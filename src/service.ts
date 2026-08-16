@@ -4,6 +4,7 @@ import type { AppConfig, CodexAccountConfig } from "./config";
 import { codexUsesFileCredentials, resolveUserPath } from "./config";
 import { QuotaDatabase } from "./db";
 import { CodexAppServerClient } from "./providers/codex-appserver";
+import { fetchClaudeUsage, mapClaudeUsage, readClaudeCredentials } from "./providers/claude-oauth";
 import { nextWakeDelayMs } from "./scheduler";
 import { alertScope, deliverTrigger, planTriggers } from "./triggers";
 import type { CollectionStateRow, Provider, ProviderStatus, QuotaEvent, QuotaObservation, TriggerDecision, WindowAnalysis } from "./types";
@@ -14,6 +15,9 @@ export class TimeQuotaService {
   private stopped = false;
   private closing = false;
   private codexPollState = new Map<string, { count: number; error: string | null }>();
+  private claudeOAuthLastPollMs = new Map<string, number>();
+  // 공식 usage 엔드포인트는 공급자 측 레이트리밋이 있어 Codex보다 느슨하게 돈다.
+  static readonly CLAUDE_OAUTH_MIN_INTERVAL_MS = 5 * 60_000;
 
   constructor(
     readonly config: AppConfig,
@@ -117,6 +121,51 @@ export class TimeQuotaService {
       throw new Error(`all configured Codex accounts failed (${profiles.map((profile) => profile.id).join(", ")})`);
     }
     return outcomes.flatMap((outcome) => outcome.events);
+  }
+
+  async pollClaudeOAuth(nowMs = Date.now()): Promise<QuotaEvent[]> {
+    const emitted: QuotaEvent[] = [];
+    for (const profile of this.config.accounts.claude.filter((item) => item.enabled)) {
+      const lastPollMs = this.claudeOAuthLastPollMs.get(profile.id) ?? 0;
+      if (nowMs - lastPollMs < TimeQuotaService.CLAUDE_OAUTH_MIN_INTERVAL_MS) continue;
+      this.claudeOAuthLastPollMs.set(profile.id, nowMs);
+      const credentials = readClaudeCredentials(profile.configDir ?? "~/.claude");
+      if (!credentials.accessToken) {
+        this.db.recordCollectionAttempt("claude", profile.id, Date.now(), credentials.error);
+        continue;
+      }
+      try {
+        const payload = await fetchClaudeUsage(credentials.accessToken);
+        const observations = mapClaudeUsage(payload, profile.id, Date.now());
+        if (!observations.length) throw new Error("usage response contained no rate windows");
+        this.db.recordCollectionAttempt("claude", profile.id, Date.now(), null);
+        if (this.closing) continue;
+        const result = this.db.ingestFullSnapshot("claude", profile.id, observations, this.config);
+        emitted.push(...result.events);
+        if (result.accepted) {
+          const observedAtMs = Math.max(...observations.map((item) => item.observedAtMs));
+          for (const previous of result.retired) {
+            const value: QuotaEvent = {
+              provider: previous.provider,
+              account: previous.account,
+              bucket: previous.bucket,
+              kind: "bucket_retired",
+              severity: "info",
+              occurredAtMs: observedAtMs,
+              confidence: "high",
+              summary: `${previous.label} 항목이 공급자 전체 응답에서 사라져 추적을 종료했습니다.`,
+              details: { lastObservedAtMs: previous.observedAtMs, fullReadsMissed: 2 },
+            };
+            if (this.db.insertEvent(value)) emitted.push(value);
+          }
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.db.recordCollectionAttempt("claude", profile.id, Date.now(), message);
+        console.error(`[timequota] Claude OAuth poll failed (${profile.id}): ${message}`);
+      }
+    }
+    return emitted;
   }
 
   private createCodexClient(profile: CodexAccountConfig): CodexAppServerClient {
@@ -281,6 +330,7 @@ export class TimeQuotaService {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[timequota] Codex refresh failed: ${message}`);
     }
+    events = events.concat(await this.pollClaudeOAuth(nowMs));
     this.db.maybePrune(nowMs, this.config.profile.historyDays);
     const triggers = await this.evaluateTriggers(nowMs);
     this.publishBoundary(nowMs);
