@@ -1,0 +1,29 @@
+#!/bin/sh
+set -eu
+SCRIPT=$0
+while [ -L "$SCRIPT" ]; do
+  SCRIPT_DIR=$(CDPATH= cd -P -- "$(dirname -- "$SCRIPT")" && pwd)
+  LINK_TARGET=$(readlink "$SCRIPT")
+  case "$LINK_TARGET" in
+    /*) SCRIPT=$LINK_TARGET ;;
+    *) SCRIPT=$SCRIPT_DIR/$LINK_TARGET ;;
+  esac
+done
+ROOT=$(CDPATH= cd -P -- "$(dirname -- "$SCRIPT")/.." && pwd)
+BUN_BIN=${BUN_BIN:-}
+if [ -z "$BUN_BIN" ]; then
+  for candidate in "$HOME/.bun/bin/bun" "$HOME/.local/share/mise/shims/bun" /opt/homebrew/bin/bun /usr/local/bin/bun; do
+    if [ -x "$candidate" ]; then
+      BUN_BIN=$candidate
+      break
+    fi
+  done
+fi
+if [ -z "$BUN_BIN" ]; then
+  BUN_BIN=$(command -v bun 2>/dev/null || true)
+fi
+if [ -z "$BUN_BIN" ]; then
+  echo "timequota: Bun was not found; set BUN_BIN" >&2
+  exit 127
+fi
+exec "$BUN_BIN" "$ROOT/src/cli.ts" "$@"

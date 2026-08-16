@@ -1,0 +1,42 @@
+{
+  "profile": {
+    "timeZone": "Asia/Seoul",
+    "recentLookbackMinutes": 120,
+    "historyDays": 28,
+    "recentWeight": 0.7,
+    "workSchedule": {
+      "weekday": [{ "start": "09:00", "end": "02:00" }],
+      "weekend": [{ "start": "11:00", "end": "01:00" }]
+    }
+  },
+  "reservePercent": {
+    "codex": { "short": 10, "weekly": 15, "other": 10 },
+    "claude": { "short": 10, "weekly": 15, "other": 10 }
+  },
+  "accounts": {
+    "codex": [
+      { "id": "default", "label": "Main", "codexHome": null, "enabled": true }
+    ],
+    "claude": [
+      { "id": "default", "label": "Main", "configDir": "~/.claude", "enabled": true }
+    ]
+  },
+  "collection": {
+    "pollSeconds": 60,
+    "staleAfterSeconds": 600,
+    "codexCommand": "codex",
+    "codexEnabled": true,
+    "claudeSessionTtlSeconds": 900
+  },
+  "alerts": {
+    "enabled": true,
+    "staleProviders": ["codex"],
+    "remainingThresholds": [20, 10, 5],
+    "predictedEarlyMinutes": 30,
+    "cooldownMinutes": 30,
+    "deliveryTimeoutSeconds": 30,
+    "macOSNotifications": true,
+    "command": null
+  },
+  "dashboard": { "host": "127.0.0.1", "port": 47831 }
+}

@@ -1,0 +1,9 @@
+node_modules/
+.build/
+dist/
+.DS_Store
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+service.log
+service.error.log
