@@ -19,6 +19,28 @@ Codex와 Claude의 5시간·주간 한도를 공급자 원본 시각으로 추�
 - 설정한 활동 시간만 남은 작업시간으로 계산하고, 5시간·주간 중 더 위험한 쪽을 현재 병목으로 표시합니다.
 - macOS 알림과 선택적인 외부 명령 트리거를 지원합니다.
 - 여러 Codex·Claude 계정을 프로필 디렉터리와 로컬 별칭별로 분리하며, 기록·개인 속도·병목·알림 cooldown도 계정별로 격리합니다.
+- 알림은 정직성 원칙을 따릅니다: 최근 실사용이 0이면 pace 경고를 보내지 않고, 실측 소진율이 안전 페이스를 넘을 때만 현재형("사용 속도 과열")을, 습관 패턴만 넘을 때는 전망형("사용 패턴 전망")을 사용합니다.
+- 수집 상태를 4상태 하트비트(never-attempted / attempted-then-failed / stale-success / recent-success)로 구분해, 멈춘 수집과 꺼진 수집이 같은 얼굴을 하지 않게 합니다.
+- burn 순위 계산은 Claude Code 전사 파일에서 토큰 수·경로 메타데이터(`cwd`, `gitBranch`, `usage`, `timestamp`)만 읽습니다. 대화 본문은 읽지 않습니다.
+
+## 통합 경계면: quota.json
+
+외부 소비자(예: Modore)는 `~/Library/Application Support/TimeQuota/quota.json` 하나만 읽습니다. 서비스가 매 tick마다 원자적으로(temp+rename, 0600) 갱신합니다.
+
+```jsonc
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-17T…",           // 소비자는 이 값이 오래되면 표시 자체를 숨긴다
+  "collection": {
+    "lastSampleAt": "…", "healthy": true,   // healthy=false면 낡은 숫자 대신 "수집 끊김"을 보일 것
+    "providers": { "codex": "recent-success", "claude": "never-attempted" }
+  },
+  "window": { "provider": "codex", "usedPercent": 66, "resetsAt": "…" },  // 전역 병목 하나
+  "topBurn": [ { "remote": "github.com/…", "percent": 42.0, "lastActiveAt": "…" } ]
+}
+```
+
+필드 제거·의미 변경은 `schemaVersion`을 올립니다.
 
 ## 요구 사항
 

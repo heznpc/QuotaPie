@@ -221,3 +221,39 @@ describe("trigger planning and claims", () => {
     errorLog.mockRestore();
   });
 });
+
+describe("pace alert honesty", () => {
+  test("suppresses pace alert when recent actual burn is zero", () => {
+    const decisions = planTriggers(
+      [window({
+        usedPercent: 66,
+        remainingPercent: 34,
+        recentBurnPerHour: 0,
+        personalBurnPerHour: 1.8,
+        blendedBurnPerHour: 1.8,
+        paceRatio: 5.46,
+        minutesBeforeReset: 4_080,
+      })],
+      [],
+      DEFAULT_CONFIG,
+      0,
+      1_000,
+    );
+    expect(decisions.filter((decision) => decision.key.endsWith(":pace"))).toHaveLength(0);
+  });
+
+  test("uses forecast wording when only habit pattern exceeds pace, current wording when measured burn does", () => {
+    const habitOnly = planTriggers(
+      [window({ recentBurnPerHour: 2, safePacePerActiveHour: 5, blendedBurnPerHour: 9, paceRatio: 1.8 })],
+      [], DEFAULT_CONFIG, 0, 1_000,
+    ).find((decision) => decision.key.endsWith(":pace"));
+    expect(habitOnly?.title).toContain("패턴 전망");
+    expect(habitOnly?.message).toContain("이 패턴이면");
+
+    const measured = planTriggers(
+      [window({ recentBurnPerHour: 12, safePacePerActiveHour: 5, blendedBurnPerHour: 10, paceRatio: 2 })],
+      [], DEFAULT_CONFIG, 0, 1_000,
+    ).find((decision) => decision.key.endsWith(":pace"));
+    expect(measured?.title).toContain("사용 속도 과열");
+  });
+});

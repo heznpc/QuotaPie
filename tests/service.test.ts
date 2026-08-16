@@ -301,3 +301,29 @@ describe("state persistence and scheduler", () => {
     expect(nextWakeDelayMs([newWindow], config, 1_000)).toBeLessThan(nextWakeDelayMs([oldWindow], config, 1_000));
   });
 });
+
+describe("boundary collection state seeding", () => {
+  test("enabled accounts with no collection history surface as never-attempted", () => {
+    const db = new QuotaDatabase(":memory:");
+    const service = new TimeQuotaService(structuredClone(DEFAULT_CONFIG), db);
+    db.recordCollectionAttempt("codex", "default", 1_000, null);
+    const states = service.boundaryCollectionStates();
+    const claude = states.find((state) => state.provider === "claude");
+    expect(claude).toBeDefined();
+    expect(claude!.lastAttemptMs).toBeNull();
+    const codex = states.find((state) => state.provider === "codex");
+    expect(codex!.lastSuccessMs).toBe(1_000);
+  });
+
+  test("failed poll then success is recorded so health recovers", () => {
+    const db = new QuotaDatabase(":memory:");
+    db.recordCollectionAttempt("codex", "default", 1_000, "boom");
+    let row = db.collectionStates()[0]!;
+    expect(row.lastSuccessMs).toBeNull();
+    expect(row.lastError).toBe("boom");
+    db.recordCollectionAttempt("codex", "default", 2_000, null);
+    row = db.collectionStates()[0]!;
+    expect(row.lastSuccessMs).toBe(2_000);
+    expect(row.lastError).toBeNull();
+  });
+});
