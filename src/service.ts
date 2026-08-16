@@ -1,11 +1,12 @@
 import { analyzeWindow, analysisHistoryStart, groupStatuses } from "./analytics";
+import { buildQuotaBoundary, writeQuotaBoundary } from "./boundary";
 import type { AppConfig, CodexAccountConfig } from "./config";
 import { codexUsesFileCredentials, resolveUserPath } from "./config";
 import { QuotaDatabase } from "./db";
 import { CodexAppServerClient } from "./providers/codex-appserver";
 import { nextWakeDelayMs } from "./scheduler";
 import { alertScope, deliverTrigger, planTriggers } from "./triggers";
-import type { Provider, ProviderStatus, QuotaEvent, QuotaObservation, TriggerDecision, WindowAnalysis } from "./types";
+import type { CollectionStateRow, Provider, ProviderStatus, QuotaEvent, QuotaObservation, TriggerDecision, WindowAnalysis } from "./types";
 
 export class TimeQuotaService {
   readonly db: QuotaDatabase;
@@ -71,6 +72,9 @@ export class TimeQuotaService {
       observations,
       this.config.collection.claudeSessionTtlSeconds * 1_000,
     );
+    for (const account of new Set(consensus.map((observation) => observation.account))) {
+      this.db.recordCollectionAttempt("claude", account, Date.now(), null);
+    }
     return this.ingest(consensus);
   }
 
@@ -94,6 +98,7 @@ export class TimeQuotaService {
       try {
         const observations = await client.readRateLimits();
         this.codexPollState.set(profile.id, { count: observations.length, error: null });
+        this.db.recordCollectionAttempt("codex", profile.id, Date.now(), null);
         return {
           ok: true as const,
           events: this.closing ? [] : this.ingestCodexSnapshot(observations),
@@ -101,6 +106,7 @@ export class TimeQuotaService {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.codexPollState.set(profile.id, { count: 0, error: message });
+        this.db.recordCollectionAttempt("codex", profile.id, Date.now(), message);
         await client.close().catch(() => undefined);
         this.codexClients.delete(profile.id);
         console.error(`[timequota] Codex account ${profile.id} refresh failed: ${message}`);
@@ -277,7 +283,42 @@ export class TimeQuotaService {
     }
     this.db.maybePrune(nowMs, this.config.profile.historyDays);
     const triggers = await this.evaluateTriggers(nowMs);
+    this.publishBoundary(nowMs);
     return { events, triggers };
+  }
+
+  // 활성 계정은 수집 기록이 한 번도 없어도 never-attempted로 표면에 남긴다.
+  // 기록 없는 계정을 생략하면 "꺼진 수집"이 보이지 않는 상태가 된다.
+  boundaryCollectionStates(): CollectionStateRow[] {
+    const recorded = this.db.collectionStates();
+    return ([
+      ...this.config.accounts.codex.filter((profile) => profile.enabled && this.config.collection.codexEnabled)
+        .map((profile) => ({ provider: "codex" as const, account: profile.id })),
+      ...this.config.accounts.claude.filter((profile) => profile.enabled)
+        .map((profile) => ({ provider: "claude" as const, account: profile.id })),
+    ]).map((enabled) =>
+      recorded.find((row) => row.provider === enabled.provider && row.account === enabled.account) ?? {
+        ...enabled,
+        lastAttemptMs: null,
+        lastSuccessMs: null,
+        lastError: null,
+      }
+    );
+  }
+
+  publishBoundary(nowMs = Date.now()): void {
+    try {
+      const document = buildQuotaBoundary(
+        this.analyses(nowMs),
+        this.boundaryCollectionStates(),
+        nowMs,
+        this.config.collection.staleAfterSeconds * 1_000,
+      );
+      writeQuotaBoundary(document);
+    } catch (error) {
+      // 경계면 쓰기 실패가 수집·알림 본연의 tick을 죽여서는 안 된다.
+      console.error(`[timequota] quota.json publish failed: ${String(error)}`);
+    }
   }
 
   async watch(): Promise<void> {

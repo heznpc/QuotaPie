@@ -95,3 +95,17 @@ export interface TriggerDecision {
   eventId?: number;
   rearmWhenRemainingAbove?: number;
 }
+
+export type CollectionHealth =
+  | "never-attempted"
+  | "attempted-then-failed"
+  | "stale-success"
+  | "recent-success";
+
+export interface CollectionStateRow {
+  provider: Provider;
+  account: string;
+  lastAttemptMs: number | null;
+  lastSuccessMs: number | null;
+  lastError: string | null;
+}

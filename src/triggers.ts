@@ -60,13 +60,24 @@ export function planTriggers(
       window.minutesBeforeReset != null &&
       window.minutesBeforeReset >= config.alerts.predictedEarlyMinutes &&
       window.paceRatio != null &&
-      window.paceRatio > 1
+      window.paceRatio > 1 &&
+      // 실소진 하한: 최근 실사용이 0이면 습관 예측만으로 경고하지 않는다.
+      window.recentBurnPerHour != null &&
+      window.recentBurnPerHour > 0
     ) {
+      // 현재형 경고는 실측 소진율이 안전 페이스를 넘을 때만. 혼합치(습관 가중)가
+      // 넘는 경우는 전망형 문구로 구분해 "지금 과열"과 "패턴상 전망"을 섞지 않는다.
+      const measuredOverPace = window.safePacePerActiveHour != null &&
+        window.recentBurnPerHour > window.safePacePerActiveHour;
       decisions.push({
         key: `${windowKey}:pace`,
-        title: `${accountTitle} 사용 속도 과열`,
-        message: `${window.label} 안전 여유가 리셋보다 약 ${Math.round(window.minutesBeforeReset)}분 먼저 소진될 전망입니다.`,
-        severity: window.paceRatio >= 1.5 ? "critical" : "warning",
+        title: measuredOverPace
+          ? `${accountTitle} 사용 속도 과열`
+          : `${accountTitle} 사용 패턴 전망`,
+        message: measuredOverPace
+          ? `${window.label} 안전 여유가 리셋보다 약 ${Math.round(window.minutesBeforeReset)}분 먼저 소진될 전망입니다.`
+          : `${window.label} 이 패턴이면 안전 여유가 리셋보다 약 ${Math.round(window.minutesBeforeReset)}분 먼저 소진될 전망입니다.`,
+        severity: window.paceRatio >= 1.5 && measuredOverPace ? "critical" : "warning",
       });
     }
   }

@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import { classifyDelta } from "./classify";
 import type { AppConfig } from "./config";
 import { dataDirectory } from "./config";
-import type { Provider, QuotaEvent, QuotaObservation } from "./types";
+import type { CollectionStateRow, Provider, QuotaEvent, QuotaObservation } from "./types";
 
 interface SnapshotRow {
   provider: Provider;
@@ -185,6 +185,16 @@ export class QuotaDatabase {
         provider TEXT NOT NULL,
         account TEXT NOT NULL,
         last_full_read_ms INTEGER NOT NULL,
+        PRIMARY KEY(provider, account)
+      )
+    `);
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS collection_state (
+        provider TEXT NOT NULL,
+        account TEXT NOT NULL,
+        last_attempt_ms INTEGER,
+        last_success_ms INTEGER,
+        last_error TEXT,
         PRIMARY KEY(provider, account)
       )
     `);
@@ -593,6 +603,38 @@ export class QuotaDatabase {
       );
       return { accepted: true, events, retired };
     });
+  }
+
+  recordCollectionAttempt(provider: Provider, account: string, atMs: number, error: string | null): void {
+    this.db
+      .query(`
+        INSERT INTO collection_state(provider, account, last_attempt_ms, last_success_ms, last_error)
+        VALUES (?1, ?2, ?3, CASE WHEN ?4 IS NULL THEN ?3 ELSE NULL END, ?4)
+        ON CONFLICT(provider, account) DO UPDATE SET
+          last_attempt_ms = ?3,
+          last_success_ms = CASE WHEN ?4 IS NULL THEN ?3 ELSE collection_state.last_success_ms END,
+          last_error = ?4
+      `)
+      .run(provider, account, atMs, error);
+  }
+
+  collectionStates(): CollectionStateRow[] {
+    return this.db
+      .query<{
+        provider: Provider;
+        account: string;
+        last_attempt_ms: number | null;
+        last_success_ms: number | null;
+        last_error: string | null;
+      }, []>("SELECT provider, account, last_attempt_ms, last_success_ms, last_error FROM collection_state")
+      .all()
+      .map((row) => ({
+        provider: row.provider,
+        account: row.account,
+        lastAttemptMs: row.last_attempt_ms,
+        lastSuccessMs: row.last_success_ms,
+        lastError: row.last_error,
+      }));
   }
 
   upsertClaudeSessions(observations: QuotaObservation[], ttlMs: number): QuotaObservation[] {
