@@ -20,7 +20,7 @@ function resetMs(value: unknown): number | null {
   return null;
 }
 
-function labelFor(key: string): string {
+export function labelFor(key: string): string {
   const labels: Record<string, string> = {
     five_hour: "Claude 5h",
     seven_day: "Claude weekly",
@@ -32,7 +32,7 @@ function labelFor(key: string): string {
   return labels[key] ?? `Claude ${key.replaceAll("_", " ")}`;
 }
 
-function durationFor(key: string): number | null {
+export function durationFor(key: string): number | null {
   if (key === "five_hour") return 5 * 3_600;
   if (key.startsWith("seven_day")) return 7 * 86_400;
   return null;
