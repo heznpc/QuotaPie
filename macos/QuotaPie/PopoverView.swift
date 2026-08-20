@@ -18,41 +18,61 @@ struct PopoverView: View {
     let onQuit: () -> Void
 
     var body: some View {
+        VStack(spacing: 0) {
+            header
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    content
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
+            }
+            .frame(maxHeight: 460)
+            Divider()
+            footer
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+        }
+        .frame(width: 380)
+    }
+
+    @ViewBuilder
+    private var content: some View {
         let payload = model.payload
         let lastError = model.lastError
         let lastSuccessAt = model.lastSuccessAt
-        VStack(alignment: .leading, spacing: 12) {
-            header
-            if let lastError {
-                CalloutView(
-                    text: "로컬 서비스에 연결할 수 없습니다",
-                    // 아래 숫자들이 언제 것인지 밝힌다. 캐시를 지우는 대신 나이를 붙인다.
-                    detail: payload == nil
-                        ? lastError
-                        : "아래는 마지막 정상값입니다 · \(lastSuccessAt.map { DisplayFormat.age(since: $0) } ?? "시각 미확인") · \(lastError)",
-                    tone: .warning
-                )
-            }
-            if let payload, !payload.accounts.isEmpty {
-                ForEach(payload.accounts) { account in
-                    AccountSection(account: account, onOpenConfig: onOpenConfig, onCopyCommand: onCopyCommand)
-                }
-            } else if lastError == nil {
-                CalloutView(
-                    text: "추적할 계정이 없습니다",
-                    detail: "설정 파일에서 Codex 또는 Claude 계정을 활성화하십시오.",
-                    tone: .neutral
-                )
-            }
-            if let events = payload?.events, !events.isEmpty {
-                Divider()
-                RecentChanges(events: Array(events.prefix(3)))
-            }
-            Divider()
-            footer
+        if let lastError {
+            CalloutView(
+                text: "로컬 서비스에 연결할 수 없습니다",
+                // 아래 숫자들이 언제 것인지 밝힌다. 캐시를 지우는 대신 나이를 붙인다.
+                detail: payload == nil
+                    ? lastError
+                    : "아래는 마지막 정상값입니다 · \(lastSuccessAt.map { DisplayFormat.age(since: $0) } ?? "시각 미확인") · \(lastError)",
+                tone: .warning
+            )
         }
-        .padding(14)
-        .frame(width: 380)
+        if let payload, !payload.accounts.isEmpty {
+            ForEach(payload.accounts) { account in
+                AccountSection(
+                    account: account,
+                    onOpenConfig: onOpenConfig,
+                    onCopyCommand: onCopyCommand
+                )
+            }
+        } else if lastError == nil {
+            CalloutView(
+                text: "추적할 계정이 없습니다",
+                detail: "설정 파일에서 Codex 또는 Claude 계정을 활성화하십시오.",
+                tone: .neutral
+            )
+        }
+        if let events = payload?.events, !events.isEmpty {
+            Divider()
+            RecentChanges(events: Array(events.prefix(3)))
+        }
     }
 
     private var header: some View {
@@ -83,15 +103,47 @@ struct PopoverView: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 10) {
-            Button("새로고침", action: onRefresh)
-            Button("복사", action: onCopy)
-            Button("웹 화면", action: onOpenDashboard)
+        HStack(spacing: 4) {
+            Button(action: onRefresh) {
+                Label("새로고침", systemImage: "arrow.clockwise")
+                    .labelStyle(.iconOnly)
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .help("새로고침 (⌘R)")
+
+            Button(action: onCopy) {
+                Label("상태 복사", systemImage: "doc.on.doc")
+                    .labelStyle(.iconOnly)
+            }
+            .keyboardShortcut("c", modifiers: .command)
+            .help("상태 복사 (⌘C)")
+
+            Button(action: onOpenDashboard) {
+                Label("웹 화면 열기", systemImage: "safari")
+                    .labelStyle(.iconOnly)
+            }
+            .help("웹 화면 열기")
+
             Spacer()
-            Button("종료", action: onQuit)
+
+            Menu {
+                Button(action: onOpenConfig) {
+                    Label("설정 열기", systemImage: "gearshape")
+                }
+                Divider()
+                Button(role: .destructive, action: onQuit) {
+                    Label("QuotaPie 종료", systemImage: "power")
+                }
+                .keyboardShortcut("q", modifiers: .command)
+            } label: {
+                Label("더 보기", systemImage: "ellipsis.circle")
+                    .labelStyle(.iconOnly)
+            }
+            .menuStyle(.borderlessButton)
+            .help("설정 및 종료")
         }
         .buttonStyle(.borderless)
-        .font(.caption)
+        .controlSize(.small)
     }
 }
 
@@ -119,12 +171,18 @@ private struct AccountSection: View {
                 )
                 HStack(spacing: 8) {
                     if let command = account.collection.recoveryCommand {
-                        Button("명령 복사") { onCopyCommand(command) }
+                        Button { onCopyCommand(command) } label: {
+                            Label("복구 명령 복사", systemImage: "doc.on.doc")
+                        }
+                        .help("터미널에서 실행할 복구 명령 복사")
                     }
-                    Button("설정 확인", action: onOpenConfig)
+                    Button(action: onOpenConfig) {
+                        Label("설정 열기", systemImage: "gearshape")
+                    }
+                    .help("QuotaPie 설정 파일 열기")
                 }
-                .buttonStyle(.borderless)
-                .font(.caption2)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
             ForEach(account.windows) { window in
                 WindowRow(window: window)
