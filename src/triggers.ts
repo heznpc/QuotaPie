@@ -189,8 +189,8 @@ export async function deliverTrigger(
             stderr: "ignore",
             env: {
               ...process.env,
-              TIMEQUOTA_EVENT_JSON: JSON.stringify(decision),
-              TIMEQUOTA_IDEMPOTENCY_KEY: deliveryKey,
+              QUOTAPIE_EVENT_JSON: JSON.stringify(decision),
+              QUOTAPIE_IDEMPOTENCY_KEY: deliveryKey,
             },
           }), timeoutMs),
         );
@@ -211,7 +211,7 @@ export async function deliverTrigger(
       succeededChannels.push(result.channel);
     } else {
       failedChannels.push(result.channel);
-      console.error(`[timequota] ${result.channel} ${result.detail}`);
+      console.error(`[quotapie] ${result.channel} ${result.detail}`);
     }
   }
   const complete = configuredChannels.length > 0 &&

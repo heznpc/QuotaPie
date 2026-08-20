@@ -1,12 +1,12 @@
 {
-  "name": "timequota",
+  "name": "quotapie",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "timequota": "bun run src/cli.ts",
+    "quotapie": "bun run src/cli.ts",
     "test": "bun test",
-    "check": "bun test && tsc --noEmit && bun build src/cli.ts --target=bun --outdir /tmp/timequota-build"
+    "check": "bun test && tsc --noEmit && bun build src/cli.ts --target=bun --outdir /tmp/quotapie-build"
   },
   "devDependencies": {
     "@types/bun": "^1.3.10",

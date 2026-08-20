@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { loadConfig } from "../src/config";
 
 function withConfig(value: unknown, run: (path: string) => void): void {
-  const directory = mkdtempSync(resolve(tmpdir(), "timequota-config-"));
+  const directory = mkdtempSync(resolve(tmpdir(), "quotapie-config-"));
   const path = resolve(directory, "config.json");
   writeFileSync(path, JSON.stringify(value));
   try {

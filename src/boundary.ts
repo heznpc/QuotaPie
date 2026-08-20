@@ -200,7 +200,7 @@ export function buildQuotaBoundary(
 }
 
 export function defaultBoundaryPath(): string {
-  return join(homedir(), "Library", "Application Support", "TimeQuota", "quota.json");
+  return join(homedir(), "Library", "Application Support", "QuotaPie", "quota.json");
 }
 
 export function writeQuotaBoundary(document: QuotaBoundaryDocument, path = defaultBoundaryPath()): void {

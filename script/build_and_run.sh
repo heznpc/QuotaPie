@@ -2,8 +2,8 @@
 set -euo pipefail
 
 MODE="${1:-run}"
-APP_NAME="TimeQuotaMenu"
-BUNDLE_ID="local.timequota.menubar"
+APP_NAME="QuotaPie"
+BUNDLE_ID="local.quotapie.menubar"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
@@ -20,7 +20,7 @@ BUILD_BINARY="$(swift build -c release --show-bin-path)/$APP_NAME"
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_CONTENTS/Resources"
 cp "$BUILD_BINARY" "$APP_BINARY"
-cp "$ROOT_DIR/macos/TimeQuotaMenu/Info.plist" "$APP_CONTENTS/Info.plist"
+cp "$ROOT_DIR/macos/QuotaPie/Info.plist" "$APP_CONTENTS/Info.plist"
 chmod +x "$APP_BINARY"
 codesign --force --sign - --timestamp=none "$APP_BUNDLE" >/dev/null
 

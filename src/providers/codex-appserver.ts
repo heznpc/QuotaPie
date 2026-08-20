@@ -167,7 +167,7 @@ export class CodexAppServerClient {
     );
     this.pumpTask = this.pump();
     await this.request("initialize", {
-      clientInfo: { name: "timequota", title: "TimeQuota", version: "0.1.0" },
+      clientInfo: { name: "quotapie", title: "QuotaPie", version: "0.1.0" },
       capabilities: {
         experimentalApi: true,
         optOutNotificationMethods: [
@@ -268,7 +268,7 @@ export class CodexAppServerClient {
       if (this.closing) return;
       void this.readRateLimits()
         .then((observations) => this.notificationHandler?.(observations))
-        .catch((error) => console.error(`[timequota] Codex update refresh failed: ${String(error)}`));
+        .catch((error) => console.error(`[quotapie] Codex update refresh failed: ${String(error)}`));
     }, 100);
   }
 

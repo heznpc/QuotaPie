@@ -52,7 +52,7 @@ function windowLine(window: WindowAnalysis, bottleneck: boolean): string[] {
 
 export function formatStatuses(statuses: ProviderStatus[]): string {
   if (!statuses.length) {
-    return "No quota observations yet. Run `timequota poll` and connect the Claude status line.";
+    return "No quota observations yet. Run `quotapie poll` and connect the Claude status line.";
   }
   const lines: string[] = [];
   for (const status of statuses) {

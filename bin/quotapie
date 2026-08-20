@@ -23,7 +23,7 @@ if [ -z "$BUN_BIN" ]; then
   BUN_BIN=$(command -v bun 2>/dev/null || true)
 fi
 if [ -z "$BUN_BIN" ]; then
-  echo "timequota: Bun was not found; set BUN_BIN" >&2
+  echo "quotapie: Bun was not found; set BUN_BIN" >&2
   exit 127
 fi
 exec "$BUN_BIN" "$ROOT/src/cli.ts" "$@"

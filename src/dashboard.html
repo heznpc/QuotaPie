@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>TimeQuota</title>
+    <title>QuotaPie</title>
     <style>
       :root {
         color-scheme: dark;
@@ -67,7 +67,7 @@
     <main>
       <header>
         <div>
-          <h1>TimeQuota</h1>
+          <h1>QuotaPie</h1>
           <div class="subtitle">공급자 원본 시계 + 개인 사용 속도</div>
         </div>
         <div id="updated" class="muted">연결 중…</div>
@@ -149,7 +149,7 @@
           document.getElementById("updated").textContent = new Date(data.nowMs).toLocaleTimeString() + " 화면 갱신";
           document.getElementById("providers").innerHTML = data.statuses.length
             ? data.statuses.map((status) => `<article class="provider"><h2>${escapeHtml(status.provider)} · ${escapeHtml(status.accountLabel ?? status.account)}</h2>${status.windows.map((window) => windowHtml(window, window.bucket === status.bottleneckBucket)).join("")}</article>`).join("")
-            : '<div class="empty">`timequota poll` 실행 후 Claude status-line을 연결해 주세요.</div>';
+            : '<div class="empty">`quotapie poll` 실행 후 Claude status-line을 연결해 주세요.</div>';
           document.getElementById("events").innerHTML = data.events.length
             ? data.events.slice(0, 15).map((event) => `<div class="event"><span>${new Date(event.occurredAtMs).toLocaleString()}</span><span class="kind">${escapeHtml(eventName[event.kind] ?? event.kind)}</span><span>${escapeHtml(`${event.account} · ${event.summary}${eventDetails(event)}`)} · 신뢰도 ${escapeHtml(event.confidence)}</span></div>`).join("")
             : "아직 기록된 이벤트가 없습니다.";
