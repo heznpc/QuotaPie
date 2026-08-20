@@ -5,7 +5,14 @@ import { dirname, resolve } from "node:path";
 import { classifyDelta } from "./classify";
 import type { AppConfig } from "./config";
 import { dataDirectory } from "./config";
-import type { CollectionStateRow, Provider, QuotaEvent, QuotaObservation } from "./types";
+import type {
+  CollectionErrorCategory,
+  CollectionSourceStateRow,
+  CollectionStateRow,
+  Provider,
+  QuotaEvent,
+  QuotaObservation,
+} from "./types";
 
 interface SnapshotRow {
   provider: Provider;
@@ -197,6 +204,29 @@ export class QuotaDatabase {
         last_error TEXT,
         PRIMARY KEY(provider, account)
       )
+    `);
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS collection_source_state (
+        provider TEXT NOT NULL,
+        account TEXT NOT NULL,
+        source TEXT NOT NULL,
+        last_attempt_ms INTEGER,
+        last_success_ms INTEGER,
+        last_error TEXT,
+        last_error_category TEXT,
+        PRIMARY KEY(provider, account, source)
+      )
+    `);
+    // 계정 단위로만 기록하던 이력을 소스 단위로 옮긴다. 어느 소스였는지 알 수
+    // 없으므로 공급자의 대표 소스 이름으로 귀속시킨다.
+    this.db.run(`
+      INSERT OR IGNORE INTO collection_source_state(
+        provider, account, source, last_attempt_ms, last_success_ms, last_error, last_error_category
+      )
+      SELECT provider, account,
+             CASE provider WHEN 'codex' THEN 'codex-appserver' ELSE 'claude-statusline' END,
+             last_attempt_ms, last_success_ms, last_error, NULL
+      FROM collection_state
     `);
     this.db.run(`
       CREATE TABLE IF NOT EXISTS events (
@@ -605,17 +635,53 @@ export class QuotaDatabase {
     });
   }
 
-  recordCollectionAttempt(provider: Provider, account: string, atMs: number, error: string | null): void {
+  recordCollectionAttempt(
+    provider: Provider,
+    account: string,
+    source: string,
+    atMs: number,
+    error: string | null,
+    category: CollectionErrorCategory | null = null,
+  ): void {
     this.db
       .query(`
-        INSERT INTO collection_state(provider, account, last_attempt_ms, last_success_ms, last_error)
-        VALUES (?1, ?2, ?3, CASE WHEN ?4 IS NULL THEN ?3 ELSE NULL END, ?4)
-        ON CONFLICT(provider, account) DO UPDATE SET
-          last_attempt_ms = ?3,
-          last_success_ms = CASE WHEN ?4 IS NULL THEN ?3 ELSE collection_state.last_success_ms END,
-          last_error = ?4
+        INSERT INTO collection_source_state(
+          provider, account, source, last_attempt_ms, last_success_ms, last_error, last_error_category
+        )
+        VALUES (?1, ?2, ?3, ?4, CASE WHEN ?5 IS NULL THEN ?4 ELSE NULL END, ?5, ?6)
+        ON CONFLICT(provider, account, source) DO UPDATE SET
+          last_attempt_ms = ?4,
+          last_success_ms = CASE WHEN ?5 IS NULL THEN ?4 ELSE collection_source_state.last_success_ms END,
+          last_error = ?5,
+          last_error_category = ?6
       `)
-      .run(provider, account, atMs, error);
+      .run(provider, account, source, atMs, error, category);
+  }
+
+  collectionSourceStates(): CollectionSourceStateRow[] {
+    return this.db
+      .query<{
+        provider: Provider;
+        account: string;
+        source: string;
+        last_attempt_ms: number | null;
+        last_success_ms: number | null;
+        last_error: string | null;
+        last_error_category: CollectionErrorCategory | null;
+      }, []>(`
+        SELECT provider, account, source, last_attempt_ms, last_success_ms, last_error, last_error_category
+        FROM collection_source_state
+      `)
+      .all()
+      .map((row) => ({
+        provider: row.provider,
+        account: row.account,
+        source: row.source,
+        lastAttemptMs: row.last_attempt_ms,
+        lastSuccessMs: row.last_success_ms,
+        lastError: row.last_error,
+        lastErrorCategory: row.last_error_category,
+      }));
   }
 
   collectionStates(): CollectionStateRow[] {
