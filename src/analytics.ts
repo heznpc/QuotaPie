@@ -317,10 +317,11 @@ export function analysisHistoryStart(config: AppConfig, nowMs = Date.now()): num
 }
 
 export function windowShortLabel(window: WindowAnalysis): string {
+  // 긴 창부터 검사한다. 주간을 먼저 반환하면 월간 분기에 영원히 닿지 않는다.
   if (window.windowSeconds != null) {
+    if (window.windowSeconds >= 28 * 86_400) return "월간";
     if (window.windowSeconds >= 7 * 86_400) return "주간";
     if (window.windowSeconds <= 6 * 3_600) return "5시간";
-    if (window.windowSeconds >= 28 * 86_400) return "월간";
   }
   return window.label;
 }

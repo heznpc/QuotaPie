@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config";
 
 function withConfig(value: unknown, run: (path: string) => void): void {
@@ -44,5 +44,27 @@ describe("account config", () => {
         codex: [{ id: "bad:id", label: "Bad", codexHome: "/tmp/bad", enabled: true }],
       },
     }, (path) => expect(() => loadConfig(path)).toThrow("must match"));
+  });
+});
+
+describe("the local API stays local", () => {
+  test("a non-loopback dashboard host is rejected instead of silently exposing the API", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tq-config-"));
+    const path = join(dir, "config.json");
+    writeFileSync(path, JSON.stringify({ dashboard: { host: "0.0.0.0", port: 47831 } }));
+    expect(() => loadConfig(path)).toThrow(/loopback/);
+    writeFileSync(path, JSON.stringify({ dashboard: { host: "192.168.1.20", port: 47831 } }));
+    expect(() => loadConfig(path)).toThrow(/loopback/);
+  });
+
+  test("loopback hosts and valid ports still load", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tq-config-"));
+    const path = join(dir, "config.json");
+    for (const host of ["127.0.0.1", "localhost", "::1"]) {
+      writeFileSync(path, JSON.stringify({ dashboard: { host, port: 47831 } }));
+      expect(loadConfig(path).dashboard.host).toBe(host);
+    }
+    writeFileSync(path, JSON.stringify({ dashboard: { host: "127.0.0.1", port: 0 } }));
+    expect(() => loadConfig(path)).toThrow(/port/);
   });
 });
