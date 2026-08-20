@@ -425,6 +425,8 @@ describe("collection isolation between providers", () => {
   test("a failing Claude poll never throws and leaves Codex collection untouched", async () => {
     const db = new QuotaDatabase(":memory:");
     const config = structuredClone(DEFAULT_CONFIG);
+    // OAuth 실패 경로를 보려면 opt-in 게이트를 명시적으로 켜야 한다.
+    config.collection.claudeOAuthEnabled = true;
     // 자격증명이 없는 임시 디렉터리를 가리켜 Claude 수집이 확실히 실패하게 만든다.
     config.accounts.claude = [{
       id: "default",
@@ -472,6 +474,7 @@ describe("a provider outage stays contained", () => {
     writeFileSync(join(dir, ".credentials.json"), JSON.stringify({
       claudeAiOauth: { accessToken: "test-token", expiresAt: Date.now() + 3_600_000 },
     }));
+    config.collection.claudeOAuthEnabled = true;
     config.accounts.claude = [{ id: "default", label: "Main", configDir: dir, enabled: true, keychainService: null }];
     const service = new QuotaPieService(config, db);
     const nowMs = 50_000_000;
@@ -488,5 +491,83 @@ describe("a provider outage stays contained", () => {
     expect(claude.collection.errorCategory).toBe("provider-error");
     // 실패 기록에 토큰이 새지 않는다.
     expect(JSON.stringify(claude)).not.toContain("test-token");
+  });
+});
+
+describe("Claude OAuth collection is opt-in", () => {
+  function claudeConfig(oauthEnabled: boolean) {
+    const config = structuredClone(DEFAULT_CONFIG);
+    const dir = mkdtempSync(join(tmpdir(), "tq-optin-"));
+    writeFileSync(join(dir, ".credentials.json"), JSON.stringify({
+      claudeAiOauth: { accessToken: "test-token", expiresAt: Date.now() + 3_600_000 },
+    }));
+    config.collection.claudeOAuthEnabled = oauthEnabled;
+    config.accounts.claude = [{ id: "default", label: "Main", configDir: dir, enabled: true, keychainService: null }];
+    return config;
+  }
+
+  test("the default configuration does not read anyone's credentials", () => {
+    expect(DEFAULT_CONFIG.collection.claudeOAuthEnabled).toBeFalse();
+  });
+
+  test("a disabled poller reads nothing even when doctor forces a run", async () => {
+    const db = new QuotaDatabase(":memory:");
+    const service = new QuotaPieService(claudeConfig(false), db);
+    let called = false;
+    const spy = (async () => {
+      called = true;
+      return new Response(JSON.stringify({ five_hour: { utilization: 10 } }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const events = await service.pollClaudeOAuth(1_000, true, spy);
+
+    expect(events).toEqual([]);
+    expect(called).toBeFalse();
+    expect(db.collectionSourceStates()).toEqual([]);
+  });
+
+  test("enabling it turns the same call into a real sample", async () => {
+    const db = new QuotaDatabase(":memory:");
+    const service = new QuotaPieService(claudeConfig(true), db);
+    const responding = (async () =>
+      new Response(JSON.stringify({
+        five_hour: { utilization: 10, resets_at: new Date(2_000_000).toISOString() },
+      }), { status: 200 })) as unknown as typeof fetch;
+
+    await service.pollClaudeOAuth(1_000, true, responding);
+
+    expect(db.latest("claude", "default", "five_hour")?.usedPercent).toBe(10);
+    expect(db.collectionSourceStates().map((row) => row.source)).toEqual(["claude-oauth"]);
+  });
+
+  test("opting out reads as unconfigured rather than broken", () => {
+    const db = new QuotaDatabase(":memory:");
+    const service = new QuotaPieService(claudeConfig(false), db);
+    const claude = service.accountStates(1_000).find((state) => state.provider === "claude")!;
+    expect(claude.collection.health).toBe("never-attempted");
+    expect(claude.collection.errorCategory).toBe("not-configured");
+  });
+
+  test("the status line still collects while OAuth stays off", () => {
+    const db = new QuotaDatabase(":memory:");
+    const config = claudeConfig(false);
+    const service = new QuotaPieService(config, db);
+    service.ingestClaudeSessions([{
+      provider: "claude",
+      account: "default",
+      bucket: "five_hour",
+      label: "Claude 5h",
+      windowSeconds: 18_000,
+      usedPercent: 33,
+      resetsAtMs: 9_000_000,
+      observedAtMs: 1_000,
+      source: "claude-statusline",
+      quality: "authoritative",
+      metadata: { sessionHash: "abc123" },
+    }], 1_000);
+    expect(db.latest("claude", "default", "five_hour")?.usedPercent).toBe(33);
+    const claude = service.accountStates(1_000).find((state) => state.provider === "claude")!;
+    expect(claude.collection.health).toBe("recent-success");
+    expect(claude.collection.activeSource).toBe("claude-statusline");
   });
 });
