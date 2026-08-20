@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import type { CollectionHealth, CollectionStateRow, WindowAnalysis } from "./types";
+import type { AccountState, CollectionHealth, CollectionStateRow, Headline } from "./types";
 
 // Modore 등 외부 소비자와의 통합 경계면. 이 파일 하나가 계약의 전부다:
 // 소비자는 quota.json을 읽기만 하고, 파일이 없거나 generatedAt이 오래됐으면
@@ -21,6 +21,8 @@ export interface QuotaBoundaryDocument {
     usedPercent: number | null;
     resetsAt: string | null;
   } | null;
+  // 소비자가 자체 판단 없이 그대로 보여줄 수 있는 결론 한 줄(추가 필드, 하위호환).
+  headline: { kind: Headline["kind"]; title: string; detail: string | null } | null;
   topBurn: Array<{ remote: string; percent: number; lastActiveAt: string }>;
 }
 
@@ -155,42 +157,44 @@ function cachedLeaderboard(nowMs: number): QuotaBoundaryDocument["topBurn"] {
 }
 
 export function buildQuotaBoundary(
-  windows: WindowAnalysis[],
-  states: CollectionStateRow[],
+  accounts: AccountState[],
+  headline: Headline | null,
   nowMs: number,
-  staleAfterMs: number,
   topBurn?: QuotaBoundaryDocument["topBurn"],
 ): QuotaBoundaryDocument {
   const providers: Record<string, CollectionHealth> = {};
   let lastSampleMs: number | null = null;
-  for (const state of states) {
-    const key = state.account === "default" ? state.provider : `${state.provider}/${state.account}`;
-    providers[key] = collectionHealth(state, nowMs, staleAfterMs);
-    if (state.lastSuccessMs != null && (lastSampleMs == null || state.lastSuccessMs > lastSampleMs)) {
-      lastSampleMs = state.lastSuccessMs;
-    }
+  for (const account of accounts) {
+    const key = account.account === "default" ? account.provider : `${account.provider}/${account.account}`;
+    providers[key] = account.collection.health;
+    const success = account.collection.lastSuccessAtMs;
+    if (success != null && (lastSampleMs == null || success > lastSampleMs)) lastSampleMs = success;
   }
-  const bottleneck = windows
-    .filter((window) => window.freshness === "fresh")
-    .sort((left, right) => right.bottleneckScore - left.bottleneckScore)[0] ?? null;
-  const bottleneckState = bottleneck
-    ? states.find((state) => state.provider === bottleneck.provider && state.account === bottleneck.account)
-    : undefined;
-  const healthy = bottleneck != null &&
-    collectionHealth(bottleneckState, nowMs, staleAfterMs) === "recent-success";
+  const ranked = accounts
+    .flatMap((account) =>
+      account.windows
+        .filter((window) => window.freshness === "fresh")
+        .map((window) => ({ account, window }))
+    )
+    .sort((left, right) => right.window.bottleneckScore - left.window.bottleneckScore);
+  const bottleneck = ranked[0] ?? null;
+  // 표시할 창의 수집이 최근에 성공했을 때만 healthy다. 오래된 숫자를 정상값처럼
+  // 보여주느니 소비자가 표시를 숨기는 편이 낫다.
+  const healthy = bottleneck != null && bottleneck.account.collection.health === "recent-success";
   return {
     schemaVersion: QUOTA_BOUNDARY_SCHEMA_VERSION,
     generatedAt: new Date(nowMs).toISOString(),
     collection: { lastSampleAt: iso(lastSampleMs), healthy, providers },
     window: bottleneck
       ? {
-        provider: bottleneck.account === "default"
-          ? bottleneck.provider
-          : `${bottleneck.provider}/${bottleneck.account}`,
-        usedPercent: bottleneck.usedPercent,
-        resetsAt: iso(bottleneck.resetsAtMs),
+        provider: bottleneck.account.account === "default"
+          ? bottleneck.account.provider
+          : `${bottleneck.account.provider}/${bottleneck.account.account}`,
+        usedPercent: bottleneck.window.usedPercent,
+        resetsAt: iso(bottleneck.window.resetsAtMs),
       }
       : null,
+    headline: headline ? { kind: headline.kind, title: headline.title, detail: headline.detail } : null,
     topBurn: topBurn ?? cachedLeaderboard(nowMs),
   };
 }

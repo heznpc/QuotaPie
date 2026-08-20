@@ -1,3 +1,4 @@
+import { buildHeadline } from "./analytics";
 import type { AppConfig } from "./config";
 import type { TimeQuotaService } from "./service";
 
@@ -31,21 +32,43 @@ export function startDashboard(service: TimeQuotaService, config: AppConfig) {
         });
       }
       if (url.pathname === "/api/status") {
-        return json({ nowMs: Date.now(), statuses: service.statuses(), events: service.recentEvents(30) });
+        const nowMs = Date.now();
+        const accounts = service.accountStates(nowMs);
+        return json({
+          nowMs,
+          headline: buildHeadline(accounts, nowMs),
+          accounts,
+          // 기존 소비자를 위해 남겨둔 표현. 창이 있는 계정만 담기므로 신규 소비자는 accounts를 쓴다.
+          statuses: service.statuses(nowMs),
+          events: service.recentEvents(30),
+        });
       }
       if (url.pathname === "/api/events") {
         const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit") ?? "50")));
         return json({ events: service.recentEvents(limit) });
       }
       if (url.pathname === "/health") {
-        const statuses = service.statuses();
-        const degraded = statuses.flatMap((status) => status.windows).filter((window) =>
-          window.provider === "codex" && window.freshness !== "fresh"
-        );
+        // 건강은 창의 신선도가 아니라 수집 자체의 상태로 판정한다. 활성 계정 중
+        // 하나라도 최근 성공이 없으면 200을 돌려주지 않는다.
+        const nowMs = Date.now();
+        const accounts = service.accountStates(nowMs);
+        const degraded = accounts.filter((account) => account.collection.health !== "recent-success");
         return json({
           ok: degraded.length === 0,
-          providers: statuses.map((status) => status.provider),
-          degraded: degraded.map((window) => ({ bucket: window.bucket, freshness: window.freshness })),
+          accounts: accounts.map((account) => ({
+            provider: account.provider,
+            account: account.account,
+            health: account.collection.health,
+            activeSource: account.collection.activeSource,
+            errorCategory: account.collection.errorCategory,
+            windows: account.windows.length,
+          })),
+          degraded: degraded.map((account) => ({
+            provider: account.provider,
+            account: account.account,
+            health: account.collection.health,
+            errorCategory: account.collection.errorCategory,
+          })),
         }, degraded.length ? 503 : 200);
       }
       return json({ error: "not_found" }, 404);

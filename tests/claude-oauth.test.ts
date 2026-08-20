@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { mapClaudeUsage } from "../src/providers/claude-oauth";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  fetchClaudeUsage,
+  keychainServiceCandidates,
+  mapClaudeUsage,
+  readClaudeCredentials,
+} from "../src/providers/claude-oauth";
 
 // 픽스처는 CodexBar가 실측으로 기록한 공식 usage 응답 형식 두 가지를 따른다:
 // 구형 flat 필드와, 2026-07 이후의 limits 배열(weekly_scoped) 혼합형.
@@ -52,5 +60,75 @@ describe("claude oauth usage mapping", () => {
     expect(mapClaudeUsage("nope")).toHaveLength(0);
     expect(mapClaudeUsage({ five_hour: { utilization: "high" } })).toHaveLength(0);
     expect(mapClaudeUsage({ limits: [{ kind: "session" }] })).toHaveLength(0);
+  });
+});
+
+describe("claude oauth credential lookup", () => {
+  test("the default profile uses the shared service name", () => {
+    expect(keychainServiceCandidates(join(homedir(), ".claude"))).toEqual(["Claude Code-credentials"]);
+  });
+
+  test("a separate profile never falls back to the default account's keychain item", () => {
+    const candidates = keychainServiceCandidates("/tmp/timequota-claude-work");
+    expect(candidates).toEqual([
+      "Claude Code-credentials-/tmp/timequota-claude-work",
+      "Claude Code-credentials-timequota-claude-work",
+    ]);
+    expect(candidates).not.toContain("Claude Code-credentials");
+  });
+
+  test("an explicit keychainService overrides the derived candidates", () => {
+    expect(keychainServiceCandidates("/tmp/whatever", "Custom-credentials")).toEqual(["Custom-credentials"]);
+  });
+
+  test("a profile directory without credentials reports auth-required, not a crash", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tq-claude-"));
+    const lookup = readClaudeCredentials(dir);
+    expect(lookup.accessToken).toBeNull();
+    expect(lookup.errorCategory).toBe("auth-required");
+  });
+
+  test("an empty token in the credentials file is auth-required rather than a bearer of nothing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tq-claude-"));
+    writeFileSync(join(dir, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "" } }));
+    const lookup = readClaudeCredentials(dir);
+    expect(lookup.accessToken).toBeNull();
+    expect(lookup.errorCategory).toBe("auth-required");
+  });
+
+  test("an expired token is reported as expired so the fix differs from first login", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tq-claude-"));
+    writeFileSync(join(dir, ".credentials.json"), JSON.stringify({
+      claudeAiOauth: { accessToken: "token", expiresAt: Date.now() - 1_000 },
+    }));
+    expect(readClaudeCredentials(dir).errorCategory).toBe("auth-expired");
+  });
+});
+
+describe("claude usage fetch failure categories", () => {
+  const ok = (body: unknown, status = 200) =>
+    (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch;
+
+  test("a rejected login is auth-expired, not a generic provider error", async () => {
+    await expect(fetchClaudeUsage("t", ok({}, 401))).rejects.toMatchObject({ category: "auth-expired" });
+    await expect(fetchClaudeUsage("t", ok({}, 403))).rejects.toMatchObject({ category: "auth-expired" });
+  });
+
+  test("provider throttling is its own category so the UI can say so", async () => {
+    await expect(fetchClaudeUsage("t", ok({}, 429))).rejects.toMatchObject({ category: "rate-limited" });
+  });
+
+  test("a server error is a provider error", async () => {
+    await expect(fetchClaudeUsage("t", ok({}, 503))).rejects.toMatchObject({ category: "provider-error" });
+  });
+
+  test("a hanging endpoint aborts on the timeout instead of stalling collection", async () => {
+    const hang = (async (_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      })) as unknown as typeof fetch;
+    const started = Date.now();
+    await expect(fetchClaudeUsage("t", hang, 200)).rejects.toMatchObject({ category: "network" });
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 });

@@ -18,7 +18,7 @@
       { "id": "default", "label": "Main", "codexHome": null, "enabled": true }
     ],
     "claude": [
-      { "id": "default", "label": "Main", "configDir": "~/.claude", "enabled": true }
+      { "id": "default", "label": "Main", "configDir": "~/.claude", "enabled": true, "keychainService": null }
     ]
   },
   "collection": {

@@ -8,7 +8,7 @@ import {
   writeQuotaBoundary,
   QUOTA_BOUNDARY_SCHEMA_VERSION,
 } from "../src/boundary";
-import type { CollectionStateRow, WindowAnalysis } from "../src/types";
+import type { AccountState, CollectionSourceState, CollectionStateRow, WindowAnalysis } from "../src/types";
 
 const NOW = 1_000_000_000;
 const STALE_AFTER = 600_000;
@@ -21,6 +21,43 @@ function state(overrides: Partial<CollectionStateRow> = {}): CollectionStateRow 
     lastSuccessMs: NOW - 1_000,
     lastError: null,
     ...overrides,
+  };
+}
+
+function source(overrides: Partial<CollectionSourceState> = {}): CollectionSourceState {
+  return {
+    source: "codex-appserver",
+    health: "recent-success",
+    lastAttemptAtMs: NOW - 1_000,
+    lastSuccessAtMs: NOW - 1_000,
+    errorCategory: null,
+    errorDetail: null,
+    ...overrides,
+  };
+}
+
+type AccountOverrides = Partial<Omit<AccountState, "collection">> & { sources?: CollectionSourceState[] };
+
+function account(overrides: AccountOverrides = {}): AccountState {
+  const windows = overrides.windows ?? [window()];
+  const sources = overrides.sources ?? [source()];
+  return {
+    provider: "codex",
+    account: "default",
+    accountLabel: "Main",
+    enabled: true,
+    windows,
+    bottleneckBucket: windows[0]?.bucket ?? null,
+    updatedAtMs: windows.length ? Math.max(...windows.map((item) => item.observedAtMs)) : null,
+    ...overrides,
+    collection: {
+      health: sources[0]?.health ?? "never-attempted",
+      activeSource: sources[0]?.lastSuccessAtMs != null ? sources[0].source : null,
+      lastSuccessAtMs: sources[0]?.lastSuccessAtMs ?? null,
+      errorCategory: sources.find((item) => item.errorCategory != null)?.errorCategory ?? null,
+      errorDetail: sources.find((item) => item.errorDetail != null)?.errorDetail ?? null,
+      sources,
+    },
   };
 }
 
@@ -51,6 +88,7 @@ function window(overrides: Partial<WindowAnalysis> = {}): WindowAnalysis {
     sampleCount: 100,
     activeHoursUntilReset: 10,
     bottleneckScore: 0.66,
+    riskLevel: "none",
     ...overrides,
   };
 }
@@ -86,7 +124,7 @@ describe("collection heartbeat 4-state", () => {
 
 describe("quota boundary document", () => {
   test("includes contract fields and marks healthy from the bottleneck provider state", () => {
-    const document = buildQuotaBoundary([window()], [state()], NOW, STALE_AFTER, []);
+    const document = buildQuotaBoundary([account()], null, NOW, []);
     expect(document.schemaVersion).toBe(QUOTA_BOUNDARY_SCHEMA_VERSION);
     expect(document.generatedAt).toBe(new Date(NOW).toISOString());
     expect(document.collection.healthy).toBeTrue();
@@ -100,14 +138,16 @@ describe("quota boundary document", () => {
   });
 
   test("collection dead means healthy=false so consumers show 수집 끊김 instead of stale numbers", () => {
-    const dead = state({ lastError: "poll failed", lastAttemptMs: NOW - 100, lastSuccessMs: NOW - 900_000 });
-    const document = buildQuotaBoundary([window()], [dead], NOW, STALE_AFTER, []);
+    const dead = account({
+      sources: [source({ health: "attempted-then-failed", errorDetail: "poll failed" })],
+    });
+    const document = buildQuotaBoundary([dead], null, NOW, []);
     expect(document.collection.healthy).toBeFalse();
     expect(document.collection.providers.codex).toBe("attempted-then-failed");
   });
 
   test("no fresh window means window=null and healthy=false", () => {
-    const document = buildQuotaBoundary([window({ freshness: "stale" })], [state()], NOW, STALE_AFTER, []);
+    const document = buildQuotaBoundary([account({ windows: [window({ freshness: "stale" })] })], null, NOW, []);
     expect(document.window).toBeNull();
     expect(document.collection.healthy).toBeFalse();
   });
@@ -115,12 +155,15 @@ describe("quota boundary document", () => {
   test("picks the highest bottleneck across providers for the single window", () => {
     const document = buildQuotaBoundary(
       [
-        window({ bottleneckScore: 0.4 }),
-        window({ provider: "claude", bucket: "seven_day", usedPercent: 91, bottleneckScore: 1.2 }),
+        account({ windows: [window({ bottleneckScore: 0.4 })] }),
+        account({
+          provider: "claude",
+          windows: [window({ provider: "claude", bucket: "seven_day", usedPercent: 91, bottleneckScore: 1.2 })],
+          sources: [source({ source: "claude-oauth" })],
+        }),
       ],
-      [state(), state({ provider: "claude" })],
+      null,
       NOW,
-      STALE_AFTER,
       [],
     );
     expect(document.window?.provider).toBe("claude");
@@ -132,7 +175,7 @@ describe("quota boundary file write", () => {
   test("writes atomically with 0600 and leaves no temp file behind", () => {
     const dir = mkdtempSync(join(tmpdir(), "tq-boundary-"));
     const path = join(dir, "quota.json");
-    const document = buildQuotaBoundary([window()], [state()], NOW, STALE_AFTER, []);
+    const document = buildQuotaBoundary([account()], null, NOW, []);
     writeQuotaBoundary(document, path);
     const mode = statSync(path).mode & 0o777;
     expect(mode).toBe(0o600);

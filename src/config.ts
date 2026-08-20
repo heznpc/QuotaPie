@@ -20,6 +20,8 @@ export interface ClaudeAccountConfig {
   label: string;
   configDir: string;
   enabled: boolean;
+  // 비표준 위치에 자격증명을 둔 프로필용 탈출구. 값은 조회에만 쓰고 저장하지 않는다.
+  keychainService: string | null;
 }
 
 export interface AppConfig {
@@ -84,7 +86,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   accounts: {
     codex: [{ id: "default", label: "Main", codexHome: null, enabled: true }],
-    claude: [{ id: "default", label: "Main", configDir: "~/.claude", enabled: true }],
+    claude: [{ id: "default", label: "Main", configDir: "~/.claude", enabled: true, keychainService: null }],
   },
   collection: {
     pollSeconds: 60,
@@ -164,7 +166,11 @@ function mergeConfig(base: AppConfig, patch: Partial<AppConfig>): AppConfig {
     },
     accounts: {
       codex: patch.accounts?.codex ?? base.accounts.codex,
-      claude: patch.accounts?.claude ?? base.accounts.claude,
+      // 사용자 설정에 없는 선택 필드는 기본값으로 채워, 이후 코드가 undefined를 다루지 않게 한다.
+      claude: (patch.accounts?.claude ?? base.accounts.claude).map((profile) => ({
+        ...profile,
+        keychainService: profile.keychainService ?? null,
+      })),
     },
     collection: { ...base.collection, ...patch.collection },
     alerts: { ...base.alerts, ...patch.alerts },
@@ -211,6 +217,11 @@ function validateAccounts(config: AppConfig): void {
       } else {
         if (typeof profile.configDir !== "string" || profile.configDir.trim() === "") {
           throw new Error(`claude account ${id} has an invalid configDir`);
+        }
+        if (profile.keychainService != null && (
+          typeof profile.keychainService !== "string" || profile.keychainService.trim() === ""
+        )) {
+          throw new Error(`claude account ${id} has an invalid keychainService`);
         }
         home = resolveUserPath(profile.configDir);
       }
