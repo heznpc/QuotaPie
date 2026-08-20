@@ -317,6 +317,7 @@ async function main(): Promise<number> {
         }
         // 상태줄 설정 여부가 아니라 실제 수집 결과를 본다. 설정만 보고 통과시키면
         // 34일간 표본 0건인 계정이 정상으로 보이는 거짓 초록이 만들어진다.
+        // 게이트가 꺼져 있으면 이 호출은 자격증명을 읽지 않고 즉시 반환한다.
         await service.pollClaudeOAuth(Date.now(), true);
         for (const account of service.accountStates().filter((state) => state.provider === "claude")) {
           const oauth = account.collection.sources.find((source) => source.source === CLAUDE_OAUTH_SOURCE);
@@ -347,6 +348,34 @@ async function main(): Promise<number> {
               check: `claude login [${account.account}]`,
               ok: false,
               detail: "run `claude auth login` in a terminal, then re-run doctor",
+            });
+          }
+          // OAuth를 켜지 않았다면 상태줄이 유일한 경로다. 이때는 훅 설정 여부를
+          // 알려줘야 사용자가 두 경로 중 하나를 고를 수 있다.
+          if (!config.collection.claudeOAuthEnabled) {
+            const profile = config.accounts.claude.find((item) => item.id === account.account)!;
+            const claudeSettings = resolve(resolveUserPath(profile.configDir), "settings.json");
+            let statusCommand = "";
+            try {
+              const parsed = JSON.parse(readFileSync(claudeSettings, "utf8")) as {
+                statusLine?: { command?: unknown };
+              };
+              statusCommand = typeof parsed.statusLine?.command === "string" ? parsed.statusLine.command : "";
+            } catch {
+              statusCommand = "";
+            }
+            const accountFlag = `--account ${profile.id}`;
+            const configured = statusCommand.includes("claude-statusline") && (
+              statusCommand.includes(accountFlag) ||
+              (profile.id === "default" && !statusCommand.includes("--account"))
+            );
+            checks.push({
+              check: `claude status line [${account.account}]`,
+              ok: configured || statusLine?.health === "recent-success",
+              detail: configured
+                ? `configured in ${claudeSettings}`
+                : `OAuth collection is off; merge this into ${claudeSettings}: ${preferredBin()} claude-statusline ${accountFlag}` +
+                  " — or set collection.claudeOAuthEnabled = true",
             });
           }
         }
