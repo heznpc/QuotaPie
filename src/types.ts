@@ -31,6 +31,7 @@ export type EventKind =
   | "credit_topup"
   | "banked_reset_consumed"
   | "bucket_retired"
+  | "window_changed"
   | "out_of_order";
 
 export type Severity = "info" | "warning" | "critical";

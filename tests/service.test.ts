@@ -68,6 +68,38 @@ describe("state persistence and scheduler", () => {
     db.close();
   });
 
+  test("detects a Codex lane window change on the first switched response", () => {
+    const db = new QuotaDatabase(":memory:");
+    const service = new QuotaPieService(structuredClone(DEFAULT_CONFIG), db);
+    const weekly: QuotaObservation = {
+      ...observation(1_000, 100),
+      bucket: "codex:primary:10080",
+      label: "Codex weekly",
+      windowSeconds: 604_800,
+      metadata: { limitId: "codex", lane: "primary" },
+    };
+    const monthly: QuotaObservation = {
+      ...weekly,
+      bucket: "codex:primary:43200",
+      label: "Codex monthly",
+      windowSeconds: 2_592_000,
+      observedAtMs: 2_000,
+      usedPercent: 0,
+    };
+    service.ingestCodexSnapshot([weekly]);
+    const events = service.ingestCodexSnapshot([monthly]);
+    const changed = events.find((event) => event.kind === "window_changed");
+    expect(changed?.occurredAtMs).toBe(2_000);
+    expect(changed?.details).toMatchObject({
+      previousBucket: weekly.bucket,
+      nextBucket: monthly.bucket,
+      previousWindowSeconds: weekly.windowSeconds,
+      nextWindowSeconds: monthly.windowSeconds,
+    });
+    expect(service.analyses(2_000).map((item) => item.bucket)).toContain(weekly.bucket);
+    db.close();
+  });
+
   test("does not retire buckets from delayed older complete Codex reads", () => {
     const db = new QuotaDatabase(":memory:");
     const service = new QuotaPieService(structuredClone(DEFAULT_CONFIG), db);

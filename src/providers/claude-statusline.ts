@@ -29,6 +29,15 @@ export function labelFor(key: string): string {
     seven_day_routines: "Claude Routines weekly",
     seven_day_cowork: "Claude Cowork weekly",
   };
+  if (key.startsWith("seven_day_")) {
+    const qualifier = key
+      .slice("seven_day_".length)
+      .split("_")
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+    if (qualifier) return `Claude ${qualifier} weekly`;
+  }
   return labels[key] ?? `Claude ${key.replaceAll("_", " ")}`;
 }
 
