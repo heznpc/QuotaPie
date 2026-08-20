@@ -118,15 +118,15 @@ export const DEFAULT_CONFIG: AppConfig = {
 };
 
 export function configPath(): string {
-  return process.env.TIMEQUOTA_CONFIG
-    ? resolve(process.env.TIMEQUOTA_CONFIG)
-    : resolve(homedir(), ".config", "timequota", "config.json");
+  return process.env.QUOTAPIE_CONFIG
+    ? resolve(process.env.QUOTAPIE_CONFIG)
+    : resolve(homedir(), ".config", "quotapie", "config.json");
 }
 
 export function dataDirectory(): string {
-  return process.env.TIMEQUOTA_HOME
-    ? resolve(process.env.TIMEQUOTA_HOME)
-    : resolve(homedir(), ".local", "share", "timequota");
+  return process.env.QUOTAPIE_HOME
+    ? resolve(process.env.QUOTAPIE_HOME)
+    : resolve(homedir(), ".local", "share", "quotapie");
 }
 
 export function resolveUserPath(value: string): string {

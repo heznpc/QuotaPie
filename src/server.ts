@@ -1,6 +1,6 @@
 import { buildHeadline } from "./analytics";
 import type { AppConfig } from "./config";
-import type { TimeQuotaService } from "./service";
+import type { QuotaPieService } from "./service";
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -12,7 +12,7 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
-export function startDashboard(service: TimeQuotaService, config: AppConfig) {
+export function startDashboard(service: QuotaPieService, config: AppConfig) {
   const dashboardFile = Bun.file(new URL("./dashboard.html", import.meta.url));
   return Bun.serve({
     hostname: config.dashboard.host,

@@ -19,7 +19,7 @@ final class StatusClient {
     private let session: URLSession
 
     init(environment: [String: String] = ProcessInfo.processInfo.environment) throws {
-        let raw = environment["TIMEQUOTA_API_URL"] ?? "http://127.0.0.1:47831"
+        let raw = environment["QUOTAPIE_API_URL"] ?? "http://127.0.0.1:47831"
         guard let url = URL(string: raw),
               url.scheme == "http",
               let host = url.host?.lowercased(),

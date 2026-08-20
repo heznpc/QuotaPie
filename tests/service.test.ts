@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config";
 import { QuotaDatabase } from "../src/db";
 import { nextWakeDelayMs } from "../src/scheduler";
-import { TimeQuotaService } from "../src/service";
+import { QuotaPieService } from "../src/service";
 import type { QuotaObservation, WindowAnalysis } from "../src/types";
 
 function observation(at: number, used: number): QuotaObservation {
@@ -27,7 +27,7 @@ function observation(at: number, used: number): QuotaObservation {
 describe("state persistence and scheduler", () => {
   test("ignores an out-of-order response", () => {
     const db = new QuotaDatabase(":memory:");
-    const service = new TimeQuotaService(structuredClone(DEFAULT_CONFIG), db);
+    const service = new QuotaPieService(structuredClone(DEFAULT_CONFIG), db);
     service.ingest([observation(2_000, 20)]);
     const events = service.ingest([observation(1_000, 10)]);
     expect(events[0]?.kind).toBe("out_of_order");
@@ -37,7 +37,7 @@ describe("state persistence and scheduler", () => {
 
   test("is idempotent for the same provider snapshot", () => {
     const db = new QuotaDatabase(":memory:");
-    const service = new TimeQuotaService(structuredClone(DEFAULT_CONFIG), db);
+    const service = new QuotaPieService(structuredClone(DEFAULT_CONFIG), db);
     const value = observation(2_000, 20);
     service.ingest([value]);
     service.ingest([value]);
@@ -47,7 +47,7 @@ describe("state persistence and scheduler", () => {
 
   test("retires a Codex bucket only after two complete responses omit it", () => {
     const db = new QuotaDatabase(":memory:");
-    const service = new TimeQuotaService(structuredClone(DEFAULT_CONFIG), db);
+    const service = new QuotaPieService(structuredClone(DEFAULT_CONFIG), db);
     const primary = observation(1_000, 20);
     const promo = {
       ...observation(1_000, 5),
@@ -70,7 +70,7 @@ describe("state persistence and scheduler", () => {
 
   test("does not retire buckets from delayed older complete Codex reads", () => {
     const db = new QuotaDatabase(":memory:");
-    const service = new TimeQuotaService(structuredClone(DEFAULT_CONFIG), db);
+    const service = new QuotaPieService(structuredClone(DEFAULT_CONFIG), db);
     const primary = observation(3_000, 20);
     const promo = { ...observation(3_000, 5), bucket: "promo", label: "Promo" };
     const oldPromo = { ...observation(2_000, 7), bucket: "old-promo", label: "Old promo" };
@@ -84,7 +84,7 @@ describe("state persistence and scheduler", () => {
 
   test("merges concurrent Claude sessions without a fake usage regression", () => {
     const db = new QuotaDatabase(":memory:");
-    const service = new TimeQuotaService(structuredClone(DEFAULT_CONFIG), db);
+    const service = new QuotaPieService(structuredClone(DEFAULT_CONFIG), db);
     const claude = (sessionHash: string, at: number, used: number, reset = 10_000_000): QuotaObservation => ({
       provider: "claude",
       account: "default",
@@ -115,7 +115,7 @@ describe("state persistence and scheduler", () => {
 
   test("uses the most recently changed Claude reset clock, including backward re-bases", () => {
     const db = new QuotaDatabase(":memory:");
-    const service = new TimeQuotaService(structuredClone(DEFAULT_CONFIG), db);
+    const service = new QuotaPieService(structuredClone(DEFAULT_CONFIG), db);
     const claude = (sessionHash: string, at: number, used: number, reset: number): QuotaObservation => ({
       provider: "claude",
       account: "default",
@@ -141,8 +141,8 @@ describe("state persistence and scheduler", () => {
   test("isolates equal Codex buckets and hides a disabled account without deleting it", () => {
     const db = new QuotaDatabase(":memory:");
     const config = structuredClone(DEFAULT_CONFIG);
-    config.accounts.codex.push({ id: "work", label: "Work", codexHome: "/tmp/timequota-work", enabled: true });
-    const service = new TimeQuotaService(config, db);
+    config.accounts.codex.push({ id: "work", label: "Work", codexHome: "/tmp/quotapie-work", enabled: true });
+    const service = new QuotaPieService(config, db);
     service.ingestCodexSnapshot([
       observation(1_000, 20),
       { ...observation(1_000, 70), account: "work" },
@@ -162,11 +162,11 @@ describe("state persistence and scheduler", () => {
     config.accounts.claude.push({
       id: "work",
       label: "Work",
-      configDir: "/tmp/timequota-claude-work",
+      configDir: "/tmp/quotapie-claude-work",
       enabled: true,
       keychainService: null,
     });
-    const service = new TimeQuotaService(config, db);
+    const service = new QuotaPieService(config, db);
     const make = (account: string, used: number): QuotaObservation => ({
       provider: "claude",
       account,
@@ -191,10 +191,10 @@ describe("state persistence and scheduler", () => {
     const db = new QuotaDatabase(":memory:");
     const config = structuredClone(DEFAULT_CONFIG);
     config.accounts.codex = [
-      { id: "default", label: "Main", codexHome: "/tmp/timequota-no-file-main", enabled: true },
-      { id: "work", label: "Work", codexHome: "/tmp/timequota-no-file-work", enabled: true },
+      { id: "default", label: "Main", codexHome: "/tmp/quotapie-no-file-main", enabled: true },
+      { id: "work", label: "Work", codexHome: "/tmp/quotapie-no-file-work", enabled: true },
     ];
-    const service = new TimeQuotaService(config, db);
+    const service = new QuotaPieService(config, db);
     await expect(service.pollCodex()).rejects.toThrow("all configured Codex accounts failed");
     expect(service.codexPollResults()).toHaveLength(2);
     expect(service.codexPollResults().every((result) => result.error?.includes("cli_auth_credentials_store") === true)).toBeTrue();
@@ -204,9 +204,9 @@ describe("state persistence and scheduler", () => {
   });
 
   test("repairs private storage permissions for existing paths", () => {
-    const directory = mkdtempSync(resolve(tmpdir(), "timequota-permissions-"));
+    const directory = mkdtempSync(resolve(tmpdir(), "quotapie-permissions-"));
     chmodSync(directory, 0o755);
-    const path = resolve(directory, "timequota.sqlite3");
+    const path = resolve(directory, "quotapie.sqlite3");
     const db = new QuotaDatabase(path);
     expect(statSync(directory).mode & 0o777).toBe(0o700);
     expect(statSync(path).mode & 0o777).toBe(0o600);
@@ -219,7 +219,7 @@ describe("state persistence and scheduler", () => {
 
   test("prunes analysis history while retaining the latest snapshot", () => {
     const db = new QuotaDatabase(":memory:");
-    const service = new TimeQuotaService(structuredClone(DEFAULT_CONFIG), db);
+    const service = new QuotaPieService(structuredClone(DEFAULT_CONFIG), db);
     const now = 40 * 86_400_000;
     service.ingest([observation(1_000, 10), observation(now - 1_000, 20)]);
     expect(db.history("codex", "default", "codex:primary:300")).toHaveLength(2);
@@ -230,11 +230,11 @@ describe("state persistence and scheduler", () => {
   });
 
   test("keeps a long-retired bucket inactive across retention and restart", () => {
-    const directory = mkdtempSync(resolve(tmpdir(), "timequota-retired-"));
-    const path = resolve(directory, "timequota.sqlite3");
+    const directory = mkdtempSync(resolve(tmpdir(), "quotapie-retired-"));
+    const path = resolve(directory, "quotapie.sqlite3");
     const config = structuredClone(DEFAULT_CONFIG);
     const db = new QuotaDatabase(path);
-    const service = new TimeQuotaService(config, db);
+    const service = new QuotaPieService(config, db);
     const primary = observation(1_000, 20);
     const promo = { ...observation(1_000, 5), bucket: "promo", label: "Promo" };
     service.ingestCodexSnapshot([primary, promo]);
@@ -249,8 +249,8 @@ describe("state persistence and scheduler", () => {
   });
 
   test("marks pre-migration events as already handled", () => {
-    const directory = mkdtempSync(resolve(tmpdir(), "timequota-migration-"));
-    const path = resolve(directory, "timequota.sqlite3");
+    const directory = mkdtempSync(resolve(tmpdir(), "quotapie-migration-"));
+    const path = resolve(directory, "quotapie.sqlite3");
     const legacy = new Database(path, { create: true });
     legacy.run(`
       CREATE TABLE events (
@@ -311,7 +311,7 @@ describe("state persistence and scheduler", () => {
 describe("account state contract", () => {
   test("enabled accounts with no collection history still appear as never-attempted", () => {
     const db = new QuotaDatabase(":memory:");
-    const service = new TimeQuotaService(structuredClone(DEFAULT_CONFIG), db);
+    const service = new QuotaPieService(structuredClone(DEFAULT_CONFIG), db);
     db.recordCollectionAttempt("codex", "default", "codex-appserver", 1_000, null, null);
     const states = service.accountStates(2_000);
     const claude = states.find((state) => state.provider === "claude");
@@ -339,7 +339,7 @@ describe("account state contract", () => {
   test("an OAuth failure does not erase a recent status-line success", () => {
     const db = new QuotaDatabase(":memory:");
     const config = structuredClone(DEFAULT_CONFIG);
-    const service = new TimeQuotaService(config, db);
+    const service = new QuotaPieService(config, db);
     const nowMs = 10_000_000;
     db.recordCollectionAttempt("claude", "default", "claude-statusline", nowMs - 1_000, null, null);
     db.recordCollectionAttempt(
@@ -360,7 +360,7 @@ describe("account state contract", () => {
   test("status-line samples are ignored while OAuth is authoritative", () => {
     const db = new QuotaDatabase(":memory:");
     const config = structuredClone(DEFAULT_CONFIG);
-    const service = new TimeQuotaService(config, db);
+    const service = new QuotaPieService(config, db);
     const nowMs = 20_000_000;
     db.recordCollectionAttempt("claude", "default", "claude-oauth", nowMs - 1_000, null, null);
     db.ingestObservation({
@@ -400,7 +400,7 @@ describe("account state contract", () => {
   test("status-line samples are accepted once OAuth has gone stale", () => {
     const db = new QuotaDatabase(":memory:");
     const config = structuredClone(DEFAULT_CONFIG);
-    const service = new TimeQuotaService(config, db);
+    const service = new QuotaPieService(config, db);
     const nowMs = 30_000_000;
     const staleMs = config.collection.staleAfterSeconds * 1_000 + 60_000;
     db.recordCollectionAttempt("claude", "default", "claude-oauth", nowMs - staleMs, null, null);
@@ -431,9 +431,9 @@ describe("collection isolation between providers", () => {
       label: "Main",
       configDir: mkdtempSync(join(tmpdir(), "tq-claude-fail-")),
       enabled: true,
-      keychainService: "TimeQuota-nonexistent-service",
+      keychainService: "QuotaPie-nonexistent-service",
     }];
-    const service = new TimeQuotaService(config, db);
+    const service = new QuotaPieService(config, db);
     const nowMs = 40_000_000;
     db.recordCollectionAttempt("codex", "default", "codex-appserver", nowMs - 1_000, null, null);
     db.ingestObservation({
@@ -473,7 +473,7 @@ describe("a provider outage stays contained", () => {
       claudeAiOauth: { accessToken: "test-token", expiresAt: Date.now() + 3_600_000 },
     }));
     config.accounts.claude = [{ id: "default", label: "Main", configDir: dir, enabled: true, keychainService: null }];
-    const service = new TimeQuotaService(config, db);
+    const service = new QuotaPieService(config, db);
     const nowMs = 50_000_000;
     db.recordCollectionAttempt("codex", "default", "codex-appserver", nowMs - 1_000, null, null);
     const failing = (async () => new Response("nope", { status: 503 })) as unknown as typeof fetch;

@@ -2,15 +2,15 @@
 import PackageDescription
 
 let package = Package(
-    name: "TimeQuotaMenu",
+    name: "QuotaPie",
     platforms: [.macOS(.v13)],
     products: [
-        .executable(name: "TimeQuotaMenu", targets: ["TimeQuotaMenu"]),
+        .executable(name: "QuotaPie", targets: ["QuotaPie"]),
     ],
     targets: [
         .executableTarget(
-            name: "TimeQuotaMenu",
-            path: "macos/TimeQuotaMenu",
+            name: "QuotaPie",
+            path: "macos/QuotaPie",
             exclude: ["Info.plist"]
         ),
     ],

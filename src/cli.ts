@@ -15,14 +15,14 @@ import { compactClaudeLine, formatEvents, formatStatuses } from "./format";
 import { parseClaudeStatusLine } from "./providers/claude-statusline";
 import { startDashboard } from "./server";
 import { collectionErrorText } from "./analytics";
-import { CLAUDE_OAUTH_SOURCE, CLAUDE_STATUSLINE_SOURCE, TimeQuotaService } from "./service";
+import { CLAUDE_OAUTH_SOURCE, CLAUDE_STATUSLINE_SOURCE, QuotaPieService } from "./service";
 import { deliverTrigger } from "./triggers";
 
 const ROOT = resolve(import.meta.dir, "..");
-const BIN = resolve(ROOT, "bin", "timequota");
+const BIN = resolve(ROOT, "bin", "quotapie");
 
 function preferredBin(): string {
-  const installed = resolve(homedir(), ".local", "bin", "timequota");
+  const installed = resolve(homedir(), ".local", "bin", "quotapie");
   return existsSync(installed) ? installed : BIN;
 }
 
@@ -36,28 +36,28 @@ function xmlEscape(value: string): string {
 }
 
 function help(): string {
-  return `TimeQuota — provider clocks + personal burn-rate timer
+  return `QuotaPie — provider clocks + personal burn-rate timer
 
 Usage:
-  timequota init                 Create a private default config and print integrations
-  timequota poll [--json]        Fetch Codex once and update history
-  timequota status [--account ID] [--json]
+  quotapie init                 Create a private default config and print integrations
+  quotapie poll [--json]        Fetch Codex once and update history
+  quotapie status [--account ID] [--json]
                                  Show current windows, pace, and predicted exhaustion
-  timequota explain [--account ID] [--json]
+  quotapie explain [--account ID] [--json]
                                  Explain resets, relief, re-bases, and paid-credit changes
-  timequota accounts [--json]    Show local account aliases and isolated profile roots
-  timequota claude-statusline [--account ID]
+  quotapie accounts [--json]    Show local account aliases and isolated profile roots
+  quotapie claude-statusline [--account ID]
                                  Ingest Claude status-line JSON and render one account's compact line
-  timequota watch                Run the adaptive collector and macOS triggers
-  timequota serve                Watch and serve the local dashboard
-  timequota doctor               Verify the local data sources
-  timequota test-alert           Send a test through configured notification channels
-  timequota launchd              Print a launchd plist for an always-on local service
-  timequota menubar-launchd      Print a launchd plist for the native menu bar app
+  quotapie watch                Run the adaptive collector and macOS triggers
+  quotapie serve                Watch and serve the local dashboard
+  quotapie doctor               Verify the local data sources
+  quotapie test-alert           Send a test through configured notification channels
+  quotapie launchd              Print a launchd plist for an always-on local service
+  quotapie menubar-launchd      Print a launchd plist for the native menu bar app
 
 Environment:
-  TIMEQUOTA_CONFIG=/path/config.json
-  TIMEQUOTA_HOME=/path/data-dir`;
+  QUOTAPIE_CONFIG=/path/config.json
+  QUOTAPIE_HOME=/path/data-dir`;
 }
 
 function optionValue(args: string[], name: string): string | null {
@@ -94,7 +94,7 @@ function launchdPlist(): string {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>local.timequota</string>
+  <key>Label</key><string>local.quotapie</string>
   <key>ProgramArguments</key>
   <array><string>${xmlEscape(preferredBin())}</string><string>serve</string></array>
   <key>RunAtLoad</key><true/>
@@ -105,8 +105,8 @@ function launchdPlist(): string {
   <dict>
     <key>HOME</key><string>${xmlEscape(home)}</string>
     <key>PATH</key><string>${xmlEscape(envPath)}</string>
-    <key>TIMEQUOTA_CONFIG</key><string>${xmlEscape(configPath())}</string>
-    <key>TIMEQUOTA_HOME</key><string>${xmlEscape(dataDirectory())}</string>
+    <key>QUOTAPIE_CONFIG</key><string>${xmlEscape(configPath())}</string>
+    <key>QUOTAPIE_HOME</key><string>${xmlEscape(dataDirectory())}</string>
   </dict>
   <key>StandardOutPath</key><string>${xmlEscape(resolve(logDir, "service.log"))}</string>
   <key>StandardErrorPath</key><string>${xmlEscape(resolve(logDir, "service.error.log"))}</string>
@@ -117,14 +117,14 @@ function launchdPlist(): string {
 function menubarLaunchdPlist(port: number): string {
   const logDir = dataDirectory();
   const home = homedir();
-  const executable = process.env.TIMEQUOTA_MENU_APP
-    ? resolve(process.env.TIMEQUOTA_MENU_APP, "Contents", "MacOS", "TimeQuotaMenu")
-    : resolve(home, "Applications", "TimeQuotaMenu.app", "Contents", "MacOS", "TimeQuotaMenu");
+  const executable = process.env.QUOTAPIE_MENU_APP
+    ? resolve(process.env.QUOTAPIE_MENU_APP, "Contents", "MacOS", "QuotaPie")
+    : resolve(home, "Applications", "QuotaPie.app", "Contents", "MacOS", "QuotaPie");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>local.timequota.menubar</string>
+  <key>Label</key><string>local.quotapie.menubar</string>
   <key>ProgramArguments</key><array><string>${xmlEscape(executable)}</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key>
@@ -135,8 +135,8 @@ function menubarLaunchdPlist(port: number): string {
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key><string>${xmlEscape(home)}</string>
-    <key>TIMEQUOTA_API_URL</key><string>http://127.0.0.1:${port}</string>
-    <key>TIMEQUOTA_CONFIG</key><string>${xmlEscape(configPath())}</string>
+    <key>QUOTAPIE_API_URL</key><string>http://127.0.0.1:${port}</string>
+    <key>QUOTAPIE_CONFIG</key><string>${xmlEscape(configPath())}</string>
   </dict>
   <key>StandardOutPath</key><string>${xmlEscape(resolve(logDir, "menubar.log"))}</string>
   <key>StandardErrorPath</key><string>${xmlEscape(resolve(logDir, "menubar.error.log"))}</string>
@@ -182,7 +182,7 @@ async function main(): Promise<number> {
     ...config.accounts.claude,
   ].some((profile) => profile.id === selectedAccount && profile.enabled);
   if (!configuredAccount) throw new Error(`unknown or disabled account alias: ${selectedAccount}`);
-  const service = new TimeQuotaService(config);
+  const service = new QuotaPieService(config);
   let dashboard: ReturnType<typeof startDashboard> | null = null;
 
   const shutdown = async () => {
@@ -361,7 +361,7 @@ async function main(): Promise<number> {
         const delivery = await deliverTrigger(
           {
             key: "manual:test",
-            title: "TimeQuota 테스트",
+            title: "QuotaPie 테스트",
             message: "알림 채널이 정상적으로 연결됐습니다.",
             severity: "info",
           },
@@ -372,13 +372,13 @@ async function main(): Promise<number> {
         return ok ? 0 : 1;
       }
       case "watch": {
-        console.log("TimeQuota is watching provider clocks. Press Ctrl-C to stop.");
+        console.log("QuotaPie is watching provider clocks. Press Ctrl-C to stop.");
         await service.watch();
         return 0;
       }
       case "serve": {
         dashboard = startDashboard(service, config);
-        console.log(`TimeQuota dashboard: http://${config.dashboard.host}:${dashboard.port}`);
+        console.log(`QuotaPie dashboard: http://${config.dashboard.host}:${dashboard.port}`);
         await service.watch();
         return 0;
       }
@@ -394,7 +394,7 @@ async function main(): Promise<number> {
 
 const exitCode = await main().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
-  console.error(`[timequota] ${message}`);
+  console.error(`[quotapie] ${message}`);
   return 1;
 });
 process.exitCode = exitCode;

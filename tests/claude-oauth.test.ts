@@ -69,10 +69,10 @@ describe("claude oauth credential lookup", () => {
   });
 
   test("a separate profile never falls back to the default account's keychain item", () => {
-    const candidates = keychainServiceCandidates("/tmp/timequota-claude-work");
+    const candidates = keychainServiceCandidates("/tmp/quotapie-claude-work");
     expect(candidates).toEqual([
-      "Claude Code-credentials-/tmp/timequota-claude-work",
-      "Claude Code-credentials-timequota-claude-work",
+      "Claude Code-credentials-/tmp/quotapie-claude-work",
+      "Claude Code-credentials-quotapie-claude-work",
     ]);
     expect(candidates).not.toContain("Claude Code-credentials");
   });
