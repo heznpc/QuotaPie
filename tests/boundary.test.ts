@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildQuotaBoundary,
   collectionHealth,
+  scanBurnLeaderboard,
   writeQuotaBoundary,
   QUOTA_BOUNDARY_SCHEMA_VERSION,
 } from "../src/boundary";
@@ -183,5 +184,62 @@ describe("quota boundary file write", () => {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     expect(parsed.schemaVersion).toBe(QUOTA_BOUNDARY_SCHEMA_VERSION);
     expect(parsed.collection.healthy).toBeTrue();
+  });
+});
+
+describe("burn leaderboard window", () => {
+  function transcript(dir: string, name: string, lines: Array<Record<string, unknown>>) {
+    const project = join(dir, "project");
+    mkdirSync(project, { recursive: true });
+    const path = join(project, name);
+    writeFileSync(path, lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
+    return path;
+  }
+
+  function usageLine(isoTimestamp: string, tokens: number, cwd?: string) {
+    return {
+      ...(cwd ? { cwd } : {}),
+      timestamp: isoTimestamp,
+      message: { usage: { input_tokens: tokens, output_tokens: 0, cache_creation_input_tokens: 0 } },
+    };
+  }
+
+  test("a long-running transcript only contributes tokens spent inside the window", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tq-burn-"));
+    const now = Date.parse("2026-08-20T12:00:00.000Z");
+    // 오늘 한 줄만 추가된 3개월짜리 대화. mtime은 최근이지만 과거 토큰은 최근 소진이 아니다.
+    transcript(dir, "old-and-new.jsonl", [
+      usageLine("2026-05-20T12:00:00.000Z", 1_000_000, "/tmp/project-a"),
+      usageLine("2026-06-20T12:00:00.000Z", 1_000_000),
+      usageLine("2026-08-20T11:00:00.000Z", 10, undefined),
+    ]);
+    const board = await scanBurnLeaderboard(now, 7 * 24 * 3_600_000, dir);
+    expect(board).toHaveLength(1);
+    expect(board[0]!.percent).toBe(100);
+    expect(Date.parse(board[0]!.lastActiveAt)).toBe(Date.parse("2026-08-20T11:00:00.000Z"));
+  });
+
+  test("ranking reflects recent spend, not lifetime spend", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tq-burn-"));
+    const now = Date.parse("2026-08-20T12:00:00.000Z");
+    transcript(dir, "veteran.jsonl", [
+      usageLine("2026-01-01T00:00:00.000Z", 9_000_000, "/tmp/veteran"),
+      usageLine("2026-08-19T00:00:00.000Z", 100),
+    ]);
+    transcript(dir, "newcomer.jsonl", [
+      usageLine("2026-08-19T00:00:00.000Z", 900, "/tmp/newcomer"),
+    ]);
+    const board = await scanBurnLeaderboard(now, 7 * 24 * 3_600_000, dir);
+    expect(board[0]!.remote).toBe("newcomer");
+    expect(board[0]!.percent).toBe(90);
+  });
+
+  test("entries whose usage lines carry no timestamp are not counted as recent", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tq-burn-"));
+    const now = Date.parse("2026-08-20T12:00:00.000Z");
+    transcript(dir, "undated.jsonl", [
+      { cwd: "/tmp/undated", message: { usage: { input_tokens: 5_000 } } },
+    ]);
+    expect(await scanBurnLeaderboard(now, 7 * 24 * 3_600_000, dir)).toEqual([]);
   });
 });

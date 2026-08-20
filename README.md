@@ -25,7 +25,7 @@ Codex와 Claude의 5시간·주간 한도를 공급자 원본 시각으로 추�
 - 여러 Codex·Claude 계정을 프로필 디렉터리와 로컬 별칭별로 분리하며, 기록·개인 속도·병목·알림 cooldown도 계정별로 격리합니다.
 - 알림은 정직성 원칙을 따릅니다: 최근 실사용이 0이면 pace 경고를 보내지 않고, 실측 소진율이 안전 페이스를 넘을 때만 현재형("사용 속도 과열")을, 습관 패턴만 넘을 때는 전망형("사용 패턴 전망")을 사용합니다.
 - 수집 상태를 4상태 하트비트(never-attempted / attempted-then-failed / stale-success / recent-success)로 구분해, 멈춘 수집과 꺼진 수집이 같은 얼굴을 하지 않게 합니다.
-- burn 순위 계산은 Claude Code 전사 파일에서 토큰 수·경로 메타데이터(`cwd`, `gitBranch`, `usage`, `timestamp`)만 읽습니다. 대화 본문은 읽지 않습니다.
+- burn 순위 계산은 Claude Code 전사 파일에서 토큰 수·경로·시각 필드(`cwd`, `usage`, `timestamp`)만 사용합니다. 대화 본문은 사용·저장·전송하지 않습니다. 전사는 줄 단위 JSON이라 이 필드에 닿으려면 해당 줄을 파싱해야 하므로, 정확한 표현은 "본문에 접근조차 하지 않는다"가 아니라 "본문을 쓰지 않는다"입니다. 관심 필드가 없는 줄은 파싱하지 않습니다.
 
 ## 통합 경계면: quota.json
 
@@ -93,14 +93,14 @@ Claude 자격증명은 기본 프로필의 경우 `~/.claude/.credentials.json` 
 ## 빠른 시작
 
 ```bash
-cd /path/to/Time
+cd /path/to/quotapie
 ./bin/quotapie init
 ./bin/quotapie doctor
 ./bin/quotapie serve
 ./script/build_and_run.sh --verify
 ```
 
-이후 메뉴 막대의 `TQ C… · A…` 표시만 확인하면 됩니다. `serve`는 브라우저가 아니라 수집·알림·메뉴 앱용 로컬 API를 함께 실행하는 명령입니다. 상세 웹 화면은 필요할 때만 메뉴에서 열거나 [http://127.0.0.1:47831](http://127.0.0.1:47831)에 접속합니다.
+이후 메뉴 막대의 결론 한 줄(`56% 남음`, `⚠ 주간 위험`, `한도 확인 지연`, `설정 필요`)만 확인하면 됩니다. `serve`는 브라우저가 아니라 수집·알림·메뉴 앱용 로컬 API를 함께 실행하는 명령입니다. 상세 웹 화면은 필요할 때만 메뉴에서 열거나 [http://127.0.0.1:47831](http://127.0.0.1:47831)에 접속합니다.
 
 CLI를 어디서나 쓰고 싶다면 프로젝트의 `bin`을 `PATH`에 추가하거나 `bin/quotapie`를 원하는 로컬 bin 디렉터리에 링크하십시오.
 

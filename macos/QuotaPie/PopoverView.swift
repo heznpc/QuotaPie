@@ -17,7 +17,14 @@ struct PopoverView: View {
         VStack(alignment: .leading, spacing: 12) {
             header
             if let lastError {
-                CalloutView(text: "로컬 서비스에 연결할 수 없습니다", detail: lastError, tone: .warning)
+                CalloutView(
+                    text: "로컬 서비스에 연결할 수 없습니다",
+                    // 아래 숫자들이 언제 것인지 밝힌다. 캐시를 지우는 대신 나이를 붙인다.
+                    detail: payload == nil
+                        ? lastError
+                        : "아래는 마지막 정상값입니다 · \(lastSuccessAt.map { DisplayFormat.age(since: $0) } ?? "시각 미확인") · \(lastError)",
+                    tone: .warning
+                )
             }
             if let payload, !payload.accounts.isEmpty {
                 ForEach(payload.accounts) { account in

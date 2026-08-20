@@ -571,3 +571,51 @@ describe("Claude OAuth collection is opt-in", () => {
     expect(claude.collection.activeSource).toBe("claude-statusline");
   });
 });
+
+describe("collection success requires actual windows", () => {
+  test("an empty Codex response is a failure, not a healthy poll with zero windows", async () => {
+    const db = new QuotaDatabase(":memory:");
+    const config = structuredClone(DEFAULT_CONFIG);
+    const service = new QuotaPieService(config, db);
+    // app-server가 응답은 했지만 창을 하나도 주지 않는 상황을 재현한다.
+    spyOn(service, "pollCodex" as never);
+    (service as unknown as { codexClients: Map<string, unknown> }).codexClients.set("default", {
+      readRateLimits: async () => [],
+      close: async () => undefined,
+      onUpdate: () => undefined,
+    });
+    await expect(service.pollCodex()).rejects.toThrow();
+    const row = db.collectionSourceStates().find((item) => item.provider === "codex")!;
+    expect(row.lastSuccessMs).toBeNull();
+    expect(row.lastErrorCategory).toBe("no-windows");
+    const codex = service.accountStates(Date.now()).find((state) => state.provider === "codex")!;
+    expect(codex.collection.health).toBe("attempted-then-failed");
+  });
+});
+
+describe("active source matches the source that wins ingestion", () => {
+  test("with both sources fresh, OAuth is reported as the active one", () => {
+    const db = new QuotaDatabase(":memory:");
+    const config = structuredClone(DEFAULT_CONFIG);
+    const service = new QuotaPieService(config, db);
+    const nowMs = 60_000_000;
+    // 상태줄이 더 최근이어도, 값을 채택하는 쪽은 OAuth다. 표시도 그와 일치해야 한다.
+    db.recordCollectionAttempt("claude", "default", "claude-oauth", nowMs - 5_000, null, null);
+    db.recordCollectionAttempt("claude", "default", "claude-statusline", nowMs - 1_000, null, null);
+    const claude = service.accountStates(nowMs).find((state) => state.provider === "claude")!;
+    expect(claude.collection.health).toBe("recent-success");
+    expect(claude.collection.activeSource).toBe("claude-oauth");
+  });
+
+  test("when OAuth has gone stale the fallback becomes the active source", () => {
+    const db = new QuotaDatabase(":memory:");
+    const config = structuredClone(DEFAULT_CONFIG);
+    const service = new QuotaPieService(config, db);
+    const nowMs = 70_000_000;
+    const staleMs = config.collection.staleAfterSeconds * 1_000 + 60_000;
+    db.recordCollectionAttempt("claude", "default", "claude-oauth", nowMs - staleMs, null, null);
+    db.recordCollectionAttempt("claude", "default", "claude-statusline", nowMs - 1_000, null, null);
+    const claude = service.accountStates(nowMs).find((state) => state.provider === "claude")!;
+    expect(claude.collection.activeSource).toBe("claude-statusline");
+  });
+});
