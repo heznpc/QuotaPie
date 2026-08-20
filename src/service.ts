@@ -1,5 +1,5 @@
 import { analyzeWindow, analysisHistoryStart, buildHeadline, groupStatuses } from "./analytics";
-import { buildQuotaBoundary, collectionHealth, writeQuotaBoundary } from "./boundary";
+import { buildQuotaBoundary, cachedLeaderboard, collectionHealth, writeQuotaBoundary } from "./boundary";
 import type { AppConfig, CodexAccountConfig } from "./config";
 import { codexUsesFileCredentials, resolveUserPath } from "./config";
 import { QuotaDatabase } from "./db";
@@ -29,6 +29,15 @@ const HEALTH_RANK: Record<CollectionHealth, number> = {
   "stale-success": 2,
   "attempted-then-failed": 1,
   "never-attempted": 0,
+};
+
+// 두 소스가 모두 최근에 성공했을 때 어느 쪽을 활성 소스로 보여줄지는 취향이
+// 아니라 이력에 반영된 권위와 일치해야 한다. 값을 채택하는 순서와 표시하는
+// 순서가 다르면 UI가 수집 경로를 잘못 알려준다.
+const SOURCE_AUTHORITY: Record<string, number> = {
+  [CLAUDE_OAUTH_SOURCE]: 2,
+  [CODEX_SOURCE]: 2,
+  [CLAUDE_STATUSLINE_SOURCE]: 1,
 };
 
 export class QuotaPieService {
@@ -147,6 +156,15 @@ export class QuotaPieService {
       }
       try {
         const observations = await client.readRateLimits();
+        // 응답은 왔지만 창이 하나도 없으면 성공이 아니다. 성공으로 적으면
+        // /health는 recent-success로 통과시키고 doctor는 창 수로 실패시켜
+        // 두 표면이 다시 다른 말을 하게 된다.
+        if (!observations.length) {
+          const message = "rate limit response contained no windows";
+          this.codexPollState.set(profile.id, { count: 0, error: message });
+          this.db.recordCollectionAttempt("codex", profile.id, CODEX_SOURCE, Date.now(), message, "no-windows");
+          return { ok: false as const, events: [] as QuotaEvent[], message };
+        }
         this.codexPollState.set(profile.id, { count: observations.length, error: null });
         this.db.recordCollectionAttempt("codex", profile.id, CODEX_SOURCE, Date.now(), null, null);
         return {
@@ -324,7 +342,13 @@ export class QuotaPieService {
         lastSuccessAtMs: row.lastSuccessMs,
         errorCategory: row.lastErrorCategory,
         errorDetail: row.lastError,
-      })).sort((left, right) => HEALTH_RANK[right.health] - HEALTH_RANK[left.health]);
+      })).sort((left, right) => {
+        const health = HEALTH_RANK[right.health] - HEALTH_RANK[left.health];
+        if (health !== 0) return health;
+        const authority = (SOURCE_AUTHORITY[right.source] ?? 0) - (SOURCE_AUTHORITY[left.source] ?? 0);
+        if (authority !== 0) return authority;
+        return (right.lastSuccessAtMs ?? 0) - (left.lastSuccessAtMs ?? 0);
+      });
       // 계정 건강도는 소스 중 가장 좋은 상태를 따른다. OAuth 실패가 최근 성공한
       // 상태줄 수집을 덮어쓰지 않도록 하는 것이 이 규칙의 목적이다.
       const best = sources[0] ?? null;
@@ -487,14 +511,19 @@ export class QuotaPieService {
     events = events.concat(await this.pollClaudeOAuth(nowMs));
     this.db.maybePrune(nowMs, this.config.profile.historyDays);
     const triggers = await this.evaluateTriggers(nowMs);
-    this.publishBoundary(nowMs);
+    await this.publishBoundary(nowMs);
     return { events, triggers };
   }
 
-  publishBoundary(nowMs = Date.now()): void {
+  async publishBoundary(nowMs = Date.now()): Promise<void> {
     try {
       const accounts = this.accountStates(nowMs);
-      const document = buildQuotaBoundary(accounts, buildHeadline(accounts, nowMs), nowMs);
+      const document = buildQuotaBoundary(
+        accounts,
+        buildHeadline(accounts, nowMs),
+        nowMs,
+        await cachedLeaderboard(nowMs),
+      );
       writeQuotaBoundary(document);
     } catch (error) {
       // 경계면 쓰기 실패가 수집·알림 본연의 tick을 죽여서는 안 된다.

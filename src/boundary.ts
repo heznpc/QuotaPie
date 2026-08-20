@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { AccountState, CollectionHealth, CollectionStateRow, Headline } from "./types";
@@ -66,13 +66,17 @@ function remoteFor(cwd: string): string {
   return remote;
 }
 
-// 전사 파일에서 토큰 수·경로 메타데이터만 읽는다. 대화 본문(content)은 파싱하지 않는다.
-export function scanBurnLeaderboard(
+// 전사 파일에서 토큰 수·경로·시각 필드만 사용한다. 대화 본문은 어떤 경로로도
+// 사용·저장·전송하지 않는다. 다만 파일은 줄 단위 JSON이라 해당 필드에 닿으려면
+// 그 줄을 파싱해야 하므로, "본문을 읽지 않는다"가 아니라 "본문을 쓰지 않는다"가
+// 정확한 표현이다. 아래는 그 접촉면을 최소화한다: 관심 필드가 없는 줄은 파싱조차
+// 하지 않고, 파일 전체를 한 번에 메모리에 올리지 않는다.
+export async function scanBurnLeaderboard(
   nowMs: number,
   lookbackMs = 7 * 24 * 3_600_000,
   projectsDir = join(homedir(), ".claude", "projects"),
   limit = 5,
-): QuotaBoundaryDocument["topBurn"] {
+): Promise<QuotaBoundaryDocument["topBurn"]> {
   if (!existsSync(projectsDir)) return [];
   const cutoffMs = nowMs - lookbackMs;
   const byRemote = new Map<string, BurnAccumulator>();
@@ -93,13 +97,15 @@ export function scanBurnLeaderboard(
       } catch {
         continue;
       }
+      // 파일 수정 시각은 1차 필터일 뿐이다. 오래 이어온 대화는 오늘 한 줄만
+      // 추가돼도 mtime이 갱신되므로, 실제 집계는 줄마다의 timestamp로 자른다.
       if (mtimeMs < cutoffMs) continue;
       let cwd: string | null = null;
       let tokens = 0;
-      let lastActiveMs = mtimeMs;
+      let lastActiveMs = 0;
       let text: string;
       try {
-        text = readFileSync(path, "utf8");
+        text = await Bun.file(path).text();
       } catch {
         continue;
       }
@@ -117,14 +123,16 @@ export function scanBurnLeaderboard(
         if (cwd == null && typeof parsed.cwd === "string") cwd = parsed.cwd;
         const message = parsed.message as { usage?: Record<string, unknown> } | undefined;
         const usage = message?.usage;
-        if (usage) {
-          for (const key of ["input_tokens", "output_tokens", "cache_creation_input_tokens"]) {
-            const value = usage[key];
-            if (typeof value === "number") tokens += value;
-          }
-          const stamp = typeof parsed.timestamp === "string" ? Date.parse(parsed.timestamp) : NaN;
-          if (Number.isFinite(stamp)) lastActiveMs = Math.max(lastActiveMs, stamp);
+        if (!usage) continue;
+        const stamp = typeof parsed.timestamp === "string" ? Date.parse(parsed.timestamp) : NaN;
+        // 시각을 모르는 줄은 최근 사용으로 셈하지 않는다. 창 밖의 토큰이
+        // 최근 소진으로 흘러들면 순위 자체가 거짓이 된다.
+        if (!Number.isFinite(stamp) || stamp < cutoffMs) continue;
+        for (const key of ["input_tokens", "output_tokens", "cache_creation_input_tokens"]) {
+          const value = usage[key];
+          if (typeof value === "number") tokens += value;
         }
+        lastActiveMs = Math.max(lastActiveMs, stamp);
       }
       if (!cwd || tokens <= 0) continue;
       const remote = remoteFor(cwd);
@@ -149,9 +157,9 @@ export function scanBurnLeaderboard(
 let leaderboardCache: { computedAtMs: number; value: QuotaBoundaryDocument["topBurn"] } | null = null;
 const LEADERBOARD_TTL_MS = 15 * 60_000;
 
-function cachedLeaderboard(nowMs: number): QuotaBoundaryDocument["topBurn"] {
+export async function cachedLeaderboard(nowMs: number): Promise<QuotaBoundaryDocument["topBurn"]> {
   if (!leaderboardCache || nowMs - leaderboardCache.computedAtMs > LEADERBOARD_TTL_MS) {
-    leaderboardCache = { computedAtMs: nowMs, value: scanBurnLeaderboard(nowMs) };
+    leaderboardCache = { computedAtMs: nowMs, value: await scanBurnLeaderboard(nowMs) };
   }
   return leaderboardCache.value;
 }
@@ -160,7 +168,8 @@ export function buildQuotaBoundary(
   accounts: AccountState[],
   headline: Headline | null,
   nowMs: number,
-  topBurn?: QuotaBoundaryDocument["topBurn"],
+  // 리더보드는 파일 I/O라 호출자가 계산해 넘긴다. 문서 조립 자체는 순수하게 둔다.
+  topBurn: QuotaBoundaryDocument["topBurn"] = [],
 ): QuotaBoundaryDocument {
   const providers: Record<string, CollectionHealth> = {};
   let lastSampleMs: number | null = null;
@@ -195,7 +204,7 @@ export function buildQuotaBoundary(
       }
       : null,
     headline: headline ? { kind: headline.kind, title: headline.title, detail: headline.detail } : null,
-    topBurn: topBurn ?? cachedLeaderboard(nowMs),
+    topBurn,
   };
 }
 

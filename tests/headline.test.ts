@@ -181,3 +181,16 @@ describe("menu bar headline", () => {
     expect(windowShortLabel(window({ windowSeconds: 18_000 }))).toBe("5시간");
   });
 });
+
+describe("window short labels", () => {
+  test("a monthly window is not swallowed by the weekly branch", () => {
+    expect(windowShortLabel(window({ windowSeconds: 30 * 86_400 }))).toBe("월간");
+    expect(windowShortLabel(window({ windowSeconds: 28 * 86_400 }))).toBe("월간");
+    expect(windowShortLabel(window({ windowSeconds: 7 * 86_400 }))).toBe("주간");
+  });
+
+  test("an unknown window length keeps the provider's own label", () => {
+    expect(windowShortLabel(window({ windowSeconds: 2 * 86_400, label: "Codex 2일" }))).toBe("Codex 2일");
+    expect(windowShortLabel(window({ windowSeconds: null, label: "Codex 43200m" }))).toBe("Codex 43200m");
+  });
+});

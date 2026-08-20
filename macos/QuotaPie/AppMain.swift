@@ -117,12 +117,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     /// 제목은 결론 하나다. 어떤 결론인지는 서비스가 고르고, 여기서는 색만 입힌다.
+    ///
+    /// 전송이 끊긴 동안에는 마지막으로 받은 값을 제목에 쓰지 않는다. 캐시된 숫자는
+    /// 팝오버에서 "마지막 정상값"이라고 밝히고 보여주면 되지만, 메뉴 막대는 지금
+    /// 상태를 말하는 자리라 늙은 값을 정상 색으로 띄우면 그대로 거짓말이 된다.
     private func render() {
         let headline = payload?.headline
         let title: String
         let color: NSColor
-        if lastError != nil, payload == nil {
-            title = "연결 끊김"
+        if lastError != nil {
+            title = payload == nil ? "연결 끊김" : "한도 확인 지연"
             color = .systemOrange
         } else {
             title = headline?.title ?? "확인 중"
@@ -139,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
             ]
         )
-        statusItem.button?.toolTip = headline?.detail ?? lastError ?? "Codex와 Claude의 실사용 한도"
+        statusItem.button?.toolTip = lastError ?? headline?.detail ?? "Codex와 Claude의 실사용 한도"
     }
 
     private func copyStatus() { copyToPasteboard(plainStatus()) }

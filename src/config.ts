@@ -242,11 +242,31 @@ function validateAccounts(config: AppConfig): void {
   }
 }
 
+// 로컬 전용은 이 제품의 계약이지 기본값 취향이 아니다. 대시보드 API에는 인증이
+// 없으므로, 루프백이 아닌 주소에 bind하는 순간 같은 네트워크의 누구나 사용량과
+// 계정 별칭을 읽을 수 있게 된다. 설정으로도 그 문이 열리지 않게 막는다.
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
+function validateDashboard(config: AppConfig): void {
+  const host = config.dashboard.host;
+  if (typeof host !== "string" || !LOOPBACK_HOSTS.has(host.toLowerCase())) {
+    throw new Error(
+      `dashboard.host must be a loopback address (${[...LOOPBACK_HOSTS].join(", ")}); ` +
+      "the local API has no authentication and is not meant to leave this machine",
+    );
+  }
+  const port = config.dashboard.port;
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`dashboard.port must be a valid TCP port, got ${String(port)}`);
+  }
+}
+
 export function loadConfig(path = configPath()): AppConfig {
   if (!existsSync(path)) return structuredClone(DEFAULT_CONFIG);
   const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<AppConfig>;
   const config = mergeConfig(DEFAULT_CONFIG, parsed);
   validateAccounts(config);
+  validateDashboard(config);
   return config;
 }
 
