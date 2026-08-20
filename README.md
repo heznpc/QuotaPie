@@ -29,7 +29,7 @@ Codex와 Claude의 5시간·주간 한도를 공급자 원본 시각으로 추�
 
 ## 통합 경계면: quota.json
 
-외부 소비자(예: Modore)는 `~/Library/Application Support/QuotaPie/quota.json` 하나만 읽습니다. 서비스가 매 tick마다 원자적으로(temp+rename, 0600) 갱신합니다.
+외부 소비자(예: [Modore](https://github.com/heznpc/Modore))는 `~/Library/Application Support/QuotaPie/quota.json` 하나만 읽습니다. 서비스가 매 tick마다 원자적으로(temp+rename, 0600) 갱신합니다.
 
 ```jsonc
 {
@@ -319,3 +319,7 @@ bun run check
 - 같은 프로필 디렉터리에서 로그아웃 후 다른 원격 계정으로 바꾸면 과거 학습과 섞일 수 있습니다. 다른 로그인에는 새 프로필 디렉터리와 새 로컬 ID를 사용하십시오.
 - 퍼센트만 제공되는 경우 실제 사용량 삭제와 한도 분모 증액을 완전히 구분할 수 없습니다. 이때는 확정 표현 대신 `allowance_relief`로 기록합니다.
 - banked reset 이벤트는 공급자 응답에 해당 수치가 실제로 노출될 때만 감지합니다. QuotaPie 자체는 크레딧을 구매하거나 banked reset을 소비하지 않습니다.
+
+## 라이선스
+
+MIT. 자세한 내용은 [LICENSE](LICENSE)를 보십시오.
