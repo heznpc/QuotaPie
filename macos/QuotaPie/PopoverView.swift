@@ -1,11 +1,15 @@
 import SwiftUI
 
+final class PopoverModel: ObservableObject {
+    @Published var payload: StatusPayload?
+    @Published var lastError: String?
+    @Published var lastSuccessAt: Date?
+}
+
 /// 첫 화면이 네 가지를 펼치지 않고 답해야 한다:
 /// 어느 계정인가 · 얼마나 썼고 남았나 · 언제 갱신되나 · 이 속도로 버티는가.
 struct PopoverView: View {
-    let payload: StatusPayload?
-    let lastError: String?
-    let lastSuccessAt: Date?
+    @ObservedObject var model: PopoverModel
     let onRefresh: () -> Void
     let onCopy: () -> Void
     let onOpenDashboard: () -> Void
@@ -14,6 +18,9 @@ struct PopoverView: View {
     let onQuit: () -> Void
 
     var body: some View {
+        let payload = model.payload
+        let lastError = model.lastError
+        let lastSuccessAt = model.lastSuccessAt
         VStack(alignment: .leading, spacing: 12) {
             header
             if let lastError {
@@ -51,24 +58,24 @@ struct PopoverView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline) {
-                Text(payload?.headline?.title ?? "확인 중")
+                Text(model.payload?.headline?.title ?? "확인 중")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(headlineTone)
                 Spacer()
-                if let lastSuccessAt {
+                if let lastSuccessAt = model.lastSuccessAt {
                     Text(DisplayFormat.age(since: lastSuccessAt))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
-            if let detail = payload?.headline?.detail {
+            if let detail = model.payload?.headline?.detail {
                 Text(detail).font(.caption).foregroundStyle(.secondary)
             }
         }
     }
 
     private var headlineTone: Color {
-        switch payload?.headline?.kind {
+        switch model.payload?.headline?.kind {
         case "pace-risk": return .orange
         case "degraded", "setup": return .secondary
         default: return .primary
@@ -145,9 +152,11 @@ private struct WindowRow: View {
                 Text(usedText)
                     .font(.system(size: 11).monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .frame(width: 76, alignment: .trailing)
                 UsageBar(window: window)
                 Text(remainingText)
                     .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(window.isExhausted ? Color.red : Color.primary)
                     .frame(width: 74, alignment: .trailing)
             }
             VStack(alignment: .leading, spacing: 1) {
@@ -157,7 +166,7 @@ private struct WindowRow: View {
                 if let pace = window.paceText {
                     Text(pace)
                         .font(.caption2)
-                        .foregroundStyle(window.isAtRisk ? Color.orange : Color.secondary)
+                        .foregroundStyle(paceTone)
                 }
                 if window.freshness != "fresh" {
                     Text(freshnessText).font(.caption2).foregroundStyle(.orange)
@@ -165,6 +174,9 @@ private struct WindowRow: View {
             }
             .padding(.leading, 52)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(window.shortLabel)
+        .accessibilityValue(accessibilityValue)
     }
 
     private var usedText: String {
@@ -182,6 +194,17 @@ private struct WindowRow: View {
         default: return "확인 필요"
         }
     }
+
+    private var paceTone: Color {
+        if window.isExhausted { return .red }
+        if window.isAtRisk { return .orange }
+        return .secondary
+    }
+
+    private var accessibilityValue: String {
+        let pieces = [usedText, remainingText, DisplayFormat.resetStamp(window.resetsAtMs), window.paceText]
+        return pieces.compactMap { $0 }.joined(separator: ", ")
+    }
 }
 
 /// 채움은 항상 "사용한 비율"이다. 얇은 눈금은 남겨두기로 한 안전 여유선이다.
@@ -196,7 +219,7 @@ private struct UsageBar: View {
             ZStack(alignment: .leading) {
                 RoundedRectangle(cornerRadius: 2).fill(Color.secondary.opacity(0.18))
                 RoundedRectangle(cornerRadius: 2)
-                    .fill(window.isAtRisk ? Color.orange : Color.accentColor)
+                    .fill(fillColor)
                     .frame(width: width * used)
                 if let reserveLine {
                     Rectangle()
@@ -207,6 +230,14 @@ private struct UsageBar: View {
             }
         }
         .frame(height: 7)
+        .accessibilityHidden(true)
+    }
+
+    private var fillColor: Color {
+        if window.isExhausted { return Color(nsColor: .systemRed) }
+        if window.isAtRisk { return Color(nsColor: .systemOrange) }
+        if window.isWatch { return Color(nsColor: .systemYellow) }
+        return Color(nsColor: .systemBlue)
     }
 }
 

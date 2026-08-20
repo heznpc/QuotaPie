@@ -76,6 +76,12 @@ export class QuotaPieService {
     }
     for (const [account, accountObservations] of grouped) {
       const observedAtMs = Math.max(...accountObservations.map((item) => item.observedAtMs));
+      // Codex는 같은 limit/lane의 기간을 7일↔30일로 바꿀 수 있다. 기간이 bucket
+      // identity에 들어가므로 보통은 새 bucket 관측 후 두 번째 누락에서야 이전
+      // bucket 은퇴로 보인다. 전체 응답 첫 순간에 lane 전환으로 따로 잡아낸다.
+      const previousLaneWindows = this.db.latestAll().filter((item) =>
+        item.provider === "codex" && item.account === account
+      );
       const result = this.db.ingestFullSnapshot(
         "codex",
         account,
@@ -84,6 +90,38 @@ export class QuotaPieService {
       );
       emitted.push(...result.events);
       if (!result.accepted) continue;
+      const currentBuckets = new Set(accountObservations.map((item) => item.bucket));
+      for (const next of accountObservations) {
+        const limitId = next.metadata?.limitId;
+        const lane = next.metadata?.lane;
+        if (typeof limitId !== "string" || typeof lane !== "string") continue;
+        const previous = previousLaneWindows
+          .filter((item) =>
+            item.bucket !== next.bucket &&
+            !currentBuckets.has(item.bucket) &&
+            item.metadata?.limitId === limitId &&
+            item.metadata?.lane === lane
+          )
+          .sort((left, right) => right.observedAtMs - left.observedAtMs)[0];
+        if (!previous) continue;
+        const value: QuotaEvent = {
+          provider: next.provider,
+          account: next.account,
+          bucket: next.bucket,
+          kind: "window_changed",
+          severity: "info",
+          occurredAtMs: next.observedAtMs,
+          confidence: "high",
+          summary: `${limitId} ${lane} 한도 창 전환: ${previous.label} → ${next.label}`,
+          details: {
+            previousBucket: previous.bucket,
+            nextBucket: next.bucket,
+            previousWindowSeconds: previous.windowSeconds,
+            nextWindowSeconds: next.windowSeconds,
+          },
+        };
+        if (this.db.insertEvent(value)) emitted.push(value);
+      }
       for (const previous of result.retired) {
         const value: QuotaEvent = {
           provider: previous.provider,

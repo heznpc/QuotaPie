@@ -41,15 +41,27 @@ describe("provider normalization", () => {
           five_hour: { used_percentage: 23.5, resets_at: 1_800_000_000 },
           seven_day: { used_percentage: 41.2, resets_at: 1_800_600_000 },
           seven_day_opus: { used_percentage: 8, resets_at: 1_800_600_000 },
+          seven_day_fable: { used_percentage: 100, resets_at: 1_800_600_000 },
         },
       },
       4321,
     );
-    expect(observations.map((item) => item.bucket)).toEqual(["five_hour", "seven_day", "seven_day_opus"]);
+    expect(observations.map((item) => item.bucket)).toEqual(["five_hour", "seven_day", "seven_day_opus", "seven_day_fable"]);
     expect(observations[0]?.windowSeconds).toBe(18_000);
     expect(observations[1]?.windowSeconds).toBe(604_800);
+    expect(observations[3]?.label).toBe("Claude Fable weekly");
     expect(String(observations[0]?.metadata?.sessionHash)).toHaveLength(16);
     expect(JSON.stringify(observations)).not.toContain("not-stored");
+  });
+
+  test("names the Codex 30-day window as monthly", () => {
+    const observations = parseCodexRateLimits({
+      rateLimits: {
+        limitId: "codex",
+        primary: { usedPercent: 0, windowDurationMins: 43_200, resetsAt: 1_800_000_000 },
+      },
+    });
+    expect(observations[0]?.label).toBe("Codex monthly");
   });
 
   test("does not turn absent Claude limits into fake 0% usage", () => {

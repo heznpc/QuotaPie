@@ -15,10 +15,8 @@ struct QuotaPieApp {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
+    private let popoverModel = PopoverModel()
     private var client: StatusClient?
-    private var payload: StatusPayload?
-    private var lastSuccessAt: Date?
-    private var lastError: String?
     private var refreshTimer: Timer?
     private var isFetching = false
     private var failureIndex = 0
@@ -38,9 +36,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         do {
             client = try StatusClient()
         } catch {
-            lastError = error.localizedDescription
+            popoverModel.lastError = error.localizedDescription
         }
 
+        installPopoverContent()
         render()
         refresh()
     }
@@ -56,18 +55,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             return
         }
         guard let button = statusItem.button else { return }
-        rebuildPopoverContent()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
         // 팝오버가 열려 있는 동안에도 값이 늙지 않도록 즉시 한 번 더 읽는다.
         refresh()
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    private func rebuildPopoverContent() {
+    private func installPopoverContent() {
         let view = PopoverView(
-            payload: payload,
-            lastError: lastError,
-            lastSuccessAt: lastSuccessAt,
+            model: popoverModel,
             onRefresh: { [weak self] in self?.refresh() },
             onCopy: { [weak self] in self?.copyStatus() },
             onOpenDashboard: { [weak self] in self?.openDashboard() },
@@ -99,19 +95,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 self.isFetching = false
                 switch result {
                 case .success(let payload):
-                    self.payload = payload
-                    self.lastSuccessAt = Date()
-                    self.lastError = nil
+                    self.popoverModel.payload = payload
+                    self.popoverModel.lastSuccessAt = Date()
+                    self.popoverModel.lastError = nil
                     self.failureIndex = 0
                     self.scheduleRefresh(after: 30)
                 case .failure(let error):
-                    self.lastError = error.localizedDescription
+                    self.popoverModel.lastError = error.localizedDescription
                     let delay = self.retrySeconds[min(self.failureIndex, self.retrySeconds.count - 1)]
                     self.failureIndex = min(self.failureIndex + 1, self.retrySeconds.count - 1)
                     self.scheduleRefresh(after: delay)
                 }
                 self.render()
-                if self.popover.isShown { self.rebuildPopoverContent() }
             }
         }
     }
@@ -122,11 +117,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     /// 팝오버에서 "마지막 정상값"이라고 밝히고 보여주면 되지만, 메뉴 막대는 지금
     /// 상태를 말하는 자리라 늙은 값을 정상 색으로 띄우면 그대로 거짓말이 된다.
     private func render() {
-        let headline = payload?.headline
+        let headline = popoverModel.payload?.headline
         let title: String
         let color: NSColor
-        if lastError != nil {
-            title = payload == nil ? "연결 끊김" : "한도 확인 지연"
+        if popoverModel.lastError != nil {
+            title = popoverModel.payload == nil ? "연결 끊김" : "한도 확인 지연"
             color = .systemOrange
         } else {
             title = headline?.title ?? "확인 중"
@@ -143,7 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
             ]
         )
-        statusItem.button?.toolTip = lastError ?? headline?.detail ?? "Codex와 Claude의 실사용 한도"
+        statusItem.button?.toolTip = popoverModel.lastError ?? headline?.detail ?? "Codex와 Claude의 실사용 한도"
     }
 
     private func copyStatus() { copyToPasteboard(plainStatus()) }
@@ -167,7 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func plainStatus() -> String {
-        guard let payload else { return "QuotaPie: 아직 한도 데이터가 없습니다." }
+        guard let payload = popoverModel.payload else { return "QuotaPie: 아직 한도 데이터가 없습니다." }
         var lines: [String] = []
         if let headline = payload.headline {
             lines.append(headline.detail.map { "\(headline.title) — \($0)" } ?? headline.title)
