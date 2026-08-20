@@ -45,6 +45,10 @@ export interface AppConfig {
     staleAfterSeconds: number;
     codexCommand: string;
     codexEnabled: boolean;
+    // 기본값은 false다. 켜면 Claude Code의 로컬 OAuth 자격증명을 읽어 공식
+    // usage 엔드포인트를 폴링한다. 남의 앱 자격증명을 건드리는 동작이므로
+    // 설치만으로 시작되지 않고, 사용자가 명시적으로 켠 경우에만 동작한다.
+    claudeOAuthEnabled: boolean;
     claudeSessionTtlSeconds: number;
   };
   alerts: {
@@ -93,6 +97,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     staleAfterSeconds: 600,
     codexCommand: "codex",
     codexEnabled: true,
+    claudeOAuthEnabled: false,
     claudeSessionTtlSeconds: 900,
   },
   alerts: {

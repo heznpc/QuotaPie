@@ -26,6 +26,7 @@
     "staleAfterSeconds": 600,
     "codexCommand": "codex",
     "codexEnabled": true,
+    "claudeOAuthEnabled": false,
     "claudeSessionTtlSeconds": 900
   },
   "alerts": {

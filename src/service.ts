@@ -176,6 +176,9 @@ export class QuotaPieService {
     force = false,
     fetchImpl: typeof fetch = fetch,
   ): Promise<QuotaEvent[]> {
+    // force는 폴링 간격만 건너뛴다. 설정 게이트는 건너뛰지 않는다 — 꺼둔 사용자의
+    // 자격증명을 진단이 몰래 읽는 일이 없어야 한다.
+    if (!this.config.collection.claudeOAuthEnabled) return [];
     const emitted: QuotaEvent[] = [];
     for (const profile of this.config.accounts.claude.filter((item) => item.enabled)) {
       const lastPollMs = this.claudeOAuthLastPollMs.get(profile.id) ?? 0;
@@ -326,6 +329,11 @@ export class QuotaPieService {
       // 상태줄 수집을 덮어쓰지 않도록 하는 것이 이 규칙의 목적이다.
       const best = sources[0] ?? null;
       const failing = sources.find((source) => source.errorCategory != null) ?? null;
+      // OAuth를 켜지 않았고 폴백 표본도 없는 상태는 고장이 아니라 미설정이다.
+      // 사용자가 둘 중 하나를 고르도록 안내해야 하므로 별도 분류로 표시한다.
+      const optedOut = profile.provider === "claude" &&
+        !this.config.collection.claudeOAuthEnabled &&
+        best == null;
       const bottleneck = [...accountWindows].sort((left, right) =>
         right.bottleneckScore - left.bottleneckScore
       )[0];
@@ -339,8 +347,16 @@ export class QuotaPieService {
           activeSource: best && best.lastSuccessAtMs != null ? best.source : null,
           lastSuccessAtMs: best?.lastSuccessAtMs ?? null,
           // 정상 동작 중인 계정에서는 폴백 소스의 과거 오류를 표면화하지 않는다.
-          errorCategory: best?.health === "recent-success" ? null : failing?.errorCategory ?? null,
-          errorDetail: best?.health === "recent-success" ? null : failing?.errorDetail ?? null,
+          errorCategory: best?.health === "recent-success"
+            ? null
+            : optedOut
+              ? "not-configured"
+              : failing?.errorCategory ?? null,
+          errorDetail: best?.health === "recent-success"
+            ? null
+            : optedOut
+              ? "set collection.claudeOAuthEnabled = true, or configure the Claude status line"
+              : failing?.errorDetail ?? null,
           sources,
         },
         windows: accountWindows,
