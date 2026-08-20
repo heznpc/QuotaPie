@@ -31,7 +31,7 @@ const HEALTH_RANK: Record<CollectionHealth, number> = {
   "never-attempted": 0,
 };
 
-export class TimeQuotaService {
+export class QuotaPieService {
   readonly db: QuotaDatabase;
   private codexClients = new Map<string, CodexAppServerClient>();
   private stopped = false;
@@ -137,7 +137,7 @@ export class TimeQuotaService {
         this.db.recordCollectionAttempt(
           "codex", profile.id, CODEX_SOURCE, Date.now(), message, "isolation-unsafe",
         );
-        console.error(`[timequota] Codex account ${profile.id} skipped: ${message}`);
+        console.error(`[quotapie] Codex account ${profile.id} skipped: ${message}`);
         return { ok: false as const, events: [] as QuotaEvent[], message };
       }
       let client = this.codexClients.get(profile.id);
@@ -159,7 +159,7 @@ export class TimeQuotaService {
         this.db.recordCollectionAttempt("codex", profile.id, CODEX_SOURCE, Date.now(), message, "provider-error");
         await client.close().catch(() => undefined);
         this.codexClients.delete(profile.id);
-        console.error(`[timequota] Codex account ${profile.id} refresh failed: ${message}`);
+        console.error(`[quotapie] Codex account ${profile.id} refresh failed: ${message}`);
         return { ok: false as const, events: [] as QuotaEvent[], message };
       }
     }));
@@ -179,7 +179,7 @@ export class TimeQuotaService {
     const emitted: QuotaEvent[] = [];
     for (const profile of this.config.accounts.claude.filter((item) => item.enabled)) {
       const lastPollMs = this.claudeOAuthLastPollMs.get(profile.id) ?? 0;
-      if (!force && nowMs - lastPollMs < TimeQuotaService.CLAUDE_OAUTH_MIN_INTERVAL_MS) continue;
+      if (!force && nowMs - lastPollMs < QuotaPieService.CLAUDE_OAUTH_MIN_INTERVAL_MS) continue;
       this.claudeOAuthLastPollMs.set(profile.id, nowMs);
       const credentials = readClaudeCredentials(profile.configDir ?? "~/.claude", profile.keychainService);
       if (!credentials.accessToken) {
@@ -231,7 +231,7 @@ export class TimeQuotaService {
           message,
           category,
         );
-        console.error(`[timequota] Claude OAuth poll failed (${profile.id}): ${message}`);
+        console.error(`[quotapie] Claude OAuth poll failed (${profile.id}): ${message}`);
       }
     }
     return emitted;
@@ -439,7 +439,7 @@ export class TimeQuotaService {
         );
         deliveryComplete = result.complete;
       } catch (error) {
-        console.error(`[timequota] Trigger delivery error: ${String(error)}`);
+        console.error(`[quotapie] Trigger delivery error: ${String(error)}`);
       }
       if (deliveryComplete) {
         const completedAtMs = Date.now();
@@ -447,14 +447,14 @@ export class TimeQuotaService {
           ? this.db.completeEventAlert(decision.eventId, decision.key, claimToken, completedAtMs)
           : this.db.completeAlertClaim(decision.key, claimToken, completedAtMs);
         if (completed) delivered.push(decision);
-        else console.error(`[timequota] Trigger claim expired before completion: ${decision.key}`);
+        else console.error(`[quotapie] Trigger claim expired before completion: ${decision.key}`);
       } else {
         if (decision.eventId != null) {
           this.db.releaseEventAlert(decision.eventId, decision.key, claimToken);
         } else {
           this.db.releaseAlertClaim(decision.key, claimToken);
         }
-        console.error(`[timequota] Trigger delivery failed: ${decision.key}`);
+        console.error(`[quotapie] Trigger delivery failed: ${decision.key}`);
       }
     }
     return delivered;
@@ -466,7 +466,7 @@ export class TimeQuotaService {
       events = await this.pollCodex();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`[timequota] Codex refresh failed: ${message}`);
+      console.error(`[quotapie] Codex refresh failed: ${message}`);
     }
     events = events.concat(await this.pollClaudeOAuth(nowMs));
     this.db.maybePrune(nowMs, this.config.profile.historyDays);
@@ -482,7 +482,7 @@ export class TimeQuotaService {
       writeQuotaBoundary(document);
     } catch (error) {
       // 경계면 쓰기 실패가 수집·알림 본연의 tick을 죽여서는 안 된다.
-      console.error(`[timequota] quota.json publish failed: ${String(error)}`);
+      console.error(`[quotapie] quota.json publish failed: ${String(error)}`);
     }
   }
 

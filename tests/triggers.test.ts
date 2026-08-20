@@ -167,7 +167,7 @@ describe("trigger planning and claims", () => {
     const errorLog = spyOn(console, "error").mockImplementation(() => undefined);
     const config = structuredClone(DEFAULT_CONFIG);
     config.alerts.macOSNotifications = false;
-    config.alerts.command = ["/definitely/not/a/timequota-command"];
+    config.alerts.command = ["/definitely/not/a/quotapie-command"];
     const delivered = await deliverTrigger(
       { key: "test", title: "test", message: "test", severity: "info" },
       config,

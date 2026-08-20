@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @main
-struct TimeQuotaMenuApp {
+struct QuotaPieApp {
     static func main() {
         let app = NSApplication.shared
         let delegate = AppDelegate()
@@ -157,13 +157,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func openConfig() {
         let environment = ProcessInfo.processInfo.environment
-        let path = NSString(string: environment["TIMEQUOTA_CONFIG"] ?? "~/.config/timequota/config.json")
+        let path = NSString(string: environment["QUOTAPIE_CONFIG"] ?? "~/.config/quotapie/config.json")
             .expandingTildeInPath
         NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
     private func plainStatus() -> String {
-        guard let payload else { return "TimeQuota: 아직 한도 데이터가 없습니다." }
+        guard let payload else { return "QuotaPie: 아직 한도 데이터가 없습니다." }
         var lines: [String] = []
         if let headline = payload.headline {
             lines.append(headline.detail.map { "\(headline.title) — \($0)" } ?? headline.title)

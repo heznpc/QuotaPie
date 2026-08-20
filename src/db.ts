@@ -97,7 +97,7 @@ export class QuotaDatabase {
   readonly db: Database;
   private readonly storagePath: string;
 
-  constructor(path = resolve(dataDirectory(), "timequota.sqlite3")) {
+  constructor(path = resolve(dataDirectory(), "quotapie.sqlite3")) {
     this.storagePath = path;
     if (path !== ":memory:") {
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
