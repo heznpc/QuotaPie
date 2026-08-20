@@ -1,5 +1,5 @@
 import type { AppConfig, TimeRange } from "./config";
-import type { ProviderStatus, QuotaObservation, WindowAnalysis } from "./types";
+import type { AccountCollectionState, AccountState, Headline, ProviderStatus, QuotaObservation, WindowAnalysis } from "./types";
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -232,6 +232,21 @@ export function analyzeWindow(
         ? "medium"
         : "low";
 
+  // 위험 판정은 "갱신 전에 마르는가" 하나로 좁힌다. 표본이 없어 예측 자체가
+  // 불가능하면(confidence none) 위험을 주장하지 않는다.
+  const projectedShortfall = minutesBeforeReset != null && minutesBeforeReset > 0;
+  let riskLevel: WindowAnalysis["riskLevel"] = "none";
+  if (freshness === "fresh") {
+    if (projectedShortfall && paceRatio != null && paceRatio > 1 && confidence !== "none") {
+      riskLevel = "at-risk";
+    } else if (
+      (paceRatio != null && paceRatio > 1) ||
+      (remainingPercent != null && remainingPercent <= reservePercent)
+    ) {
+      riskLevel = "watch";
+    }
+  }
+
   let bottleneckScore = 0;
   if (latest.usedPercent != null) bottleneckScore += latest.usedPercent / 100;
   if (paceRatio != null && paceRatio > 1) bottleneckScore += Math.min(2, paceRatio - 1);
@@ -264,6 +279,7 @@ export function analyzeWindow(
     sampleCount,
     activeHoursUntilReset: activeHours,
     bottleneckScore,
+    riskLevel,
   };
 }
 
@@ -298,4 +314,118 @@ export function groupStatuses(
 
 export function analysisHistoryStart(config: AppConfig, nowMs = Date.now()): number {
   return nowMs - config.profile.historyDays * DAY_MS;
+}
+
+export function windowShortLabel(window: WindowAnalysis): string {
+  if (window.windowSeconds != null) {
+    if (window.windowSeconds >= 7 * 86_400) return "주간";
+    if (window.windowSeconds <= 6 * 3_600) return "5시간";
+    if (window.windowSeconds >= 28 * 86_400) return "월간";
+  }
+  return window.label;
+}
+
+function accountTitle(state: AccountState): string {
+  return `${state.provider === "codex" ? "Codex" : "Claude"} · ${state.accountLabel}`;
+}
+
+const RISK_ORDER: Record<WindowAnalysis["riskLevel"], number> = { "at-risk": 2, watch: 1, none: 0 };
+
+// 메뉴 막대에 올릴 결론 하나를 고른다. 가장 낮은 잔량이 아니라 가장 높은 위험을
+// 고른다는 점이 핵심이다: 잔량 90%라도 갱신보다 엿새 먼저 마를 전망이면 그게 제목이다.
+export function buildHeadline(states: AccountState[], nowMs = Date.now()): Headline {
+  const enabled = states.filter((state) => state.enabled);
+  const freshWindows = enabled.flatMap((state) =>
+    state.windows.filter((window) => window.freshness === "fresh")
+  );
+
+  const riskiest = [...freshWindows]
+    .filter((window) => window.riskLevel === "at-risk")
+    .sort((left, right) => (left.minutesBeforeReset ?? 0) - (right.minutesBeforeReset ?? 0))
+    .sort((left, right) => right.bottleneckScore - left.bottleneckScore)[0];
+  if (riskiest) {
+    const owner = enabled.find((state) =>
+      state.provider === riskiest.provider && state.account === riskiest.account
+    );
+    const exhausts = riskiest.exhaustsAtMs != null
+      ? new Date(riskiest.exhaustsAtMs).toLocaleString("ko-KR", { month: "long", day: "numeric" })
+      : null;
+    return {
+      kind: "pace-risk",
+      title: `⚠ ${windowShortLabel(riskiest)} 위험`,
+      detail: owner
+        ? `${accountTitle(owner)} · ${riskiest.label}${exhausts ? ` · ${exhausts}경 소진 예상` : ""}`
+        : riskiest.label,
+      provider: riskiest.provider,
+      account: riskiest.account,
+      bucket: riskiest.bucket,
+    };
+  }
+
+  // 수집이 끊긴 계정은 "괜찮다"고 말할 근거가 없다. 위험 없음과 확인 불가를 구분한다.
+  const degraded = enabled.find((state) =>
+    state.collection.health === "stale-success" ||
+    (state.collection.health === "attempted-then-failed" && state.windows.length > 0)
+  );
+  if (degraded) {
+    return {
+      kind: "degraded",
+      title: "한도 확인 지연",
+      detail: `${accountTitle(degraded)} · ${collectionErrorText(degraded.collection)}`,
+      provider: degraded.provider,
+      account: degraded.account,
+      bucket: null,
+    };
+  }
+
+  const needsSetup = enabled.find((state) =>
+    state.collection.health === "never-attempted" || state.collection.health === "attempted-then-failed"
+  );
+  if (needsSetup || !freshWindows.length) {
+    const target = needsSetup ?? enabled[0] ?? null;
+    return {
+      kind: "setup",
+      title: "설정 필요",
+      detail: target
+        ? `${accountTitle(target)} · ${collectionErrorText(target.collection)}`
+        : "추적할 계정이 설정되지 않았습니다.",
+      provider: target?.provider ?? null,
+      account: target?.account ?? null,
+      bucket: null,
+    };
+  }
+
+  const leader = [...freshWindows].sort((left, right) => {
+    const rank = RISK_ORDER[right.riskLevel] - RISK_ORDER[left.riskLevel];
+    if (rank !== 0) return rank;
+    return right.bottleneckScore - left.bottleneckScore;
+  })[0]!;
+  const owner = enabled.find((state) =>
+    state.provider === leader.provider && state.account === leader.account
+  );
+  return {
+    kind: "normal",
+    title: leader.remainingPercent != null
+      ? `${Math.round(leader.remainingPercent)}% 남음`
+      : "한도 확인됨",
+    detail: owner ? `${accountTitle(owner)} · ${leader.label}` : leader.label,
+    provider: leader.provider,
+    account: leader.account,
+    bucket: leader.bucket,
+  };
+}
+
+export function collectionErrorText(collection: AccountCollectionState): string {
+  switch (collection.errorCategory) {
+    case "auth-required": return "로그인이 필요합니다";
+    case "auth-expired": return "로그인이 만료됐습니다";
+    case "rate-limited": return "공급자 요청 한도에 걸렸습니다";
+    case "network": return "네트워크에 연결할 수 없습니다";
+    case "not-configured": return "수집이 설정되지 않았습니다";
+    case "isolation-unsafe": return "계정 자격증명 격리가 필요합니다";
+    case "no-windows": return "응답에 한도 창이 없습니다";
+    case "provider-error": return "공급자 응답을 읽지 못했습니다";
+    default:
+      return collection.health === "never-attempted" ? "아직 수집을 시도하지 않았습니다" : "수집이 지연되고 있습니다";
+  }
 }

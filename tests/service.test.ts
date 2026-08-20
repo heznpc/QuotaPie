@@ -1,8 +1,8 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmodSync, existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config";
 import { QuotaDatabase } from "../src/db";
 import { nextWakeDelayMs } from "../src/scheduler";
@@ -159,7 +159,13 @@ describe("state persistence and scheduler", () => {
   test("keeps Claude session consensus isolated by account alias", () => {
     const db = new QuotaDatabase(":memory:");
     const config = structuredClone(DEFAULT_CONFIG);
-    config.accounts.claude.push({ id: "work", label: "Work", configDir: "/tmp/timequota-claude-work", enabled: true });
+    config.accounts.claude.push({
+      id: "work",
+      label: "Work",
+      configDir: "/tmp/timequota-claude-work",
+      enabled: true,
+      keychainService: null,
+    });
     const service = new TimeQuotaService(config, db);
     const make = (account: string, used: number): QuotaObservation => ({
       provider: "claude",
@@ -302,28 +308,185 @@ describe("state persistence and scheduler", () => {
   });
 });
 
-describe("boundary collection state seeding", () => {
-  test("enabled accounts with no collection history surface as never-attempted", () => {
+describe("account state contract", () => {
+  test("enabled accounts with no collection history still appear as never-attempted", () => {
     const db = new QuotaDatabase(":memory:");
     const service = new TimeQuotaService(structuredClone(DEFAULT_CONFIG), db);
-    db.recordCollectionAttempt("codex", "default", 1_000, null);
-    const states = service.boundaryCollectionStates();
+    db.recordCollectionAttempt("codex", "default", "codex-appserver", 1_000, null, null);
+    const states = service.accountStates(2_000);
     const claude = states.find((state) => state.provider === "claude");
     expect(claude).toBeDefined();
-    expect(claude!.lastAttemptMs).toBeNull();
+    expect(claude!.collection.health).toBe("never-attempted");
+    expect(claude!.windows).toEqual([]);
     const codex = states.find((state) => state.provider === "codex");
-    expect(codex!.lastSuccessMs).toBe(1_000);
+    expect(codex!.collection.lastSuccessAtMs).toBe(1_000);
+    expect(codex!.collection.activeSource).toBe("codex-appserver");
   });
 
   test("failed poll then success is recorded so health recovers", () => {
     const db = new QuotaDatabase(":memory:");
-    db.recordCollectionAttempt("codex", "default", 1_000, "boom");
-    let row = db.collectionStates()[0]!;
+    db.recordCollectionAttempt("codex", "default", "codex-appserver", 1_000, "boom", "provider-error");
+    let row = db.collectionSourceStates()[0]!;
     expect(row.lastSuccessMs).toBeNull();
     expect(row.lastError).toBe("boom");
-    db.recordCollectionAttempt("codex", "default", 2_000, null);
-    row = db.collectionStates()[0]!;
+    expect(row.lastErrorCategory).toBe("provider-error");
+    db.recordCollectionAttempt("codex", "default", "codex-appserver", 2_000, null, null);
+    row = db.collectionSourceStates()[0]!;
     expect(row.lastSuccessMs).toBe(2_000);
     expect(row.lastError).toBeNull();
+  });
+
+  test("an OAuth failure does not erase a recent status-line success", () => {
+    const db = new QuotaDatabase(":memory:");
+    const config = structuredClone(DEFAULT_CONFIG);
+    const service = new TimeQuotaService(config, db);
+    const nowMs = 10_000_000;
+    db.recordCollectionAttempt("claude", "default", "claude-statusline", nowMs - 1_000, null, null);
+    db.recordCollectionAttempt(
+      "claude", "default", "claude-oauth", nowMs, "no Claude login found", "auth-required",
+    );
+    const claude = service.accountStates(nowMs).find((state) => state.provider === "claude")!;
+    // 계정 건강도는 살아 있는 소스를 따르되, 실패한 소스의 원인은 그대로 노출한다.
+    expect(claude.collection.health).toBe("recent-success");
+    expect(claude.collection.activeSource).toBe("claude-statusline");
+    expect(claude.collection.sources.map((item) => item.source).sort()).toEqual([
+      "claude-oauth",
+      "claude-statusline",
+    ]);
+    expect(claude.collection.sources.find((item) => item.source === "claude-oauth")!.errorCategory)
+      .toBe("auth-required");
+  });
+
+  test("status-line samples are ignored while OAuth is authoritative", () => {
+    const db = new QuotaDatabase(":memory:");
+    const config = structuredClone(DEFAULT_CONFIG);
+    const service = new TimeQuotaService(config, db);
+    const nowMs = 20_000_000;
+    db.recordCollectionAttempt("claude", "default", "claude-oauth", nowMs - 1_000, null, null);
+    db.ingestObservation({
+      provider: "claude",
+      account: "default",
+      bucket: "five_hour",
+      label: "Claude 5h",
+      windowSeconds: 18_000,
+      usedPercent: 40,
+      resetsAtMs: nowMs + 3_600_000,
+      observedAtMs: nowMs - 1_000,
+      source: "claude-oauth",
+      quality: "authoritative",
+    }, config);
+    service.ingestClaudeSessions([{
+      provider: "claude",
+      account: "default",
+      bucket: "five_hour",
+      label: "Claude 5h",
+      windowSeconds: 18_000,
+      usedPercent: 12,
+      resetsAtMs: nowMs + 3_600_000,
+      observedAtMs: nowMs,
+      source: "claude-statusline",
+      quality: "authoritative",
+      metadata: { sessionHash: "abc123" },
+    }], nowMs);
+    // 폴백 값이 권위 있는 값을 되돌리지 않는다.
+    expect(db.latest("claude", "default", "five_hour")?.usedPercent).toBe(40);
+    expect(db.latest("claude", "default", "five_hour")?.source).toBe("claude-oauth");
+    // 폴백 소스가 살아 있다는 사실 자체는 기록된다.
+    const statusLine = db.collectionSourceStates()
+      .find((row) => row.source === "claude-statusline");
+    expect(statusLine?.lastSuccessMs).toBe(nowMs);
+  });
+
+  test("status-line samples are accepted once OAuth has gone stale", () => {
+    const db = new QuotaDatabase(":memory:");
+    const config = structuredClone(DEFAULT_CONFIG);
+    const service = new TimeQuotaService(config, db);
+    const nowMs = 30_000_000;
+    const staleMs = config.collection.staleAfterSeconds * 1_000 + 60_000;
+    db.recordCollectionAttempt("claude", "default", "claude-oauth", nowMs - staleMs, null, null);
+    service.ingestClaudeSessions([{
+      provider: "claude",
+      account: "default",
+      bucket: "five_hour",
+      label: "Claude 5h",
+      windowSeconds: 18_000,
+      usedPercent: 12,
+      resetsAtMs: nowMs + 3_600_000,
+      observedAtMs: nowMs,
+      source: "claude-statusline",
+      quality: "authoritative",
+      metadata: { sessionHash: "abc123" },
+    }], nowMs);
+    expect(db.latest("claude", "default", "five_hour")?.usedPercent).toBe(12);
+  });
+});
+
+describe("collection isolation between providers", () => {
+  test("a failing Claude poll never throws and leaves Codex collection untouched", async () => {
+    const db = new QuotaDatabase(":memory:");
+    const config = structuredClone(DEFAULT_CONFIG);
+    // 자격증명이 없는 임시 디렉터리를 가리켜 Claude 수집이 확실히 실패하게 만든다.
+    config.accounts.claude = [{
+      id: "default",
+      label: "Main",
+      configDir: mkdtempSync(join(tmpdir(), "tq-claude-fail-")),
+      enabled: true,
+      keychainService: "TimeQuota-nonexistent-service",
+    }];
+    const service = new TimeQuotaService(config, db);
+    const nowMs = 40_000_000;
+    db.recordCollectionAttempt("codex", "default", "codex-appserver", nowMs - 1_000, null, null);
+    db.ingestObservation({
+      provider: "codex",
+      account: "default",
+      bucket: "codex:primary:10080",
+      label: "Codex weekly",
+      windowSeconds: 604_800,
+      usedPercent: 20,
+      resetsAtMs: nowMs + 86_400_000,
+      observedAtMs: nowMs - 1_000,
+      source: "codex-appserver",
+      quality: "authoritative",
+    }, config);
+
+    const events = await service.pollClaudeOAuth(nowMs, true);
+    expect(events).toEqual([]);
+
+    const states = service.accountStates(nowMs);
+    const codex = states.find((state) => state.provider === "codex")!;
+    expect(codex.collection.health).toBe("recent-success");
+    expect(codex.windows).toHaveLength(1);
+    const claude = states.find((state) => state.provider === "claude")!;
+    expect(claude.collection.health).toBe("attempted-then-failed");
+    expect(claude.collection.errorCategory).toBe("auth-required");
+    // 실패 사유에 자격증명 값이 섞이지 않는다.
+    expect(claude.collection.errorDetail ?? "").not.toContain("Bearer");
+  });
+});
+
+describe("a provider outage stays contained", () => {
+  test("a Claude usage endpoint outage is recorded without throwing or touching Codex", async () => {
+    const db = new QuotaDatabase(":memory:");
+    const config = structuredClone(DEFAULT_CONFIG);
+    const dir = mkdtempSync(join(tmpdir(), "tq-claude-outage-"));
+    writeFileSync(join(dir, ".credentials.json"), JSON.stringify({
+      claudeAiOauth: { accessToken: "test-token", expiresAt: Date.now() + 3_600_000 },
+    }));
+    config.accounts.claude = [{ id: "default", label: "Main", configDir: dir, enabled: true, keychainService: null }];
+    const service = new TimeQuotaService(config, db);
+    const nowMs = 50_000_000;
+    db.recordCollectionAttempt("codex", "default", "codex-appserver", nowMs - 1_000, null, null);
+    const failing = (async () => new Response("nope", { status: 503 })) as unknown as typeof fetch;
+
+    const events = await service.pollClaudeOAuth(nowMs, true, failing);
+    expect(events).toEqual([]);
+
+    const states = service.accountStates(nowMs);
+    expect(states.find((state) => state.provider === "codex")!.collection.health).toBe("recent-success");
+    const claude = states.find((state) => state.provider === "claude")!;
+    expect(claude.collection.health).toBe("attempted-then-failed");
+    expect(claude.collection.errorCategory).toBe("provider-error");
+    // 실패 기록에 토큰이 새지 않는다.
+    expect(JSON.stringify(claude)).not.toContain("test-token");
   });
 });

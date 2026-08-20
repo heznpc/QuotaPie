@@ -14,7 +14,8 @@ import {
 import { compactClaudeLine, formatEvents, formatStatuses } from "./format";
 import { parseClaudeStatusLine } from "./providers/claude-statusline";
 import { startDashboard } from "./server";
-import { TimeQuotaService } from "./service";
+import { collectionErrorText } from "./analytics";
+import { CLAUDE_OAUTH_SOURCE, CLAUDE_STATUSLINE_SOURCE, TimeQuotaService } from "./service";
 import { deliverTrigger } from "./triggers";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -314,41 +315,47 @@ async function main(): Promise<number> {
             }
           }
         }
-        const claudeWindows = service.analyses().filter((window) => window.provider === "claude");
-        for (const profile of config.accounts.claude.filter((item) => item.enabled)) {
-          const claudeSettings = resolve(resolveUserPath(profile.configDir), "settings.json");
-          let statusCommand = "";
-          try {
-            const parsed = JSON.parse(readFileSync(claudeSettings, "utf8")) as {
-              statusLine?: { command?: unknown };
-            };
-            statusCommand = typeof parsed.statusLine?.command === "string" ? parsed.statusLine.command : "";
-          } catch {
-            statusCommand = "";
-          }
-          const accountFlag = `--account ${profile.id}`;
-          const claudeConfigured = statusCommand.includes("claude-statusline") && (
-            statusCommand.includes(accountFlag) || (profile.id === "default" && !statusCommand.includes("--account"))
+        // 상태줄 설정 여부가 아니라 실제 수집 결과를 본다. 설정만 보고 통과시키면
+        // 34일간 표본 0건인 계정이 정상으로 보이는 거짓 초록이 만들어진다.
+        await service.pollClaudeOAuth(Date.now(), true);
+        for (const account of service.accountStates().filter((state) => state.provider === "claude")) {
+          const oauth = account.collection.sources.find((source) => source.source === CLAUDE_OAUTH_SOURCE);
+          const statusLine = account.collection.sources.find(
+            (source) => source.source === CLAUDE_STATUSLINE_SOURCE,
           );
-          const accountWindows = claudeWindows.filter((window) => window.account === profile.id);
-          const latestClaude = accountWindows.length
-            ? Math.max(...accountWindows.map((window) => window.observedAtMs))
-            : null;
+          const healthy = account.collection.health === "recent-success";
+          const detail = healthy
+            ? `${account.collection.activeSource} · ${account.windows.length} windows · ${account.accountLabel}`
+            : `${collectionErrorText(account.collection)}${
+              account.collection.errorDetail ? ` (${account.collection.errorDetail})` : ""
+            }`;
           checks.push({
-            check: `claude status line [${profile.id}]`,
-            ok: claudeConfigured,
-            detail: claudeConfigured
-              ? latestClaude == null
-                ? `configured · ${profile.label}; waiting for Claude's first API response`
-                : `configured · ${profile.label}; last observation ${Math.round((Date.now() - latestClaude) / 60_000)} minutes ago`
-              : `merge this command into ${claudeSettings}: ${preferredBin()} claude-statusline ${accountFlag}`,
+            check: `claude collection [${account.account}]`,
+            ok: healthy,
+            detail,
           });
+          // 폴백 소스는 없어도 되지만, 상태는 드러내 둔다.
+          if (!healthy && statusLine?.health === "recent-success") {
+            checks.push({
+              check: `claude status line [${account.account}]`,
+              ok: true,
+              detail: "fallback source is delivering while OAuth is unavailable",
+            });
+          }
+          if (oauth?.errorCategory === "auth-required" || oauth?.errorCategory === "auth-expired") {
+            checks.push({
+              check: `claude login [${account.account}]`,
+              ok: false,
+              detail: "run `claude auth login` in a terminal, then re-run doctor",
+            });
+          }
         }
         if (jsonOutput) console.log(JSON.stringify(checks, null, 2));
         else {
           for (const check of checks) console.log(`${check.ok ? "✓" : "○"} ${check.check}: ${check.detail}`);
         }
-        return checks.some((check) => !check.ok && check.check !== "config" && !check.check.startsWith("claude status line")) ? 1 : 0;
+        // 수집 실패는 이제 실패로 취급한다. config 미생성만 정보성으로 남긴다.
+        return checks.some((check) => !check.ok && check.check !== "config") ? 1 : 0;
       }
       case "test-alert": {
         const delivery = await deliverTrigger(

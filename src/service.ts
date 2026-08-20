@@ -1,13 +1,35 @@
-import { analyzeWindow, analysisHistoryStart, groupStatuses } from "./analytics";
-import { buildQuotaBoundary, writeQuotaBoundary } from "./boundary";
+import { analyzeWindow, analysisHistoryStart, buildHeadline, groupStatuses } from "./analytics";
+import { buildQuotaBoundary, collectionHealth, writeQuotaBoundary } from "./boundary";
 import type { AppConfig, CodexAccountConfig } from "./config";
 import { codexUsesFileCredentials, resolveUserPath } from "./config";
 import { QuotaDatabase } from "./db";
 import { CodexAppServerClient } from "./providers/codex-appserver";
-import { fetchClaudeUsage, mapClaudeUsage, readClaudeCredentials } from "./providers/claude-oauth";
+import { ClaudeUsageError, fetchClaudeUsage, mapClaudeUsage, readClaudeCredentials } from "./providers/claude-oauth";
 import { nextWakeDelayMs } from "./scheduler";
 import { alertScope, deliverTrigger, planTriggers } from "./triggers";
-import type { CollectionStateRow, Provider, ProviderStatus, QuotaEvent, QuotaObservation, TriggerDecision, WindowAnalysis } from "./types";
+import type {
+  AccountState,
+  CollectionHealth,
+  CollectionSourceState,
+  Headline,
+  Provider,
+  ProviderStatus,
+  QuotaEvent,
+  QuotaObservation,
+  TriggerDecision,
+  WindowAnalysis,
+} from "./types";
+
+export const CLAUDE_OAUTH_SOURCE = "claude-oauth";
+export const CLAUDE_STATUSLINE_SOURCE = "claude-statusline";
+export const CODEX_SOURCE = "codex-appserver";
+
+const HEALTH_RANK: Record<CollectionHealth, number> = {
+  "recent-success": 3,
+  "stale-success": 2,
+  "attempted-then-failed": 1,
+  "never-attempted": 0,
+};
 
 export class TimeQuotaService {
   readonly db: QuotaDatabase;
@@ -71,15 +93,36 @@ export class TimeQuotaService {
     return emitted;
   }
 
-  ingestClaudeSessions(observations: QuotaObservation[]): QuotaEvent[] {
+  ingestClaudeSessions(observations: QuotaObservation[], nowMs = Date.now()): QuotaEvent[] {
     const consensus = this.db.upsertClaudeSessions(
       observations,
       this.config.collection.claudeSessionTtlSeconds * 1_000,
     );
-    for (const account of new Set(consensus.map((observation) => observation.account))) {
-      this.db.recordCollectionAttempt("claude", account, Date.now(), null);
+    const accepted: QuotaObservation[] = [];
+    for (const observation of consensus) {
+      this.db.recordCollectionAttempt(
+        "claude",
+        observation.account,
+        CLAUDE_STATUSLINE_SOURCE,
+        observation.observedAtMs,
+        null,
+        null,
+      );
+      // 상태줄은 폴백이다. OAuth가 최근에 성공한 계정에서는 값을 이력에 넣지 않아
+      // 두 소스가 번갈아 들어오며 소스 변경·계량 보정 잡음을 만드는 일을 막는다.
+      if (!this.oauthIsAuthoritative(observation.account, nowMs)) accepted.push(observation);
     }
-    return this.ingest(consensus);
+    return this.ingest(accepted);
+  }
+
+  private oauthIsAuthoritative(account: string, nowMs: number): boolean {
+    const state = this.db
+      .collectionSourceStates()
+      .find((row) =>
+        row.provider === "claude" && row.account === account && row.source === CLAUDE_OAUTH_SOURCE
+      );
+    if (state?.lastSuccessMs == null) return false;
+    return nowMs - state.lastSuccessMs <= this.config.collection.staleAfterSeconds * 1_000;
   }
 
   async pollCodex(): Promise<QuotaEvent[]> {
@@ -91,6 +134,9 @@ export class TimeQuotaService {
       if (requireFileCredentials && !codexUsesFileCredentials(profile)) {
         const message = "multi-account Codex requires cli_auth_credentials_store = \"file\" in this profile's config.toml";
         this.codexPollState.set(profile.id, { count: 0, error: message });
+        this.db.recordCollectionAttempt(
+          "codex", profile.id, CODEX_SOURCE, Date.now(), message, "isolation-unsafe",
+        );
         console.error(`[timequota] Codex account ${profile.id} skipped: ${message}`);
         return { ok: false as const, events: [] as QuotaEvent[], message };
       }
@@ -102,7 +148,7 @@ export class TimeQuotaService {
       try {
         const observations = await client.readRateLimits();
         this.codexPollState.set(profile.id, { count: observations.length, error: null });
-        this.db.recordCollectionAttempt("codex", profile.id, Date.now(), null);
+        this.db.recordCollectionAttempt("codex", profile.id, CODEX_SOURCE, Date.now(), null, null);
         return {
           ok: true as const,
           events: this.closing ? [] : this.ingestCodexSnapshot(observations),
@@ -110,7 +156,7 @@ export class TimeQuotaService {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.codexPollState.set(profile.id, { count: 0, error: message });
-        this.db.recordCollectionAttempt("codex", profile.id, Date.now(), message);
+        this.db.recordCollectionAttempt("codex", profile.id, CODEX_SOURCE, Date.now(), message, "provider-error");
         await client.close().catch(() => undefined);
         this.codexClients.delete(profile.id);
         console.error(`[timequota] Codex account ${profile.id} refresh failed: ${message}`);
@@ -123,22 +169,37 @@ export class TimeQuotaService {
     return outcomes.flatMap((outcome) => outcome.events);
   }
 
-  async pollClaudeOAuth(nowMs = Date.now()): Promise<QuotaEvent[]> {
+  // force는 doctor 전용이다. 진단은 다음 폴링 주기를 기다리지 않고 지금 상태를 봐야 한다.
+  // fetchImpl은 테스트에서 공급자 실패를 재현하기 위한 이음매다.
+  async pollClaudeOAuth(
+    nowMs = Date.now(),
+    force = false,
+    fetchImpl: typeof fetch = fetch,
+  ): Promise<QuotaEvent[]> {
     const emitted: QuotaEvent[] = [];
     for (const profile of this.config.accounts.claude.filter((item) => item.enabled)) {
       const lastPollMs = this.claudeOAuthLastPollMs.get(profile.id) ?? 0;
-      if (nowMs - lastPollMs < TimeQuotaService.CLAUDE_OAUTH_MIN_INTERVAL_MS) continue;
+      if (!force && nowMs - lastPollMs < TimeQuotaService.CLAUDE_OAUTH_MIN_INTERVAL_MS) continue;
       this.claudeOAuthLastPollMs.set(profile.id, nowMs);
-      const credentials = readClaudeCredentials(profile.configDir ?? "~/.claude");
+      const credentials = readClaudeCredentials(profile.configDir ?? "~/.claude", profile.keychainService);
       if (!credentials.accessToken) {
-        this.db.recordCollectionAttempt("claude", profile.id, Date.now(), credentials.error);
+        this.db.recordCollectionAttempt(
+          "claude",
+          profile.id,
+          CLAUDE_OAUTH_SOURCE,
+          Date.now(),
+          credentials.error,
+          credentials.errorCategory,
+        );
         continue;
       }
       try {
-        const payload = await fetchClaudeUsage(credentials.accessToken);
+        const payload = await fetchClaudeUsage(credentials.accessToken, fetchImpl);
         const observations = mapClaudeUsage(payload, profile.id, Date.now());
-        if (!observations.length) throw new Error("usage response contained no rate windows");
-        this.db.recordCollectionAttempt("claude", profile.id, Date.now(), null);
+        if (!observations.length) {
+          throw new ClaudeUsageError("usage response contained no rate windows", "no-windows");
+        }
+        this.db.recordCollectionAttempt("claude", profile.id, CLAUDE_OAUTH_SOURCE, Date.now(), null, null);
         if (this.closing) continue;
         const result = this.db.ingestFullSnapshot("claude", profile.id, observations, this.config);
         emitted.push(...result.events);
@@ -161,7 +222,15 @@ export class TimeQuotaService {
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.db.recordCollectionAttempt("claude", profile.id, Date.now(), message);
+        const category = error instanceof ClaudeUsageError ? error.category : "provider-error";
+        this.db.recordCollectionAttempt(
+          "claude",
+          profile.id,
+          CLAUDE_OAUTH_SOURCE,
+          Date.now(),
+          message,
+          category,
+        );
         console.error(`[timequota] Claude OAuth poll failed (${profile.id}): ${message}`);
       }
     }
@@ -216,6 +285,75 @@ export class TimeQuotaService {
       if (providerDifference !== 0) return providerDifference;
       return this.accountOrder(left.provider, left.account) - this.accountOrder(right.provider, right.account);
     });
+  }
+
+  // 스냅샷 유무와 무관하게 "설정된 활성 계정" 전체를 돌려준다. Claude 계정이
+  // 목록에서 통째로 사라지는 대신, 왜 비어 있는지가 상태로 드러나야 한다.
+  accountStates(nowMs = Date.now()): AccountState[] {
+    const windows = this.analyses(nowMs);
+    const sourceStates = this.db.collectionSourceStates();
+    const staleAfterMs = this.config.collection.staleAfterSeconds * 1_000;
+    const profiles: Array<{ provider: Provider; id: string; label: string; enabled: boolean }> = [
+      ...this.config.accounts.codex.map((profile) => ({
+        provider: "codex" as const,
+        id: profile.id,
+        label: profile.label,
+        enabled: profile.enabled,
+      })),
+      ...this.config.accounts.claude.map((profile) => ({
+        provider: "claude" as const,
+        id: profile.id,
+        label: profile.label,
+        enabled: profile.enabled,
+      })),
+    ];
+    return profiles.filter((profile) => profile.enabled).map((profile) => {
+      const accountWindows = windows
+        .filter((window) => window.provider === profile.provider && window.account === profile.id)
+        .sort((left, right) => (left.windowSeconds ?? 0) - (right.windowSeconds ?? 0));
+      const rows = sourceStates.filter((row) =>
+        row.provider === profile.provider && row.account === profile.id
+      );
+      const sources: CollectionSourceState[] = rows.map((row) => ({
+        source: row.source,
+        health: collectionHealth(row, nowMs, staleAfterMs),
+        lastAttemptAtMs: row.lastAttemptMs,
+        lastSuccessAtMs: row.lastSuccessMs,
+        errorCategory: row.lastErrorCategory,
+        errorDetail: row.lastError,
+      })).sort((left, right) => HEALTH_RANK[right.health] - HEALTH_RANK[left.health]);
+      // 계정 건강도는 소스 중 가장 좋은 상태를 따른다. OAuth 실패가 최근 성공한
+      // 상태줄 수집을 덮어쓰지 않도록 하는 것이 이 규칙의 목적이다.
+      const best = sources[0] ?? null;
+      const failing = sources.find((source) => source.errorCategory != null) ?? null;
+      const bottleneck = [...accountWindows].sort((left, right) =>
+        right.bottleneckScore - left.bottleneckScore
+      )[0];
+      return {
+        provider: profile.provider,
+        account: profile.id,
+        accountLabel: profile.label,
+        enabled: profile.enabled,
+        collection: {
+          health: best?.health ?? "never-attempted",
+          activeSource: best && best.lastSuccessAtMs != null ? best.source : null,
+          lastSuccessAtMs: best?.lastSuccessAtMs ?? null,
+          // 정상 동작 중인 계정에서는 폴백 소스의 과거 오류를 표면화하지 않는다.
+          errorCategory: best?.health === "recent-success" ? null : failing?.errorCategory ?? null,
+          errorDetail: best?.health === "recent-success" ? null : failing?.errorDetail ?? null,
+          sources,
+        },
+        windows: accountWindows,
+        bottleneckBucket: bottleneck?.bucket ?? null,
+        updatedAtMs: accountWindows.length
+          ? Math.max(...accountWindows.map((window) => window.observedAtMs))
+          : null,
+      };
+    });
+  }
+
+  headline(nowMs = Date.now()): Headline {
+    return buildHeadline(this.accountStates(nowMs), nowMs);
   }
 
   private accountLabel(provider: Provider, account: string): string {
@@ -337,33 +475,10 @@ export class TimeQuotaService {
     return { events, triggers };
   }
 
-  // 활성 계정은 수집 기록이 한 번도 없어도 never-attempted로 표면에 남긴다.
-  // 기록 없는 계정을 생략하면 "꺼진 수집"이 보이지 않는 상태가 된다.
-  boundaryCollectionStates(): CollectionStateRow[] {
-    const recorded = this.db.collectionStates();
-    return ([
-      ...this.config.accounts.codex.filter((profile) => profile.enabled && this.config.collection.codexEnabled)
-        .map((profile) => ({ provider: "codex" as const, account: profile.id })),
-      ...this.config.accounts.claude.filter((profile) => profile.enabled)
-        .map((profile) => ({ provider: "claude" as const, account: profile.id })),
-    ]).map((enabled) =>
-      recorded.find((row) => row.provider === enabled.provider && row.account === enabled.account) ?? {
-        ...enabled,
-        lastAttemptMs: null,
-        lastSuccessMs: null,
-        lastError: null,
-      }
-    );
-  }
-
   publishBoundary(nowMs = Date.now()): void {
     try {
-      const document = buildQuotaBoundary(
-        this.analyses(nowMs),
-        this.boundaryCollectionStates(),
-        nowMs,
-        this.config.collection.staleAfterSeconds * 1_000,
-      );
+      const accounts = this.accountStates(nowMs);
+      const document = buildQuotaBoundary(accounts, buildHeadline(accounts, nowMs), nowMs);
       writeQuotaBoundary(document);
     } catch (error) {
       // 경계면 쓰기 실패가 수집·알림 본연의 tick을 죽여서는 안 된다.

@@ -31,6 +31,7 @@ function window(overrides: Partial<WindowAnalysis> = {}): WindowAnalysis {
     sampleCount: 10,
     activeHoursUntilReset: 1,
     bottleneckScore: 2,
+    riskLevel: "none",
     ...overrides,
   };
 }
