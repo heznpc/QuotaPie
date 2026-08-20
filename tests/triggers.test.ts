@@ -73,6 +73,23 @@ describe("trigger planning and claims", () => {
     expect(decisions).toEqual([]);
   });
 
+  test("surfaces a Codex lane window change as an event alert", () => {
+    const event: QuotaEvent = {
+      provider: "codex",
+      account: "default",
+      bucket: "codex:primary:43200",
+      kind: "window_changed",
+      severity: "info",
+      occurredAtMs: 1_000,
+      confidence: "high",
+      summary: "Codex weekly → Codex monthly",
+      details: {},
+    };
+    const decision = planTriggers([], [event], DEFAULT_CONFIG, 0, 2_000)[0];
+    expect(decision?.title).toBe("codex/default 한도 창 전환");
+    expect(decision?.message).toBe(event.summary);
+  });
+
   test("durably claims and coalesces event alerts by cooldown", () => {
     const db = new QuotaDatabase(":memory:");
     const first: QuotaEvent = {

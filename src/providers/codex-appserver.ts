@@ -38,6 +38,7 @@ function labelFor(limitName: string | null, durationMinutes: number | null, lane
   const base = limitName && limitName !== "codex" ? limitName : "Codex";
   if (durationMinutes === 300) return `${base} 5h`;
   if (durationMinutes === 10_080) return `${base} weekly`;
+  if (durationMinutes === 43_200) return `${base} monthly`;
   if (durationMinutes != null) return `${base} ${durationMinutes}m`;
   return `${base} ${lane}`;
 }

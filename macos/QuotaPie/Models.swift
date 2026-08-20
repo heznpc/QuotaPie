@@ -106,11 +106,23 @@ struct QuotaWindow: Decodable, Identifiable {
 
     var id: String { "\(provider)/\(account)/\(bucket)" }
     var isAtRisk: Bool { riskLevel == "at-risk" }
+    var isWatch: Bool { riskLevel == "watch" }
+    var isExhausted: Bool { (remainingPercent ?? 1) <= 0 }
 
     var shortLabel: String {
         guard let windowSeconds else { return label }
         if windowSeconds >= 28 * 86_400 { return "월간" }
-        if windowSeconds >= 7 * 86_400 { return "주간" }
+        if windowSeconds >= 7 * 86_400 {
+            if bucket.hasPrefix("seven_day_") {
+                let suffix = bucket.dropFirst("seven_day_".count)
+                let qualifier = suffix
+                    .split(separator: "_")
+                    .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+                    .joined(separator: " ")
+                if !qualifier.isEmpty { return "\(qualifier) 주간" }
+            }
+            return "주간"
+        }
         if windowSeconds <= 6 * 3_600 { return "5시간" }
         return label
     }
@@ -118,6 +130,7 @@ struct QuotaWindow: Decodable, Identifiable {
     /// 속도에 대한 한 줄 판단. 측정된 소진이 없으면 위험을 주장하지 않는다.
     var paceText: String? {
         guard freshness == "fresh" else { return nil }
+        if isExhausted { return "소진됨" }
         if isAtRisk, let exhaustsAtMs {
             return "⚠ \(DisplayFormat.day(exhaustsAtMs))경 소진 예상"
         }

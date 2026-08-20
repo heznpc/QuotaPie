@@ -84,7 +84,7 @@ export function planTriggers(
 
   const plannedEventKeys = new Set<string>();
   for (const event of recentEvents.filter((item) => item.occurredAtMs >= sinceMs)) {
-    if (!["external_relief", "allowance_relief", "schedule_rebased", "paid_usage", "credit_topup"].includes(event.kind)) {
+    if (!["external_relief", "allowance_relief", "schedule_rebased", "paid_usage", "credit_topup", "window_changed"].includes(event.kind)) {
       continue;
     }
     const key = `event:${alertScope(event.provider, event.account, event.bucket)}:${event.kind}`;
@@ -95,7 +95,9 @@ export function planTriggers(
       eventId: event.id,
       title: event.kind === "paid_usage" || event.kind === "credit_topup"
         ? `${event.provider}/${event.account} 결제성 사용 변화`
-        : `${event.provider}/${event.account} 타이머 재동기화`,
+        : event.kind === "window_changed"
+          ? `${event.provider}/${event.account} 한도 창 전환`
+          : `${event.provider}/${event.account} 타이머 재동기화`,
       message: event.summary,
       severity: event.severity,
     });
