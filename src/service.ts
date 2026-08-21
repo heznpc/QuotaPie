@@ -407,8 +407,8 @@ export class QuotaPieService {
   // Returns every enabled configured account whether or not it has
   // snapshots. Rather than a Claude account vanishing from the list, why it
   // is empty should be visible as state.
-  accountStates(nowMs = Date.now()): AccountState[] {
-    const windows = this.analyses(nowMs);
+  accountStates(nowMs = Date.now(), analysed?: WindowAnalysis[]): AccountState[] {
+    const windows = analysed ?? this.analyses(nowMs);
     const sourceStates = this.collection.sourceStates();
     const staleAfterMs = this.config.collection.staleAfterSeconds * 1_000;
     const profiles: Array<{ provider: Provider; id: string; label: string; enabled: boolean }> = [
@@ -542,9 +542,9 @@ export class QuotaPieService {
     }
   }
 
-  async evaluateTriggers(nowMs = Date.now()): Promise<TriggerDecision[]> {
+  async evaluateTriggers(nowMs = Date.now(), analysed?: WindowAnalysis[]): Promise<TriggerDecision[]> {
     if (!this.config.alerts.enabled) return [];
-    const windows = this.analyses(nowMs);
+    const windows = analysed ?? this.analyses(nowMs);
     this.rearmRecovered(windows);
     const decisions = planTriggers(
       windows,
@@ -600,7 +600,12 @@ export class QuotaPieService {
     return delivered;
   }
 
-  async tick(nowMs = Date.now()): Promise<{ events: QuotaEvent[]; triggers: TriggerDecision[] }> {
+  async tick(nowMs = Date.now()): Promise<{
+    events: QuotaEvent[];
+    triggers: TriggerDecision[];
+    windows: WindowAnalysis[];
+    collected: boolean;
+  }> {
     let events: QuotaEvent[] = [];
     try {
       events = await this.pollCodex();
@@ -609,15 +614,30 @@ export class QuotaPieService {
       console.error(`[quotapie] Codex refresh failed: ${message}`);
     }
     events = events.concat(await this.pollClaudeOAuth(nowMs));
+    const collected = this.anyProviderCollectedRecently(nowMs);
     this.db.maybePrune(nowMs, this.config.profile.historyDays);
-    const triggers = await this.evaluateTriggers(nowMs);
-    await this.publishBoundary(nowMs);
-    return { events, triggers };
+    // One analysis pass per tick. It feeds the triggers, the boundary file, and
+    // the wake schedule, all of which used to recompute it independently.
+    const windows = this.analyses(nowMs);
+    const triggers = await this.evaluateTriggers(nowMs, windows);
+    await this.publishBoundary(nowMs, windows);
+    return { events, triggers, windows, collected };
   }
 
-  async publishBoundary(nowMs = Date.now()): Promise<void> {
+  /// Whether any source produced a sample recently enough for this tick to
+  /// count as having reached a provider. Judged from the same heartbeat every
+  /// other surface reads, rather than from whether a poll call happened to
+  /// return without throwing.
+  private anyProviderCollectedRecently(nowMs: number): boolean {
+    const staleAfterMs = this.config.collection.staleAfterSeconds * 1_000;
+    return this.collection.sourceStates().some((row) =>
+      row.lastSuccessMs != null && nowMs - row.lastSuccessMs <= staleAfterMs
+    );
+  }
+
+  async publishBoundary(nowMs = Date.now(), analysed?: WindowAnalysis[]): Promise<void> {
     try {
-      const accounts = this.accountStates(nowMs);
+      const accounts = this.accountStates(nowMs, analysed);
       const document = buildQuotaBoundary(
         accounts,
         buildHeadline(accounts, nowMs, this.locale),
@@ -632,12 +652,32 @@ export class QuotaPieService {
     }
   }
 
+  /// A failing provider must not turn this into a busy loop.
+  ///
+  /// The wake schedule is computed from the windows this tick already analysed
+  /// rather than by analysing everything a second time, and a tick that reached
+  /// no provider at all backs off instead of retrying a second later. Without
+  /// the backoff, an account whose credentials have gone stale spins this loop
+  /// once a second, and each pass rescans the whole snapshot history — enough
+  /// to starve the HTTP server that the menu bar app depends on.
+  static readonly FAILURE_BACKOFF_MS = [5_000, 15_000, 60_000, 300_000];
+
   async watch(): Promise<void> {
     this.stopped = false;
+    let consecutiveFailures = 0;
     while (!this.stopped) {
-      await this.tick();
+      const { collected, windows } = await this.tick();
+      consecutiveFailures = collected ? 0 : consecutiveFailures + 1;
       if (this.stopped) break;
-      const delay = nextWakeDelayMs(this.analyses(), this.config);
+      const scheduled = nextWakeDelayMs(windows, this.config);
+      const delay = consecutiveFailures > 0
+        ? Math.max(
+          scheduled,
+          QuotaPieService.FAILURE_BACKOFF_MS[
+            Math.min(consecutiveFailures - 1, QuotaPieService.FAILURE_BACKOFF_MS.length - 1)
+          ]!,
+        )
+        : scheduled;
       await Bun.sleep(delay);
     }
   }
