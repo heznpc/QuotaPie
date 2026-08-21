@@ -68,13 +68,42 @@ function remoteFor(cwd: string): string {
   return remote;
 }
 
+/// Yields one line at a time from a UTF-8 text file without holding the whole
+/// file, or a full array of its lines, in memory. A line that straddles a chunk
+/// boundary is carried over, and a final line with no trailing newline is still
+/// emitted.
+export async function* readLines(
+  stream: ReadableStream<Uint8Array>,
+): AsyncGenerator<string, void, unknown> {
+  const decoder = new TextDecoder();
+  const reader = stream.getReader();
+  let carry = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      carry += decoder.decode(value, { stream: true });
+      let newlineIndex = carry.indexOf("\n");
+      while (newlineIndex >= 0) {
+        yield carry.slice(0, newlineIndex);
+        carry = carry.slice(newlineIndex + 1);
+        newlineIndex = carry.indexOf("\n");
+      }
+    }
+    carry += decoder.decode();
+    if (carry.length > 0) yield carry;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 // Uses only the token, path, and timestamp fields from transcripts.
 // Conversation content is never used, stored, or transmitted. The files are
 // line-delimited JSON, though, so reaching those fields does mean parsing the
 // lines that hold them — the accurate claim is "the content is not used", not
 // "the content is never touched". This keeps that contact surface small:
 // lines without the fields of interest are not parsed at all, and the file is
-// not materialised in memory in one piece.
+// streamed rather than materialised in memory in one piece.
 export async function scanBurnLeaderboard(
   nowMs: number,
   lookbackMs = 7 * 24 * 3_600_000,
@@ -108,13 +137,13 @@ export async function scanBurnLeaderboard(
       let cwd: string | null = null;
       let tokens = 0;
       let lastActiveMs = 0;
-      let text: string;
+      let lines: AsyncGenerator<string, void, unknown>;
       try {
-        text = await Bun.file(path).text();
+        lines = readLines(Bun.file(path).stream());
       } catch {
         continue;
       }
-      for (const line of text.split("\n")) {
+      for await (const line of lines) {
         if (!line) continue;
         const wantsCwd = cwd == null && line.includes('"cwd"');
         const wantsUsage = line.includes('"usage"');

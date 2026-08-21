@@ -36,6 +36,25 @@ export type EventKind =
 
 export type Severity = "info" | "warning" | "critical";
 
+// The one list of event kinds that raise an alert. The delivery query and the
+// trigger planner both derive from this: when they were written out separately,
+// window_changed was added to the planner and not to the query, so the event was
+// recorded and then never delivered.
+export const ALERTABLE_EVENT_KINDS = [
+  "external_relief",
+  "allowance_relief",
+  "schedule_rebased",
+  "paid_usage",
+  "credit_topup",
+  "window_changed",
+] as const satisfies readonly EventKind[];
+
+export type AlertableEventKind = (typeof ALERTABLE_EVENT_KINDS)[number];
+
+export function isAlertableEventKind(kind: string): kind is AlertableEventKind {
+  return (ALERTABLE_EVENT_KINDS as readonly string[]).includes(kind);
+}
+
 export interface QuotaEvent {
   id?: number;
   provider: Provider;

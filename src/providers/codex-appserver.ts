@@ -202,7 +202,15 @@ export class CodexAppServerClient {
         reject(new Error(`Codex App Server ${method} timed out`));
       }, this.timeoutMs);
       this.pending.set(id, { resolve, reject, timeout });
-      this.write({ method, id, ...(params === undefined ? {} : { params }) });
+      try {
+        this.write({ method, id, ...(params === undefined ? {} : { params }) });
+      } catch (error) {
+        // A synchronous write failure would otherwise leave this entry pending
+        // until the timeout fires, delaying the error the caller already has.
+        clearTimeout(timeout);
+        this.pending.delete(id);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 

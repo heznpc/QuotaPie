@@ -45,7 +45,11 @@ export function startDashboard(service: QuotaPieService, config: AppConfig) {
         });
       }
       if (url.pathname === "/api/events") {
-        const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit") ?? "50")));
+        // Number("abc") is NaN, and NaN survives both Math.min and Math.max.
+        const requested = Number(url.searchParams.get("limit") ?? "50");
+        const limit = Number.isFinite(requested)
+          ? Math.min(200, Math.max(1, Math.trunc(requested)))
+          : 50;
         return json({ events: service.recentEvents(limit) });
       }
       if (url.pathname === "/health") {
