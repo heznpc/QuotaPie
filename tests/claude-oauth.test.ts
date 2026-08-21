@@ -9,8 +9,9 @@ import {
   readClaudeCredentials,
 } from "../src/providers/claude-oauth";
 
-// 픽스처는 CodexBar가 실측으로 기록한 공식 usage 응답 형식 두 가지를 따른다:
-// 구형 flat 필드와, 2026-07 이후의 limits 배열(weekly_scoped) 혼합형.
+// The fixtures follow the two official usage response shapes CodexBar
+// recorded from real traffic: the older flat fields, and the mixed form with
+// the limits array (weekly_scoped) seen from 2026-07 onwards.
 
 describe("claude oauth usage mapping", () => {
   test("maps flat five_hour/seven_day fields to statusline-compatible buckets", () => {
@@ -47,7 +48,8 @@ describe("claude oauth usage mapping", () => {
         },
       ],
     }, "default", 1_000);
-    // flat이 이미 채운 five_hour/seven_day는 limits의 99/88이 덮어쓰지 못한다.
+    // five_hour/seven_day already filled from the flat fields are not
+    // overwritten by the 99/88 in limits.
     expect(observations.find((item) => item.bucket === "five_hour")!.usedPercent).toBe(11);
     expect(observations.find((item) => item.bucket === "seven_day")!.usedPercent).toBe(9);
     const fable = observations.find((item) => item.bucket === "seven_day_fable")!;

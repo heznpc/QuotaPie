@@ -275,3 +275,28 @@ describe("pace alert honesty", () => {
     expect(measured?.title).toContain("사용 속도 과열");
   });
 });
+
+describe("alert wording stays readable", () => {
+  test("a multi-day shortfall is not reported as thousands of minutes", async () => {
+    const decisions = planTriggers(
+      [window({
+        label: "Claude Fable weekly",
+        usedPercent: 90,
+        remainingPercent: 10,
+        paceRatio: 3,
+        recentBurnPerHour: 5,
+        blendedBurnPerHour: 5,
+        minutesBeforeReset: 8_259,
+        exhaustsAtMs: 1_000,
+      })],
+      [],
+      DEFAULT_CONFIG,
+      0,
+      1_000,
+    );
+    const pace = decisions.find((decision) => decision.key.endsWith(":pace"));
+    expect(pace).toBeDefined();
+    expect(pace!.message).toContain("5일 17시간");
+    expect(pace!.message).not.toContain("8259분");
+  });
+});

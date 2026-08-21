@@ -1,6 +1,18 @@
 import type { AppConfig } from "./config";
 import type { QuotaEvent, TriggerDecision, WindowAnalysis } from "./types";
 
+// Raw minutes stop being readable within a day: "8259분 먼저" tells nobody
+// anything. Alerts carry the largest two units instead.
+function humanGap(minutes: number): string {
+  const total = Math.max(0, Math.round(minutes));
+  const days = Math.floor(total / 1_440);
+  const hours = Math.floor((total % 1_440) / 60);
+  const mins = total % 60;
+  if (days > 0) return hours > 0 ? `${days}일 ${hours}시간` : `${days}일`;
+  if (hours > 0) return mins > 0 ? `${hours}시간 ${mins}분` : `${hours}시간`;
+  return `${mins}분`;
+}
+
 export function alertScope(provider: string, account: string, bucket: string): string {
   // Preserve the original single-account keys so an upgrade does not discard
   // existing cooldown/re-arm state and immediately repeat an alert.
@@ -61,12 +73,15 @@ export function planTriggers(
       window.minutesBeforeReset >= config.alerts.predictedEarlyMinutes &&
       window.paceRatio != null &&
       window.paceRatio > 1 &&
-      // 실소진 하한: 최근 실사용이 0이면 습관 예측만으로 경고하지 않는다.
+      // Floor on measured burn: with no recent real usage, a habit-based
+      // projection alone is not grounds for a warning.
       window.recentBurnPerHour != null &&
       window.recentBurnPerHour > 0
     ) {
-      // 현재형 경고는 실측 소진율이 안전 페이스를 넘을 때만. 혼합치(습관 가중)가
-      // 넘는 경우는 전망형 문구로 구분해 "지금 과열"과 "패턴상 전망"을 섞지 않는다.
+      // Present-tense warnings are reserved for a measured burn rate above the
+      // safe pace. When only the blended figure (weighted by habit) exceeds it,
+      // the wording turns forward-looking, so "running hot now" and "on this
+      // pattern" never get conflated.
       const measuredOverPace = window.safePacePerActiveHour != null &&
         window.recentBurnPerHour > window.safePacePerActiveHour;
       decisions.push({
@@ -75,8 +90,8 @@ export function planTriggers(
           ? `${accountTitle} 사용 속도 과열`
           : `${accountTitle} 사용 패턴 전망`,
         message: measuredOverPace
-          ? `${window.label} 안전 여유가 리셋보다 약 ${Math.round(window.minutesBeforeReset)}분 먼저 소진될 전망입니다.`
-          : `${window.label} 이 패턴이면 안전 여유가 리셋보다 약 ${Math.round(window.minutesBeforeReset)}분 먼저 소진될 전망입니다.`,
+          ? `${window.label} 안전 여유가 리셋보다 약 ${humanGap(window.minutesBeforeReset)} 먼저 소진될 전망입니다.`
+          : `${window.label} 이 패턴이면 안전 여유가 리셋보다 약 ${humanGap(window.minutesBeforeReset)} 먼저 소진될 전망입니다.`,
         severity: window.paceRatio >= 1.5 && measuredOverPace ? "critical" : "warning",
       });
     }

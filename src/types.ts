@@ -80,8 +80,9 @@ export interface WindowAnalysis {
   riskLevel: RiskLevel;
 }
 
-// 위험은 "남은 비율"이 아니라 "갱신 전에 마르는가"로 정의한다. 10% 남았어도
-// 10분 뒤 갱신이면 안전하고, 60% 남았어도 사흘 먼저 마를 전망이면 위험하다.
+// Risk is "will this run dry before it resets", not "how much is left". 10%
+// remaining with a reset in ten minutes is safe; 60% remaining that is
+// projected to run out three days early is not.
 export type RiskLevel = "none" | "watch" | "at-risk";
 
 export interface ProviderStatus {
@@ -116,8 +117,9 @@ export interface CollectionStateRow {
   lastError: string | null;
 }
 
-// 사용자가 실제로 취할 수 있는 행동으로 분류한다. 원문 오류 메시지는 detail로
-// 따로 나르고, 자격증명·토큰 값은 어느 필드에도 담지 않는다.
+// Categorised by what the user can actually do about it. The raw provider
+// message travels separately as detail, and no field ever carries a
+// credential or token value.
 export type CollectionErrorCategory =
   | "auth-required"
   | "auth-expired"
@@ -128,8 +130,9 @@ export type CollectionErrorCategory =
   | "provider-error"
   | "no-windows";
 
-// 한 계정에 여러 소스(claude-oauth, claude-statusline)가 붙는다. 소스 단위로
-// 저장해야 한쪽 실패가 다른 쪽의 최근 성공을 덮어쓰지 않는다.
+// One account can have several sources (claude-oauth, claude-statusline).
+// Storing health per source is what stops a failure in one from overwriting
+// a recent success in the other.
 export interface CollectionSourceStateRow {
   provider: Provider;
   account: string;
@@ -158,8 +161,8 @@ export interface AccountCollectionState {
   sources: CollectionSourceState[];
 }
 
-// 스냅샷이 하나도 없어도 설정된 계정은 사라지지 않는다. 네이티브 UI가
-// 정직한 빈 상태·오류 상태를 그릴 수 있어야 하기 때문이다.
+// A configured account never disappears just because it has no snapshots.
+// The native UI needs to be able to render an honest empty or error state.
 export interface AccountState {
   provider: Provider;
   account: string;
@@ -173,8 +176,9 @@ export interface AccountState {
 
 export type HeadlineKind = "normal" | "pace-risk" | "degraded" | "setup";
 
-// 메뉴 막대 제목은 공급자 약어 나열이 아니라 결론 하나다. 어떤 결론을 고를지는
-// 서버에서 정해 테스트 가능하게 두고, 앱은 그리기만 한다.
+// The menu bar title is one conclusion, not a row of provider abbreviations.
+// Which conclusion wins is decided here, where it can be tested; the app only
+// draws it.
 export interface Headline {
   kind: HeadlineKind;
   title: string;

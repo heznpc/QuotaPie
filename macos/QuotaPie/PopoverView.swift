@@ -6,8 +6,9 @@ final class PopoverModel: ObservableObject {
     @Published var lastSuccessAt: Date?
 }
 
-/// 첫 화면이 네 가지를 펼치지 않고 답해야 한다:
-/// 어느 계정인가 · 얼마나 썼고 남았나 · 언제 갱신되나 · 이 속도로 버티는가.
+/// The first thing on screen has to answer four questions without anything
+/// being expanded: which account, how much is used and left, when it resets,
+/// and whether this pace lasts.
 struct PopoverView: View {
     @ObservedObject var model: PopoverModel
     let onRefresh: () -> Void
@@ -47,7 +48,8 @@ struct PopoverView: View {
         if let lastError {
             CalloutView(
                 text: "로컬 서비스에 연결할 수 없습니다",
-                // 아래 숫자들이 언제 것인지 밝힌다. 캐시를 지우는 대신 나이를 붙인다.
+                // Say when the numbers below are from. Rather than discarding
+                // the cache, give it an age.
                 detail: payload == nil
                     ? lastError
                     : "아래는 마지막 정상값입니다 · \(lastSuccessAt.map { DisplayFormat.age(since: $0) } ?? "시각 미확인") · \(lastError)",
@@ -158,14 +160,21 @@ private struct AccountSection: View {
                 Text("\(account.providerTitle) · \(account.accountLabel)")
                     .font(.system(size: 12, weight: .semibold))
                 Spacer()
-                Text(statusTrail)
-                    .font(.caption2)
-                    .foregroundStyle(account.collection.isHealthy ? Color.secondary : Color.orange)
+                if account.collection.isHealthy {
+                    Text(statusTrail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .help(account.collection.actionText)
+                }
             }
             if account.windows.isEmpty || !account.collection.isHealthy {
                 CalloutView(
                     text: account.collection.actionText,
-                    detail: account.collection.recoveryCommand.map { "터미널에서 `\($0)` 실행" }
+                    detail: account.collection.recoveryCommand.map { "\($0) 명령을 터미널에서 실행하십시오." }
                         ?? account.collection.errorDetail,
                     tone: account.collection.isHealthy ? .neutral : .warning
                 )
@@ -191,7 +200,6 @@ private struct AccountSection: View {
     }
 
     private var statusTrail: String {
-        guard account.collection.isHealthy else { return account.collection.actionText }
         let age = account.collection.lastSuccessAtMs
             .map { DisplayFormat.age(since: Date(timeIntervalSince1970: $0 / 1_000)) } ?? "—"
         return "\(account.collection.sourceLabel) · \(age)"
@@ -206,6 +214,8 @@ private struct WindowRow: View {
             HStack(spacing: 8) {
                 Text(window.shortLabel)
                     .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                     .frame(width: 44, alignment: .leading)
                 Text(usedText)
                     .font(.system(size: 11).monospacedDigit())
@@ -265,7 +275,8 @@ private struct WindowRow: View {
     }
 }
 
-/// 채움은 항상 "사용한 비율"이다. 얇은 눈금은 남겨두기로 한 안전 여유선이다.
+/// The fill is always the used percentage. The thin mark is the safety
+/// reserve you decided to leave.
 private struct UsageBar: View {
     let window: QuotaWindow
 

@@ -217,8 +217,9 @@ export class QuotaDatabase {
         PRIMARY KEY(provider, account, source)
       )
     `);
-    // 계정 단위로만 기록하던 이력을 소스 단위로 옮긴다. 어느 소스였는지 알 수
-    // 없으므로 공급자의 대표 소스 이름으로 귀속시킨다.
+    // Move history that was only recorded per account onto per-source rows.
+    // The original source is unknowable, so attribute it to the provider's
+    // primary source name.
     this.db.run(`
       INSERT OR IGNORE INTO collection_source_state(
         provider, account, source, last_attempt_ms, last_success_ms, last_error, last_error_category

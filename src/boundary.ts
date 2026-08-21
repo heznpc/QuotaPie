@@ -3,9 +3,10 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { AccountState, CollectionHealth, CollectionStateRow, Headline } from "./types";
 
-// Modore 등 외부 소비자와의 통합 경계면. 이 파일 하나가 계약의 전부다:
-// 소비자는 quota.json을 읽기만 하고, 파일이 없거나 generatedAt이 오래됐으면
-// 표시 자체를 숨긴다. 필드 제거·의미 변경은 schemaVersion을 올려야 한다.
+// The integration boundary with external consumers such as Modore. This one
+// file is the whole contract: consumers only read quota.json, and hide their
+// display entirely when the file is missing or generatedAt has gone stale.
+// Removing a field or changing its meaning requires bumping schemaVersion.
 export const QUOTA_BOUNDARY_SCHEMA_VERSION = 1;
 
 export interface QuotaBoundaryDocument {
@@ -21,7 +22,8 @@ export interface QuotaBoundaryDocument {
     usedPercent: number | null;
     resetsAt: string | null;
   } | null;
-  // 소비자가 자체 판단 없이 그대로 보여줄 수 있는 결론 한 줄(추가 필드, 하위호환).
+  // One line a consumer can display as-is without making its own judgement
+  // (an added field, backward compatible).
   headline: { kind: Headline["kind"]; title: string; detail: string | null } | null;
   topBurn: Array<{ remote: string; percent: number; lastActiveAt: string }>;
 }
@@ -60,17 +62,19 @@ function remoteFor(cwd: string): string {
       remote = url.replace(/^https?:\/\//, "").replace(/^git@/, "").replace(/:/, "/").replace(/\.git$/, "");
     }
   } catch {
-    // git 없음/디렉터리 삭제 등 — 디렉터리 이름으로 충분하다.
+    // No git, deleted directory, and so on — the directory name is enough.
   }
   remoteCache.set(cwd, remote);
   return remote;
 }
 
-// 전사 파일에서 토큰 수·경로·시각 필드만 사용한다. 대화 본문은 어떤 경로로도
-// 사용·저장·전송하지 않는다. 다만 파일은 줄 단위 JSON이라 해당 필드에 닿으려면
-// 그 줄을 파싱해야 하므로, "본문을 읽지 않는다"가 아니라 "본문을 쓰지 않는다"가
-// 정확한 표현이다. 아래는 그 접촉면을 최소화한다: 관심 필드가 없는 줄은 파싱조차
-// 하지 않고, 파일 전체를 한 번에 메모리에 올리지 않는다.
+// Uses only the token, path, and timestamp fields from transcripts.
+// Conversation content is never used, stored, or transmitted. The files are
+// line-delimited JSON, though, so reaching those fields does mean parsing the
+// lines that hold them — the accurate claim is "the content is not used", not
+// "the content is never touched". This keeps that contact surface small:
+// lines without the fields of interest are not parsed at all, and the file is
+// not materialised in memory in one piece.
 export async function scanBurnLeaderboard(
   nowMs: number,
   lookbackMs = 7 * 24 * 3_600_000,
@@ -97,8 +101,9 @@ export async function scanBurnLeaderboard(
       } catch {
         continue;
       }
-      // 파일 수정 시각은 1차 필터일 뿐이다. 오래 이어온 대화는 오늘 한 줄만
-      // 추가돼도 mtime이 갱신되므로, 실제 집계는 줄마다의 timestamp로 자른다.
+      // The file mtime is only a first pass. One message added today
+      // refreshes the mtime of a months-old transcript, so the actual tally
+      // is cut by each line's own timestamp.
       if (mtimeMs < cutoffMs) continue;
       let cwd: string | null = null;
       let tokens = 0;
@@ -125,8 +130,9 @@ export async function scanBurnLeaderboard(
         const usage = message?.usage;
         if (!usage) continue;
         const stamp = typeof parsed.timestamp === "string" ? Date.parse(parsed.timestamp) : NaN;
-        // 시각을 모르는 줄은 최근 사용으로 셈하지 않는다. 창 밖의 토큰이
-        // 최근 소진으로 흘러들면 순위 자체가 거짓이 된다.
+        // A line with no timestamp is not counted as recent usage. Letting
+        // tokens from outside the window leak in would make the ranking
+        // itself a lie.
         if (!Number.isFinite(stamp) || stamp < cutoffMs) continue;
         for (const key of ["input_tokens", "output_tokens", "cache_creation_input_tokens"]) {
           const value = usage[key];
@@ -168,7 +174,8 @@ export function buildQuotaBoundary(
   accounts: AccountState[],
   headline: Headline | null,
   nowMs: number,
-  // 리더보드는 파일 I/O라 호출자가 계산해 넘긴다. 문서 조립 자체는 순수하게 둔다.
+  // The leaderboard is file I/O, so the caller computes it and passes it in.
+  // Assembling the document itself stays pure.
   topBurn: QuotaBoundaryDocument["topBurn"] = [],
 ): QuotaBoundaryDocument {
   const providers: Record<string, CollectionHealth> = {};
@@ -187,8 +194,9 @@ export function buildQuotaBoundary(
     )
     .sort((left, right) => right.window.bottleneckScore - left.window.bottleneckScore);
   const bottleneck = ranked[0] ?? null;
-  // 표시할 창의 수집이 최근에 성공했을 때만 healthy다. 오래된 숫자를 정상값처럼
-  // 보여주느니 소비자가 표시를 숨기는 편이 낫다.
+  // Healthy only when collection for the displayed window recently
+  // succeeded. Better that a consumer hides the display than shows an old
+  // number as if it were current.
   const healthy = bottleneck != null && bottleneck.account.collection.health === "recent-success";
   return {
     schemaVersion: QUOTA_BOUNDARY_SCHEMA_VERSION,
