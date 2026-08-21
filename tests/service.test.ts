@@ -725,3 +725,47 @@ describe("events reach the alert planner", () => {
     expect(decisions).toHaveLength(ALERTABLE_EVENT_KINDS.length);
   });
 });
+
+describe("a failing provider does not starve the process", () => {
+  test("one analysis pass per tick feeds triggers, the boundary, and the schedule", async () => {
+    const db = new QuotaDatabase(":memory:");
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.collection.codexEnabled = false;
+    config.alerts.enabled = false;
+    const service = new QuotaPieService(config, db);
+    const spy = spyOn(service, "analyses");
+    await service.tick(1_000);
+    // Recomputing it for the schedule, the triggers, and the boundary is what
+    // multiplied a full history scan by three on every pass.
+    expect(spy.mock.calls.length).toBe(1);
+    spy.mockRestore();
+    service.close();
+  });
+
+  test("a tick that reached no provider reports it, so the caller can back off", async () => {
+    const db = new QuotaDatabase(":memory:");
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.collection.codexEnabled = false;
+    config.alerts.enabled = false;
+    const service = new QuotaPieService(config, db);
+    expect((await service.tick(1_000)).collected).toBeFalse();
+
+    // A recent success from any source is what makes a tick count.
+    service.collection.recordAttempt("claude", "default", "claude-oauth", 1_000, null, null);
+    expect((await service.tick(1_000)).collected).toBeTrue();
+
+    // An old success does not keep the loop at full speed forever.
+    const staleMs = config.collection.staleAfterSeconds * 1_000 + 1_000;
+    expect((await service.tick(1_000 + staleMs)).collected).toBeFalse();
+    service.close();
+  });
+
+  test("the backoff grows and is bounded", () => {
+    const steps = QuotaPieService.FAILURE_BACKOFF_MS;
+    expect(steps[0]).toBeGreaterThanOrEqual(5_000);
+    for (let index = 1; index < steps.length; index += 1) {
+      expect(steps[index]!).toBeGreaterThan(steps[index - 1]!);
+    }
+    expect(steps[steps.length - 1]).toBeLessThanOrEqual(600_000);
+  });
+});
