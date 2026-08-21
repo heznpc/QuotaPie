@@ -264,8 +264,8 @@ export function buildQuotaBoundary(
         remainingPercent: headline.remainingPercent,
         exhaustsAt: iso(headline.exhaustsAtMs),
         errorCategory: headline.errorCategory,
-        displayText: headline.title,
-        displayDetail: headline.detail,
+        displayText: headline.displayText,
+        displayDetail: headline.displayDetail,
       }
       : null,
     topBurn,

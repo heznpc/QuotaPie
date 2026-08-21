@@ -33,21 +33,49 @@ struct Headline: Decodable {
     /// The backend's own rendering, kept as a fallback for anything this app
     /// has no localisation for. Prefer building the sentence from the fields
     /// above so the app follows the viewer's language, not the daemon's.
-    let title: String
-    let detail: String?
+    let displayText: String
+    let displayDetail: String?
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try values.decode(String.self, forKey: .kind)
+        provider = try values.decodeIfPresent(String.self, forKey: .provider)
+        account = try values.decodeIfPresent(String.self, forKey: .account)
+        accountLabel = try values.decodeIfPresent(String.self, forKey: .accountLabel)
+        bucket = try values.decodeIfPresent(String.self, forKey: .bucket)
+        windowKind = try values.decodeIfPresent(String.self, forKey: .windowKind)
+        windowLabel = try values.decodeIfPresent(String.self, forKey: .windowLabel)
+        remainingPercent = try values.decodeIfPresent(Double.self, forKey: .remainingPercent)
+        exhaustsAtMs = try values.decodeIfPresent(Double.self, forKey: .exhaustsAtMs)
+        errorCategory = try values.decodeIfPresent(String.self, forKey: .errorCategory)
+        // The fallback to the old names lives only here, at the decoding
+        // boundary, so it cannot spread back into the app: an older daemon
+        // sends title/detail, a current one sends displayText/displayDetail.
+        displayText = try values.decodeIfPresent(String.self, forKey: .displayText)
+            ?? values.decodeIfPresent(String.self, forKey: .title)
+            ?? ""
+        displayDetail = try values.decodeIfPresent(String.self, forKey: .displayDetail)
+            ?? values.decodeIfPresent(String.self, forKey: .detail)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind, provider, account, accountLabel, bucket, windowKind, windowLabel
+        case remainingPercent, exhaustsAtMs, errorCategory
+        case displayText, displayDetail, title, detail
+    }
 
     /// The conclusion, said in the viewer's language.
     var localizedTitle: String {
         switch kind {
         case "pace-risk":
-            guard let windowKind, let name = Self.windowName(windowKind) else { return title }
+            guard let windowKind, let name = Self.windowName(windowKind) else { return displayText }
             return Strings.t("headline.atRisk", name)
         case "degraded": return Strings.t("headline.degraded")
         case "setup": return Strings.t("headline.setup")
         case "normal":
-            guard let remainingPercent else { return title }
+            guard let remainingPercent else { return displayText }
             return Strings.t("window.remaining", String(Int(remainingPercent.rounded())))
-        default: return title
+        default: return displayText
         }
     }
 
@@ -55,7 +83,7 @@ struct Headline: Decodable {
     /// the backend's `detail` here is what left a Korean title sitting above an
     /// English sentence.
     var localizedDetail: String? {
-        guard let provider else { return detail }
+        guard let provider else { return displayDetail }
         let providerName = provider == "codex" ? "Codex" : provider == "claude" ? "Claude" : provider
         var parts = [providerName]
         if let accountLabel { parts.append(accountLabel) }
@@ -68,7 +96,7 @@ struct Headline: Decodable {
         case "degraded", "setup":
             parts.append(Strings.t("collection.\(errorCategory ?? "never-attempted")"))
         default:
-            return detail
+            return displayDetail
         }
         return parts.joined(separator: " · ")
     }
@@ -184,7 +212,24 @@ struct QuotaEvent: Decodable {
     let kind: String
     let severity: String
     let occurredAtMs: Double
-    let summary: String
+    let displayText: String
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try values.decode(String.self, forKey: .provider)
+        account = try values.decode(String.self, forKey: .account)
+        kind = try values.decode(String.self, forKey: .kind)
+        severity = try values.decode(String.self, forKey: .severity)
+        occurredAtMs = try values.decode(Double.self, forKey: .occurredAtMs)
+        // Old-daemon fallback, decoding boundary only.
+        displayText = try values.decodeIfPresent(String.self, forKey: .displayText)
+            ?? values.decodeIfPresent(String.self, forKey: .summary)
+            ?? ""
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case provider, account, kind, severity, occurredAtMs, displayText, summary
+    }
 }
 
 enum DisplayFormat {

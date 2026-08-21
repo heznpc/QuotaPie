@@ -715,7 +715,7 @@ describe("events reach the alert planner", () => {
         severity: "info",
         occurredAtMs,
         confidence: "high",
-        summary: `${kind} occurred`,
+        displayText: `${kind} occurred`,
         details: {},
       });
     }

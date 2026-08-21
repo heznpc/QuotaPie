@@ -361,8 +361,8 @@ export function buildHeadline(
     remainingPercent: null,
     exhaustsAtMs: null,
     errorCategory: null,
-    title: "",
-    detail: null,
+    displayText: "",
+    displayDetail: null,
   });
 
   const riskiest = [...freshWindows]
@@ -382,8 +382,8 @@ export function buildHeadline(
       windowLabel: riskiest.label,
       remainingPercent: riskiest.remainingPercent,
       exhaustsAtMs: riskiest.exhaustsAtMs,
-      title: t("headline.pace-risk", { windowKind, label: riskiest.label }, locale),
-      detail: t("headline.pace-risk.detail", {
+      displayText: t("headline.pace-risk", { windowKind, label: riskiest.label }, locale),
+      displayDetail: t("headline.pace-risk.detail", {
         provider: providerName(riskiest.provider),
         account: account?.accountLabel ?? riskiest.account,
         label: riskiest.label,
@@ -405,8 +405,8 @@ export function buildHeadline(
       account: degraded.account,
       accountLabel: degraded.accountLabel,
       errorCategory: degraded.collection.errorCategory,
-      title: t("headline.degraded", {}, locale),
-      detail: `${providerName(degraded.provider)} · ${degraded.accountLabel} · ${
+      displayText: t("headline.degraded", {}, locale),
+      displayDetail: `${providerName(degraded.provider)} · ${degraded.accountLabel} · ${
         collectionErrorText(degraded.collection, locale)
       }`,
     };
@@ -423,8 +423,8 @@ export function buildHeadline(
       account: target?.account ?? null,
       accountLabel: target?.accountLabel ?? null,
       errorCategory: target?.collection.errorCategory ?? null,
-      title: t("headline.setup", {}, locale),
-      detail: target
+      displayText: t("headline.setup", {}, locale),
+      displayDetail: target
         ? `${providerName(target.provider)} · ${target.accountLabel} · ${
           collectionErrorText(target.collection, locale)
         }`
@@ -448,10 +448,10 @@ export function buildHeadline(
     windowLabel: leader.label,
     remainingPercent: leader.remainingPercent,
     exhaustsAtMs: leader.exhaustsAtMs,
-    title: leader.remainingPercent != null
+    displayText: leader.remainingPercent != null
       ? t("headline.normal", { percent: leader.remainingPercent }, locale)
       : t("headline.normal.unknown", {}, locale),
-    detail: t("headline.detail", {
+    displayDetail: t("headline.detail", {
       provider: providerName(leader.provider),
       account: account?.accountLabel ?? leader.account,
       label: leader.label,

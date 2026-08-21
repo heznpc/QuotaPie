@@ -1,4 +1,19 @@
 import { buildHeadline } from "./analytics";
+import type { Headline, QuotaEvent } from "./types";
+
+// Deprecated compatibility aliases for the one consumer that can be a version
+// behind this daemon: the menu bar app, during the seconds between the backend
+// restarting and the app restarting. Every other consumer is either served by
+// this process (the dashboard) or reads quota.json. Remove the aliases the next
+// time the Swift payload shape changes for its own reasons — they are a bridge,
+// not a second name.
+function headlineJson(headline: Headline) {
+  return { ...headline, title: headline.displayText, detail: headline.displayDetail };
+}
+
+function eventJson(event: QuotaEvent) {
+  return { ...event, summary: event.displayText };
+}
 import type { AppConfig } from "./config";
 import type { QuotaPieService } from "./service";
 
@@ -36,12 +51,12 @@ export function startDashboard(service: QuotaPieService, config: AppConfig) {
         const accounts = service.accountStates(nowMs);
         return json({
           nowMs,
-          headline: buildHeadline(accounts, nowMs, service.locale),
+          headline: headlineJson(buildHeadline(accounts, nowMs, service.locale)),
           accounts,
           // Kept for existing consumers. It only contains accounts that have
           // windows, so new consumers should read accounts instead.
           statuses: service.statuses(nowMs),
-          events: service.recentEvents(30),
+          events: service.recentEvents(30).map(eventJson),
         });
       }
       if (url.pathname === "/api/events") {
@@ -50,7 +65,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig) {
         const limit = Number.isFinite(requested)
           ? Math.min(200, Math.max(1, Math.trunc(requested)))
           : 50;
-        return json({ events: service.recentEvents(limit) });
+        return json({ events: service.recentEvents(limit).map(eventJson) });
       }
       if (url.pathname === "/health") {
         // Health is judged by the state of collection itself, not by window

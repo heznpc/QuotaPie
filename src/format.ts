@@ -70,7 +70,7 @@ export function formatEvents(events: QuotaEvent[]): string {
   return events
     .map((event) => {
       const at = new Date(event.occurredAtMs).toLocaleString();
-      return `${at} [${event.severity}] ${event.provider}/${event.account}/${event.bucket} ${event.kind}\n  ${event.summary}`;
+      return `${at} [${event.severity}] ${event.provider}/${event.account}/${event.bucket} ${event.kind}\n  ${event.displayText}`;
     })
     .join("\n");
 }
