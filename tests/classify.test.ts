@@ -57,7 +57,8 @@ describe("classifyDelta", () => {
     const next = observation({ usedPercent: 40, observedAtMs: HOUR, resetsAtMs: 5 * HOUR });
     const events = classifyDelta(previous, next, DEFAULT_CONFIG);
     expect(events[0]?.kind).toBe("allowance_relief");
-    expect(events[0]?.summary).toContain("한도 증액");
+    expect(events[0]?.kind).toBe("allowance_relief");
+    expect(events[0]?.summary).toContain("larger allowance");
   });
 
   test("separates a clock rebase from a recharge", () => {

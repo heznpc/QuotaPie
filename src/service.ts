@@ -5,6 +5,8 @@ import { codexUsesFileCredentials, resolveUserPath } from "./config";
 import { QuotaDatabase } from "./db";
 import { CodexAppServerClient } from "./providers/codex-appserver";
 import { ClaudeUsageError, fetchClaudeUsage, mapClaudeUsage, readClaudeCredentials } from "./providers/claude-oauth";
+import { resolveLocale, t } from "./i18n";
+import type { Locale } from "./i18n";
 import { nextWakeDelayMs } from "./scheduler";
 import { alertScope, deliverTrigger, planTriggers } from "./triggers";
 import type {
@@ -52,11 +54,14 @@ export class QuotaPieService {
   // polls more loosely than Codex does.
   static readonly CLAUDE_OAUTH_MIN_INTERVAL_MS = 5 * 60_000;
 
+  readonly locale: Locale;
+
   constructor(
     readonly config: AppConfig,
     database?: QuotaDatabase,
   ) {
     this.db = database ?? new QuotaDatabase();
+    this.locale = resolveLocale(config.profile.locale);
   }
 
   ingest(observations: QuotaObservation[]): QuotaEvent[] {
@@ -116,8 +121,17 @@ export class QuotaPieService {
           severity: "info",
           occurredAtMs: next.observedAtMs,
           confidence: "high",
-          summary: `${limitId} ${lane} 한도 창 전환: ${previous.label} → ${next.label}`,
+          summary: t("event.window_changed", {
+            limitId,
+            lane,
+            fromLabel: previous.label,
+            toLabel: next.label,
+          }, this.locale),
           details: {
+            limitId,
+            lane,
+            fromLabel: previous.label,
+            toLabel: next.label,
             previousBucket: previous.bucket,
             nextBucket: next.bucket,
             previousWindowSeconds: previous.windowSeconds,
@@ -135,8 +149,8 @@ export class QuotaPieService {
           severity: "info",
           occurredAtMs: observedAtMs,
           confidence: "high",
-          summary: `${previous.label} 항목이 공급자 전체 응답에서 사라져 추적을 종료했습니다.`,
-          details: { lastObservedAtMs: previous.observedAtMs, fullReadsMissed: 2 },
+          summary: t("event.bucket_retired", { label: previous.label }, this.locale),
+          details: { label: previous.label, lastObservedAtMs: previous.observedAtMs, fullReadsMissed: 2 },
         };
         if (this.db.insertEvent(value)) emitted.push(value);
       }
@@ -281,8 +295,8 @@ export class QuotaPieService {
               severity: "info",
               occurredAtMs: observedAtMs,
               confidence: "high",
-              summary: `${previous.label} 항목이 공급자 전체 응답에서 사라져 추적을 종료했습니다.`,
-              details: { lastObservedAtMs: previous.observedAtMs, fullReadsMissed: 2 },
+              summary: t("event.bucket_retired", { label: previous.label }, this.locale),
+              details: { label: previous.label, lastObservedAtMs: previous.observedAtMs, fullReadsMissed: 2 },
             };
             if (this.db.insertEvent(value)) emitted.push(value);
           }
@@ -443,7 +457,7 @@ export class QuotaPieService {
   }
 
   headline(nowMs = Date.now()): Headline {
-    return buildHeadline(this.accountStates(nowMs), nowMs);
+    return buildHeadline(this.accountStates(nowMs), nowMs, this.locale);
   }
 
   private accountLabel(provider: Provider, account: string): string {
@@ -570,7 +584,7 @@ export class QuotaPieService {
       const accounts = this.accountStates(nowMs);
       const document = buildQuotaBoundary(
         accounts,
-        buildHeadline(accounts, nowMs),
+        buildHeadline(accounts, nowMs, this.locale),
         nowMs,
         await cachedLeaderboard(nowMs),
       );

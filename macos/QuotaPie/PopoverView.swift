@@ -47,12 +47,15 @@ struct PopoverView: View {
         let lastSuccessAt = model.lastSuccessAt
         if let lastError {
             CalloutView(
-                text: "로컬 서비스에 연결할 수 없습니다",
+                text: Strings.t("popover.disconnected"),
                 // Say when the numbers below are from. Rather than discarding
                 // the cache, give it an age.
                 detail: payload == nil
                     ? lastError
-                    : "아래는 마지막 정상값입니다 · \(lastSuccessAt.map { DisplayFormat.age(since: $0) } ?? "시각 미확인") · \(lastError)",
+                    : Strings.t(
+                        "popover.cachedNotice",
+                        lastSuccessAt.map { DisplayFormat.age(since: $0) } ?? "—"
+                    ) + " · " + lastError,
                 tone: .warning
             )
         }
@@ -66,8 +69,8 @@ struct PopoverView: View {
             }
         } else if lastError == nil {
             CalloutView(
-                text: "추적할 계정이 없습니다",
-                detail: "설정 파일에서 Codex 또는 Claude 계정을 활성화하십시오.",
+                text: Strings.t("popover.noAccounts"),
+                detail: Strings.t("popover.noAccountsDetail"),
                 tone: .neutral
             )
         }
@@ -77,7 +80,7 @@ struct PopoverView: View {
         }
     }
 
-    /// The status item already switches to 한도 확인 지연 when the transport is
+    /// The status item already switches to the degraded title when the transport is
     /// down. The header has to agree: leaving the cached conclusion as the
     /// largest text on screen makes a stale reading look like the current one.
     private var isDisconnected: Bool { model.lastError != nil }
@@ -102,16 +105,16 @@ struct PopoverView: View {
     }
 
     private var headlineTitle: String {
-        if isDisconnected { return model.payload == nil ? "연결 끊김" : "한도 확인 지연" }
-        return model.payload?.headline?.title ?? "확인 중"
+        if isDisconnected { return model.payload == nil ? Strings.t("headline.disconnected") : Strings.t("headline.degraded") }
+        return model.payload?.headline?.localizedTitle ?? Strings.t("headline.checking")
     }
 
     private var headlineDetail: String? {
         guard !isDisconnected else {
-            guard let cached = model.payload?.headline?.title else { return nil }
-            return "마지막 정상값 · \(cached)"
+            guard let cached = model.payload?.headline?.localizedTitle else { return nil }
+            return Strings.t("headline.lastGood") + " · " + cached
         }
-        return model.payload?.headline?.detail
+        return model.payload?.headline?.localizedDetail
     }
 
     private var headlineTone: Color {
@@ -126,42 +129,42 @@ struct PopoverView: View {
     private var footer: some View {
         HStack(spacing: 4) {
             Button(action: onRefresh) {
-                Label("새로고침", systemImage: "arrow.clockwise")
+                Label(Strings.t("action.refresh"), systemImage: "arrow.clockwise")
                     .labelStyle(.iconOnly)
             }
             .keyboardShortcut("r", modifiers: .command)
-            .help("새로고침 (⌘R)")
+            .help(Strings.t("action.refreshHelp"))
 
             Button(action: onCopy) {
-                Label("상태 복사", systemImage: "doc.on.doc")
+                Label(Strings.t("action.copy"), systemImage: "doc.on.doc")
                     .labelStyle(.iconOnly)
             }
             .keyboardShortcut("c", modifiers: .command)
-            .help("상태 복사 (⌘C)")
+            .help(Strings.t("action.copyHelp"))
 
             Button(action: onOpenDashboard) {
-                Label("웹 화면 열기", systemImage: "safari")
+                Label(Strings.t("action.openDashboard"), systemImage: "safari")
                     .labelStyle(.iconOnly)
             }
-            .help("웹 화면 열기")
+            .help(Strings.t("action.openDashboard"))
 
             Spacer()
 
             Menu {
                 Button(action: onOpenConfig) {
-                    Label("설정 열기", systemImage: "gearshape")
+                    Label(Strings.t("action.openSettings"), systemImage: "gearshape")
                 }
                 Divider()
                 Button(role: .destructive, action: onQuit) {
-                    Label("QuotaPie 종료", systemImage: "power")
+                    Label(Strings.t("action.quit"), systemImage: "power")
                 }
                 .keyboardShortcut("q", modifiers: .command)
             } label: {
-                Label("더 보기", systemImage: "ellipsis.circle")
+                Label(Strings.t("action.more"), systemImage: "ellipsis.circle")
                     .labelStyle(.iconOnly)
             }
             .menuStyle(.borderlessButton)
-            .help("설정 및 종료")
+            .help(Strings.t("action.moreHelp"))
         }
         .buttonStyle(.borderless)
         .controlSize(.small)
@@ -193,21 +196,21 @@ private struct AccountSection: View {
             if account.windows.isEmpty || !account.collection.isHealthy {
                 CalloutView(
                     text: account.collection.actionText,
-                    detail: account.collection.recoveryCommand.map { "\($0) 명령을 터미널에서 실행하십시오." }
+                    detail: account.collection.recoveryCommand.map { Strings.t("popover.runCommand", $0) }
                         ?? account.collection.errorDetail,
                     tone: account.collection.isHealthy ? .neutral : .warning
                 )
                 HStack(spacing: 8) {
                     if let command = account.collection.recoveryCommand {
                         Button { onCopyCommand(command) } label: {
-                            Label("복구 명령 복사", systemImage: "doc.on.doc")
+                            Label(Strings.t("action.copyCommand"), systemImage: "doc.on.doc")
                         }
-                        .help("터미널에서 실행할 복구 명령 복사")
+                        .help(Strings.t("action.copyCommandHelp"))
                     }
                     Button(action: onOpenConfig) {
-                        Label("설정 열기", systemImage: "gearshape")
+                        Label(Strings.t("action.openSettings"), systemImage: "gearshape")
                     }
-                    .help("QuotaPie 설정 파일 열기")
+                    .help(Strings.t("action.openSettingsHelp"))
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -267,18 +270,18 @@ private struct WindowRow: View {
     }
 
     private var usedText: String {
-        window.usedPercent.map { "\(Int($0.rounded()))% 사용" } ?? "사용량 미확인"
+        window.usedPercent.map { Strings.t("window.used", String(Int($0.rounded()))) } ?? Strings.t("window.usageUnknown")
     }
 
     private var remainingText: String {
-        window.remainingPercent.map { "\(Int($0.rounded()))% 남음" } ?? "—"
+        window.remainingPercent.map { Strings.t("window.remaining", String(Int($0.rounded()))) } ?? "—"
     }
 
     private var freshnessText: String {
         switch window.freshness {
-        case "stale": return "오래된 값"
-        case "reset_due": return "갱신 확인 중"
-        default: return "확인 필요"
+        case "stale": return Strings.t("window.stale")
+        case "reset_due": return Strings.t("window.resetDue")
+        default: return Strings.t("window.unknown")
         }
     }
 
@@ -334,7 +337,7 @@ private struct RecentChanges: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text("최근 변화").font(.caption2).foregroundStyle(.secondary)
+            Text(Strings.t("popover.recentChanges")).font(.caption2).foregroundStyle(.secondary)
             ForEach(events.indices, id: \.self) { index in
                 let event = events[index]
                 Text("\(event.summary) · \(DisplayFormat.age(since: Date(timeIntervalSince1970: event.occurredAtMs / 1_000)))")

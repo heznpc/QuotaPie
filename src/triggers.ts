@@ -1,22 +1,11 @@
 import type { AppConfig } from "./config";
+import { humanGap, resolveLocale, t } from "./i18n";
 import type {
   QuotaEvent,
   TriggerDecision,
   WindowAnalysis,
 } from "./types";
 import { isAlertableEventKind } from "./types";
-
-// Raw minutes stop being readable within a day: "8259분 먼저" tells nobody
-// anything. Alerts carry the largest two units instead.
-function humanGap(minutes: number): string {
-  const total = Math.max(0, Math.round(minutes));
-  const days = Math.floor(total / 1_440);
-  const hours = Math.floor((total % 1_440) / 60);
-  const mins = total % 60;
-  if (days > 0) return hours > 0 ? `${days}일 ${hours}시간` : `${days}일`;
-  if (hours > 0) return mins > 0 ? `${hours}시간 ${mins}분` : `${hours}시간`;
-  return `${mins}분`;
-}
 
 export function alertScope(provider: string, account: string, bucket: string): string {
   // Preserve the original single-account keys so an upgrade does not discard
@@ -34,10 +23,12 @@ export function planTriggers(
   nowMs = Date.now(),
 ): TriggerDecision[] {
   const decisions: TriggerDecision[] = [];
+  const locale = resolveLocale(config.profile.locale);
+  const say = (key: string, params: Parameters<typeof t>[1] = {}) => t(key, params, locale);
 
   for (const window of windows) {
     const windowKey = alertScope(window.provider, window.account, window.bucket);
-    const accountTitle = `${window.provider}/${window.account}`;
+    const who = { provider: window.provider, account: window.account, label: window.label };
     const staleNeedsAlert = config.alerts.staleProviders.includes(window.provider) && (
       window.freshness === "stale" ||
       window.freshness === "unknown" ||
@@ -48,10 +39,8 @@ export function planTriggers(
     if (staleNeedsAlert) {
       decisions.push({
         key: `${windowKey}:stale`,
-        title: `${accountTitle} 한도 데이터 확인 필요`,
-        message: window.freshness === "reset_due"
-          ? `${window.label} 리셋 예정 시각은 지났지만 공급자가 아직 갱신을 확인하지 않았습니다.`
-          : `${window.label} 원본 데이터가 ${window.freshness === "stale" ? "오래됐습니다" : "없습니다"}.`,
+        title: say("alert.stale.title", who),
+        message: say("alert.stale.message", who),
         severity: "warning",
       });
       continue;
@@ -65,8 +54,12 @@ export function planTriggers(
       if (crossed != null) {
         decisions.push({
           key: `${windowKey}:remaining:${crossed}`,
-          title: `${accountTitle} ${crossed}% 이하`,
-          message: `${window.label} 잔여 ${window.remainingPercent.toFixed(1)}% · 안전 여유 ${window.reservePercent}%`,
+          title: say("alert.remaining.title", who),
+          message: say("alert.remaining.message", {
+            ...who,
+            percent: Number(window.remainingPercent.toFixed(1)),
+            threshold: crossed,
+          }),
           severity: crossed <= 5 ? "critical" : "warning",
           rearmWhenRemainingAbove: crossed + 5,
         });
@@ -91,12 +84,11 @@ export function planTriggers(
         window.recentBurnPerHour > window.safePacePerActiveHour;
       decisions.push({
         key: `${windowKey}:pace`,
-        title: measuredOverPace
-          ? `${accountTitle} 사용 속도 과열`
-          : `${accountTitle} 사용 패턴 전망`,
-        message: measuredOverPace
-          ? `${window.label} 안전 여유가 리셋보다 약 ${humanGap(window.minutesBeforeReset)} 먼저 소진될 전망입니다.`
-          : `${window.label} 이 패턴이면 안전 여유가 리셋보다 약 ${humanGap(window.minutesBeforeReset)} 먼저 소진될 전망입니다.`,
+        title: say(measuredOverPace ? "alert.pace.title.measured" : "alert.pace.title.projected", who),
+        message: say(measuredOverPace ? "alert.pace.message.measured" : "alert.pace.message.projected", {
+          ...who,
+          detail: humanGap(window.minutesBeforeReset, locale),
+        }),
         severity: window.paceRatio >= 1.5 && measuredOverPace ? "critical" : "warning",
       });
     }
@@ -111,11 +103,18 @@ export function planTriggers(
     decisions.push({
       key,
       eventId: event.id,
-      title: event.kind === "paid_usage" || event.kind === "credit_topup"
-        ? `${event.provider}/${event.account} 결제성 사용 변화`
-        : event.kind === "window_changed"
-          ? `${event.provider}/${event.account} 한도 창 전환`
-          : `${event.provider}/${event.account} 타이머 재동기화`,
+      title: t(
+        event.kind === "paid_usage" || event.kind === "credit_topup"
+          ? "alert.event.title.payment"
+          : event.kind === "window_changed"
+            ? "alert.event.title.window"
+            : "alert.event.title.resync",
+        { provider: event.provider, account: event.account },
+        locale,
+      ),
+      // The stored summary was rendered in this process's locale when the event
+      // was recorded, so it needs no re-rendering here. A consumer that wants a
+      // different language has the kind and details to render from instead.
       message: event.summary,
       severity: event.severity,
     });

@@ -7,7 +7,11 @@ import type { AccountState, CollectionHealth, CollectionStateRow, Headline } fro
 // file is the whole contract: consumers only read quota.json, and hide their
 // display entirely when the file is missing or generatedAt has gone stale.
 // Removing a field or changing its meaning requires bumping schemaVersion.
-export const QUOTA_BOUNDARY_SCHEMA_VERSION = 1;
+//
+// v2 replaced headline.title/detail with semantic fields plus displayText, so
+// a consumer can render in its own language instead of inheriting this
+// process's locale.
+export const QUOTA_BOUNDARY_SCHEMA_VERSION = 2;
 
 export interface QuotaBoundaryDocument {
   schemaVersion: number;
@@ -22,9 +26,20 @@ export interface QuotaBoundaryDocument {
     usedPercent: number | null;
     resetsAt: string | null;
   } | null;
-  // One line a consumer can display as-is without making its own judgement
-  // (an added field, backward compatible).
-  headline: { kind: Headline["kind"]; title: string; detail: string | null } | null;
+  // The semantic fields are the contract; displayText is a convenience so a
+  // consumer that does not localise anything still has a sentence. A consumer
+  // that does should render from kind, windowKind, and the numbers instead.
+  headline: {
+    kind: Headline["kind"];
+    provider: string | null;
+    account: string | null;
+    windowKind: Headline["windowKind"];
+    remainingPercent: number | null;
+    exhaustsAt: string | null;
+    errorCategory: Headline["errorCategory"];
+    displayText: string;
+    displayDetail: string | null;
+  } | null;
   topBurn: Array<{ remote: string; percent: number; lastActiveAt: string }>;
 }
 
@@ -240,7 +255,19 @@ export function buildQuotaBoundary(
         resetsAt: iso(bottleneck.window.resetsAtMs),
       }
       : null,
-    headline: headline ? { kind: headline.kind, title: headline.title, detail: headline.detail } : null,
+    headline: headline
+      ? {
+        kind: headline.kind,
+        provider: headline.provider,
+        account: headline.account,
+        windowKind: headline.windowKind,
+        remainingPercent: headline.remainingPercent,
+        exhaustsAt: iso(headline.exhaustsAtMs),
+        errorCategory: headline.errorCategory,
+        displayText: headline.title,
+        displayDetail: headline.detail,
+      }
+      : null,
     topBurn,
   };
 }

@@ -15,6 +15,7 @@ import { compactClaudeLine, formatEvents, formatStatuses } from "./format";
 import { parseClaudeStatusLine } from "./providers/claude-statusline";
 import { startDashboard } from "./server";
 import { collectionErrorText } from "./analytics";
+import { resolveLocale, t } from "./i18n";
 import { CLAUDE_OAUTH_SOURCE, CLAUDE_STATUSLINE_SOURCE, QuotaPieService } from "./service";
 import { deliverTrigger } from "./triggers";
 
@@ -406,8 +407,8 @@ async function main(): Promise<number> {
         const delivery = await deliverTrigger(
           {
             key: "manual:test",
-            title: "QuotaPie 테스트",
-            message: "알림 채널이 정상적으로 연결됐습니다.",
+            title: t("alert.test.title", {}, resolveLocale(config.profile.locale)),
+            message: t("alert.test.message", {}, resolveLocale(config.profile.locale)),
             severity: "info",
           },
           config,
