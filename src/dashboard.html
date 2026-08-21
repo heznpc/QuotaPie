@@ -307,7 +307,7 @@
               }).join("")
             : `<div class="empty">${escapeHtml(t("empty"))}</div>`;
           document.getElementById("events").innerHTML = data.events.length
-            ? data.events.slice(0, 15).map((event) => `<div class="event"><span>${new Date(event.occurredAtMs).toLocaleString()}</span><span class="kind">${escapeHtml(eventName[event.kind] ?? event.kind)}</span><span>${escapeHtml(`${event.account} · ${event.summary}${eventDetails(event)}`)} · ${t("detail.confidence")} ${escapeHtml(event.confidence)}</span></div>`).join("")
+            ? data.events.slice(0, 15).map((event) => `<div class="event"><span>${new Date(event.occurredAtMs).toLocaleString()}</span><span class="kind">${escapeHtml(eventName[event.kind] ?? event.kind)}</span><span>${escapeHtml(`${event.account} · ${event.displayText}${eventDetails(event)}`)} · ${t("detail.confidence")} ${escapeHtml(event.confidence)}</span></div>`).join("")
             : t("noEvents");
         } catch (error) {
           document.getElementById("updated").textContent = t("failed");

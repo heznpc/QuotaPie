@@ -324,8 +324,8 @@ describe("the boundary carries meaning, not only a sentence", () => {
       remainingPercent: 89,
       exhaustsAtMs: NOW + 86_400_000,
       errorCategory: null,
-      title: "⚠ weekly at risk",
-      detail: "Codex · Main · Codex weekly",
+      displayText: "⚠ weekly at risk",
+      displayDetail: "Codex · Main · Codex weekly",
     }, NOW, []);
     const headline = document.headline!;
     // A consumer that localises reads these.

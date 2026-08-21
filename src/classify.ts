@@ -27,7 +27,7 @@ function event(
     severity,
     occurredAtMs: next.observedAtMs,
     confidence,
-    summary: t(`event.${kind}`, params, resolveLocale(config.profile.locale)),
+    displayText: t(`event.${kind}`, params, resolveLocale(config.profile.locale)),
     details: { label: next.label, ...details },
   };
 }

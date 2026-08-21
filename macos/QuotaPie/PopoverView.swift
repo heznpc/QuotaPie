@@ -340,7 +340,7 @@ private struct RecentChanges: View {
             Text(Strings.t("popover.recentChanges")).font(.caption2).foregroundStyle(.secondary)
             ForEach(events.indices, id: \.self) { index in
                 let event = events[index]
-                Text("\(event.summary) · \(DisplayFormat.age(since: Date(timeIntervalSince1970: event.occurredAtMs / 1_000)))")
+                Text("\(event.displayText) · \(DisplayFormat.age(since: Date(timeIntervalSince1970: event.occurredAtMs / 1_000)))")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
