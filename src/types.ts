@@ -66,6 +66,10 @@ export interface QuotaEvent {
   severity: Severity;
   occurredAtMs: number;
   confidence: "low" | "medium" | "high";
+  /// A compatibility rendering, not canonical data. It was written in whatever
+  /// locale the daemon had when the event was recorded, so a surface that
+  /// localises must render from kind and details instead of reading this back
+  /// as if it were meaning.
   summary: string;
   details: Record<string, string | number | boolean | null>;
 }
@@ -216,6 +220,9 @@ export interface Headline {
   remainingPercent: number | null;
   exhaustsAtMs: number | null;
   errorCategory: CollectionErrorCategory | null;
+  /// Compatibility renderings in the daemon's locale, for consumers that do not
+  /// localise. Anything that does should build its sentence from the fields
+  /// above; reading these back as meaning is how the two drift apart again.
   title: string;
   detail: string | null;
 }

@@ -10,6 +10,8 @@ import { QuotaDatabase } from "../src/db";
 import { nextWakeDelayMs } from "../src/scheduler";
 import { QuotaPieService } from "../src/service";
 import type { QuotaObservation, WindowAnalysis } from "../src/types";
+import { AlertStore } from "../src/storage/alert-store";
+import { CollectionStore } from "../src/storage/collection-store";
 
 function observation(at: number, used: number): QuotaObservation {
   return {
@@ -318,7 +320,7 @@ describe("state persistence and scheduler", () => {
     `);
     legacy.close();
     const migrated = new QuotaDatabase(path);
-    expect(migrated.pendingAlertEvents()).toEqual([]);
+    expect(new AlertStore(migrated.storage).pendingEvents()).toEqual([]);
     migrated.close();
     rmSync(directory, { recursive: true, force: true });
   });
@@ -346,7 +348,7 @@ describe("account state contract", () => {
   test("enabled accounts with no collection history still appear as never-attempted", () => {
     const db = new QuotaDatabase(":memory:");
     const service = new QuotaPieService(structuredClone(DEFAULT_CONFIG), db);
-    db.recordCollectionAttempt("codex", "default", "codex-appserver", 1_000, null, null);
+    new CollectionStore(db.storage).recordAttempt("codex", "default", "codex-appserver", 1_000, null, null);
     const states = service.accountStates(2_000);
     const claude = states.find((state) => state.provider === "claude");
     expect(claude).toBeDefined();
@@ -359,13 +361,13 @@ describe("account state contract", () => {
 
   test("failed poll then success is recorded so health recovers", () => {
     const db = new QuotaDatabase(":memory:");
-    db.recordCollectionAttempt("codex", "default", "codex-appserver", 1_000, "boom", "provider-error");
-    let row = db.collectionSourceStates()[0]!;
+    new CollectionStore(db.storage).recordAttempt("codex", "default", "codex-appserver", 1_000, "boom", "provider-error");
+    let row = new CollectionStore(db.storage).sourceStates()[0]!;
     expect(row.lastSuccessMs).toBeNull();
     expect(row.lastError).toBe("boom");
     expect(row.lastErrorCategory).toBe("provider-error");
-    db.recordCollectionAttempt("codex", "default", "codex-appserver", 2_000, null, null);
-    row = db.collectionSourceStates()[0]!;
+    new CollectionStore(db.storage).recordAttempt("codex", "default", "codex-appserver", 2_000, null, null);
+    row = new CollectionStore(db.storage).sourceStates()[0]!;
     expect(row.lastSuccessMs).toBe(2_000);
     expect(row.lastError).toBeNull();
   });
@@ -375,8 +377,8 @@ describe("account state contract", () => {
     const config = structuredClone(DEFAULT_CONFIG);
     const service = new QuotaPieService(config, db);
     const nowMs = 10_000_000;
-    db.recordCollectionAttempt("claude", "default", "claude-statusline", nowMs - 1_000, null, null);
-    db.recordCollectionAttempt(
+    new CollectionStore(db.storage).recordAttempt("claude", "default", "claude-statusline", nowMs - 1_000, null, null);
+    new CollectionStore(db.storage).recordAttempt(
       "claude", "default", "claude-oauth", nowMs, "no Claude login found", "auth-required",
     );
     const claude = service.accountStates(nowMs).find((state) => state.provider === "claude")!;
@@ -397,7 +399,7 @@ describe("account state contract", () => {
     const config = structuredClone(DEFAULT_CONFIG);
     const service = new QuotaPieService(config, db);
     const nowMs = 20_000_000;
-    db.recordCollectionAttempt("claude", "default", "claude-oauth", nowMs - 1_000, null, null);
+    new CollectionStore(db.storage).recordAttempt("claude", "default", "claude-oauth", nowMs - 1_000, null, null);
     db.ingestObservation({
       provider: "claude",
       account: "default",
@@ -427,7 +429,7 @@ describe("account state contract", () => {
     expect(db.latest("claude", "default", "five_hour")?.usedPercent).toBe(40);
     expect(db.latest("claude", "default", "five_hour")?.source).toBe("claude-oauth");
     // That the fallback source is alive is still recorded.
-    const statusLine = db.collectionSourceStates()
+    const statusLine = new CollectionStore(db.storage).sourceStates()
       .find((row) => row.source === "claude-statusline");
     expect(statusLine?.lastSuccessMs).toBe(nowMs);
   });
@@ -438,7 +440,7 @@ describe("account state contract", () => {
     const service = new QuotaPieService(config, db);
     const nowMs = 30_000_000;
     const staleMs = config.collection.staleAfterSeconds * 1_000 + 60_000;
-    db.recordCollectionAttempt("claude", "default", "claude-oauth", nowMs - staleMs, null, null);
+    new CollectionStore(db.storage).recordAttempt("claude", "default", "claude-oauth", nowMs - staleMs, null, null);
     service.ingestClaudeSessions([{
       provider: "claude",
       account: "default",
@@ -473,7 +475,7 @@ describe("collection isolation between providers", () => {
     }];
     const service = new QuotaPieService(config, db);
     const nowMs = 40_000_000;
-    db.recordCollectionAttempt("codex", "default", "codex-appserver", nowMs - 1_000, null, null);
+    new CollectionStore(db.storage).recordAttempt("codex", "default", "codex-appserver", nowMs - 1_000, null, null);
     db.ingestObservation({
       provider: "codex",
       account: "default",
@@ -514,7 +516,7 @@ describe("a provider outage stays contained", () => {
     config.accounts.claude = [{ id: "default", label: "Main", configDir: dir, enabled: true, keychainService: null }];
     const service = new QuotaPieService(config, db);
     const nowMs = 50_000_000;
-    db.recordCollectionAttempt("codex", "default", "codex-appserver", nowMs - 1_000, null, null);
+    new CollectionStore(db.storage).recordAttempt("codex", "default", "codex-appserver", nowMs - 1_000, null, null);
     const failing = (async () => new Response("nope", { status: 503 })) as unknown as typeof fetch;
 
     const events = await service.pollClaudeOAuth(nowMs, true, failing);
@@ -559,7 +561,7 @@ describe("Claude OAuth collection is opt-in", () => {
 
     expect(events).toEqual([]);
     expect(called).toBeFalse();
-    expect(db.collectionSourceStates()).toEqual([]);
+    expect(new CollectionStore(db.storage).sourceStates()).toEqual([]);
   });
 
   test("enabling it turns the same call into a real sample", async () => {
@@ -573,7 +575,7 @@ describe("Claude OAuth collection is opt-in", () => {
     await service.pollClaudeOAuth(1_000, true, responding);
 
     expect(db.latest("claude", "default", "five_hour")?.usedPercent).toBe(10);
-    expect(db.collectionSourceStates().map((row) => row.source)).toEqual(["claude-oauth"]);
+    expect(new CollectionStore(db.storage).sourceStates().map((row) => row.source)).toEqual(["claude-oauth"]);
   });
 
   test("opting out reads as unconfigured rather than broken", () => {
@@ -621,7 +623,7 @@ describe("collection success requires actual windows", () => {
       onUpdate: () => undefined,
     });
     await expect(service.pollCodex()).rejects.toThrow();
-    const row = db.collectionSourceStates().find((item) => item.provider === "codex")!;
+    const row = new CollectionStore(db.storage).sourceStates().find((item) => item.provider === "codex")!;
     expect(row.lastSuccessMs).toBeNull();
     expect(row.lastErrorCategory).toBe("no-windows");
     const codex = service.accountStates(Date.now()).find((state) => state.provider === "codex")!;
@@ -637,8 +639,8 @@ describe("active source matches the source that wins ingestion", () => {
     const nowMs = 60_000_000;
     // Even with a more recent status line, OAuth is what ingestion accepts,
     // and the display has to agree with it.
-    db.recordCollectionAttempt("claude", "default", "claude-oauth", nowMs - 5_000, null, null);
-    db.recordCollectionAttempt("claude", "default", "claude-statusline", nowMs - 1_000, null, null);
+    new CollectionStore(db.storage).recordAttempt("claude", "default", "claude-oauth", nowMs - 5_000, null, null);
+    new CollectionStore(db.storage).recordAttempt("claude", "default", "claude-statusline", nowMs - 1_000, null, null);
     const claude = service.accountStates(nowMs).find((state) => state.provider === "claude")!;
     expect(claude.collection.health).toBe("recent-success");
     expect(claude.collection.activeSource).toBe("claude-oauth");
@@ -650,8 +652,8 @@ describe("active source matches the source that wins ingestion", () => {
     const service = new QuotaPieService(config, db);
     const nowMs = 70_000_000;
     const staleMs = config.collection.staleAfterSeconds * 1_000 + 60_000;
-    db.recordCollectionAttempt("claude", "default", "claude-oauth", nowMs - staleMs, null, null);
-    db.recordCollectionAttempt("claude", "default", "claude-statusline", nowMs - 1_000, null, null);
+    new CollectionStore(db.storage).recordAttempt("claude", "default", "claude-oauth", nowMs - staleMs, null, null);
+    new CollectionStore(db.storage).recordAttempt("claude", "default", "claude-statusline", nowMs - 1_000, null, null);
     const claude = service.accountStates(nowMs).find((state) => state.provider === "claude")!;
     expect(claude.collection.activeSource).toBe("claude-statusline");
   });
@@ -690,7 +692,7 @@ describe("events reach the alert planner", () => {
     expect(produced.some((event) => event.kind === "window_changed")).toBeTrue();
 
     // The delivery query has to hand the same event to the planner.
-    const pending = db.pendingAlertEvents();
+    const pending = new AlertStore(db.storage).pendingEvents();
     const pendingChange = pending.find((event) => event.kind === "window_changed");
     expect(pendingChange).toBeDefined();
 
@@ -717,7 +719,7 @@ describe("events reach the alert planner", () => {
         details: {},
       });
     }
-    const pending = db.pendingAlertEvents();
+    const pending = new AlertStore(db.storage).pendingEvents();
     expect(pending.map((event) => event.kind).sort()).toEqual([...ALERTABLE_EVENT_KINDS].sort());
     const decisions = planTriggers([], pending, config, 0, occurredAtMs + 1_000);
     expect(decisions).toHaveLength(ALERTABLE_EVENT_KINDS.length);
