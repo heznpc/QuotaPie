@@ -3,6 +3,11 @@ import { buildQuotaBoundary, cachedLeaderboard, collectionHealth, writeQuotaBoun
 import type { AppConfig, CodexAccountConfig } from "./config";
 import { codexUsesFileCredentials, resolveUserPath } from "./config";
 import { QuotaDatabase } from "./db";
+import { selectClaudeConsensus } from "./domain/claude-consensus";
+import { AlertStore } from "./storage/alert-store";
+import { ClaudeSessionStore } from "./storage/claude-session-store";
+import { CollectionStore } from "./storage/collection-store";
+import type { QuotaStorage } from "./storage/database";
 import { CodexAppServerClient } from "./providers/codex-appserver";
 import { ClaudeUsageError, fetchClaudeUsage, mapClaudeUsage, readClaudeCredentials } from "./providers/claude-oauth";
 import { resolveLocale, t } from "./i18n";
@@ -45,6 +50,10 @@ const SOURCE_AUTHORITY: Record<string, number> = {
 
 export class QuotaPieService {
   readonly db: QuotaDatabase;
+  readonly storage: QuotaStorage;
+  readonly alerts: AlertStore;
+  readonly collection: CollectionStore;
+  readonly claudeSessions: ClaudeSessionStore;
   private codexClients = new Map<string, CodexAppServerClient>();
   private stopped = false;
   private closing = false;
@@ -61,6 +70,12 @@ export class QuotaPieService {
     database?: QuotaDatabase,
   ) {
     this.db = database ?? new QuotaDatabase();
+    // One connection, several collaborators. The service depends on each of
+    // them directly rather than reaching through the database for everything.
+    this.storage = this.db.storage;
+    this.alerts = new AlertStore(this.storage);
+    this.collection = new CollectionStore(this.storage);
+    this.claudeSessions = new ClaudeSessionStore(this.storage);
     this.locale = resolveLocale(config.profile.locale);
   }
 
@@ -159,13 +174,10 @@ export class QuotaPieService {
   }
 
   ingestClaudeSessions(observations: QuotaObservation[], nowMs = Date.now()): QuotaEvent[] {
-    const consensus = this.db.upsertClaudeSessions(
-      observations,
-      this.config.collection.claudeSessionTtlSeconds * 1_000,
-    );
+    const consensus = this.reconcileClaudeSessions(observations);
     const accepted: QuotaObservation[] = [];
     for (const observation of consensus) {
-      this.db.recordCollectionAttempt(
+      this.collection.recordAttempt(
         "claude",
         observation.account,
         CLAUDE_STATUSLINE_SOURCE,
@@ -182,9 +194,33 @@ export class QuotaPieService {
     return this.ingest(accepted);
   }
 
+  /// Persistence and decision, kept apart: the store writes and reads rows, and
+  /// selectClaudeConsensus decides which of them wins.
+  private reconcileClaudeSessions(observations: QuotaObservation[]): QuotaObservation[] {
+    const valid = observations.filter((observation) =>
+      observation.provider === "claude" && typeof observation.metadata?.sessionHash === "string"
+    );
+    if (!valid.length) return [];
+    const ttlMs = this.config.collection.claudeSessionTtlSeconds * 1_000;
+    const referenceMs = Math.max(...valid.map((observation) => observation.observedAtMs));
+    const affected = [
+      ...new Map(
+        valid.map((observation) => [
+          `${observation.account}\u0000${observation.bucket}`,
+          { account: observation.account, bucket: observation.bucket },
+        ]),
+      ).values(),
+    ];
+    return this.storage.transaction(() => {
+      this.claudeSessions.upsertSessionRows(valid);
+      const rows = this.claudeSessions.activeSessionRowsSince(referenceMs - ttlMs);
+      return selectClaudeConsensus(rows, affected, ttlMs, referenceMs);
+    });
+  }
+
   private oauthIsAuthoritative(account: string, nowMs: number): boolean {
-    const state = this.db
-      .collectionSourceStates()
+    const state = this.collection
+      .sourceStates()
       .find((row) =>
         row.provider === "claude" && row.account === account && row.source === CLAUDE_OAUTH_SOURCE
       );
@@ -201,7 +237,7 @@ export class QuotaPieService {
       if (requireFileCredentials && !codexUsesFileCredentials(profile)) {
         const message = "multi-account Codex requires cli_auth_credentials_store = \"file\" in this profile's config.toml";
         this.codexPollState.set(profile.id, { count: 0, error: message });
-        this.db.recordCollectionAttempt(
+        this.collection.recordAttempt(
           "codex", profile.id, CODEX_SOURCE, Date.now(), message, "isolation-unsafe",
         );
         console.error(`[quotapie] Codex account ${profile.id} skipped: ${message}`);
@@ -220,11 +256,11 @@ export class QuotaPieService {
         if (!observations.length) {
           const message = "rate limit response contained no windows";
           this.codexPollState.set(profile.id, { count: 0, error: message });
-          this.db.recordCollectionAttempt("codex", profile.id, CODEX_SOURCE, Date.now(), message, "no-windows");
+          this.collection.recordAttempt("codex", profile.id, CODEX_SOURCE, Date.now(), message, "no-windows");
           return { ok: false as const, events: [] as QuotaEvent[], message };
         }
         this.codexPollState.set(profile.id, { count: observations.length, error: null });
-        this.db.recordCollectionAttempt("codex", profile.id, CODEX_SOURCE, Date.now(), null, null);
+        this.collection.recordAttempt("codex", profile.id, CODEX_SOURCE, Date.now(), null, null);
         return {
           ok: true as const,
           events: this.closing ? [] : this.ingestCodexSnapshot(observations),
@@ -232,7 +268,7 @@ export class QuotaPieService {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.codexPollState.set(profile.id, { count: 0, error: message });
-        this.db.recordCollectionAttempt("codex", profile.id, CODEX_SOURCE, Date.now(), message, "provider-error");
+        this.collection.recordAttempt("codex", profile.id, CODEX_SOURCE, Date.now(), message, "provider-error");
         await client.close().catch(() => undefined);
         this.codexClients.delete(profile.id);
         console.error(`[quotapie] Codex account ${profile.id} refresh failed: ${message}`);
@@ -264,7 +300,7 @@ export class QuotaPieService {
       this.claudeOAuthLastPollMs.set(profile.id, nowMs);
       const credentials = readClaudeCredentials(profile.configDir ?? "~/.claude", profile.keychainService);
       if (!credentials.accessToken) {
-        this.db.recordCollectionAttempt(
+        this.collection.recordAttempt(
           "claude",
           profile.id,
           CLAUDE_OAUTH_SOURCE,
@@ -280,7 +316,7 @@ export class QuotaPieService {
         if (!observations.length) {
           throw new ClaudeUsageError("usage response contained no rate windows", "no-windows");
         }
-        this.db.recordCollectionAttempt("claude", profile.id, CLAUDE_OAUTH_SOURCE, Date.now(), null, null);
+        this.collection.recordAttempt("claude", profile.id, CLAUDE_OAUTH_SOURCE, Date.now(), null, null);
         if (this.closing) continue;
         const result = this.db.ingestFullSnapshot("claude", profile.id, observations, this.config);
         emitted.push(...result.events);
@@ -304,7 +340,7 @@ export class QuotaPieService {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const category = error instanceof ClaudeUsageError ? error.category : "provider-error";
-        this.db.recordCollectionAttempt(
+        this.collection.recordAttempt(
           "claude",
           profile.id,
           CLAUDE_OAUTH_SOURCE,
@@ -373,7 +409,7 @@ export class QuotaPieService {
   // is empty should be visible as state.
   accountStates(nowMs = Date.now()): AccountState[] {
     const windows = this.analyses(nowMs);
-    const sourceStates = this.db.collectionSourceStates();
+    const sourceStates = this.collection.sourceStates();
     const staleAfterMs = this.config.collection.staleAfterSeconds * 1_000;
     const profiles: Array<{ provider: Provider; id: string; label: string; enabled: boolean }> = [
       ...this.config.accounts.codex.map((profile) => ({
@@ -484,24 +520,24 @@ export class QuotaPieService {
     for (const window of windows) {
       if (window.freshness === "fresh") {
         const staleKey = `${alertScope(window.provider, window.account, window.bucket)}:stale`;
-        const staleState = this.db.alertState(staleKey);
+        const staleState = this.alerts.state(staleKey);
         if (staleState) {
-          this.db.setAlertState(staleKey, staleState.lastFiredAtMs, true);
+          this.alerts.setState(staleKey, staleState.lastFiredAtMs, true);
         }
       }
       if (window.remainingPercent != null) {
         for (const threshold of this.config.alerts.remainingThresholds) {
           const key = `${alertScope(window.provider, window.account, window.bucket)}:remaining:${threshold}`;
-          const state = this.db.alertState(key);
+          const state = this.alerts.state(key);
           if (state && window.remainingPercent > threshold + 5) {
-            this.db.setAlertState(key, state.lastFiredAtMs, true);
+            this.alerts.setState(key, state.lastFiredAtMs, true);
           }
         }
       }
       const paceKey = `${alertScope(window.provider, window.account, window.bucket)}:pace`;
-      const paceState = this.db.alertState(paceKey);
+      const paceState = this.alerts.state(paceKey);
       if (paceState && (window.paceRatio == null || window.paceRatio < 0.9)) {
-        this.db.setAlertState(paceKey, paceState.lastFiredAtMs, true);
+        this.alerts.setState(paceKey, paceState.lastFiredAtMs, true);
       }
     }
   }
@@ -512,7 +548,7 @@ export class QuotaPieService {
     this.rearmRecovered(windows);
     const decisions = planTriggers(
       windows,
-      this.db.pendingAlertEvents().filter((event) => this.isEnabledAccount(event.provider, event.account)),
+      this.alerts.pendingEvents().filter((event) => this.isEnabledAccount(event.provider, event.account)),
       this.config,
       0,
       nowMs,
@@ -522,10 +558,10 @@ export class QuotaPieService {
     for (const decision of decisions) {
       const claimAtMs = Date.now();
       const eventClaimToken = decision.eventId != null
-        ? this.db.claimEventAlert(decision.eventId, decision.key, claimAtMs, cooldownMs)
+        ? this.alerts.claimEvent(decision.eventId, decision.key, claimAtMs, cooldownMs)
         : null;
       const thresholdClaim = decision.eventId == null
-        ? this.db.claimAlert(decision.key, claimAtMs, cooldownMs)
+        ? this.alerts.claim(decision.key, claimAtMs, cooldownMs)
         : null;
       const claimToken = eventClaimToken ?? thresholdClaim?.token ?? null;
       if (claimToken == null) continue;
@@ -537,9 +573,9 @@ export class QuotaPieService {
         const result = await deliverTrigger(
           decision,
           this.config,
-          this.db.deliveredChannels(deliveryKey),
+          this.alerts.deliveredChannels(deliveryKey),
           deliveryKey,
-          (channel) => this.db.markChannelDelivered(deliveryKey, channel, Date.now()),
+          (channel) => this.alerts.markChannelDelivered(deliveryKey, channel, Date.now()),
         );
         deliveryComplete = result.complete;
       } catch (error) {
@@ -548,15 +584,15 @@ export class QuotaPieService {
       if (deliveryComplete) {
         const completedAtMs = Date.now();
         const completed = decision.eventId != null
-          ? this.db.completeEventAlert(decision.eventId, decision.key, claimToken, completedAtMs)
-          : this.db.completeAlertClaim(decision.key, claimToken, completedAtMs);
+          ? this.alerts.completeEvent(decision.eventId, decision.key, claimToken, completedAtMs)
+          : this.alerts.completeClaim(decision.key, claimToken, completedAtMs);
         if (completed) delivered.push(decision);
         else console.error(`[quotapie] Trigger claim expired before completion: ${decision.key}`);
       } else {
         if (decision.eventId != null) {
-          this.db.releaseEventAlert(decision.eventId, decision.key, claimToken);
+          this.alerts.releaseEvent(decision.eventId, decision.key, claimToken);
         } else {
-          this.db.releaseAlertClaim(decision.key, claimToken);
+          this.alerts.releaseClaim(decision.key, claimToken);
         }
         console.error(`[quotapie] Trigger delivery failed: ${decision.key}`);
       }

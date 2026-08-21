@@ -341,6 +341,37 @@ If you generate the plist with `QUOTAPIE_CONFIG` and `QUOTAPIE_HOME` set, those 
 
 The data directory is corrected to `0700`, and the config, SQLite, WAL, and log files to `0600`. Analysis snapshots are retained for your configured `historyDays` plus a day of slack, and events for 180 days. The most recent snapshot of each entry is kept even when it is old, so current state can still be displayed.
 
+## Storage layout
+
+One connection, one transaction owner, several collaborators.
+
+```text
+QuotaPieService
+ ├─ QuotaDatabase        snapshot / bucket / event ingestion
+ ├─ AlertStore           alert_state + event_delivery + alert_channel_delivery
+ ├─ CollectionStore      per-source collection heartbeat
+ └─ ClaudeSessionStore   session rows in and out
+      └─ selectClaudeConsensus()   pure decision, no database
+```
+
+`QuotaStorage` owns the connection, the PRAGMAs, the schema, and
+`transaction()`. The stores are separate files, not separate connections:
+splitting the connection would leave `BEGIN IMMEDIATE`, the alert lease, and
+event delivery each atomic on their own and unrelated to one another, which is
+the exact property they exist to provide. A nested `transaction()` joins the one
+already in flight rather than starting a second.
+
+`alert_state`, `event_delivery`, and `alert_channel_delivery` implement one
+feature between them, so one store owns all three; a claim must never have a
+transaction boundary through the middle of it.
+
+Which source is authoritative and what an account's health is are not stored
+facts — they are policy, and they live in `QuotaPieService.accountStates()`.
+
+Snapshot, bucket, and event ingestion stay together in `QuotaDatabase`, because
+`classifyDelta`, the snapshot insert, the bucket-state update, and the event
+insert are a single unit of work.
+
 ## Verification
 
 ```bash
