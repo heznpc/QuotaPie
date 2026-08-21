@@ -83,12 +83,12 @@ describe("trigger planning and claims", () => {
       severity: "info",
       occurredAtMs: 1_000,
       confidence: "high",
-      summary: "Codex weekly → Codex monthly",
+      displayText: "Codex weekly → Codex monthly",
       details: {},
     };
     const decision = planTriggers([], [event], DEFAULT_CONFIG, 0, 2_000)[0];
     expect(decision?.title).toBe("codex/default limit window changed");
-    expect(decision?.message).toBe(event.summary);
+    expect(decision?.message).toBe(event.displayText);
   });
 
   test("durably claims and coalesces event alerts by cooldown", () => {
@@ -101,7 +101,7 @@ describe("trigger planning and claims", () => {
       severity: "warning" as const,
       occurredAtMs: 1_000,
       confidence: "high" as const,
-      summary: "paid",
+      displayText: "paid",
       details: {},
     };
     expect(db.insertEvent(first)).toBeTrue();
@@ -125,7 +125,7 @@ describe("trigger planning and claims", () => {
       severity: "info",
       occurredAtMs: at,
       confidence: "high",
-      summary: "rebase",
+      displayText: "rebase",
       details: {},
     });
     const first = event(1_000);

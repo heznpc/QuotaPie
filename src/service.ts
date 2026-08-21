@@ -136,7 +136,7 @@ export class QuotaPieService {
           severity: "info",
           occurredAtMs: next.observedAtMs,
           confidence: "high",
-          summary: t("event.window_changed", {
+          displayText: t("event.window_changed", {
             limitId,
             lane,
             fromLabel: previous.label,
@@ -164,7 +164,7 @@ export class QuotaPieService {
           severity: "info",
           occurredAtMs: observedAtMs,
           confidence: "high",
-          summary: t("event.bucket_retired", { label: previous.label }, this.locale),
+          displayText: t("event.bucket_retired", { label: previous.label }, this.locale),
           details: { label: previous.label, lastObservedAtMs: previous.observedAtMs, fullReadsMissed: 2 },
         };
         if (this.db.insertEvent(value)) emitted.push(value);
@@ -331,7 +331,7 @@ export class QuotaPieService {
               severity: "info",
               occurredAtMs: observedAtMs,
               confidence: "high",
-              summary: t("event.bucket_retired", { label: previous.label }, this.locale),
+              displayText: t("event.bucket_retired", { label: previous.label }, this.locale),
               details: { label: previous.label, lastObservedAtMs: previous.observedAtMs, fullReadsMissed: 2 },
             };
             if (this.db.insertEvent(value)) emitted.push(value);

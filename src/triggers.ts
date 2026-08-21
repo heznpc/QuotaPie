@@ -115,7 +115,7 @@ export function planTriggers(
       // The stored summary was rendered in this process's locale when the event
       // was recorded, so it needs no re-rendering here. A consumer that wants a
       // different language has the kind and details to render from instead.
-      message: event.summary,
+      message: event.displayText,
       severity: event.severity,
     });
   }

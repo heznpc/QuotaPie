@@ -58,7 +58,7 @@ describe("classifyDelta", () => {
     const events = classifyDelta(previous, next, DEFAULT_CONFIG);
     expect(events[0]?.kind).toBe("allowance_relief");
     expect(events[0]?.kind).toBe("allowance_relief");
-    expect(events[0]?.summary).toContain("larger allowance");
+    expect(events[0]?.displayText).toContain("larger allowance");
   });
 
   test("separates a clock rebase from a recharge", () => {

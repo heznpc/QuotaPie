@@ -20,7 +20,7 @@ function event(overrides: Partial<QuotaEvent> = {}): QuotaEvent {
     severity: "info",
     occurredAtMs: 1_000,
     confidence: "high",
-    summary: "relief",
+    displayText: "relief",
     details: {},
     ...overrides,
   };

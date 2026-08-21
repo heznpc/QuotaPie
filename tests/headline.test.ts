@@ -88,8 +88,8 @@ describe("menu bar headline", () => {
     expect(headline.windowKind).toBe("weekly");
     expect(headline.bucket).toBe("codex:primary:10080");
     expect(headline.remainingPercent).toBe(90);
-    expect(headline.title).toBe("⚠ weekly at risk");
-    expect(headline.title).not.toContain("90");
+    expect(headline.displayText).toBe("⚠ weekly at risk");
+    expect(headline.displayText).not.toContain("90");
   });
 
   // The other direction: little left is not a risk when the reset is close.
@@ -106,7 +106,7 @@ describe("menu bar headline", () => {
     })], NOW);
     expect(headline.kind).toBe("normal");
     expect(headline.remainingPercent).toBe(10);
-    expect(headline.title).toBe("10% left");
+    expect(headline.displayText).toBe("10% left");
   });
 
   test("a riskier account outranks a healthier one with less remaining", () => {
@@ -157,8 +157,8 @@ describe("menu bar headline", () => {
     })], NOW);
     expect(headline.kind).toBe("setup");
     expect(headline.errorCategory).toBe("auth-required");
-    expect(headline.title).toBe("Setup needed");
-    expect(headline.detail).toContain("Sign-in required");
+    expect(headline.displayText).toBe("Setup needed");
+    expect(headline.displayDetail).toContain("Sign-in required");
   });
 
   test("stale collection on a tracked account reports delay rather than its last number", () => {
@@ -173,7 +173,7 @@ describe("menu bar headline", () => {
         }],
     })], NOW);
     expect(headline.kind).toBe("degraded");
-    expect(headline.title).toBe("Limits unconfirmed");
+    expect(headline.displayText).toBe("Limits unconfirmed");
   });
 
   test("no configured accounts still yields an honest setup headline", () => {
@@ -205,8 +205,8 @@ describe("menu bar headline", () => {
     expect(korean.kind).toBe(english.kind);
     expect(korean.windowKind).toBe(english.windowKind);
     expect(korean.remainingPercent).toBe(english.remainingPercent);
-    expect(english.title).toBe("⚠ weekly at risk");
-    expect(korean.title).toBe("⚠ 주간 위험");
+    expect(english.displayText).toBe("⚠ weekly at risk");
+    expect(korean.displayText).toBe("⚠ 주간 위험");
   });
 });
 

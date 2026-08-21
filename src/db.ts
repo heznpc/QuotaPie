@@ -88,7 +88,7 @@ function eventFromRow(row: EventRow): QuotaEvent {
     severity: row.severity,
     occurredAtMs: row.occurred_at_ms,
     confidence: row.confidence,
-    summary: row.summary,
+    displayText: row.summary,
     details: JSON.parse(row.details_json || "{}"),
   };
 }
@@ -427,7 +427,7 @@ export class QuotaDatabase {
         value.severity,
         value.occurredAtMs,
         value.confidence,
-        value.summary,
+        value.displayText,
         JSON.stringify(value.details),
       );
     if (result.changes > 0) value.id = Number(result.lastInsertRowid);

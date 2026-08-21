@@ -31,7 +31,7 @@ function eventFromRow(row: EventRow): QuotaEvent {
     severity: row.severity,
     occurredAtMs: row.occurred_at_ms,
     confidence: row.confidence,
-    summary: row.summary,
+    displayText: row.summary,
     details: JSON.parse(row.details_json || "{}"),
   };
 }
