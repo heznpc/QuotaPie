@@ -62,6 +62,70 @@ describe("one connection, one transaction owner", () => {
     expect(collection.sourceStates()).toEqual([]);
   });
 
+  test("a caught nested failure still poisons the outer transaction", () => {
+    const store = storage();
+    const alerts = new AlertStore(store);
+    const collection = new CollectionStore(store);
+
+    expect(() =>
+      store.transaction(() => {
+        collection.recordAttempt("codex", "default", "codex-appserver", 1_000, null, null);
+        try {
+          store.transaction(() => {
+            alerts.setState("k", 1_000, true);
+            throw new Error("inner failed");
+          });
+        } catch {
+          // A caller that recovers here still cannot commit: the nested writes
+          // belong to this same transaction, so letting the outer through would
+          // be the half-state this contract exists to prevent.
+        }
+      })
+    ).toThrow();
+
+    expect(collection.sourceStates()).toEqual([]);
+    expect(alerts.state("k")).toBeNull();
+  });
+
+  test("the abort names the nested failure as its cause", () => {
+    const store = storage();
+    const inner = new Error("inner failed");
+    let thrown: unknown;
+    try {
+      store.transaction(() => {
+        try {
+          store.transaction(() => { throw inner; });
+        } catch {
+          // swallowed
+        }
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as Error).cause).toBe(inner);
+  });
+
+  test("a later unit of work is unaffected by an earlier poisoned one", () => {
+    const store = storage();
+    const collection = new CollectionStore(store);
+    try {
+      store.transaction(() => {
+        try {
+          store.transaction(() => { throw new Error("inner"); });
+        } catch {
+          // swallowed
+        }
+      });
+    } catch {
+      // expected
+    }
+    // The poison does not linger past the unit that carried it.
+    store.transaction(() => {
+      collection.recordAttempt("codex", "default", "codex-appserver", 2_000, null, null);
+    });
+    expect(collection.sourceStates()).toHaveLength(1);
+  });
+
   test("a completed unit of work is durable across a reopen", () => {
     const store = storage();
     const collection = new CollectionStore(store);
