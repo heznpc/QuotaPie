@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { compactClaudeLine } from "../src/format";
 import { analyzeWindow, groupStatuses } from "../src/analytics";
 import { DEFAULT_CONFIG } from "../src/config";
 import type { QuotaObservation } from "../src/types";
@@ -96,5 +97,40 @@ describe("personal burn analysis", () => {
     ]);
     expect(statuses[0]?.windows[0]?.remainingPercent).toBe(80);
     expect(statuses[1]?.windows[0]?.remainingPercent).toBe(30);
+  });
+});
+
+describe("the compact status line shows the weekly window that matters", () => {
+  test("a model-scoped weekly at risk outranks a healthy overall weekly", () => {
+    const base = {
+      provider: "claude" as const,
+      account: "default",
+      windowSeconds: 7 * 86_400,
+      source: "claude-oauth",
+      quality: "authoritative" as const,
+      freshness: "fresh" as const,
+      observedAtMs: 1_000,
+      resetsAtMs: 100_000,
+      timeToResetMs: 99_000,
+      reservePercent: 15,
+      recentBurnPerHour: 1,
+      personalBurnPerHour: 1,
+      blendedBurnPerHour: 1,
+      safePacePerActiveHour: 1,
+      exhaustsAtMs: null,
+      minutesBeforeReset: null,
+      confidence: "high" as const,
+      sampleCount: 100,
+      activeHoursUntilReset: 10,
+      riskLevel: "none" as const,
+    };
+    const line = compactClaudeLine([
+      { ...base, bucket: "seven_day", label: "Claude weekly", usedPercent: 10, remainingPercent: 90, paceRatio: 0.2, bottleneckScore: 0.1 },
+      { ...base, bucket: "seven_day_fable", label: "Claude Fable weekly", usedPercent: 100, remainingPercent: 0, paceRatio: 4, bottleneckScore: 2.4, riskLevel: "watch" },
+    ], "Main");
+    // The overall weekly is fine; the scoped one is exhausted, and that is the
+    // number worth a single line.
+    expect(line).toContain("0%");
+    expect(line).not.toContain("90%");
   });
 });

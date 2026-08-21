@@ -114,7 +114,16 @@ function launchdPlist(): string {
 </plist>`;
 }
 
-function menubarLaunchdPlist(port: number): string {
+// The menu bar app has to reach the host the backend actually binds to. IPv6
+// loopback needs brackets in a URL, and hardcoding 127.0.0.1 left the app
+// unable to connect whenever dashboard.host was set to ::1.
+function apiOrigin(host: string, port: number): string {
+  const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  const authority = bare.includes(":") ? `[${bare}]` : bare;
+  return `http://${authority}:${port}`;
+}
+
+function menubarLaunchdPlist(host: string, port: number): string {
   const logDir = dataDirectory();
   const home = homedir();
   const executable = process.env.QUOTAPIE_MENU_APP
@@ -135,7 +144,7 @@ function menubarLaunchdPlist(port: number): string {
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key><string>${xmlEscape(home)}</string>
-    <key>QUOTAPIE_API_URL</key><string>http://127.0.0.1:${port}</string>
+    <key>QUOTAPIE_API_URL</key><string>${xmlEscape(apiOrigin(host, port))}</string>
     <key>QUOTAPIE_CONFIG</key><string>${xmlEscape(configPath())}</string>
   </dict>
   <key>StandardOutPath</key><string>${xmlEscape(resolve(logDir, "menubar.log"))}</string>
@@ -172,7 +181,10 @@ async function main(): Promise<number> {
     return 0;
   }
   if (command === "menubar-launchd") {
-    console.log(menubarLaunchdPlist(loadConfig().dashboard.port));
+    {
+      const dashboard = loadConfig().dashboard;
+      console.log(menubarLaunchdPlist(dashboard.host, dashboard.port));
+    }
     return 0;
   }
 

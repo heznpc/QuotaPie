@@ -1,5 +1,10 @@
 import type { AppConfig } from "./config";
-import type { QuotaEvent, TriggerDecision, WindowAnalysis } from "./types";
+import type {
+  QuotaEvent,
+  TriggerDecision,
+  WindowAnalysis,
+} from "./types";
+import { isAlertableEventKind } from "./types";
 
 // Raw minutes stop being readable within a day: "8259분 먼저" tells nobody
 // anything. Alerts carry the largest two units instead.
@@ -99,9 +104,7 @@ export function planTriggers(
 
   const plannedEventKeys = new Set<string>();
   for (const event of recentEvents.filter((item) => item.occurredAtMs >= sinceMs)) {
-    if (!["external_relief", "allowance_relief", "schedule_rebased", "paid_usage", "credit_topup", "window_changed"].includes(event.kind)) {
-      continue;
-    }
+    if (!isAlertableEventKind(event.kind)) continue;
     const key = `event:${alertScope(event.provider, event.account, event.bucket)}:${event.kind}`;
     if (plannedEventKeys.has(key)) continue;
     plannedEventKeys.add(key);

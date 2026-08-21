@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   buildQuotaBoundary,
   collectionHealth,
+  readLines,
   scanBurnLeaderboard,
   writeQuotaBoundary,
   QUOTA_BOUNDARY_SCHEMA_VERSION,
@@ -242,5 +243,69 @@ describe("burn leaderboard window", () => {
       { cwd: "/tmp/undated", message: { usage: { input_tokens: 5_000 } } },
     ]);
     expect(await scanBurnLeaderboard(now, 7 * 24 * 3_600_000, dir)).toEqual([]);
+  });
+});
+
+describe("streaming line reader", () => {
+  function stream(chunks: string[]): ReadableStream<Uint8Array> {
+    const encoder = new TextEncoder();
+    return new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        controller.close();
+      },
+    });
+  }
+
+  async function collect(chunks: string[]): Promise<string[]> {
+    const out: string[] = [];
+    for await (const line of readLines(stream(chunks))) out.push(line);
+    return out;
+  }
+
+  test("a line split across chunk boundaries is reassembled", async () => {
+    expect(await collect(['{"a":', '1}\n{"b":2}', "\n"])).toEqual(['{"a":1}', '{"b":2}']);
+  });
+
+  test("a final line without a trailing newline is still emitted", async () => {
+    expect(await collect(['{"a":1}\n{"b":2}'])).toEqual(['{"a":1}', '{"b":2}']);
+  });
+
+  test("empty lines are preserved as empty strings rather than dropped or merged", async () => {
+    expect(await collect(["a\n\nb\n"])).toEqual(["a", "", "b"]);
+  });
+
+  test("a multi-byte character split across chunks is not corrupted", async () => {
+    const encoded = new TextEncoder().encode("한글\n");
+    const encoder = new TextDecoder();
+    const first = encoded.slice(0, 4);
+    const second = encoded.slice(4);
+    const parts = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(first);
+        controller.enqueue(second);
+        controller.close();
+      },
+    });
+    const out: string[] = [];
+    for await (const line of readLines(parts)) out.push(line);
+    expect(out).toEqual(["한글"]);
+    expect(encoder.decode(encoded).trim()).toBe("한글");
+  });
+
+  test("a very long single line survives being spread over many chunks", async () => {
+    const long = "x".repeat(200_000);
+    const chunks: string[] = [];
+    for (let index = 0; index < long.length; index += 4_096) {
+      chunks.push(long.slice(index, index + 4_096));
+    }
+    chunks.push("\n");
+    const out = await collect(chunks);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.length).toBe(200_000);
+  });
+
+  test("an empty stream yields nothing", async () => {
+    expect(await collect([])).toEqual([]);
   });
 });

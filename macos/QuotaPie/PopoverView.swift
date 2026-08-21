@@ -77,10 +77,15 @@ struct PopoverView: View {
         }
     }
 
+    /// The status item already switches to 한도 확인 지연 when the transport is
+    /// down. The header has to agree: leaving the cached conclusion as the
+    /// largest text on screen makes a stale reading look like the current one.
+    private var isDisconnected: Bool { model.lastError != nil }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline) {
-                Text(model.payload?.headline?.title ?? "확인 중")
+                Text(headlineTitle)
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(headlineTone)
                 Spacer()
@@ -90,13 +95,27 @@ struct PopoverView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            if let detail = model.payload?.headline?.detail {
+            if let detail = headlineDetail {
                 Text(detail).font(.caption).foregroundStyle(.secondary)
             }
         }
     }
 
+    private var headlineTitle: String {
+        if isDisconnected { return model.payload == nil ? "연결 끊김" : "한도 확인 지연" }
+        return model.payload?.headline?.title ?? "확인 중"
+    }
+
+    private var headlineDetail: String? {
+        guard !isDisconnected else {
+            guard let cached = model.payload?.headline?.title else { return nil }
+            return "마지막 정상값 · \(cached)"
+        }
+        return model.payload?.headline?.detail
+    }
+
     private var headlineTone: Color {
+        if isDisconnected { return .orange }
         switch model.payload?.headline?.kind {
         case "pace-risk": return .orange
         case "degraded", "setup": return .secondary

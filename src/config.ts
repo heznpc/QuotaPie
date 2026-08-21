@@ -265,12 +265,74 @@ function validateDashboard(config: AppConfig): void {
   }
 }
 
+function requireNumber(
+  value: unknown,
+  label: string,
+  { min, max, integer = false }: { min: number; max: number; integer?: boolean },
+): void {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${label} must be a finite number, got ${JSON.stringify(value)}`);
+  }
+  if (integer && !Number.isInteger(value)) throw new Error(`${label} must be an integer, got ${value}`);
+  if (value < min || value > max) throw new Error(`${label} must be between ${min} and ${max}, got ${value}`);
+}
+
+// Everything below feeds the forecast directly. A weight above 1 flips the
+// personal term negative, a zero poll interval spins the loop, and an invalid
+// time zone throws from deep inside analytics where the cause is unrecognisable.
+// Rejecting here means a bad config fails at load with a sentence that names
+// the field.
+function validateProfile(config: AppConfig): void {
+  const profile = config.profile;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: profile.timeZone });
+  } catch {
+    throw new Error(`profile.timeZone is not a known IANA time zone: ${String(profile.timeZone)}`);
+  }
+  requireNumber(profile.recentWeight, "profile.recentWeight", { min: 0, max: 1 });
+  requireNumber(profile.historyDays, "profile.historyDays", { min: 1, max: 3_650, integer: true });
+  requireNumber(profile.recentLookbackMinutes, "profile.recentLookbackMinutes", { min: 1, max: 10_080 });
+
+  for (const [dayKind, ranges] of Object.entries(profile.workSchedule)) {
+    if (!Array.isArray(ranges)) throw new Error(`profile.workSchedule.${dayKind} must be an array`);
+    for (const range of ranges) {
+      for (const edge of ["start", "end"] as const) {
+        if (typeof range?.[edge] !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(range[edge])) {
+          throw new Error(`profile.workSchedule.${dayKind} needs HH:MM ${edge}, got ${JSON.stringify(range?.[edge])}`);
+        }
+      }
+    }
+  }
+
+  for (const [provider, buckets] of Object.entries(config.reservePercent)) {
+    for (const [bucket, value] of Object.entries(buckets)) {
+      requireNumber(value, `reservePercent.${provider}.${bucket}`, { min: 0, max: 100 });
+    }
+  }
+
+  requireNumber(config.collection.pollSeconds, "collection.pollSeconds", { min: 1, max: 86_400, integer: true });
+  requireNumber(config.collection.staleAfterSeconds, "collection.staleAfterSeconds", { min: 1, max: 86_400, integer: true });
+  requireNumber(
+    config.collection.claudeSessionTtlSeconds,
+    "collection.claudeSessionTtlSeconds",
+    { min: 1, max: 86_400, integer: true },
+  );
+
+  for (const threshold of config.alerts.remainingThresholds) {
+    requireNumber(threshold, "alerts.remainingThresholds[]", { min: 0, max: 100 });
+  }
+  requireNumber(config.alerts.cooldownMinutes, "alerts.cooldownMinutes", { min: 0, max: 10_080 });
+  requireNumber(config.alerts.deliveryTimeoutSeconds, "alerts.deliveryTimeoutSeconds", { min: 1, max: 600 });
+  requireNumber(config.alerts.predictedEarlyMinutes, "alerts.predictedEarlyMinutes", { min: 0, max: 10_080 });
+}
+
 export function loadConfig(path = configPath()): AppConfig {
   if (!existsSync(path)) return structuredClone(DEFAULT_CONFIG);
   const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<AppConfig>;
   const config = mergeConfig(DEFAULT_CONFIG, parsed);
   validateAccounts(config);
   validateDashboard(config);
+  validateProfile(config);
   return config;
 }
 

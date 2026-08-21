@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { mapClaudeUsage } from "../src/providers/claude-oauth";
 import { parseClaudeStatusLine } from "../src/providers/claude-statusline";
 import { parseCodexRateLimits } from "../src/providers/codex-appserver";
 
@@ -82,5 +83,20 @@ describe("provider normalization", () => {
     expect(codex[0]?.account).toBe("work");
     expect(claude[0]?.account).toBe("work");
     expect(JSON.stringify([...codex, ...claude])).not.toContain("private-session");
+  });
+});
+
+describe("provider values are normalised at the adapter boundary", () => {
+  test("a percentage outside 0..100 is clamped rather than carried into the domain", () => {
+    const windows = mapClaudeUsage({
+      five_hour: { utilization: 137, resets_at: "2026-12-25T12:00:00.000Z" },
+      seven_day: { utilization: -4, resets_at: "2026-12-31T00:00:00.000Z" },
+    });
+    expect(windows.find((item) => item.bucket === "five_hour")!.usedPercent).toBe(100);
+    expect(windows.find((item) => item.bucket === "seven_day")!.usedPercent).toBe(0);
+  });
+
+  test("a non-numeric percentage still yields no window", () => {
+    expect(mapClaudeUsage({ five_hour: { utilization: Number.NaN } })).toHaveLength(0);
   });
 });
