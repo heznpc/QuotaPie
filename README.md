@@ -358,8 +358,15 @@ QuotaPieService
 `transaction()`. The stores are separate files, not separate connections:
 splitting the connection would leave `BEGIN IMMEDIATE`, the alert lease, and
 event delivery each atomic on their own and unrelated to one another, which is
-the exact property they exist to provide. A nested `transaction()` joins the one
-already in flight rather than starting a second.
+the exact property they exist to provide.
+
+A nested `transaction()` joins the one already in flight rather than starting a
+second, and a failure inside a nested call makes the whole unit rollback-only.
+Catching that failure does not let the outer unit commit: the nested writes are
+part of the same transaction, so committing anyway would produce exactly the
+half-state the boundary exists to prevent. Sub-units meant to be independently
+recoverable would need `SAVEPOINT`, which is a different contract than the one
+stated here.
 
 `alert_state`, `event_delivery`, and `alert_channel_delivery` implement one
 feature between them, so one store owns all three; a claim must never have a
