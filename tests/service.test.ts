@@ -378,7 +378,8 @@ describe("account state contract", () => {
       "claude", "default", "claude-oauth", nowMs, "no Claude login found", "auth-required",
     );
     const claude = service.accountStates(nowMs).find((state) => state.provider === "claude")!;
-    // 계정 건강도는 살아 있는 소스를 따르되, 실패한 소스의 원인은 그대로 노출한다.
+    // Account health follows the live source, while the failing source keeps
+    // reporting its own cause.
     expect(claude.collection.health).toBe("recent-success");
     expect(claude.collection.activeSource).toBe("claude-statusline");
     expect(claude.collection.sources.map((item) => item.source).sort()).toEqual([
@@ -420,10 +421,10 @@ describe("account state contract", () => {
       quality: "authoritative",
       metadata: { sessionHash: "abc123" },
     }], nowMs);
-    // 폴백 값이 권위 있는 값을 되돌리지 않는다.
+    // The fallback value does not roll back the authoritative one.
     expect(db.latest("claude", "default", "five_hour")?.usedPercent).toBe(40);
     expect(db.latest("claude", "default", "five_hour")?.source).toBe("claude-oauth");
-    // 폴백 소스가 살아 있다는 사실 자체는 기록된다.
+    // That the fallback source is alive is still recorded.
     const statusLine = db.collectionSourceStates()
       .find((row) => row.source === "claude-statusline");
     expect(statusLine?.lastSuccessMs).toBe(nowMs);
@@ -457,9 +458,10 @@ describe("collection isolation between providers", () => {
   test("a failing Claude poll never throws and leaves Codex collection untouched", async () => {
     const db = new QuotaDatabase(":memory:");
     const config = structuredClone(DEFAULT_CONFIG);
-    // OAuth 실패 경로를 보려면 opt-in 게이트를 명시적으로 켜야 한다.
+    // Seeing the OAuth failure path requires explicitly opening the opt-in gate.
     config.collection.claudeOAuthEnabled = true;
-    // 자격증명이 없는 임시 디렉터리를 가리켜 Claude 수집이 확실히 실패하게 만든다.
+    // Point at a temp directory with no credentials so Claude collection
+    // definitely fails.
     config.accounts.claude = [{
       id: "default",
       label: "Main",
@@ -493,7 +495,7 @@ describe("collection isolation between providers", () => {
     const claude = states.find((state) => state.provider === "claude")!;
     expect(claude.collection.health).toBe("attempted-then-failed");
     expect(claude.collection.errorCategory).toBe("auth-required");
-    // 실패 사유에 자격증명 값이 섞이지 않는다.
+    // The failure reason carries no credential value.
     expect(claude.collection.errorDetail ?? "").not.toContain("Bearer");
   });
 });
@@ -521,7 +523,7 @@ describe("a provider outage stays contained", () => {
     const claude = states.find((state) => state.provider === "claude")!;
     expect(claude.collection.health).toBe("attempted-then-failed");
     expect(claude.collection.errorCategory).toBe("provider-error");
-    // 실패 기록에 토큰이 새지 않는다.
+    // No token leaks into the failure record.
     expect(JSON.stringify(claude)).not.toContain("test-token");
   });
 });
@@ -609,7 +611,7 @@ describe("collection success requires actual windows", () => {
     const db = new QuotaDatabase(":memory:");
     const config = structuredClone(DEFAULT_CONFIG);
     const service = new QuotaPieService(config, db);
-    // app-server가 응답은 했지만 창을 하나도 주지 않는 상황을 재현한다.
+    // Reproduce an app-server that responds but hands back no windows.
     spyOn(service, "pollCodex" as never);
     (service as unknown as { codexClients: Map<string, unknown> }).codexClients.set("default", {
       readRateLimits: async () => [],
@@ -631,7 +633,8 @@ describe("active source matches the source that wins ingestion", () => {
     const config = structuredClone(DEFAULT_CONFIG);
     const service = new QuotaPieService(config, db);
     const nowMs = 60_000_000;
-    // 상태줄이 더 최근이어도, 값을 채택하는 쪽은 OAuth다. 표시도 그와 일치해야 한다.
+    // Even with a more recent status line, OAuth is what ingestion accepts,
+    // and the display has to agree with it.
     db.recordCollectionAttempt("claude", "default", "claude-oauth", nowMs - 5_000, null, null);
     db.recordCollectionAttempt("claude", "default", "claude-statusline", nowMs - 1_000, null, null);
     const claude = service.accountStates(nowMs).find((state) => state.provider === "claude")!;

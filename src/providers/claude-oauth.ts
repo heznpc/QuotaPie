@@ -4,14 +4,16 @@ import { basename, join, resolve } from "node:path";
 import type { CollectionErrorCategory, QuotaObservation } from "../types";
 import { durationFor, labelFor } from "./claude-statusline";
 
-// Claude Code CLI의 로컬 OAuth 자격증명으로 공식 usage 엔드포인트를 읽는다.
-// 토큰은 매 호출 시 로컬 저장소에서 읽기만 하고 어디에도 저장하지 않는다.
-// 데스크톱 앱만 쓰는 환경에서는 statusline이 영원히 침묵하므로 이 경로가 주 수집원이다.
+// Reads the official usage endpoint using Claude Code's local OAuth
+// credentials. The token is read per call and never stored anywhere.
+// If only the desktop app is used, the status line never runs, which makes
+// this the primary source rather than a supplement.
 
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const BETA_HEADER = "oauth-2025-04-20";
-// 자격증명 조회와 네트워크 호출 모두 상한을 둔다. Claude 소스가 멈춰도
-// Codex 폴링·알림·보존·quota.json 발행이 지연되면 안 된다.
+// Both the credential lookup and the network call are bounded. A stuck
+// Claude source must not delay Codex polling, alerts, retention, or the
+// quota.json publication.
 const KEYCHAIN_TIMEOUT_MS = 3_000;
 const USAGE_TIMEOUT_MS = 10_000;
 
@@ -21,9 +23,10 @@ export interface ClaudeCredentialLookup {
   errorCategory: CollectionErrorCategory | null;
 }
 
-// Claude Code는 기본 프로필을 "Claude Code-credentials"에 넣고, 별도 config
-// 디렉터리를 쓰는 프로필은 디렉터리를 붙인 서비스 이름을 쓴다. 기본 서비스로
-// 폴백하면 다른 계정의 토큰을 이 계정 것으로 오인하므로 폴백하지 않는다.
+// Claude Code keeps the default profile under "Claude Code-credentials", and
+// profiles with their own config directory under a service name derived from
+// that directory. Falling back to the default item would attribute another
+// account's token to this one, so there is no fallback.
 export function keychainServiceCandidates(dir: string, configured?: string | null): string[] {
   if (configured) return [configured];
   const base = "Claude Code-credentials";
@@ -67,8 +70,9 @@ export function readClaudeCredentials(
 ): ClaudeCredentialLookup {
   const dir = configDir.startsWith("~") ? join(homedir(), configDir.slice(1)) : resolve(configDir);
   const file = join(dir, ".credentials.json");
-  // 파일에서 읽은 실패 사유(만료 등)는 키체인 폴백이 실패해도 잃지 않는다.
-  // 잃으면 "만료됐으니 갱신하라"가 "처음 로그인하라"로 잘못 안내된다.
+  // A failure reason found in the file (expiry, for instance) survives a
+  // failed keychain fallback. Losing it would turn "refresh your expired
+  // login" into "log in for the first time".
   let lastFailure: ClaudeCredentialLookup | null = null;
   if (existsSync(file)) {
     try {
@@ -148,8 +152,9 @@ export function mapClaudeUsage(
     buckets.set(key, { usedPercent: flat.utilization, resetsAtMs: resetMs(flat.resets_at) });
   }
 
-  // 신형 응답은 weekly 상한이 flat 필드 대신 limits 배열로 온다. flat이 이미
-  // 채운 버킷은 건드리지 않아 두 형식이 공존하는 과도기에도 안정적이다.
+  // Newer responses carry weekly caps in a limits array instead of flat
+  // fields. Buckets already filled from the flat form are left alone, which
+  // keeps this stable while both shapes coexist.
   const limits = root.limits;
   if (Array.isArray(limits)) {
     for (const entry of limits as ScopedLimit[]) {

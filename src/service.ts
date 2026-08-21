@@ -31,9 +31,10 @@ const HEALTH_RANK: Record<CollectionHealth, number> = {
   "never-attempted": 0,
 };
 
-// 두 소스가 모두 최근에 성공했을 때 어느 쪽을 활성 소스로 보여줄지는 취향이
-// 아니라 이력에 반영된 권위와 일치해야 한다. 값을 채택하는 순서와 표시하는
-// 순서가 다르면 UI가 수집 경로를 잘못 알려준다.
+// When both sources succeeded recently, which one is shown as active is not
+// a matter of taste: it has to match the authority applied to the history.
+// If the order values are accepted in differs from the order they are
+// displayed in, the UI reports the wrong collection path.
 const SOURCE_AUTHORITY: Record<string, number> = {
   [CLAUDE_OAUTH_SOURCE]: 2,
   [CODEX_SOURCE]: 2,
@@ -47,7 +48,8 @@ export class QuotaPieService {
   private closing = false;
   private codexPollState = new Map<string, { count: number; error: string | null }>();
   private claudeOAuthLastPollMs = new Map<string, number>();
-  // 공식 usage 엔드포인트는 공급자 측 레이트리밋이 있어 Codex보다 느슨하게 돈다.
+  // The official usage endpoint is rate limited on the provider side, so this
+  // polls more loosely than Codex does.
   static readonly CLAUDE_OAUTH_MIN_INTERVAL_MS = 5 * 60_000;
 
   constructor(
@@ -76,9 +78,11 @@ export class QuotaPieService {
     }
     for (const [account, accountObservations] of grouped) {
       const observedAtMs = Math.max(...accountObservations.map((item) => item.observedAtMs));
-      // Codex는 같은 limit/lane의 기간을 7일↔30일로 바꿀 수 있다. 기간이 bucket
-      // identity에 들어가므로 보통은 새 bucket 관측 후 두 번째 누락에서야 이전
-      // bucket 은퇴로 보인다. 전체 응답 첫 순간에 lane 전환으로 따로 잡아낸다.
+      // Codex can switch the period of the same limit lane between 7 and 30
+      // days. The period is part of the bucket identity, so normally this
+      // only surfaces as the old bucket retiring on the second miss after
+      // the new one appears. Catch it as a lane switch on the first full
+      // response instead.
       const previousLaneWindows = this.db.latestAll().filter((item) =>
         item.provider === "codex" && item.account === account
       );
@@ -155,8 +159,10 @@ export class QuotaPieService {
         null,
         null,
       );
-      // 상태줄은 폴백이다. OAuth가 최근에 성공한 계정에서는 값을 이력에 넣지 않아
-      // 두 소스가 번갈아 들어오며 소스 변경·계량 보정 잡음을 만드는 일을 막는다.
+      // The status line is a fallback. For accounts where OAuth recently
+      // succeeded its values stay out of the history, which stops the two
+      // sources from alternating and manufacturing source-change and
+      // meter-correction noise.
       if (!this.oauthIsAuthoritative(observation.account, nowMs)) accepted.push(observation);
     }
     return this.ingest(accepted);
@@ -194,9 +200,9 @@ export class QuotaPieService {
       }
       try {
         const observations = await client.readRateLimits();
-        // 응답은 왔지만 창이 하나도 없으면 성공이 아니다. 성공으로 적으면
-        // /health는 recent-success로 통과시키고 doctor는 창 수로 실패시켜
-        // 두 표면이 다시 다른 말을 하게 된다.
+        // A response that arrives with no windows is not a success. Recording
+        // it as one lets /health pass it as recent-success while doctor fails
+        // it on window count, putting the two surfaces back at odds.
         if (!observations.length) {
           const message = "rate limit response contained no windows";
           this.codexPollState.set(profile.id, { count: 0, error: message });
@@ -225,15 +231,17 @@ export class QuotaPieService {
     return outcomes.flatMap((outcome) => outcome.events);
   }
 
-  // force는 doctor 전용이다. 진단은 다음 폴링 주기를 기다리지 않고 지금 상태를 봐야 한다.
-  // fetchImpl은 테스트에서 공급자 실패를 재현하기 위한 이음매다.
+  // force exists for doctor: a diagnostic has to see the state now rather
+  // than wait for the next polling interval. fetchImpl is the seam tests use
+  // to reproduce provider failures.
   async pollClaudeOAuth(
     nowMs = Date.now(),
     force = false,
     fetchImpl: typeof fetch = fetch,
   ): Promise<QuotaEvent[]> {
-    // force는 폴링 간격만 건너뛴다. 설정 게이트는 건너뛰지 않는다 — 꺼둔 사용자의
-    // 자격증명을 진단이 몰래 읽는 일이 없어야 한다.
+    // force skips the polling interval, not the configuration gate. A
+    // diagnostic must never quietly read credentials the user has opted out
+    // of sharing.
     if (!this.config.collection.claudeOAuthEnabled) return [];
     const emitted: QuotaEvent[] = [];
     for (const profile of this.config.accounts.claude.filter((item) => item.enabled)) {
@@ -346,8 +354,9 @@ export class QuotaPieService {
     });
   }
 
-  // 스냅샷 유무와 무관하게 "설정된 활성 계정" 전체를 돌려준다. Claude 계정이
-  // 목록에서 통째로 사라지는 대신, 왜 비어 있는지가 상태로 드러나야 한다.
+  // Returns every enabled configured account whether or not it has
+  // snapshots. Rather than a Claude account vanishing from the list, why it
+  // is empty should be visible as state.
   accountStates(nowMs = Date.now()): AccountState[] {
     const windows = this.analyses(nowMs);
     const sourceStates = this.db.collectionSourceStates();
@@ -387,12 +396,14 @@ export class QuotaPieService {
         if (authority !== 0) return authority;
         return (right.lastSuccessAtMs ?? 0) - (left.lastSuccessAtMs ?? 0);
       });
-      // 계정 건강도는 소스 중 가장 좋은 상태를 따른다. OAuth 실패가 최근 성공한
-      // 상태줄 수집을 덮어쓰지 않도록 하는 것이 이 규칙의 목적이다.
+      // Account health follows the best of its sources. The point of the rule
+      // is that an OAuth failure cannot overwrite a status-line collection
+      // that just succeeded.
       const best = sources[0] ?? null;
       const failing = sources.find((source) => source.errorCategory != null) ?? null;
-      // OAuth를 켜지 않았고 폴백 표본도 없는 상태는 고장이 아니라 미설정이다.
-      // 사용자가 둘 중 하나를 고르도록 안내해야 하므로 별도 분류로 표시한다.
+      // OAuth off with no fallback samples is not broken, it is unconfigured.
+      // The user has to be pointed at one of the two routes, so it gets its
+      // own category.
       const optedOut = profile.provider === "claude" &&
         !this.config.collection.claudeOAuthEnabled &&
         best == null;
@@ -408,7 +419,8 @@ export class QuotaPieService {
           health: best?.health ?? "never-attempted",
           activeSource: best && best.lastSuccessAtMs != null ? best.source : null,
           lastSuccessAtMs: best?.lastSuccessAtMs ?? null,
-          // 정상 동작 중인 계정에서는 폴백 소스의 과거 오류를 표면화하지 않는다.
+          // For a healthy account, a past error on the fallback source is not
+          // worth surfacing.
           errorCategory: best?.health === "recent-success"
             ? null
             : optedOut
@@ -564,7 +576,8 @@ export class QuotaPieService {
       );
       writeQuotaBoundary(document);
     } catch (error) {
-      // 경계면 쓰기 실패가 수집·알림 본연의 tick을 죽여서는 안 된다.
+      // A failed boundary write must not kill the collection and alert tick
+      // that is this loop's actual job.
       console.error(`[quotapie] quota.json publish failed: ${String(error)}`);
     }
   }
