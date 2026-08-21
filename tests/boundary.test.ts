@@ -128,6 +128,7 @@ describe("quota boundary document", () => {
   test("includes contract fields and marks healthy from the bottleneck provider state", () => {
     const document = buildQuotaBoundary([account()], null, NOW, []);
     expect(document.schemaVersion).toBe(QUOTA_BOUNDARY_SCHEMA_VERSION);
+    expect(QUOTA_BOUNDARY_SCHEMA_VERSION).toBe(2);
     expect(document.generatedAt).toBe(new Date(NOW).toISOString());
     expect(document.collection.healthy).toBeTrue();
     expect(document.collection.lastSampleAt).toBe(new Date(NOW - 1_000).toISOString());
@@ -307,5 +308,32 @@ describe("streaming line reader", () => {
 
   test("an empty stream yields nothing", async () => {
     expect(await collect([])).toEqual([]);
+  });
+});
+
+describe("the boundary carries meaning, not only a sentence", () => {
+  test("a headline is published as semantic fields with displayText alongside", () => {
+    const document = buildQuotaBoundary([account()], {
+      kind: "pace-risk",
+      provider: "codex",
+      account: "default",
+      accountLabel: "Main",
+      bucket: "codex:primary:10080",
+      windowKind: "weekly",
+      windowLabel: "Codex weekly",
+      remainingPercent: 89,
+      exhaustsAtMs: NOW + 86_400_000,
+      errorCategory: null,
+      title: "⚠ weekly at risk",
+      detail: "Codex · Main · Codex weekly",
+    }, NOW, []);
+    const headline = document.headline!;
+    // A consumer that localises reads these.
+    expect(headline.kind).toBe("pace-risk");
+    expect(headline.windowKind).toBe("weekly");
+    expect(headline.remainingPercent).toBe(89);
+    expect(headline.exhaustsAt).toBe(new Date(NOW + 86_400_000).toISOString());
+    // A consumer that does not still has something to show.
+    expect(headline.displayText).toBe("⚠ weekly at risk");
   });
 });

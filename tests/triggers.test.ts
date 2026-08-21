@@ -86,7 +86,7 @@ describe("trigger planning and claims", () => {
       details: {},
     };
     const decision = planTriggers([], [event], DEFAULT_CONFIG, 0, 2_000)[0];
-    expect(decision?.title).toBe("codex/default 한도 창 전환");
+    expect(decision?.title).toBe("codex/default limit window changed");
     expect(decision?.message).toBe(event.summary);
   });
 
@@ -265,14 +265,14 @@ describe("pace alert honesty", () => {
       [window({ recentBurnPerHour: 2, safePacePerActiveHour: 5, blendedBurnPerHour: 9, paceRatio: 1.8 })],
       [], DEFAULT_CONFIG, 0, 1_000,
     ).find((decision) => decision.key.endsWith(":pace"));
-    expect(habitOnly?.title).toContain("패턴 전망");
-    expect(habitOnly?.message).toContain("이 패턴이면");
+    expect(habitOnly?.title).toContain("pace forecast");
+    expect(habitOnly?.message).toContain("on this pattern");
 
     const measured = planTriggers(
       [window({ recentBurnPerHour: 12, safePacePerActiveHour: 5, blendedBurnPerHour: 10, paceRatio: 2 })],
       [], DEFAULT_CONFIG, 0, 1_000,
     ).find((decision) => decision.key.endsWith(":pace"));
-    expect(measured?.title).toContain("사용 속도 과열");
+    expect(measured?.title).toContain("burning too fast");
   });
 });
 
@@ -296,7 +296,7 @@ describe("alert wording stays readable", () => {
     );
     const pace = decisions.find((decision) => decision.key.endsWith(":pace"));
     expect(pace).toBeDefined();
-    expect(pace!.message).toContain("5일 17시간");
-    expect(pace!.message).not.toContain("8259분");
+    expect(pace!.message).toContain("5 days 17 hours");
+    expect(pace!.message).not.toContain("8259");
   });
 });

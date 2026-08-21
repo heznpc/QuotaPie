@@ -1,5 +1,15 @@
 import type { AppConfig, TimeRange } from "./config";
-import type { AccountCollectionState, AccountState, Headline, ProviderStatus, QuotaObservation, WindowAnalysis } from "./types";
+import { DEFAULT_LOCALE, formatDay, t, windowKindOf } from "./i18n";
+import type { Locale } from "./i18n";
+import type {
+  AccountCollectionState,
+  AccountState,
+  Headline,
+  HeadlineKind,
+  ProviderStatus,
+  QuotaObservation,
+  WindowAnalysis,
+} from "./types";
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -316,19 +326,11 @@ export function analysisHistoryStart(config: AppConfig, nowMs = Date.now()): num
   return nowMs - config.profile.historyDays * DAY_MS;
 }
 
-export function windowShortLabel(window: WindowAnalysis): string {
-  // Check the longest window first. Returning weekly up front would make the
-  // monthly branch unreachable.
-  if (window.windowSeconds != null) {
-    if (window.windowSeconds >= 28 * 86_400) return "월간";
-    if (window.windowSeconds >= 7 * 86_400) return "주간";
-    if (window.windowSeconds <= 6 * 3_600) return "5시간";
-  }
-  return window.label;
-}
-
-function accountTitle(state: AccountState): string {
-  return `${state.provider === "codex" ? "Codex" : "Claude"} · ${state.accountLabel}`;
+export function windowShortLabel(window: WindowAnalysis, locale: Locale = DEFAULT_LOCALE): string {
+  const kind = windowKindOf(window.windowSeconds);
+  // Look the name up directly. Deriving it by stripping words off a headline
+  // sentence works until the next language, which is not a useful guarantee.
+  return kind === "other" ? window.label : t(`window.${kind}`, {}, locale);
 }
 
 const RISK_ORDER: Record<WindowAnalysis["riskLevel"], number> = { "at-risk": 2, watch: 1, none: 0 };
@@ -336,32 +338,57 @@ const RISK_ORDER: Record<WindowAnalysis["riskLevel"], number> = { "at-risk": 2, 
 // Picks the single conclusion for the menu bar. The point is that it picks
 // the highest risk, not the lowest remaining percentage: 90% left still wins
 // the title if it is projected to run out six days before the reset.
-export function buildHeadline(states: AccountState[], nowMs = Date.now()): Headline {
+export function buildHeadline(
+  states: AccountState[],
+  nowMs = Date.now(),
+  locale: Locale = DEFAULT_LOCALE,
+): Headline {
   const enabled = states.filter((state) => state.enabled);
   const freshWindows = enabled.flatMap((state) =>
     state.windows.filter((window) => window.freshness === "fresh")
   );
+  const owner = (window: WindowAnalysis) =>
+    enabled.find((state) => state.provider === window.provider && state.account === window.account) ?? null;
+
+  const base = (kind: HeadlineKind): Headline => ({
+    kind,
+    provider: null,
+    account: null,
+    accountLabel: null,
+    bucket: null,
+    windowKind: null,
+    windowLabel: null,
+    remainingPercent: null,
+    exhaustsAtMs: null,
+    errorCategory: null,
+    title: "",
+    detail: null,
+  });
 
   const riskiest = [...freshWindows]
     .filter((window) => window.riskLevel === "at-risk")
     .sort((left, right) => (left.minutesBeforeReset ?? 0) - (right.minutesBeforeReset ?? 0))
     .sort((left, right) => right.bottleneckScore - left.bottleneckScore)[0];
   if (riskiest) {
-    const owner = enabled.find((state) =>
-      state.provider === riskiest.provider && state.account === riskiest.account
-    );
-    const exhausts = riskiest.exhaustsAtMs != null
-      ? new Date(riskiest.exhaustsAtMs).toLocaleString("ko-KR", { month: "long", day: "numeric" })
-      : null;
+    const account = owner(riskiest);
+    const windowKind = windowKindOf(riskiest.windowSeconds);
     return {
-      kind: "pace-risk",
-      title: `⚠ ${windowShortLabel(riskiest)} 위험`,
-      detail: owner
-        ? `${accountTitle(owner)} · ${riskiest.label}${exhausts ? ` · ${exhausts}경 소진 예상` : ""}`
-        : riskiest.label,
+      ...base("pace-risk"),
       provider: riskiest.provider,
       account: riskiest.account,
+      accountLabel: account?.accountLabel ?? riskiest.account,
       bucket: riskiest.bucket,
+      windowKind,
+      windowLabel: riskiest.label,
+      remainingPercent: riskiest.remainingPercent,
+      exhaustsAtMs: riskiest.exhaustsAtMs,
+      title: t("headline.pace-risk", { windowKind, label: riskiest.label }, locale),
+      detail: t("headline.pace-risk.detail", {
+        provider: providerName(riskiest.provider),
+        account: account?.accountLabel ?? riskiest.account,
+        label: riskiest.label,
+        date: riskiest.exhaustsAtMs != null ? formatDay(riskiest.exhaustsAtMs, locale) : undefined,
+      }, locale),
     };
   }
 
@@ -373,12 +400,15 @@ export function buildHeadline(states: AccountState[], nowMs = Date.now()): Headl
   );
   if (degraded) {
     return {
-      kind: "degraded",
-      title: "한도 확인 지연",
-      detail: `${accountTitle(degraded)} · ${collectionErrorText(degraded.collection)}`,
+      ...base("degraded"),
       provider: degraded.provider,
       account: degraded.account,
-      bucket: null,
+      accountLabel: degraded.accountLabel,
+      errorCategory: degraded.collection.errorCategory,
+      title: t("headline.degraded", {}, locale),
+      detail: `${providerName(degraded.provider)} · ${degraded.accountLabel} · ${
+        collectionErrorText(degraded.collection, locale)
+      }`,
     };
   }
 
@@ -388,14 +418,17 @@ export function buildHeadline(states: AccountState[], nowMs = Date.now()): Headl
   if (needsSetup || !freshWindows.length) {
     const target = needsSetup ?? enabled[0] ?? null;
     return {
-      kind: "setup",
-      title: "설정 필요",
-      detail: target
-        ? `${accountTitle(target)} · ${collectionErrorText(target.collection)}`
-        : "추적할 계정이 설정되지 않았습니다.",
+      ...base("setup"),
       provider: target?.provider ?? null,
       account: target?.account ?? null,
-      bucket: null,
+      accountLabel: target?.accountLabel ?? null,
+      errorCategory: target?.collection.errorCategory ?? null,
+      title: t("headline.setup", {}, locale),
+      detail: target
+        ? `${providerName(target.provider)} · ${target.accountLabel} · ${
+          collectionErrorText(target.collection, locale)
+        }`
+        : t("headline.noAccounts", {}, locale),
     };
   }
 
@@ -404,32 +437,36 @@ export function buildHeadline(states: AccountState[], nowMs = Date.now()): Headl
     if (rank !== 0) return rank;
     return right.bottleneckScore - left.bottleneckScore;
   })[0]!;
-  const owner = enabled.find((state) =>
-    state.provider === leader.provider && state.account === leader.account
-  );
+  const account = owner(leader);
   return {
-    kind: "normal",
-    title: leader.remainingPercent != null
-      ? `${Math.round(leader.remainingPercent)}% 남음`
-      : "한도 확인됨",
-    detail: owner ? `${accountTitle(owner)} · ${leader.label}` : leader.label,
+    ...base("normal"),
     provider: leader.provider,
     account: leader.account,
+    accountLabel: account?.accountLabel ?? leader.account,
     bucket: leader.bucket,
+    windowKind: windowKindOf(leader.windowSeconds),
+    windowLabel: leader.label,
+    remainingPercent: leader.remainingPercent,
+    exhaustsAtMs: leader.exhaustsAtMs,
+    title: leader.remainingPercent != null
+      ? t("headline.normal", { percent: leader.remainingPercent }, locale)
+      : t("headline.normal.unknown", {}, locale),
+    detail: t("headline.detail", {
+      provider: providerName(leader.provider),
+      account: account?.accountLabel ?? leader.account,
+      label: leader.label,
+    }, locale),
   };
 }
 
-export function collectionErrorText(collection: AccountCollectionState): string {
-  switch (collection.errorCategory) {
-    case "auth-required": return "로그인이 필요합니다";
-    case "auth-expired": return "로그인이 만료됐습니다";
-    case "rate-limited": return "공급자 요청 한도에 걸렸습니다";
-    case "network": return "네트워크에 연결할 수 없습니다";
-    case "not-configured": return "수집이 설정되지 않았습니다";
-    case "isolation-unsafe": return "계정 자격증명 격리가 필요합니다";
-    case "no-windows": return "응답에 한도 창이 없습니다";
-    case "provider-error": return "공급자 응답을 읽지 못했습니다";
-    default:
-      return collection.health === "never-attempted" ? "아직 수집을 시도하지 않았습니다" : "수집이 지연되고 있습니다";
-  }
+function providerName(provider: ProviderStatus["provider"]): string {
+  return provider === "codex" ? "Codex" : "Claude";
+}
+
+export function collectionErrorText(
+  collection: AccountCollectionState,
+  locale: Locale = DEFAULT_LOCALE,
+): string {
+  const key = collection.errorCategory ?? collection.health;
+  return t(`collection.${key}`, {}, locale);
 }

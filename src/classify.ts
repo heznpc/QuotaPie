@@ -1,14 +1,24 @@
 import type { AppConfig } from "./config";
+import { resolveLocale, t } from "./i18n";
 import type { QuotaEvent, QuotaObservation } from "./types";
 
+// An event carries its kind and the parameters that describe it. The summary is
+// a rendering of those, kept alongside so stored history stays readable and so
+// consumers that do not want to translate anything have something to show.
 function event(
   next: QuotaObservation,
   kind: QuotaEvent["kind"],
   severity: QuotaEvent["severity"],
   confidence: QuotaEvent["confidence"],
-  summary: string,
+  config: AppConfig,
   details: QuotaEvent["details"] = {},
 ): QuotaEvent {
+  const params = {
+    label: next.label,
+    provider: next.provider,
+    account: next.account,
+    ...details,
+  };
   return {
     provider: next.provider,
     account: next.account,
@@ -17,8 +27,8 @@ function event(
     severity,
     occurredAtMs: next.observedAtMs,
     confidence,
-    summary,
-    details,
+    summary: t(`event.${kind}`, params, resolveLocale(config.profile.locale)),
+    details: { label: next.label, ...details },
   };
 }
 
@@ -28,12 +38,12 @@ export function classifyDelta(
   config: AppConfig,
 ): QuotaEvent[] {
   if (!previous) {
-    return [event(next, "first_observation", "info", "high", `${next.label} 관측을 시작했습니다.`)];
+    return [event(next, "first_observation", "info", "high", config,)];
   }
 
   if (next.observedAtMs < previous.observedAtMs) {
     return [
-      event(next, "out_of_order", "info", "high", `${next.label}의 오래된 응답을 무시했습니다.`, {
+      event(next, "out_of_order", "info", "high", config, {
         previousObservedAtMs: previous.observedAtMs,
         nextObservedAtMs: next.observedAtMs,
       }),
@@ -43,7 +53,7 @@ export function classifyDelta(
   const events: QuotaEvent[] = [];
   if (next.source !== previous.source) {
     events.push(
-      event(next, "source_changed", "info", "high", `${next.label} 데이터 소스가 변경됐습니다.`, {
+      event(next, "source_changed", "info", "high", config, {
         from: previous.source,
         to: next.source,
       }),
@@ -53,7 +63,7 @@ export function classifyDelta(
   if (next.usedPercent == null || next.resetsAtMs == null) {
     if (previous.usedPercent != null || previous.resetsAtMs != null) {
       events.push(
-        event(next, "source_unknown", "warning", "high", `${next.label} 원본 값이 일시적으로 사라졌습니다.`, {
+        event(next, "source_unknown", "warning", "high", config, {
           usedPercentMissing: next.usedPercent == null,
           resetsAtMissing: next.resetsAtMs == null,
         }),
@@ -84,7 +94,7 @@ export function classifyDelta(
           "scheduled_reset",
           "info",
           strongDrop ? "high" : smallDrop ? "medium" : "low",
-          `${next.label} 한도가 예정대로 갱신됐습니다.`,
+          config,
           {
             usedPercentBefore: previousUsed,
             usedPercentAfter: next.usedPercent,
@@ -104,7 +114,7 @@ export function classifyDelta(
           "external_relief",
           "info",
           strongDrop ? "high" : smallDrop ? "medium" : "low",
-          `${next.label}에 예정 밖 충전이 감지됐습니다.`,
+          config,
           {
             usedPercentBefore: previousUsed,
             usedPercentAfter: next.usedPercent,
@@ -121,7 +131,7 @@ export function classifyDelta(
           "allowance_relief",
           "info",
           "medium",
-          `${next.label} 사용률이 크게 낮아졌습니다. 리셋·한도 증액·서버 보정 중 하나일 수 있습니다.`,
+          config,
           {
             usedPercentBefore: previousUsed,
             usedPercentAfter: next.usedPercent,
@@ -131,14 +141,14 @@ export function classifyDelta(
       );
     } else if (smallDrop) {
       events.push(
-        event(next, "meter_correction", "info", "low", `${next.label} 사용률이 소폭 역행했습니다.`, {
+        event(next, "meter_correction", "info", "low", config, {
           usedPercentBefore: previousUsed,
           usedPercentAfter: next.usedPercent,
         }),
       );
     } else if (resetChanged) {
       events.push(
-        event(next, "schedule_rebased", "info", "high", `${next.label} 리셋 시각이 재조정됐습니다.`, {
+        event(next, "schedule_rebased", "info", "high", config, {
           shiftMinutes: Math.round(resetShiftMs / 60_000),
           previousResetsAtMs: previousReset,
           nextResetsAtMs: next.resetsAtMs,
@@ -153,7 +163,7 @@ export function classifyDelta(
     next.creditBalance < previous.creditBalance - 0.000_001
   ) {
     events.push(
-      event(next, "paid_usage", "warning", "high", `${next.provider} 유료 크레딧이 사용됐습니다.`, {
+      event(next, "paid_usage", "warning", "high", config, {
         balanceBefore: previous.creditBalance,
         balanceAfter: next.creditBalance,
       }),
@@ -164,7 +174,7 @@ export function classifyDelta(
     next.creditBalance > previous.creditBalance + 0.000_001
   ) {
     events.push(
-      event(next, "credit_topup", "warning", "medium", `${next.provider} 크레딧 잔액이 증가했습니다.`, {
+      event(next, "credit_topup", "warning", "medium", config, {
         balanceBefore: previous.creditBalance,
         balanceAfter: next.creditBalance,
       }),
@@ -177,7 +187,7 @@ export function classifyDelta(
     next.resetCreditsAvailable < previous.resetCreditsAvailable
   ) {
     events.push(
-      event(next, "banked_reset_consumed", "info", "high", "저장형 리셋이 사용된 것으로 보입니다.", {
+      event(next, "banked_reset_consumed", "info", "high", config, {
         countBefore: previous.resetCreditsAvailable,
         countAfter: next.resetCreditsAvailable,
       }),

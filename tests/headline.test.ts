@@ -84,9 +84,12 @@ describe("menu bar headline", () => {
       })],
     })], NOW);
     expect(headline.kind).toBe("pace-risk");
-    expect(headline.title).toBe("⚠ 주간 위험");
-    expect(headline.title).not.toContain("90");
+    // The semantic fields are the contract; the sentence is a rendering of them.
+    expect(headline.windowKind).toBe("weekly");
     expect(headline.bucket).toBe("codex:primary:10080");
+    expect(headline.remainingPercent).toBe(90);
+    expect(headline.title).toBe("⚠ weekly at risk");
+    expect(headline.title).not.toContain("90");
   });
 
   // The other direction: little left is not a risk when the reset is close.
@@ -102,7 +105,8 @@ describe("menu bar headline", () => {
       })],
     })], NOW);
     expect(headline.kind).toBe("normal");
-    expect(headline.title).toBe("10% 남음");
+    expect(headline.remainingPercent).toBe(10);
+    expect(headline.title).toBe("10% left");
   });
 
   test("a riskier account outranks a healthier one with less remaining", () => {
@@ -152,8 +156,9 @@ describe("menu bar headline", () => {
         }],
     })], NOW);
     expect(headline.kind).toBe("setup");
-    expect(headline.title).toBe("설정 필요");
-    expect(headline.detail).toContain("로그인이 필요합니다");
+    expect(headline.errorCategory).toBe("auth-required");
+    expect(headline.title).toBe("Setup needed");
+    expect(headline.detail).toContain("Sign-in required");
   });
 
   test("stale collection on a tracked account reports delay rather than its last number", () => {
@@ -168,7 +173,7 @@ describe("menu bar headline", () => {
         }],
     })], NOW);
     expect(headline.kind).toBe("degraded");
-    expect(headline.title).toBe("한도 확인 지연");
+    expect(headline.title).toBe("Limits unconfirmed");
   });
 
   test("no configured accounts still yields an honest setup headline", () => {
@@ -178,16 +183,39 @@ describe("menu bar headline", () => {
   });
 
   test("short labels collapse window lengths for the title", () => {
-    expect(windowShortLabel(window())).toBe("주간");
-    expect(windowShortLabel(window({ windowSeconds: 18_000 }))).toBe("5시간");
+    expect(windowShortLabel(window())).toBe("weekly");
+    expect(windowShortLabel(window({ windowSeconds: 18_000 }))).toBe("5-hour");
+  });
+
+  test("the same conclusion renders in whichever locale is asked for", () => {
+    const risky = [account({
+      windows: [window({
+        usedPercent: 10,
+        remainingPercent: 90,
+        paceRatio: 7.57,
+        exhaustsAtMs: NOW + 86_400_000,
+        minutesBeforeReset: 6 * 24 * 60,
+        riskLevel: "at-risk",
+        bottleneckScore: 2.1,
+      })],
+    })];
+    const english = buildHeadline(risky, NOW, "en");
+    const korean = buildHeadline(risky, NOW, "ko");
+    // Same meaning, different sentence.
+    expect(korean.kind).toBe(english.kind);
+    expect(korean.windowKind).toBe(english.windowKind);
+    expect(korean.remainingPercent).toBe(english.remainingPercent);
+    expect(english.title).toBe("⚠ weekly at risk");
+    expect(korean.title).toBe("⚠ 주간 위험");
   });
 });
 
 describe("window short labels", () => {
   test("a monthly window is not swallowed by the weekly branch", () => {
-    expect(windowShortLabel(window({ windowSeconds: 30 * 86_400 }))).toBe("월간");
-    expect(windowShortLabel(window({ windowSeconds: 28 * 86_400 }))).toBe("월간");
-    expect(windowShortLabel(window({ windowSeconds: 7 * 86_400 }))).toBe("주간");
+    expect(windowShortLabel(window({ windowSeconds: 30 * 86_400 }))).toBe("monthly");
+    expect(windowShortLabel(window({ windowSeconds: 28 * 86_400 }))).toBe("monthly");
+    expect(windowShortLabel(window({ windowSeconds: 7 * 86_400 }))).toBe("weekly");
+    expect(windowShortLabel(window({ windowSeconds: 30 * 86_400 }), "ko")).toBe("월간");
   });
 
   test("an unknown window length keeps the provider's own label", () => {

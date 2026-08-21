@@ -1,3 +1,5 @@
+import type { WindowKind } from "./i18n";
+
 export type Provider = "codex" | "claude";
 
 export type SourceQuality = "authoritative" | "fallback" | "derived";
@@ -198,11 +200,22 @@ export type HeadlineKind = "normal" | "pace-risk" | "degraded" | "setup";
 // The menu bar title is one conclusion, not a row of provider abbreviations.
 // Which conclusion wins is decided here, where it can be tested; the app only
 // draws it.
+//
+// The semantic fields are the contract. title and detail are a convenience
+// rendering in the process locale, so a consumer that does not want to
+// translate anything still has something to display, and one that does can
+// ignore them entirely.
 export interface Headline {
   kind: HeadlineKind;
-  title: string;
-  detail: string | null;
   provider: Provider | null;
   account: string | null;
+  accountLabel: string | null;
   bucket: string | null;
+  windowKind: WindowKind | null;
+  windowLabel: string | null;
+  remainingPercent: number | null;
+  exhaustsAtMs: number | null;
+  errorCategory: CollectionErrorCategory | null;
+  title: string;
+  detail: string | null;
 }
