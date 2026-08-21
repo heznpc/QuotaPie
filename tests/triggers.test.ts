@@ -3,6 +3,7 @@ import { DEFAULT_CONFIG } from "../src/config";
 import { QuotaDatabase } from "../src/db";
 import { alertScope, deliverTrigger, planTriggers } from "../src/triggers";
 import type { QuotaEvent, WindowAnalysis } from "../src/types";
+import { AlertStore } from "../src/storage/alert-store";
 
 function window(overrides: Partial<WindowAnalysis> = {}): WindowAnalysis {
   return {
@@ -104,13 +105,13 @@ describe("trigger planning and claims", () => {
       details: {},
     };
     expect(db.insertEvent(first)).toBeTrue();
-    const firstClaim = db.claimEventAlert(first.id!, "event:codex:x:paid_usage", 1_000, 30_000);
+    const firstClaim = new AlertStore(db.storage).claimEvent(first.id!, "event:codex:x:paid_usage", 1_000, 30_000);
     expect(firstClaim).not.toBeNull();
-    expect(db.completeEventAlert(first.id!, "event:codex:x:paid_usage", firstClaim!, 1_000)).toBeTrue();
+    expect(new AlertStore(db.storage).completeEvent(first.id!, "event:codex:x:paid_usage", firstClaim!, 1_000)).toBeTrue();
     const second: QuotaEvent = { ...first, id: undefined, occurredAtMs: 2_000 };
     expect(db.insertEvent(second)).toBeTrue();
-    expect(db.claimEventAlert(second.id!, "event:codex:x:paid_usage", 2_000, 30_000)).toBeNull();
-    expect(db.pendingAlertEvents()).toEqual([]);
+    expect(new AlertStore(db.storage).claimEvent(second.id!, "event:codex:x:paid_usage", 2_000, 30_000)).toBeNull();
+    expect(new AlertStore(db.storage).pendingEvents()).toEqual([]);
     db.close();
   });
 
@@ -131,51 +132,51 @@ describe("trigger planning and claims", () => {
     const second = event(2_000);
     db.insertEvent(first);
     db.insertEvent(second);
-    const staleToken = db.claimEventAlert(first.id!, "event:codex:x:schedule_rebased", 1_000, 0, 5_000);
+    const staleToken = new AlertStore(db.storage).claimEvent(first.id!, "event:codex:x:schedule_rebased", 1_000, 0, 5_000);
     expect(staleToken).not.toBeNull();
-    expect(db.claimEventAlert(second.id!, "event:codex:x:schedule_rebased", 2_000, 0, 5_000)).toBeNull();
-    const currentToken = db.claimEventAlert(first.id!, "event:codex:x:schedule_rebased", 6_001, 0, 5_000);
+    expect(new AlertStore(db.storage).claimEvent(second.id!, "event:codex:x:schedule_rebased", 2_000, 0, 5_000)).toBeNull();
+    const currentToken = new AlertStore(db.storage).claimEvent(first.id!, "event:codex:x:schedule_rebased", 6_001, 0, 5_000);
     expect(currentToken).not.toBeNull();
-    expect(db.releaseEventAlert(first.id!, "event:codex:x:schedule_rebased", staleToken!)).toBeFalse();
-    expect(db.completeEventAlert(first.id!, "event:codex:x:schedule_rebased", currentToken!, 6_100)).toBeTrue();
+    expect(new AlertStore(db.storage).releaseEvent(first.id!, "event:codex:x:schedule_rebased", staleToken!)).toBeFalse();
+    expect(new AlertStore(db.storage).completeEvent(first.id!, "event:codex:x:schedule_rebased", currentToken!, 6_100)).toBeTrue();
     db.close();
   });
 
   test("keeps a completed threshold disarmed until explicit recovery", () => {
     const db = new QuotaDatabase(":memory:");
-    const firstClaim = db.claimAlert("codex:x:remaining:5", 1_000, 0);
+    const firstClaim = new AlertStore(db.storage).claim("codex:x:remaining:5", 1_000, 0);
     expect(firstClaim).not.toBeNull();
-    expect(db.completeAlertClaim("codex:x:remaining:5", firstClaim!.token, 1_000)).toBeTrue();
-    expect(db.claimAlert("codex:x:remaining:5", 2_000, 0)).toBeNull();
-    db.setAlertState("codex:x:remaining:5", 1_000, true);
-    expect(db.claimAlert("codex:x:remaining:5", 2_000, 0)).not.toBeNull();
+    expect(new AlertStore(db.storage).completeClaim("codex:x:remaining:5", firstClaim!.token, 1_000)).toBeTrue();
+    expect(new AlertStore(db.storage).claim("codex:x:remaining:5", 2_000, 0)).toBeNull();
+    new AlertStore(db.storage).setState("codex:x:remaining:5", 1_000, true);
+    expect(new AlertStore(db.storage).claim("codex:x:remaining:5", 2_000, 0)).not.toBeNull();
     db.close();
   });
 
   test("reclaims a threshold after a crashed delivery lease expires", () => {
     const db = new QuotaDatabase(":memory:");
-    const staleToken = db.claimAlert("codex:x:remaining:5", 1_000, 0, 5_000);
+    const staleToken = new AlertStore(db.storage).claim("codex:x:remaining:5", 1_000, 0, 5_000);
     expect(staleToken).not.toBeNull();
-    expect(db.claimAlert("codex:x:remaining:5", 2_000, 0, 5_000)).toBeNull();
-    const currentToken = db.claimAlert("codex:x:remaining:5", 6_001, 0, 5_000);
+    expect(new AlertStore(db.storage).claim("codex:x:remaining:5", 2_000, 0, 5_000)).toBeNull();
+    const currentToken = new AlertStore(db.storage).claim("codex:x:remaining:5", 6_001, 0, 5_000);
     expect(currentToken).not.toBeNull();
-    expect(db.releaseAlertClaim("codex:x:remaining:5", staleToken!.token)).toBeFalse();
-    expect(db.completeAlertClaim("codex:x:remaining:5", currentToken!.token, 6_100)).toBeTrue();
+    expect(new AlertStore(db.storage).releaseClaim("codex:x:remaining:5", staleToken!.token)).toBeFalse();
+    expect(new AlertStore(db.storage).completeClaim("codex:x:remaining:5", currentToken!.token, 6_100)).toBeTrue();
     db.close();
   });
 
   test("clears partial channel delivery state when a threshold recovers", () => {
     const db = new QuotaDatabase(":memory:");
     const key = "codex:x:remaining:5";
-    const claim = db.claimAlert(key, 1_000, 0);
+    const claim = new AlertStore(db.storage).claim(key, 1_000, 0);
     expect(claim).not.toBeNull();
     const deliveryKey = `threshold:${key}:${claim!.generation}`;
-    db.markChannelDelivered(deliveryKey, "macos-notification", 1_100);
-    db.releaseAlertClaim(key, claim!.token);
-    expect(db.deliveredChannels(deliveryKey)).toEqual(["macos-notification"]);
-    db.setAlertState(key, 0, true);
-    expect(db.deliveredChannels(deliveryKey)).toEqual([]);
-    const nextClaim = db.claimAlert(key, 2_000, 0);
+    new AlertStore(db.storage).markChannelDelivered(deliveryKey, "macos-notification", 1_100);
+    new AlertStore(db.storage).releaseClaim(key, claim!.token);
+    expect(new AlertStore(db.storage).deliveredChannels(deliveryKey)).toEqual(["macos-notification"]);
+    new AlertStore(db.storage).setState(key, 0, true);
+    expect(new AlertStore(db.storage).deliveredChannels(deliveryKey)).toEqual([]);
+    const nextClaim = new AlertStore(db.storage).claim(key, 2_000, 0);
     expect(nextClaim?.generation).toBe(claim!.generation + 1);
     db.close();
   });
