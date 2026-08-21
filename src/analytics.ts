@@ -232,8 +232,8 @@ export function analyzeWindow(
         ? "medium"
         : "low";
 
-  // 위험 판정은 "갱신 전에 마르는가" 하나로 좁힌다. 표본이 없어 예측 자체가
-  // 불가능하면(confidence none) 위험을 주장하지 않는다.
+  // Risk is narrowed to one question: will this run dry before it resets?
+  // With no samples to forecast from (confidence none), no risk is claimed.
   const projectedShortfall = minutesBeforeReset != null && minutesBeforeReset > 0;
   let riskLevel: WindowAnalysis["riskLevel"] = "none";
   if (freshness === "fresh") {
@@ -317,7 +317,8 @@ export function analysisHistoryStart(config: AppConfig, nowMs = Date.now()): num
 }
 
 export function windowShortLabel(window: WindowAnalysis): string {
-  // 긴 창부터 검사한다. 주간을 먼저 반환하면 월간 분기에 영원히 닿지 않는다.
+  // Check the longest window first. Returning weekly up front would make the
+  // monthly branch unreachable.
   if (window.windowSeconds != null) {
     if (window.windowSeconds >= 28 * 86_400) return "월간";
     if (window.windowSeconds >= 7 * 86_400) return "주간";
@@ -332,8 +333,9 @@ function accountTitle(state: AccountState): string {
 
 const RISK_ORDER: Record<WindowAnalysis["riskLevel"], number> = { "at-risk": 2, watch: 1, none: 0 };
 
-// 메뉴 막대에 올릴 결론 하나를 고른다. 가장 낮은 잔량이 아니라 가장 높은 위험을
-// 고른다는 점이 핵심이다: 잔량 90%라도 갱신보다 엿새 먼저 마를 전망이면 그게 제목이다.
+// Picks the single conclusion for the menu bar. The point is that it picks
+// the highest risk, not the lowest remaining percentage: 90% left still wins
+// the title if it is projected to run out six days before the reset.
 export function buildHeadline(states: AccountState[], nowMs = Date.now()): Headline {
   const enabled = states.filter((state) => state.enabled);
   const freshWindows = enabled.flatMap((state) =>
@@ -363,7 +365,8 @@ export function buildHeadline(states: AccountState[], nowMs = Date.now()): Headl
     };
   }
 
-  // 수집이 끊긴 계정은 "괜찮다"고 말할 근거가 없다. 위험 없음과 확인 불가를 구분한다.
+  // An account whose collection has stalled gives no grounds for saying
+  // things are fine. "No risk" and "cannot tell" are kept apart.
   const degraded = enabled.find((state) =>
     state.collection.health === "stale-success" ||
     (state.collection.health === "attempted-then-failed" && state.windows.length > 0)

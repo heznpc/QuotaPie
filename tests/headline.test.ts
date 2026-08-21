@@ -69,7 +69,8 @@ function account(overrides: AccountOverrides = {}): AccountState {
 }
 
 describe("menu bar headline", () => {
-  // 실측된 모순: 잔량 90%라 정상으로 보였지만 속도 7.57배로 갱신보다 엿새 먼저 마를 전망이었다.
+  // The contradiction measured in production: 90% remaining looked healthy
+  // while a 7.57x pace put it six days short of the reset.
   test("high remaining with a projected shortfall is a risk headline, not a healthy percentage", () => {
     const headline = buildHeadline([account({
       windows: [window({
@@ -88,7 +89,7 @@ describe("menu bar headline", () => {
     expect(headline.bucket).toBe("codex:primary:10080");
   });
 
-  // 반대 방향: 잔량이 적어도 곧 갱신되면 위험이 아니다.
+  // The other direction: little left is not a risk when the reset is close.
   test("low remaining that resets soon stays a normal headline", () => {
     const headline = buildHeadline([account({
       windows: [window({

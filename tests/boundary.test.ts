@@ -207,7 +207,8 @@ describe("burn leaderboard window", () => {
   test("a long-running transcript only contributes tokens spent inside the window", async () => {
     const dir = mkdtempSync(join(tmpdir(), "tq-burn-"));
     const now = Date.parse("2026-08-20T12:00:00.000Z");
-    // 오늘 한 줄만 추가된 3개월짜리 대화. mtime은 최근이지만 과거 토큰은 최근 소진이 아니다.
+    // A three-month-old conversation with one line added today. The mtime is
+    // recent, but the old tokens are not recent burn.
     transcript(dir, "old-and-new.jsonl", [
       usageLine("2026-05-20T12:00:00.000Z", 1_000_000, "/tmp/project-a"),
       usageLine("2026-06-20T12:00:00.000Z", 1_000_000),

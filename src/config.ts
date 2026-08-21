@@ -20,7 +20,8 @@ export interface ClaudeAccountConfig {
   label: string;
   configDir: string;
   enabled: boolean;
-  // 비표준 위치에 자격증명을 둔 프로필용 탈출구. 값은 조회에만 쓰고 저장하지 않는다.
+  // Escape hatch for profiles whose credentials live somewhere non-standard.
+  // The value is used to look them up and is never stored.
   keychainService: string | null;
 }
 
@@ -45,9 +46,10 @@ export interface AppConfig {
     staleAfterSeconds: number;
     codexCommand: string;
     codexEnabled: boolean;
-    // 기본값은 false다. 켜면 Claude Code의 로컬 OAuth 자격증명을 읽어 공식
-    // usage 엔드포인트를 폴링한다. 남의 앱 자격증명을 건드리는 동작이므로
-    // 설치만으로 시작되지 않고, 사용자가 명시적으로 켠 경우에만 동작한다.
+    // Defaults to false. When on, this reads Claude Code's local OAuth
+    // credentials to poll the official usage endpoint. Touching credentials
+    // another application owns should not begin because someone ran an
+    // installer, so it runs only when explicitly enabled.
     claudeOAuthEnabled: boolean;
     claudeSessionTtlSeconds: number;
   };
@@ -171,7 +173,8 @@ function mergeConfig(base: AppConfig, patch: Partial<AppConfig>): AppConfig {
     },
     accounts: {
       codex: patch.accounts?.codex ?? base.accounts.codex,
-      // 사용자 설정에 없는 선택 필드는 기본값으로 채워, 이후 코드가 undefined를 다루지 않게 한다.
+      // Fill optional fields the user's config omits, so nothing downstream
+      // has to handle undefined.
       claude: (patch.accounts?.claude ?? base.accounts.claude).map((profile) => ({
         ...profile,
         keychainService: profile.keychainService ?? null,
@@ -242,9 +245,10 @@ function validateAccounts(config: AppConfig): void {
   }
 }
 
-// 로컬 전용은 이 제품의 계약이지 기본값 취향이 아니다. 대시보드 API에는 인증이
-// 없으므로, 루프백이 아닌 주소에 bind하는 순간 같은 네트워크의 누구나 사용량과
-// 계정 별칭을 읽을 수 있게 된다. 설정으로도 그 문이 열리지 않게 막는다.
+// Local-only is this product's contract, not merely a safe default. The
+// dashboard API has no authentication, so binding to anything but loopback
+// would let anyone on the same network read usage and account aliases.
+// Configuration is not allowed to open that door either.
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
 function validateDashboard(config: AppConfig): void {

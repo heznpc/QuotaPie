@@ -38,7 +38,8 @@ export function startDashboard(service: QuotaPieService, config: AppConfig) {
           nowMs,
           headline: buildHeadline(accounts, nowMs),
           accounts,
-          // 기존 소비자를 위해 남겨둔 표현. 창이 있는 계정만 담기므로 신규 소비자는 accounts를 쓴다.
+          // Kept for existing consumers. It only contains accounts that have
+          // windows, so new consumers should read accounts instead.
           statuses: service.statuses(nowMs),
           events: service.recentEvents(30),
         });
@@ -48,8 +49,9 @@ export function startDashboard(service: QuotaPieService, config: AppConfig) {
         return json({ events: service.recentEvents(limit) });
       }
       if (url.pathname === "/health") {
-        // 건강은 창의 신선도가 아니라 수집 자체의 상태로 판정한다. 활성 계정 중
-        // 하나라도 최근 성공이 없으면 200을 돌려주지 않는다.
+        // Health is judged by the state of collection itself, not by window
+        // freshness. If any enabled account lacks a recent success, this does
+        // not return 200.
         const nowMs = Date.now();
         const accounts = service.accountStates(nowMs);
         const degraded = accounts.filter((account) => account.collection.health !== "recent-success");

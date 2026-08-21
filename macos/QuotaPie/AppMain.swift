@@ -20,8 +20,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var refreshTimer: Timer?
     private var isFetching = false
     private var failureIndex = 0
-    private var eventMonitor: Any?
     private let retrySeconds: [TimeInterval] = [2, 5, 15, 30]
+#if DEBUG
+    private var debugWindow: NSWindow?
+#endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -40,13 +42,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
 
         installPopoverContent()
+        installKeyboardShortcuts()
         render()
         refresh()
+
+#if DEBUG
+        if ProcessInfo.processInfo.environment["QUOTAPIE_DEBUG_AUTO_OPEN"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.showDebugWindow()
+            }
+        }
+#endif
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
-        if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
     }
 
     @objc private func togglePopover() {
@@ -56,7 +66,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         guard let button = statusItem.button else { return }
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
-        // 팝오버가 열려 있는 동안에도 값이 늙지 않도록 즉시 한 번 더 읽는다.
+        // Read again immediately so the values are not already ageing by the
+        // time the popover finishes opening.
         refresh()
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -72,11 +83,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             onQuit: { NSApp.terminate(nil) }
         )
         let controller = NSHostingController(rootView: view)
-        // fittingSize는 레이아웃 전에 계산돼 헤더가 잘린다. SwiftUI가 스스로
-        // 크기를 알리게 두고 팝오버가 그 값을 따르게 한다.
+        // fittingSize is computed before layout and clips the header. Let
+        // SwiftUI report its own size and have the popover follow it.
         controller.sizingOptions = [.preferredContentSize]
         popover.contentViewController = controller
     }
+
+    /// Command-key shortcuts have to be real key equivalents.
+    ///
+    /// A local NSEvent monitor never sees them: AppKit routes command combinations
+    /// through performKeyEquivalent on the key window and the main menu first, and
+    /// drops them when nothing claims them, so they never arrive as a plain keyDown.
+    /// An accessory app still owns a main menu even though the menu bar does not
+    /// show it, which is where these belong.
+    private func installKeyboardShortcuts() {
+        let mainMenu = NSMenu()
+
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "새로고침", action: #selector(refresh), keyEquivalent: "r")
+        appMenu.addItem(withTitle: "상태 복사", action: #selector(copyStatus), keyEquivalent: "c")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "QuotaPie 종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        for item in appMenu.items where item.action != nil && item.action != #selector(NSApplication.terminate(_:)) {
+            item.target = self
+        }
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+
+        NSApp.mainMenu = mainMenu
+    }
+
+#if DEBUG
+    private func showDebugWindow() {
+        guard let controller = popover.contentViewController else { return }
+        NSApp.setActivationPolicy(.regular)
+        let window = NSWindow(contentViewController: controller)
+        window.title = "QuotaPie UI Debug"
+        window.styleMask = [.titled, .closable, .resizable]
+        window.setContentSize(NSSize(width: 380, height: 560))
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        debugWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+    }
+#endif
 
     private func scheduleRefresh(after seconds: TimeInterval) {
         refreshTimer?.invalidate()
@@ -111,11 +162,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
-    /// 제목은 결론 하나다. 어떤 결론인지는 서비스가 고르고, 여기서는 색만 입힌다.
+    /// The title is one conclusion. The service decides which one; this only
+    /// gives it a colour.
     ///
-    /// 전송이 끊긴 동안에는 마지막으로 받은 값을 제목에 쓰지 않는다. 캐시된 숫자는
-    /// 팝오버에서 "마지막 정상값"이라고 밝히고 보여주면 되지만, 메뉴 막대는 지금
-    /// 상태를 말하는 자리라 늙은 값을 정상 색으로 띄우면 그대로 거짓말이 된다.
+    /// While the transport is down, the last value received is not used as the
+    /// title. Cached numbers are fine in the popover, labelled as the last good
+    /// reading, but the menu bar states what is true now — showing an old
+    /// number in the normal colour there is simply a lie.
     private func render() {
         let headline = popoverModel.payload?.headline
         let title: String
@@ -141,7 +194,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusItem.button?.toolTip = popoverModel.lastError ?? headline?.detail ?? "Codex와 Claude의 실사용 한도"
     }
 
-    private func copyStatus() { copyToPasteboard(plainStatus()) }
+    @objc private func copyStatus() { copyToPasteboard(plainStatus()) }
 
     private func copyToPasteboard(_ value: String) {
         let pasteboard = NSPasteboard.general

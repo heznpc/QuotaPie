@@ -315,9 +315,11 @@ async function main(): Promise<number> {
             }
           }
         }
-        // 상태줄 설정 여부가 아니라 실제 수집 결과를 본다. 설정만 보고 통과시키면
-        // 34일간 표본 0건인 계정이 정상으로 보이는 거짓 초록이 만들어진다.
-        // 게이트가 꺼져 있으면 이 호출은 자격증명을 읽지 않고 즉시 반환한다.
+        // Judge by actual collection results, not by whether a status line is
+        // configured. Passing on configuration alone is how an account with
+        // zero samples in 34 days looked healthy.
+        // With the gate off, this call returns immediately without reading
+        // any credentials.
         await service.pollClaudeOAuth(Date.now(), true);
         for (const account of service.accountStates().filter((state) => state.provider === "claude")) {
           const oauth = account.collection.sources.find((source) => source.source === CLAUDE_OAUTH_SOURCE);
@@ -335,7 +337,7 @@ async function main(): Promise<number> {
             ok: healthy,
             detail,
           });
-          // 폴백 소스는 없어도 되지만, 상태는 드러내 둔다.
+          // The fallback source is optional, but its state is worth showing.
           if (!healthy && statusLine?.health === "recent-success") {
             checks.push({
               check: `claude status line [${account.account}]`,
@@ -350,8 +352,9 @@ async function main(): Promise<number> {
               detail: "run `claude auth login` in a terminal, then re-run doctor",
             });
           }
-          // OAuth를 켜지 않았다면 상태줄이 유일한 경로다. 이때는 훅 설정 여부를
-          // 알려줘야 사용자가 두 경로 중 하나를 고를 수 있다.
+          // With OAuth off, the status line is the only path left, so report
+          // whether the hook is configured — otherwise the user cannot tell
+          // which of the two routes to take.
           if (!config.collection.claudeOAuthEnabled) {
             const profile = config.accounts.claude.find((item) => item.id === account.account)!;
             const claudeSettings = resolve(resolveUserPath(profile.configDir), "settings.json");
@@ -383,7 +386,8 @@ async function main(): Promise<number> {
         else {
           for (const check of checks) console.log(`${check.ok ? "✓" : "○"} ${check.check}: ${check.detail}`);
         }
-        // 수집 실패는 이제 실패로 취급한다. config 미생성만 정보성으로 남긴다.
+        // A collection failure now fails the command. Only a missing config
+        // file stays informational.
         return checks.some((check) => !check.ok && check.check !== "config") ? 1 : 0;
       }
       case "test-alert": {

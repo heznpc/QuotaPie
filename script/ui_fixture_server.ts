@@ -1,6 +1,7 @@
-// 메뉴 앱의 다섯 가지 표시 상태를 결정론적으로 재현하기 위한 픽스처 서버.
-// 실제 수집을 기다리지 않고 UI를 검증하려고 둔 개발 전용 도구다.
-// 사용법: bun run script/ui_fixture_server.ts <state> [port]
+// A fixture server that reproduces the menu bar app's display states
+// deterministically. Development only: it exists so the UI can be verified
+// without waiting for real collection.
+// Usage: bun run script/ui_fixture_server.ts <state> [port]
 import { buildHeadline } from "../src/analytics";
 import type { AccountState, CollectionSourceState, WindowAnalysis } from "../src/types";
 
@@ -100,10 +101,41 @@ const claudeHealthy = account({
   sources: [source({ source: "claude-oauth" })],
 });
 
+function overflowAccount(index: number): AccountState {
+  const provider = index % 2 === 0 ? "codex" as const : "claude" as const;
+  const accountId = `debug-${index + 1}`;
+  const windows = [
+    window({
+      provider,
+      account: accountId,
+      bucket: provider === "codex" ? "codex:primary:300" : "five_hour",
+      label: `${provider} 5h`,
+      windowSeconds: 18_000,
+      usedPercent: 20 + index,
+      remainingPercent: 80 - index,
+    }),
+    window({
+      provider,
+      account: accountId,
+      bucket: provider === "codex" ? "codex:primary:10080" : "seven_day",
+      label: `${provider} weekly`,
+      usedPercent: 50 + index,
+      remainingPercent: 50 - index,
+    }),
+  ];
+  return account({
+    provider,
+    account: accountId,
+    accountLabel: `Debug ${index + 1}`,
+    windows,
+    sources: [source({ source: provider === "codex" ? "codex-appserver" : "claude-oauth" })],
+  });
+}
+
 export const FIXTURES: Record<string, AccountState[]> = {
-  // 정상: 위험 없는 두 계정
+  // Normal: two accounts, no risk.
   normal: [account({ windows: [fiveHour, window()] }), claudeHealthy],
-  // 속도 위험: 잔량은 넉넉하지만 갱신 전에 마를 전망
+  // Pace risk: plenty remaining, but projected to run dry before the reset.
   "pace-risk": [
     account({
       windows: [fiveHour, window({
@@ -118,7 +150,7 @@ export const FIXTURES: Record<string, AccountState[]> = {
     }),
     claudeHealthy,
   ],
-  // 수집 지연: 마지막 값은 있으나 오래됨
+  // Collection delayed: a last value exists, but it has gone stale.
   stale: [
     account({
       windows: [window({ freshness: "stale" })],
@@ -126,7 +158,7 @@ export const FIXTURES: Record<string, AccountState[]> = {
     }),
     claudeHealthy,
   ],
-  // 수집 실패: 로그인이 필요한 계정
+  // Collection failed: an account that needs a login.
   failed: [
     account({ windows: [fiveHour, window()] }),
     account({
@@ -141,13 +173,16 @@ export const FIXTURES: Record<string, AccountState[]> = {
       })],
     }),
   ],
-  // 데이터 없음: 계정은 켜져 있으나 한 번도 수집하지 않음
+  // No data: the account is enabled but has never been collected from.
   "no-data": [
     account({
       windows: [],
       sources: [source({ health: "never-attempted", lastAttemptAtMs: null, lastSuccessAtMs: null })],
     }),
   ],
+  // Long list: check that only the body scrolls while the header and the
+  // action bar stay pinned.
+  overflow: Array.from({ length: 6 }, (_, index) => overflowAccount(index)),
 };
 
 const state = process.argv[2] ?? "normal";

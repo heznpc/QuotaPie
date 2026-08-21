@@ -17,7 +17,8 @@ struct StatusPayload: Decodable {
     private enum CodingKeys: String, CodingKey { case nowMs, headline, accounts, events }
 }
 
-/// 메뉴 막대에 올릴 결론. 어떤 결론을 고를지는 서비스가 정하고 앱은 그리기만 한다.
+/// The conclusion for the menu bar. The service decides which one wins; the
+/// app only draws it.
 struct Headline: Decodable {
     let kind: String
     let title: String
@@ -50,7 +51,8 @@ struct CollectionState: Decodable {
 
     var isHealthy: Bool { health == "recent-success" }
 
-    /// 사용자가 취할 수 있는 행동으로 바꾼 문구. 원문 오류는 보조 설명으로만 쓴다.
+    /// Phrased as something the user can act on. The raw provider error is kept
+    /// as supporting detail only.
     var actionText: String {
         switch errorCategory {
         case "auth-required": return "로그인이 필요합니다"
@@ -71,7 +73,7 @@ struct CollectionState: Decodable {
         }
     }
 
-    /// 로그인이 필요한 상태에서만 구체적인 복구 명령을 안내한다.
+    /// A concrete recovery command is offered only when a login is what is missing.
     var recoveryCommand: String? {
         (errorCategory == "auth-required" || errorCategory == "auth-expired") ? "claude auth login" : nil
     }
@@ -119,7 +121,7 @@ struct QuotaWindow: Decodable, Identifiable {
                     .split(separator: "_")
                     .map { $0.prefix(1).uppercased() + $0.dropFirst() }
                     .joined(separator: " ")
-                if !qualifier.isEmpty { return "\(qualifier) 주간" }
+                if !qualifier.isEmpty { return qualifier }
             }
             return "주간"
         }
@@ -127,7 +129,7 @@ struct QuotaWindow: Decodable, Identifiable {
         return label
     }
 
-    /// 속도에 대한 한 줄 판단. 측정된 소진이 없으면 위험을 주장하지 않는다.
+    /// One line of judgement about pace. With no measured burn, no risk is claimed.
     var paceText: String? {
         guard freshness == "fresh" else { return nil }
         if isExhausted { return "소진됨" }
@@ -173,7 +175,7 @@ enum DisplayFormat {
         return clockFormatter.string(from: Date(timeIntervalSince1970: timestampMs / 1_000))
     }
 
-    /// 오늘·내일이면 시각까지, 그 뒤면 날짜와 시각을 함께 보여준다.
+    /// Today shows the time alone; anything later shows the date with it.
     static func resetStamp(_ timestampMs: Double?, now: Date = Date()) -> String {
         guard let timestampMs else { return "갱신 시각 미확인" }
         let date = Date(timeIntervalSince1970: timestampMs / 1_000)
