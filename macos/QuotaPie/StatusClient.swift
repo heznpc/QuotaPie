@@ -7,9 +7,9 @@ enum StatusClientError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .invalidLocalURL: return "로컬 API 주소가 올바르지 않습니다."
-        case .invalidResponse: return "로컬 API 응답을 읽을 수 없습니다."
-        case .httpStatus(let code): return "로컬 서비스가 HTTP \(code)를 반환했습니다."
+        case .invalidLocalURL: return Strings.t("client.badURL")
+        case .invalidResponse: return Strings.t("client.badResponse")
+        case .httpStatus(let code): return Strings.t("client.httpStatus", String(code))
         }
     }
 }

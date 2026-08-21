@@ -12,7 +12,7 @@ The everyday surface is a **native macOS menu bar app**. The CLI is for diagnosi
 - Claude collects through one of two paths. The default is the official status-line JSON. Turning on `collection.claudeOAuthEnabled` makes the official `api/oauth/usage` endpoint — read with Claude Code's local OAuth credentials — the primary source. If you only use the desktop app, the status line never runs, so samples never accumulate; that is the case where you want this switch on.
 - When both sources are alive, a recent OAuth reading is authoritative and the status-line value stays out of the history. This stops equivalent values from arriving under a different source name and manufacturing noise events.
 - Collection health is stored **per source**, not per account, and account health is derived from the best of them. An OAuth failure cannot overwrite a status-line collection that just succeeded.
-- The menu bar title is one conclusion, not a row of provider abbreviations. It picks the **highest risk**, not the lowest remaining percentage — 89% left still reads as `⚠ 주간 위험` if you are on course to run dry six days before the reset.
+- The menu bar title is one conclusion, not a row of provider abbreviations. It picks the **highest risk**, not the lowest remaining percentage — 89% left still reads as `⚠ weekly at risk` if you are on course to run dry six days before the reset.
 - `doctor` and `/health` judge by actual collection results, not by whether configuration exists. An account with zero samples does not pass.
 - Provider emails, remote account IDs, OAuth tokens, cookies, prompts, and conversation content are never stored. Multiple accounts are distinguished only by a local alias you choose.
 - 5-hour, weekly, and per-model windows are tracked independently.
@@ -23,7 +23,7 @@ The everyday surface is a **native macOS menu bar app**. The CLI is for diagnosi
 - Only your configured active hours count as remaining working time, and whichever of the 5-hour or weekly window is more dangerous is shown as the current bottleneck.
 - macOS notifications and an optional external command trigger are supported.
 - Multiple Codex and Claude accounts are separated by profile directory and local alias; history, personal pace, bottleneck, and alert cooldowns are all isolated per account.
-- Alerts follow an honesty rule: if recent measured usage is zero, no pace warning is sent. Present-tense wording ("사용 속도 과열") is reserved for a measured burn rate above the safe pace; when only the habitual pattern exceeds it, the wording is forward-looking ("사용 패턴 전망").
+- Alerts follow an honesty rule: if recent measured usage is zero, no pace warning is sent. Present-tense wording ("burning too fast") is reserved for a measured burn rate above the safe pace; when only the habitual pattern exceeds it, the wording is forward-looking ("pace forecast").
 - Collection state is a four-state heartbeat (never-attempted / attempted-then-failed / stale-success / recent-success) so that a stalled collector and a disabled one do not wear the same face.
 - The burn leaderboard reads only token counts, paths, and timestamps (`cwd`, `usage`, `timestamp`) from Claude Code transcripts. Conversation content is never used, stored, or transmitted. Transcripts are line-delimited JSON, so reaching those fields does require parsing the lines that contain them — the accurate claim is "the content is not used", not "the content is never touched". Lines without the fields of interest are not parsed at all.
 
@@ -33,18 +33,23 @@ External consumers (for example [Modore](https://github.com/heznpc/Modore)) read
 
 ```jsonc
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "generatedAt": "2026-08-17T…",           // consumers hide the display entirely once this goes stale
   "collection": {
     "lastSampleAt": "…", "healthy": true,   // if healthy=false, show "collection stalled" instead of old numbers
     "providers": { "codex": "recent-success", "claude": "never-attempted" }
   },
   "window": { "provider": "codex", "usedPercent": 66, "resetsAt": "…" },  // the single global bottleneck
+  "headline": {                             // semantic fields are the contract
+    "kind": "pace-risk", "windowKind": "weekly", "remainingPercent": 89,
+    "exhaustsAt": "…", "errorCategory": null,
+    "displayText": "⚠ weekly at risk"       // convenience for consumers that do not localise
+  },
   "topBurn": [ { "remote": "github.com/…", "percent": 42.0, "lastActiveAt": "…" } ]
 }
 ```
 
-Removing a field or changing its meaning bumps `schemaVersion`.
+Removing a field or changing its meaning bumps `schemaVersion`. Version 2 replaced the headline's finished sentence with semantic fields plus `displayText`, so a consumer can render in its own language rather than inheriting this process's locale.
 
 ## Claude OAuth collection must be turned on
 
@@ -55,6 +60,29 @@ Removing a field or changing its meaning bumps `schemaVersion`.
 ```
 
 The token is read per call and never lands in QuotaPie's storage, logs, or API responses. If you would rather not enable it, configure the Claude status line hook and use that as the fallback path. With neither in place, that account reads as "not configured" — distinguished from broken, not lumped in with it.
+
+## Language
+
+The interface is English by default. Korean is a locale, not the substrate.
+
+The backend moves meaning rather than prose: an event carries its kind and its
+parameters, a headline carries what it concluded and about which window. Each
+surface then makes the sentence — the menu bar app in the viewer's macOS
+language, the web view in the browser's, the CLI and macOS notifications in
+whatever `profile.locale` resolves to.
+
+```json
+{ "profile": { "locale": "auto" } }
+```
+
+`auto` reads `QUOTAPIE_LOCALE`, `LC_ALL`, `LC_MESSAGES`, then `LANG`, and falls
+back to English. Set `"en"` or `"ko"` to pin it. The menu bar app follows the
+system language on its own and also honours `QUOTAPIE_LOCALE`.
+
+Adding a language means adding one column to two tables — `src/i18n.ts` for the
+backend and `macos/QuotaPie/Strings.swift` for the app — plus the table in the
+web view. The keys are deliberately identical across all three, and a missing
+key renders as the key itself rather than as blank space.
 
 ## Reading collection state
 
@@ -100,7 +128,7 @@ cd /path/to/quotapie
 ./script/build_and_run.sh --verify
 ```
 
-After that, the single conclusion in the menu bar is all you need to read (`56% 남음`, `⚠ 주간 위험`, `한도 확인 지연`, `설정 필요`). `serve` is not a browser command: it runs collection, alerts, and the local API that the menu bar app reads. Open the detailed web view only when you want it, from the menu or at [http://127.0.0.1:47831](http://127.0.0.1:47831).
+After that, the single conclusion in the menu bar is all you need to read (`56% left`, `⚠ weekly at risk`, `Limits unconfirmed`, `Setup needed`). `serve` is not a browser command: it runs collection, alerts, and the local API that the menu bar app reads. Open the detailed web view only when you want it, from the menu or at [http://127.0.0.1:47831](http://127.0.0.1:47831).
 
 To use the CLI from anywhere, add the project's `bin` to your `PATH`, or link `bin/quotapie` into a local bin directory of your choice.
 

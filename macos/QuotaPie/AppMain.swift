@@ -27,7 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.toolTip = "Codex와 Claude의 실사용 한도"
+        statusItem.button?.toolTip = Strings.t("status.tooltip")
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover)
 
@@ -101,10 +101,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "새로고침", action: #selector(refresh), keyEquivalent: "r")
-        appMenu.addItem(withTitle: "상태 복사", action: #selector(copyStatus), keyEquivalent: "c")
+        appMenu.addItem(withTitle: Strings.t("action.refresh"), action: #selector(refresh), keyEquivalent: "r")
+        appMenu.addItem(withTitle: Strings.t("action.copy"), action: #selector(copyStatus), keyEquivalent: "c")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "QuotaPie 종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: Strings.t("action.quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         for item in appMenu.items where item.action != nil && item.action != #selector(NSApplication.terminate(_:)) {
             item.target = self
         }
@@ -174,10 +174,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let title: String
         let color: NSColor
         if popoverModel.lastError != nil {
-            title = popoverModel.payload == nil ? "연결 끊김" : "한도 확인 지연"
+            title = popoverModel.payload == nil ? Strings.t("headline.disconnected") : Strings.t("headline.degraded")
             color = .systemOrange
         } else {
-            title = headline?.title ?? "확인 중"
+            title = headline?.localizedTitle ?? Strings.t("headline.checking")
             switch headline?.kind {
             case "pace-risk": color = .systemOrange
             case "degraded", "setup": color = .secondaryLabelColor
@@ -191,7 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
             ]
         )
-        statusItem.button?.toolTip = popoverModel.lastError ?? headline?.detail ?? "Codex와 Claude의 실사용 한도"
+        statusItem.button?.toolTip = popoverModel.lastError ?? headline?.localizedDetail ?? Strings.t("status.tooltip")
     }
 
     @objc private func copyStatus() { copyToPasteboard(plainStatus()) }
@@ -215,10 +215,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func plainStatus() -> String {
-        guard let payload = popoverModel.payload else { return "QuotaPie: 아직 한도 데이터가 없습니다." }
+        guard let payload = popoverModel.payload else { return Strings.t("status.noData") }
         var lines: [String] = []
         if let headline = payload.headline {
-            lines.append(headline.detail.map { "\(headline.title) — \($0)" } ?? headline.title)
+            lines.append(headline.localizedDetail.map { "\(headline.localizedTitle) — \($0)" } ?? headline.localizedTitle)
         }
         for account in payload.accounts {
             lines.append("\(account.providerTitle) · \(account.accountLabel)")
@@ -226,8 +226,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 lines.append("  \(account.collection.actionText)")
             }
             for window in account.windows {
-                let used = window.usedPercent.map { "\(Int($0.rounded()))% 사용" } ?? "사용량 미확인"
-                let remaining = window.remainingPercent.map { "\(Int($0.rounded()))% 남음" } ?? "—"
+                let used = window.usedPercent.map { Strings.t("window.used", String(Int($0.rounded()))) } ?? Strings.t("window.usageUnknown")
+                let remaining = window.remainingPercent.map { Strings.t("window.remaining", String(Int($0.rounded()))) } ?? "—"
                 lines.append("  \(window.shortLabel): \(used) · \(remaining) · \(DisplayFormat.resetStamp(window.resetsAtMs))")
                 if let pace = window.paceText { lines.append("    \(pace)") }
             }

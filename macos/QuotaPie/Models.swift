@@ -21,11 +21,64 @@ struct StatusPayload: Decodable {
 /// app only draws it.
 struct Headline: Decodable {
     let kind: String
-    let title: String
-    let detail: String?
     let provider: String?
     let account: String?
+    let accountLabel: String?
     let bucket: String?
+    let windowKind: String?
+    let windowLabel: String?
+    let remainingPercent: Double?
+    let exhaustsAtMs: Double?
+    let errorCategory: String?
+    /// The backend's own rendering, kept as a fallback for anything this app
+    /// has no localisation for. Prefer building the sentence from the fields
+    /// above so the app follows the viewer's language, not the daemon's.
+    let title: String
+    let detail: String?
+
+    /// The conclusion, said in the viewer's language.
+    var localizedTitle: String {
+        switch kind {
+        case "pace-risk":
+            guard let windowKind, let name = Self.windowName(windowKind) else { return title }
+            return Strings.t("headline.atRisk", name)
+        case "degraded": return Strings.t("headline.degraded")
+        case "setup": return Strings.t("headline.setup")
+        case "normal":
+            guard let remainingPercent else { return title }
+            return Strings.t("window.remaining", String(Int(remainingPercent.rounded())))
+        default: return title
+        }
+    }
+
+    /// The supporting line, also said in the viewer's language. Falling back to
+    /// the backend's `detail` here is what left a Korean title sitting above an
+    /// English sentence.
+    var localizedDetail: String? {
+        guard let provider else { return detail }
+        let providerName = provider == "codex" ? "Codex" : provider == "claude" ? "Claude" : provider
+        var parts = [providerName]
+        if let accountLabel { parts.append(accountLabel) }
+        switch kind {
+        case "pace-risk", "normal":
+            if let windowLabel { parts.append(windowLabel) }
+            if kind == "pace-risk", let exhaustsAtMs {
+                parts.append(Strings.t("headline.runsDryOn", DisplayFormat.day(exhaustsAtMs)))
+            }
+        case "degraded", "setup":
+            parts.append(Strings.t("collection.\(errorCategory ?? "never-attempted")"))
+        default:
+            return detail
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    static func windowName(_ kind: String) -> String? {
+        switch kind {
+        case "five-hour", "weekly", "monthly": return Strings.t("window.\(kind)")
+        default: return nil
+        }
+    }
 }
 
 struct AccountState: Decodable, Identifiable {
@@ -54,23 +107,7 @@ struct CollectionState: Decodable {
     /// Phrased as something the user can act on. The raw provider error is kept
     /// as supporting detail only.
     var actionText: String {
-        switch errorCategory {
-        case "auth-required": return "로그인이 필요합니다"
-        case "auth-expired": return "로그인이 만료됐습니다"
-        case "rate-limited": return "공급자 요청 한도에 걸렸습니다"
-        case "network": return "네트워크에 연결할 수 없습니다"
-        case "not-configured": return "수집이 설정되지 않았습니다"
-        case "isolation-unsafe": return "계정 자격증명 격리가 필요합니다"
-        case "no-windows": return "응답에 한도 창이 없습니다"
-        case "provider-error": return "공급자 응답을 읽지 못했습니다"
-        default:
-            switch health {
-            case "never-attempted": return "아직 수집을 시도하지 않았습니다"
-            case "stale-success": return "한도 확인이 지연되고 있습니다"
-            case "attempted-then-failed": return "수집에 실패했습니다"
-            default: return "확인됨"
-            }
-        }
+        Strings.t("collection.\(errorCategory ?? health)")
     }
 
     /// A concrete recovery command is offered only when a login is what is missing.
@@ -80,9 +117,8 @@ struct CollectionState: Decodable {
 
     var sourceLabel: String {
         switch activeSource {
-        case "claude-oauth": return "공식"
-        case "claude-statusline": return "상태줄"
-        case "codex-appserver": return "공식"
+        case "claude-oauth", "codex-appserver": return Strings.t("source.official")
+        case "claude-statusline": return Strings.t("source.statusline")
         default: return activeSource ?? "—"
         }
     }
@@ -113,7 +149,7 @@ struct QuotaWindow: Decodable, Identifiable {
 
     var shortLabel: String {
         guard let windowSeconds else { return label }
-        if windowSeconds >= 28 * 86_400 { return "월간" }
+        if windowSeconds >= 28 * 86_400 { return Strings.t("window.monthly") }
         if windowSeconds >= 7 * 86_400 {
             if bucket.hasPrefix("seven_day_") {
                 let suffix = bucket.dropFirst("seven_day_".count)
@@ -123,23 +159,21 @@ struct QuotaWindow: Decodable, Identifiable {
                     .joined(separator: " ")
                 if !qualifier.isEmpty { return qualifier }
             }
-            return "주간"
+            return Strings.t("window.weekly")
         }
-        if windowSeconds <= 6 * 3_600 { return "5시간" }
+        if windowSeconds <= 6 * 3_600 { return Strings.t("window.five-hour") }
         return label
     }
 
     /// One line of judgement about pace. With no measured burn, no risk is claimed.
     var paceText: String? {
         guard freshness == "fresh" else { return nil }
-        if isExhausted { return "소진됨" }
+        if isExhausted { return Strings.t("window.exhausted") }
         if isAtRisk, let exhaustsAtMs {
-            return "⚠ \(DisplayFormat.day(exhaustsAtMs))경 소진 예상"
+            return Strings.t("window.runsDry", DisplayFormat.day(exhaustsAtMs))
         }
-        if let paceRatio, paceRatio > 1 {
-            return "이 패턴이면 갱신 전에 빠듯합니다"
-        }
-        if paceRatio != nil { return "현재 속도는 여유 있음" }
+        if let paceRatio, paceRatio > 1 { return Strings.t("window.paceTight") }
+        if paceRatio != nil { return Strings.t("window.paceComfortable") }
         return nil
     }
 }
@@ -155,7 +189,7 @@ struct QuotaEvent: Decodable {
 
 enum DisplayFormat {
     static func duration(until timestampMs: Double?, now: Date = Date()) -> String {
-        guard let timestampMs else { return "시간 미확인" }
+        guard let timestampMs else { return Strings.t("window.resetUnknown") }
         return interval(milliseconds: max(0, timestampMs - now.timeIntervalSince1970 * 1_000))
     }
 
@@ -165,9 +199,9 @@ enum DisplayFormat {
         let days = totalMinutes / 1_440
         let hours = (totalMinutes % 1_440) / 60
         let minutes = totalMinutes % 60
-        if days > 0 { return "\(days)일 \(hours)시간" }
-        if hours > 0 { return "\(hours)시간 \(minutes)분" }
-        return "\(minutes)분"
+        if days > 0 { return Strings.t("time.days", String(days), String(hours)) }
+        if hours > 0 { return Strings.t("time.hours", String(hours), String(minutes)) }
+        return Strings.t("time.minutes", String(minutes))
     }
 
     static func clock(_ timestampMs: Double?) -> String {
@@ -177,11 +211,12 @@ enum DisplayFormat {
 
     /// Today shows the time alone; anything later shows the date with it.
     static func resetStamp(_ timestampMs: Double?, now: Date = Date()) -> String {
-        guard let timestampMs else { return "갱신 시각 미확인" }
+        guard let timestampMs else { return Strings.t("window.resetUnknown") }
         let date = Date(timeIntervalSince1970: timestampMs / 1_000)
         let calendar = Calendar.current
-        if calendar.isDate(date, inSameDayAs: now) { return "\(clockFormatter.string(from: date)) 갱신" }
-        return "\(dayFormatter.string(from: date)) \(clockFormatter.string(from: date)) 갱신"
+        let clock = clockFormatter.string(from: date)
+        if calendar.isDate(date, inSameDayAs: now) { return Strings.t("window.resetsAt", clock) }
+        return Strings.t("window.resetsAt", "\(dayFormatter.string(from: date)) \(clock)")
     }
 
     static func day(_ timestampMs: Double) -> String {
@@ -190,22 +225,22 @@ enum DisplayFormat {
 
     static func age(since date: Date, now: Date = Date()) -> String {
         let seconds = max(0, now.timeIntervalSince(date))
-        if seconds < 60 { return "방금" }
-        if seconds < 3_600 { return "\(Int(seconds / 60))분 전" }
-        return "\(Int(seconds / 3_600))시간 전"
+        if seconds < 60 { return Strings.t("time.justNow") }
+        if seconds < 3_600 { return Strings.t("time.minutesAgo", String(Int(seconds / 60))) }
+        return Strings.t("time.hoursAgo", String(Int(seconds / 3_600)))
     }
 
     private static let clockFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "ko_KR")
+        formatter.locale = Locale(identifier: Strings.localeIdentifier())
         formatter.dateFormat = "HH:mm"
         return formatter
     }()
 
     private static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "ko_KR")
-        formatter.dateFormat = "M월 d일"
+        formatter.locale = Locale(identifier: Strings.localeIdentifier())
+        formatter.dateFormat = Strings.t("format.dayMonth")
         return formatter
     }()
 }

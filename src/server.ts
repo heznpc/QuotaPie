@@ -36,7 +36,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig) {
         const accounts = service.accountStates(nowMs);
         return json({
           nowMs,
-          headline: buildHeadline(accounts, nowMs),
+          headline: buildHeadline(accounts, nowMs, service.locale),
           accounts,
           // Kept for existing consumers. It only contains accounts that have
           // windows, so new consumers should read accounts instead.

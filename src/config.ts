@@ -2,6 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import type { Provider } from "./types";
+import { isLocale, LOCALES } from "./i18n";
 
 export interface TimeRange {
   start: string;
@@ -27,6 +28,9 @@ export interface ClaudeAccountConfig {
 
 export interface AppConfig {
   profile: {
+    // "auto" resolves from the environment; "en" is the fallback when nothing
+    // recognisable is set.
+    locale: string;
     timeZone: string;
     recentLookbackMinutes: number;
     historyDays: number;
@@ -77,6 +81,7 @@ export interface AppConfig {
 
 export const DEFAULT_CONFIG: AppConfig = {
   profile: {
+    locale: "auto",
     timeZone: "Asia/Seoul",
     recentLookbackMinutes: 120,
     historyDays: 28,
@@ -288,6 +293,9 @@ function validateProfile(config: AppConfig): void {
     new Intl.DateTimeFormat("en-US", { timeZone: profile.timeZone });
   } catch {
     throw new Error(`profile.timeZone is not a known IANA time zone: ${String(profile.timeZone)}`);
+  }
+  if (profile.locale !== "auto" && !isLocale(profile.locale)) {
+    throw new Error(`profile.locale must be "auto" or one of ${LOCALES.join(", ")}, got ${String(profile.locale)}`);
   }
   requireNumber(profile.recentWeight, "profile.recentWeight", { min: 0, max: 1 });
   requireNumber(profile.historyDays, "profile.historyDays", { min: 1, max: 3_650, integer: true });
