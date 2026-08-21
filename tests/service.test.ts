@@ -4,6 +4,8 @@ import { chmodSync, existsSync, mkdtempSync, rmSync, statSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config";
+import { planTriggers } from "../src/triggers";
+import { ALERTABLE_EVENT_KINDS } from "../src/types";
 import { QuotaDatabase } from "../src/db";
 import { nextWakeDelayMs } from "../src/scheduler";
 import { QuotaPieService } from "../src/service";
@@ -652,5 +654,72 @@ describe("active source matches the source that wins ingestion", () => {
     db.recordCollectionAttempt("claude", "default", "claude-statusline", nowMs - 1_000, null, null);
     const claude = service.accountStates(nowMs).find((state) => state.provider === "claude")!;
     expect(claude.collection.activeSource).toBe("claude-statusline");
+  });
+});
+
+describe("events reach the alert planner", () => {
+  // The producer had a test, the consumer had a test, and nothing covered the
+  // seam between them: window_changed was recorded and then silently dropped by
+  // the delivery query. This walks the whole path instead.
+  function codexWindow(bucket: string, durationMinutes: number, observedAtMs: number): QuotaObservation {
+    return {
+      provider: "codex",
+      account: "default",
+      bucket,
+      label: `Codex ${durationMinutes}m`,
+      windowSeconds: durationMinutes * 60,
+      usedPercent: 20,
+      resetsAtMs: observedAtMs + durationMinutes * 60_000,
+      observedAtMs,
+      source: "codex-app-server",
+      quality: "authoritative",
+      metadata: { limitId: "primary", lane: "primary" },
+    };
+  }
+
+  test("a Codex lane switch survives from ingestion all the way to a trigger decision", () => {
+    const db = new QuotaDatabase(":memory:");
+    const config = structuredClone(DEFAULT_CONFIG);
+    const service = new QuotaPieService(config, db);
+    const start = 100_000_000;
+
+    service.ingestCodexSnapshot([codexWindow("primary:primary:10080", 10_080, start)]);
+    const produced = service.ingestCodexSnapshot([
+      codexWindow("primary:primary:43200", 43_200, start + 60_000),
+    ]);
+    expect(produced.some((event) => event.kind === "window_changed")).toBeTrue();
+
+    // The delivery query has to hand the same event to the planner.
+    const pending = db.pendingAlertEvents();
+    const pendingChange = pending.find((event) => event.kind === "window_changed");
+    expect(pendingChange).toBeDefined();
+
+    const decisions = planTriggers([], pending, config, 0, start + 120_000);
+    const decision = decisions.find((item) => item.key.includes("window_changed"));
+    expect(decision).toBeDefined();
+    expect(decision!.eventId).toBe(pendingChange!.id!);
+  });
+
+  test("every kind the planner acts on is a kind the delivery query returns", () => {
+    const db = new QuotaDatabase(":memory:");
+    const config = structuredClone(DEFAULT_CONFIG);
+    const occurredAtMs = 200_000_000;
+    for (const kind of ALERTABLE_EVENT_KINDS) {
+      db.insertEvent({
+        provider: "codex",
+        account: "default",
+        bucket: `bucket-${kind}`,
+        kind,
+        severity: "info",
+        occurredAtMs,
+        confidence: "high",
+        summary: `${kind} 발생`,
+        details: {},
+      });
+    }
+    const pending = db.pendingAlertEvents();
+    expect(pending.map((event) => event.kind).sort()).toEqual([...ALERTABLE_EVENT_KINDS].sort());
+    const decisions = planTriggers([], pending, config, 0, occurredAtMs + 1_000);
+    expect(decisions).toHaveLength(ALERTABLE_EVENT_KINDS.length);
   });
 });

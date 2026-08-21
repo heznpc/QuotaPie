@@ -13,6 +13,7 @@ import type {
   QuotaEvent,
   QuotaObservation,
 } from "./types";
+import { ALERTABLE_EVENT_KINDS } from "./types";
 
 interface SnapshotRow {
   provider: Provider;
@@ -853,7 +854,7 @@ export class QuotaDatabase {
         FROM events e
         LEFT JOIN event_delivery d ON d.event_id = e.id
         WHERE d.delivered_at_ms IS NULL
-          AND e.kind IN ('external_relief', 'allowance_relief', 'schedule_rebased', 'paid_usage', 'credit_topup')
+          AND e.kind IN (${ALERTABLE_EVENT_KINDS.map((kind) => `'${kind}'`).join(", ")})
         ORDER BY e.id ASC LIMIT ?
       `)
       .all(limit);

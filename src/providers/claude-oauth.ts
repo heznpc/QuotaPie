@@ -129,6 +129,13 @@ interface ScopedLimit {
   scope?: { model?: { display_name?: unknown } | null } | null;
 }
 
+// Normalise at the adapter boundary: a percentage outside 0..100 is not
+// something the domain should have to reason about later.
+function percent(raw: unknown): number | null {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
+  return Math.min(100, Math.max(0, raw));
+}
+
 function resetMs(raw: unknown): number | null {
   if (typeof raw !== "string") return null;
   const parsed = Date.parse(raw);
@@ -148,8 +155,9 @@ export function mapClaudeUsage(
     if (!/^(five_hour|seven_day)/.test(key)) continue;
     if (!value || typeof value !== "object") continue;
     const flat = value as FlatLimit;
-    if (typeof flat.utilization !== "number" || !Number.isFinite(flat.utilization)) continue;
-    buckets.set(key, { usedPercent: flat.utilization, resetsAtMs: resetMs(flat.resets_at) });
+    const used = percent(flat.utilization);
+    if (used == null) continue;
+    buckets.set(key, { usedPercent: used, resetsAtMs: resetMs(flat.resets_at) });
   }
 
   // Newer responses carry weekly caps in a limits array instead of flat
@@ -159,7 +167,8 @@ export function mapClaudeUsage(
   if (Array.isArray(limits)) {
     for (const entry of limits as ScopedLimit[]) {
       if (!entry || typeof entry !== "object") continue;
-      if (typeof entry.percent !== "number" || !Number.isFinite(entry.percent)) continue;
+      const scopedUsed = percent(entry.percent);
+      if (scopedUsed == null) continue;
       let bucket: string | null = null;
       if (entry.kind === "session") bucket = "five_hour";
       else if (entry.kind === "weekly_all") bucket = "seven_day";
@@ -170,7 +179,7 @@ export function mapClaudeUsage(
         }
       }
       if (!bucket || buckets.has(bucket)) continue;
-      buckets.set(bucket, { usedPercent: entry.percent, resetsAtMs: resetMs(entry.resets_at) });
+      buckets.set(bucket, { usedPercent: scopedUsed, resetsAtMs: resetMs(entry.resets_at) });
     }
   }
 

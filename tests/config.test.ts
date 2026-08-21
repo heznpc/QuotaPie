@@ -68,3 +68,41 @@ describe("the local API stays local", () => {
     expect(() => loadConfig(path)).toThrow(/port/);
   });
 });
+
+describe("forecast inputs are validated at load", () => {
+  function write(patch: unknown): string {
+    const dir = mkdtempSync(join(tmpdir(), "tq-validate-"));
+    const path = join(dir, "config.json");
+    writeFileSync(path, JSON.stringify(patch));
+    return path;
+  }
+
+  test("a weight above one is rejected instead of inverting the personal term", () => {
+    expect(() => loadConfig(write({ profile: { recentWeight: 5 } }))).toThrow(/recentWeight/);
+    expect(() => loadConfig(write({ profile: { recentWeight: -0.1 } }))).toThrow(/recentWeight/);
+  });
+
+  test("an unknown time zone fails at load rather than deep inside analytics", () => {
+    expect(() => loadConfig(write({ profile: { timeZone: "Mars/Olympus" } }))).toThrow(/time zone/);
+  });
+
+  test("a zero poll interval is rejected", () => {
+    expect(() => loadConfig(write({ collection: { pollSeconds: 0 } }))).toThrow(/pollSeconds/);
+    expect(() => loadConfig(write({ collection: { staleAfterSeconds: -1 } }))).toThrow(/staleAfterSeconds/);
+  });
+
+  test("a reserve outside 0..100 is rejected", () => {
+    expect(() => loadConfig(write({ reservePercent: { codex: { weekly: 150 } } }))).toThrow(/reservePercent/);
+  });
+
+  test("a malformed work schedule range is rejected", () => {
+    expect(() => loadConfig(write({ profile: { workSchedule: { weekday: [{ start: "9시", end: "02:00" }] } } })))
+      .toThrow(/workSchedule/);
+    expect(() => loadConfig(write({ profile: { workSchedule: { weekday: [{ start: "25:00", end: "02:00" }] } } })))
+      .toThrow(/workSchedule/);
+  });
+
+  test("the shipped defaults pass their own validation", () => {
+    expect(loadConfig(write({})).profile.recentWeight).toBe(0.7);
+  });
+});

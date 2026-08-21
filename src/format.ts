@@ -79,7 +79,12 @@ export function compactClaudeLine(windows: WindowAnalysis[], accountLabel?: stri
   const claude = windows.filter((window) => window.provider === "claude");
   if (!claude.length) return "⏱ Claude quota: waiting for first API response";
   const short = claude.find((window) => window.windowSeconds != null && window.windowSeconds <= 6 * 3_600);
-  const weekly = claude.find((window) => window.windowSeconds != null && window.windowSeconds >= 6 * 86_400);
+  // Claude can expose several weekly windows (overall plus per-model). Taking
+  // the first one hides a model-scoped window that is the actual bottleneck,
+  // which is the opposite of what this line is for.
+  const weekly = claude
+    .filter((window) => window.windowSeconds != null && window.windowSeconds >= 6 * 86_400)
+    .sort((left, right) => right.bottleneckScore - left.bottleneckScore)[0];
   const item = (window: WindowAnalysis | undefined, name: string): string => {
     if (!window || window.remainingPercent == null) return `${name} —`;
     const pace = window.paceRatio == null ? "learning" : `${window.paceRatio.toFixed(1)}×`;
