@@ -5,23 +5,42 @@ MODE="${1:-run}"
 APP_NAME="QuotaPie"
 BUNDLE_ID="local.quotapie.menubar"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DIST_DIR="$ROOT_DIR/dist"
+# `bundle` takes its destination as the second argument so scripts/package-macos.sh
+# can assemble into build/ without touching the dist/ copy a local run uses.
+DIST_DIR="${2:-$ROOT_DIR/dist}"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 
+# Every mode assembles the bundle the same way, so the app the packaging script
+# signs is laid out exactly like the one a local run produces. A second copy of
+# these steps in package-macos.sh would drift the moment Info.plist gains a key
+# or Resources gains a file.
+build_bundle() {
+  cd "$ROOT_DIR"
+  swift build -c release --product "$APP_NAME"
+  local build_binary
+  build_binary="$(swift build -c release --show-bin-path)/$APP_NAME"
+
+  rm -rf "$APP_BUNDLE"
+  mkdir -p "$APP_MACOS" "$APP_CONTENTS/Resources"
+  cp "$build_binary" "$APP_BINARY"
+  cp "$ROOT_DIR/macos/QuotaPie/Info.plist" "$APP_CONTENTS/Info.plist"
+  chmod +x "$APP_BINARY"
+}
+
+# `bundle` stops before the three things the packaging path must not do: kill a
+# running copy, ad-hoc sign (package-macos.sh applies the real Developer ID
+# signature, and an ad-hoc one would just be overwritten), and launch anything.
+if [ "$MODE" = "bundle" ]; then
+  build_bundle
+  echo "$APP_BUNDLE"
+  exit 0
+fi
+
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
-
-cd "$ROOT_DIR"
-swift build -c release --product "$APP_NAME"
-BUILD_BINARY="$(swift build -c release --show-bin-path)/$APP_NAME"
-
-rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_MACOS" "$APP_CONTENTS/Resources"
-cp "$BUILD_BINARY" "$APP_BINARY"
-cp "$ROOT_DIR/macos/QuotaPie/Info.plist" "$APP_CONTENTS/Info.plist"
-chmod +x "$APP_BINARY"
+build_bundle
 codesign --force --sign - --timestamp=none "$APP_BUNDLE" >/dev/null
 
 open_app() {
@@ -55,7 +74,7 @@ case "$MODE" in
     exit 1
     ;;
   *)
-    echo "usage: $0 [run|--debug|--logs|--telemetry|--verify]" >&2
+    echo "usage: $0 [run|--debug|--logs|--telemetry|--verify|bundle [dest-dir]]" >&2
     exit 2
     ;;
 esac
