@@ -11,7 +11,7 @@ let package = Package(
         .executableTarget(
             name: "QuotaPie",
             path: "macos/QuotaPie",
-            exclude: ["Info.plist"]
+            exclude: ["Info.plist", "QuotaPie.entitlements"]
         ),
     ],
     swiftLanguageVersions: [.v5]
