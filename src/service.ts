@@ -1,19 +1,29 @@
 import { analyzeWindow, analysisHistoryStart, buildHeadline, groupStatuses } from "./analytics";
 import { buildQuotaBoundary, cachedLeaderboard, collectionHealth, writeQuotaBoundary } from "./boundary";
 import type { AppConfig, CodexAccountConfig } from "./config";
-import { codexUsesFileCredentials, resolveUserPath } from "./config";
+import { codexProfileRoot, codexUsesFileCredentials, resolveUserPath } from "./config";
 import { QuotaDatabase } from "./db";
 import { selectClaudeConsensus } from "./domain/claude-consensus";
 import { AlertStore } from "./storage/alert-store";
 import { ClaudeSessionStore } from "./storage/claude-session-store";
 import { CollectionStore } from "./storage/collection-store";
 import type { QuotaStorage } from "./storage/database";
+import { ResumeTaskStore, ResumeTaskStoreError } from "./storage/resume-task-store";
 import { CodexAppServerClient } from "./providers/codex-appserver";
 import { ClaudeUsageError, fetchClaudeUsage, mapClaudeUsage, readClaudeCredentials } from "./providers/claude-oauth";
 import { resolveLocale, t } from "./i18n";
 import type { Locale } from "./i18n";
 import { nextWakeDelayMs } from "./scheduler";
 import { alertScope, deliverTrigger, planTriggers } from "./triggers";
+import { randomUUID } from "node:crypto";
+import { basename, resolve } from "node:path";
+import {
+  findClaudeResumeTarget,
+  findCodexResumeTarget,
+  normalizeSessionId,
+  resumeTaskKey,
+  resumeWorkingDirectoryAvailable,
+} from "./session-discovery";
 import type {
   AccountState,
   CollectionHealth,
@@ -23,9 +33,28 @@ import type {
   ProviderStatus,
   QuotaEvent,
   QuotaObservation,
+  ResumePlan,
+  ResumeTask,
+  ResumeTaskSummary,
   TriggerDecision,
   WindowAnalysis,
 } from "./types";
+
+export interface RegisterResumeTaskInput {
+  provider: Provider;
+  account?: string;
+  nativeId: string;
+  cwd?: string;
+  projectLabel?: string;
+  bucket?: string;
+}
+
+export class ResumeTargetError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ResumeTargetError";
+  }
+}
 
 export const CLAUDE_OAUTH_SOURCE = "claude-oauth";
 export const CLAUDE_STATUSLINE_SOURCE = "claude-statusline";
@@ -54,6 +83,7 @@ export class QuotaPieService {
   readonly alerts: AlertStore;
   readonly collection: CollectionStore;
   readonly claudeSessions: ClaudeSessionStore;
+  readonly resumeTasks: ResumeTaskStore;
   private codexClients = new Map<string, CodexAppServerClient>();
   private stopped = false;
   private closing = false;
@@ -76,6 +106,7 @@ export class QuotaPieService {
     this.alerts = new AlertStore(this.storage);
     this.collection = new CollectionStore(this.storage);
     this.claudeSessions = new ClaudeSessionStore(this.storage);
+    this.resumeTasks = new ResumeTaskStore(this.storage);
     this.locale = resolveLocale(config.profile.locale);
   }
 
@@ -369,6 +400,15 @@ export class QuotaPieService {
     return client;
   }
 
+  private codexClient(profile: CodexAccountConfig): CodexAppServerClient {
+    let client = this.codexClients.get(profile.id);
+    if (!client) {
+      client = this.createCodexClient(profile);
+      this.codexClients.set(profile.id, client);
+    }
+    return client;
+  }
+
   codexPollResults(): Array<{ account: string; count: number; error: string | null }> {
     return this.config.accounts.codex
       .filter((profile) => profile.enabled)
@@ -512,6 +552,288 @@ export class QuotaPieService {
     return profiles.some((profile) => profile.id === account && profile.enabled);
   }
 
+  registerResumeTask(input: RegisterResumeTaskInput, nowMs = Date.now()): ResumeTaskSummary {
+    const account = input.account ?? "default";
+    if (!this.isEnabledAccount(input.provider, account)) {
+      throw new Error(`unknown or disabled ${input.provider} account alias: ${account}`);
+    }
+    const nativeId = normalizeSessionId(input.nativeId);
+    const cwd = resolve(input.cwd ?? process.cwd());
+    const projectLabel = (input.projectLabel ?? basename(cwd) ?? "").trim();
+    if (!projectLabel || projectLabel.length > 160 || /[\u0000-\u001f\u007f]/.test(projectLabel)) {
+      throw new Error("label must be 1-160 characters without control characters");
+    }
+    const candidates = this.analyses(nowMs, input.provider)
+      .filter((window) =>
+        window.account === account &&
+        window.remainingPercent != null &&
+        (input.bucket == null || window.bucket === input.bucket)
+      )
+      .sort((left, right) => {
+        const remaining = left.remainingPercent! - right.remainingPercent!;
+        if (remaining !== 0) return remaining;
+        return (left.resetsAtMs ?? Number.MAX_SAFE_INTEGER) -
+          (right.resetsAtMs ?? Number.MAX_SAFE_INTEGER);
+      });
+    const blocking = candidates[0];
+    if (!blocking) {
+      const suffix = input.bucket ? ` for bucket ${input.bucket}` : "";
+      throw new Error(`no current quota window with a remaining value${suffix}`);
+    }
+    const created = this.resumeTasks.create({
+      id: randomUUID(),
+      taskKey: resumeTaskKey(input.provider, account, nativeId),
+      provider: input.provider,
+      account,
+      projectLabel,
+      bucket: blocking.bucket,
+      registeredAtMs: nowMs,
+      registeredRemainingPercent: blocking.remainingPercent!,
+      expectedResetAtMs: blocking.resetsAtMs,
+    });
+    return this.resumeTaskSummary(created);
+  }
+
+  resumeTaskSummaries(limit = 100): ResumeTaskSummary[] {
+    return this.resumeTasks.active(limit).map((task) => this.resumeTaskSummary(task));
+  }
+
+  private resumeTaskSummary(task: ResumeTask): ResumeTaskSummary {
+    return {
+      id: task.id,
+      provider: task.provider,
+      account: task.account,
+      accountLabel: this.accountLabel(task.provider, task.account),
+      projectLabel: task.projectLabel,
+      state: task.state,
+      registeredAtMs: task.registeredAtMs,
+      expectedResetAtMs: task.expectedResetAtMs,
+      readyAtMs: task.readyAtMs,
+      errorDetail: task.errorDetail,
+    };
+  }
+
+  async approveResumeTask(id: string, nowMs?: number): Promise<{
+    task: ResumeTaskSummary;
+    plan: ResumePlan;
+  }> {
+    const initialNowMs = nowMs ?? Date.now();
+    const task = this.resumeTasks.get(id);
+    if (!task) throw new ResumeTaskStoreError("not-found", "resume task not found");
+    if (task.state !== "ready") {
+      throw new ResumeTaskStoreError(
+        "state-conflict",
+        `resume task is ${task.state}; expected ready`,
+      );
+    }
+    if (!this.hasFreshResumeCapacity(task, initialNowMs)) {
+      this.resumeTasks.markWaiting(id, initialNowMs);
+      this.rearmResumeReadyNotification(task);
+      throw new ResumeTargetError("fresh quota is no longer available; waiting for provider confirmation");
+    }
+    try {
+      const plan = await this.buildResumePlan(task);
+      const finalNowMs = nowMs ?? Date.now();
+      if (!this.hasFreshResumeCapacity(task, finalNowMs)) {
+        this.resumeTasks.markWaiting(id, finalNowMs);
+        this.rearmResumeReadyNotification(task);
+        throw new ResumeTargetError("fresh quota is no longer available; waiting for provider confirmation");
+      }
+      // Discovery is asynchronous. This final guarded transition both closes
+      // a concurrent dismiss race and makes a second approval lose cleanly.
+      const approved = this.resumeTasks.approve(id, finalNowMs);
+      return { task: this.resumeTaskSummary(approved), plan };
+    } catch (error) {
+      if (error instanceof ResumeTaskStoreError) throw error;
+      const detail = error instanceof ResumeTargetError
+        ? error.message
+        : "could not resolve the provider session metadata";
+      if (this.resumeTasks.get(id)?.state === "ready") {
+        this.resumeTasks.setError(id, detail, Date.now());
+      }
+      if (error instanceof ResumeTargetError) throw error;
+      throw new ResumeTargetError(detail);
+    }
+  }
+
+  markResumeTaskResumed(id: string, nowMs = Date.now()): ResumeTaskSummary {
+    return this.resumeTaskSummary(this.resumeTasks.markResumed(id, nowMs));
+  }
+
+  retryResumeTask(id: string, nowMs = Date.now()): ResumeTaskSummary {
+    return this.resumeTaskSummary(this.resumeTasks.retry(id, nowMs));
+  }
+
+  dismissResumeTask(id: string, nowMs = Date.now()): ResumeTaskSummary {
+    return this.resumeTaskSummary(this.resumeTasks.dismiss(id, nowMs));
+  }
+
+  private async buildResumePlan(task: ResumeTask): Promise<ResumePlan> {
+    let target;
+    if (task.provider === "codex") {
+      const profile = this.config.accounts.codex.find((item) => item.id === task.account && item.enabled);
+      if (!profile) throw new ResumeTargetError("the Codex account is disabled or no longer configured");
+      if (
+        this.config.accounts.codex.filter((item) => item.enabled).length > 1 &&
+        !codexUsesFileCredentials(profile)
+      ) {
+        throw new ResumeTargetError("the Codex account credentials are not safely isolated");
+      }
+      if (basename(this.config.collection.codexCommand) !== "codex") {
+        throw new ResumeTargetError("the configured Codex command must have the executable name codex");
+      }
+      target = await findCodexResumeTarget(this.codexClient(profile), task.account, task.taskKey);
+      if (!target) throw new ResumeTargetError("the Codex task is no longer available in this account");
+      if (!await resumeWorkingDirectoryAvailable(target.cwd)) {
+        throw new ResumeTargetError("the task working directory is no longer available");
+      }
+      return {
+        executable: this.config.collection.codexCommand,
+        arguments: ["resume", "-C", target.cwd, target.nativeId],
+        environment: { CODEX_HOME: codexProfileRoot(profile) },
+        workingDirectory: target.cwd,
+      };
+    }
+    const profile = this.config.accounts.claude.find((item) => item.id === task.account && item.enabled);
+    if (!profile) throw new ResumeTargetError("the Claude account is disabled or no longer configured");
+    const configDir = resolveUserPath(profile.configDir);
+    target = await findClaudeResumeTarget(configDir, task.account, task.taskKey);
+    if (!target) throw new ResumeTargetError("the Claude task is no longer available in this account");
+    if (!await resumeWorkingDirectoryAvailable(target.cwd)) {
+      throw new ResumeTargetError("the task working directory is no longer available");
+    }
+    return {
+      executable: "claude",
+      arguments: ["--resume", target.nativeId],
+      environment: { CLAUDE_CONFIG_DIR: configDir },
+      workingDirectory: target.cwd,
+    };
+  }
+
+  async updateResumeReadiness(
+    windows: WindowAnalysis[],
+    nowMs = Date.now(),
+  ): Promise<ResumeTaskSummary[]> {
+    for (const task of this.resumeTasks.active().filter((item) => item.state === "ready")) {
+      const current = windows.find((window) =>
+        window.provider === task.provider &&
+        window.account === task.account &&
+        window.bucket === task.bucket
+      );
+      if (
+        current?.freshness === "fresh" &&
+        current.observedAtMs > task.registeredAtMs &&
+        current.remainingPercent != null &&
+        current.remainingPercent > 0
+      ) continue;
+      try {
+        this.resumeTasks.markWaiting(task.id, nowMs);
+        this.rearmResumeReadyNotification(task);
+      } catch (error) {
+        if (error instanceof ResumeTaskStoreError && (
+          error.kind === "state-conflict" || error.kind === "not-found"
+        )) continue;
+        throw error;
+      }
+    }
+    const ready: ResumeTask[] = [];
+    for (let task of this.resumeTasks.waiting()) {
+      const current = windows.find((window) =>
+        window.provider === task.provider &&
+        window.account === task.account &&
+        window.bucket === task.bucket
+      );
+      if (current && current.resetsAtMs !== task.expectedResetAtMs) {
+        try {
+          task = this.resumeTasks.updateExpectedReset(task.id, current.resetsAtMs, nowMs);
+        } catch (error) {
+          if (error instanceof ResumeTaskStoreError && (
+            error.kind === "state-conflict" || error.kind === "not-found"
+          )) continue;
+          throw error;
+        }
+      }
+      const recovered = current?.freshness === "fresh" &&
+        current.observedAtMs > task.registeredAtMs &&
+        current.remainingPercent != null &&
+        current.remainingPercent > task.registeredRemainingPercent + 0.01;
+      if (!recovered) continue;
+      try {
+        ready.push(this.resumeTasks.markReady(task.id, nowMs));
+      } catch (error) {
+        // An HTTP action may have dismissed it after waiting() returned. The
+        // guarded update is the authority; a lost race is not a failed tick.
+        if (error instanceof ResumeTaskStoreError && (
+          error.kind === "state-conflict" || error.kind === "not-found"
+        )) continue;
+        throw error;
+      }
+    }
+    await this.deliverResumeReadyNotifications();
+    return ready.map((task) => this.resumeTaskSummary(task));
+  }
+
+  private rearmResumeReadyNotification(task: ResumeTask): void {
+    if (!this.config.alerts.enabled) return;
+    const key = `resume:${task.id}:ready`;
+    const state = this.alerts.state(key);
+    if (state) this.alerts.setState(key, state.lastFiredAtMs, true);
+  }
+
+  private async deliverResumeReadyNotifications(): Promise<void> {
+    if (!this.config.alerts.enabled) return;
+    const hasChannel = (
+      this.config.alerts.macOSNotifications && process.platform === "darwin"
+    ) || Boolean(this.config.alerts.command?.length);
+    if (!hasChannel) return;
+    for (const task of this.resumeTasks.active().filter((item) => item.state === "ready")) {
+      const decision: TriggerDecision = {
+        key: `resume:${task.id}:ready`,
+        title: t("alert.resume.ready.title", {
+          provider: task.provider,
+          account: task.account,
+        }, this.locale),
+        message: t("alert.resume.ready.message", { label: task.projectLabel }, this.locale),
+        severity: "info",
+      };
+      const claim = this.alerts.claim(decision.key, Date.now(), 0);
+      if (!claim) continue;
+      const deliveryKey = `threshold:${decision.key}:${claim.generation}`;
+      let complete = false;
+      try {
+        const result = await deliverTrigger(
+          decision,
+          this.config,
+          this.alerts.deliveredChannels(deliveryKey),
+          deliveryKey,
+          (channel) => this.alerts.markChannelDelivered(deliveryKey, channel, Date.now()),
+        );
+        complete = result.complete;
+      } catch (error) {
+        console.error(`[quotapie] Resume-ready notification error: ${String(error)}`);
+      }
+      if (complete) {
+        if (!this.alerts.completeClaim(decision.key, claim.token, Date.now())) {
+          console.error(`[quotapie] Resume-ready notification claim expired: ${task.id}`);
+        }
+      } else {
+        this.alerts.releaseClaim(decision.key, claim.token);
+        console.error(`[quotapie] Resume-ready notification failed: ${task.id}`);
+      }
+    }
+  }
+
+  private hasFreshResumeCapacity(task: ResumeTask, nowMs: number): boolean {
+    return this.analyses(nowMs, task.provider).some((window) =>
+      window.account === task.account &&
+      window.bucket === task.bucket &&
+      window.freshness === "fresh" &&
+      window.observedAtMs > task.registeredAtMs &&
+      window.remainingPercent != null &&
+      window.remainingPercent > 0
+    );
+  }
+
   recentEvents(limit = 50): QuotaEvent[] {
     return this.db.recentEvents(limit);
   }
@@ -616,9 +938,11 @@ export class QuotaPieService {
     events = events.concat(await this.pollClaudeOAuth(nowMs));
     const collected = this.anyProviderCollectedRecently(nowMs);
     this.db.maybePrune(nowMs, this.config.profile.historyDays);
+    this.resumeTasks.pruneTerminal(nowMs - this.config.profile.historyDays * 86_400_000);
     // One analysis pass per tick. It feeds the triggers, the boundary file, and
     // the wake schedule, all of which used to recompute it independently.
     const windows = this.analyses(nowMs);
+    await this.updateResumeReadiness(windows, nowMs);
     const triggers = await this.evaluateTriggers(nowMs, windows);
     await this.publishBoundary(nowMs, windows);
     return { events, triggers, windows, collected };

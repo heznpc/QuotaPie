@@ -228,4 +228,42 @@ export function migrate(db: Database): void {
         value_ms INTEGER NOT NULL
       )
     `);
+    db.run(`
+      CREATE TABLE IF NOT EXISTS resume_tasks (
+        id TEXT PRIMARY KEY,
+        task_key TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        account TEXT NOT NULL,
+        project_label TEXT NOT NULL,
+        bucket TEXT NOT NULL,
+        registered_at_ms INTEGER NOT NULL,
+        registered_remaining_percent REAL NOT NULL,
+        expected_reset_at_ms INTEGER,
+        state TEXT NOT NULL CHECK(state IN ('waiting', 'ready', 'approved', 'resumed', 'dismissed')),
+        ready_at_ms INTEGER,
+        approved_at_ms INTEGER,
+        resumed_at_ms INTEGER,
+        dismissed_at_ms INTEGER,
+        updated_at_ms INTEGER NOT NULL,
+        error_detail TEXT
+      )
+    `);
+    const resumeTaskColumns = db
+      .query<{ name: string }, []>("PRAGMA table_info(resume_tasks)")
+      .all();
+    if (!resumeTaskColumns.some((column) => column.name === "registered_remaining_percent")) {
+      db.run(`
+        ALTER TABLE resume_tasks
+        ADD COLUMN registered_remaining_percent REAL NOT NULL DEFAULT 0
+      `);
+    }
+    db.run(`
+      CREATE UNIQUE INDEX IF NOT EXISTS resume_tasks_one_active_session
+      ON resume_tasks(task_key)
+      WHERE state IN ('waiting', 'ready', 'approved')
+    `);
+    db.run(`
+      CREATE INDEX IF NOT EXISTS resume_tasks_recent
+      ON resume_tasks(registered_at_ms DESC)
+    `);
   }

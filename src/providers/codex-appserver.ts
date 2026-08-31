@@ -14,6 +14,26 @@ interface PendingRequest {
   timeout: ReturnType<typeof setTimeout>;
 }
 
+export interface CodexThreadListParams {
+  cursor?: string | null;
+  limit?: number | null;
+  sortKey?: "created_at" | "updated_at" | null;
+  sortDirection?: "asc" | "desc" | null;
+  archived?: boolean | null;
+  useStateDbOnly?: boolean;
+}
+
+export interface CodexThreadSummary {
+  id: string;
+  cwd: string;
+  name: string | null;
+}
+
+export interface CodexThreadListPage {
+  data: CodexThreadSummary[];
+  nextCursor: string | null;
+}
+
 function numberOrNull(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim() !== "") {
@@ -132,6 +152,8 @@ export function parseCodexRateLimits(
 
 export class CodexAppServerClient {
   private process: ReturnType<typeof Bun.spawn> | null = null;
+  private connectTask: Promise<void> | null = null;
+  private initialized = false;
   private requestId = 1;
   private pending = new Map<number, PendingRequest>();
   private pumpTask: Promise<void> | null = null;
@@ -153,7 +175,19 @@ export class CodexAppServerClient {
 
   async connect(): Promise<void> {
     if (this.closing) throw new Error("Codex App Server client is closing");
-    if (this.process) return;
+    if (this.process && this.initialized) return;
+    if (this.connectTask) return this.connectTask;
+    const task = this.initializeConnection();
+    this.connectTask = task;
+    try {
+      await task;
+    } finally {
+      if (this.connectTask === task) this.connectTask = null;
+    }
+  }
+
+  private async initializeConnection(): Promise<void> {
+    this.initialized = false;
     this.process = Bun.spawn(
       [this.command, "-s", "read-only", "-a", "untrusted", "app-server", "--stdio"],
       {
@@ -167,24 +201,62 @@ export class CodexAppServerClient {
       },
     );
     this.pumpTask = this.pump();
-    await this.request("initialize", {
-      clientInfo: { name: "quotapie", title: "QuotaPie", version: "0.1.0" },
-      capabilities: {
-        experimentalApi: true,
-        optOutNotificationMethods: [
-          "thread/started",
-          "item/agentMessage/delta",
-          "item/reasoning/textDelta",
-        ],
-      },
-    });
-    this.write({ method: "initialized", params: {} });
+    try {
+      await this.request("initialize", {
+        clientInfo: { name: "quotapie", title: "QuotaPie", version: "0.1.0" },
+        capabilities: {
+          experimentalApi: true,
+          optOutNotificationMethods: [
+            "thread/started",
+            "item/agentMessage/delta",
+            "item/reasoning/textDelta",
+          ],
+        },
+      });
+      this.write({ method: "initialized", params: {} });
+      this.initialized = true;
+    } catch (error) {
+      const process = this.process;
+      this.process = null;
+      this.initialized = false;
+      try { process?.kill(); } catch { /* The process may already be gone. */ }
+      await this.pumpTask?.catch(() => undefined);
+      this.pumpTask = null;
+      throw error;
+    }
   }
 
   async readRateLimits(): Promise<QuotaObservation[]> {
     await this.connect();
     const result = await this.request("account/rateLimits/read");
     return parseCodexRateLimits(result, Date.now(), this.account);
+  }
+
+  async listThreads(params: CodexThreadListParams = {}): Promise<CodexThreadListPage> {
+    await this.connect();
+    const result = await this.request("thread/list", params);
+    if (!result || typeof result !== "object") {
+      throw new Error("Codex App Server thread/list returned an invalid response");
+    }
+    const object = result as Record<string, unknown>;
+    const rawData = Array.isArray(object.data) ? object.data : [];
+    // thread/list also returns `preview` and other transcript metadata. Drop
+    // those fields at this boundary; resume discovery only needs identity,
+    // cwd, and the optional user-visible name.
+    const data: CodexThreadSummary[] = rawData.flatMap((raw) => {
+      if (!raw || typeof raw !== "object") return [];
+      const thread = raw as Record<string, unknown>;
+      if (typeof thread.id !== "string" || typeof thread.cwd !== "string") return [];
+      return [{
+        id: thread.id,
+        cwd: thread.cwd,
+        name: typeof thread.name === "string" ? thread.name : null,
+      }];
+    });
+    return {
+      data,
+      nextCursor: typeof object.nextCursor === "string" ? object.nextCursor : null,
+    };
   }
 
   private write(message: RpcMessage): void {
@@ -235,7 +307,10 @@ export class CodexAppServerClient {
         }
       }
     } finally {
-      if (this.process === process) this.process = null;
+      if (this.process === process) {
+        this.process = null;
+        this.initialized = false;
+      }
       for (const pending of this.pending.values()) {
         clearTimeout(pending.timeout);
         pending.reject(new Error("Codex App Server stopped"));
@@ -289,6 +364,7 @@ export class CodexAppServerClient {
     this.notificationRefreshScheduled = false;
     const process = this.process;
     this.process = null;
+    this.initialized = false;
     if (!process) return;
     try {
       const stdin = process.stdin;

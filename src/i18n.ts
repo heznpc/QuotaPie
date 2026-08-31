@@ -235,6 +235,18 @@ const CATALOG: Record<string, Record<Locale, Renderer>> = {
     en: () => "The notification channel is connected.",
     ko: () => "알림 채널이 정상적으로 연결됐습니다.",
   },
+  "alert.resume.ready.title": {
+    en: (p) => `${p.provider}/${p.account} task is ready`,
+    ko: (p) => `${p.provider}/${p.account} 작업 재개 가능`,
+  },
+  "alert.resume.ready.message": {
+    en: (p) => `${p.label} has fresh quota again. Open QuotaPie to approve resuming it.`,
+    ko: (p) => `${p.label} 한도가 다시 확인됐습니다. QuotaPie에서 재개를 승인해 주세요.`,
+  },
+  "resume.registered": {
+    en: (p) => `${p.label} will be offered for resume after fresh quota is confirmed.`,
+    ko: (p) => `${p.label} 한도가 다시 확인되면 재개할 수 있도록 알려드립니다.`,
+  },
 };
 
 export type MessageKey = keyof typeof CATALOG;

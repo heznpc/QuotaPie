@@ -5,6 +5,10 @@ struct StatusPayload: Decodable {
     let headline: Headline?
     let accounts: [AccountState]
     let events: [QuotaEvent]
+    /// A short-lived capability issued by the local service. It is deliberately
+    /// kept in memory and is required for every resume-task mutation.
+    let actionToken: String?
+    let resumeTasks: [ResumeTask]
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -12,9 +16,61 @@ struct StatusPayload: Decodable {
         headline = try values.decodeIfPresent(Headline.self, forKey: .headline)
         accounts = try values.decodeIfPresent([AccountState].self, forKey: .accounts) ?? []
         events = try values.decodeIfPresent([QuotaEvent].self, forKey: .events) ?? []
+        actionToken = try values.decodeIfPresent(String.self, forKey: .actionToken)
+        resumeTasks = try values.decodeIfPresent([ResumeTask].self, forKey: .resumeTasks) ?? []
     }
 
-    private enum CodingKeys: String, CodingKey { case nowMs, headline, accounts, events }
+    private enum CodingKeys: String, CodingKey {
+        case nowMs, headline, accounts, events, actionToken, resumeTasks
+    }
+}
+
+/// Work that QuotaPie observed pausing at a provider limit. The service owns
+/// the state machine; the app only offers explicit, user-approved actions.
+struct ResumeTask: Decodable, Identifiable {
+    let id: String
+    let provider: String
+    let account: String
+    let accountLabel: String
+    let projectLabel: String
+    let state: String
+    let registeredAtMs: Double
+    let expectedResetAtMs: Double?
+    let readyAtMs: Double?
+    let errorDetail: String?
+
+    var providerTitle: String {
+        provider == "codex" ? "Codex" : provider == "claude" ? "Claude" : provider
+    }
+
+    var accountTitle: String {
+        accountLabel == account ? accountLabel : "\(accountLabel) [\(account)]"
+    }
+
+    var shortReference: String { "#\(id.prefix(8))" }
+
+    var pausedReference: String {
+        Strings.t("resume.pausedReference", DisplayFormat.clock(registeredAtMs), shortReference)
+    }
+
+    var isWaiting: Bool { state == "waiting" }
+    var isReady: Bool { state == "ready" }
+    var isApproved: Bool { state == "approved" }
+    var isActive: Bool { isWaiting || isReady || isApproved }
+}
+
+/// The only executable material accepted from the service. No shell command or
+/// prompt field exists in this wire type by design.
+struct ResumePlan: Decodable {
+    let executable: String
+    let arguments: [String]
+    let environment: [String: String]
+    let workingDirectory: String
+}
+
+struct ResumeApprovalResponse: Decodable {
+    let task: ResumeTask
+    let plan: ResumePlan
 }
 
 /// The conclusion for the menu bar. The service decides which one wins; the

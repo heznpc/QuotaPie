@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private let popoverModel = PopoverModel()
+    private let resumeLauncher = ResumeLauncher()
     private var client: StatusClient?
     private var refreshTimer: Timer?
     private var isFetching = false
@@ -80,6 +81,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             onOpenDashboard: { [weak self] in self?.openDashboard() },
             onOpenConfig: { [weak self] in self?.openConfig() },
             onCopyCommand: { [weak self] command in self?.copyToPasteboard(command) },
+            onResumeTask: { [weak self] task in self?.resume(task) },
+            onRetryTask: { [weak self] task in self?.retry(task) },
+            onDismissTask: { [weak self] task in self?.dismiss(task) },
             onQuit: { NSApp.terminate(nil) }
         )
         let controller = NSHostingController(rootView: view)
@@ -147,6 +151,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 switch result {
                 case .success(let payload):
                     self.popoverModel.payload = payload
+                    let activeTaskIDs = Set(payload.resumeTasks.filter(\.isActive).map(\.id))
+                    self.popoverModel.resumeActivities = self.popoverModel.resumeActivities.filter {
+                        activeTaskIDs.contains($0.key)
+                    }
                     self.popoverModel.lastSuccessAt = Date()
                     self.popoverModel.lastError = nil
                     self.failureIndex = 0
@@ -171,11 +179,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     /// number in the normal colour there is simply a lie.
     private func render() {
         let headline = popoverModel.payload?.headline
+        let readyTasks = popoverModel.lastError == nil
+            ? (popoverModel.payload?.resumeTasks.filter(\.isReady) ?? [])
+            : []
         let title: String
         let color: NSColor
-        if popoverModel.lastError != nil {
+        let toolTip: String
+        if let task = readyTasks.first {
+            title = Strings.t("resume.readyCount", String(readyTasks.count))
+            color = .systemBlue
+            toolTip = Strings.t(
+                "resume.readyTooltip",
+                task.providerTitle,
+                task.accountTitle,
+                "\(task.projectLabel) \(task.shortReference)"
+            )
+        } else if popoverModel.lastError != nil {
             title = popoverModel.payload == nil ? Strings.t("headline.disconnected") : Strings.t("headline.degraded")
             color = .systemOrange
+            toolTip = popoverModel.lastError ?? Strings.t("status.tooltip")
         } else {
             title = headline?.localizedTitle ?? Strings.t("headline.checking")
             switch headline?.kind {
@@ -183,6 +205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             case "degraded", "setup": color = .secondaryLabelColor
             default: color = .labelColor
             }
+            toolTip = headline?.localizedDetail ?? Strings.t("status.tooltip")
         }
         statusItem.button?.attributedTitle = NSAttributedString(
             string: title,
@@ -191,7 +214,145 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
             ]
         )
-        statusItem.button?.toolTip = popoverModel.lastError ?? headline?.localizedDetail ?? Strings.t("status.tooltip")
+        statusItem.button?.toolTip = toolTip
+    }
+
+    private func resume(_ task: ResumeTask) {
+        guard task.isReady,
+              popoverModel.resumeActivities[task.id]?.isBusy != true else { return }
+        guard let actionToken = currentActionToken else {
+            popoverModel.resumeActivities[task.id] = .failed(Strings.t("client.missingActionToken"))
+            return
+        }
+        guard confirmResume(task) else { return }
+        guard let client else { return }
+
+        popoverModel.resumeActivities[task.id] = .approving
+        client.approveResumeTask(id: task.id, actionToken: actionToken) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .failure(let error):
+                    self.popoverModel.resumeActivities[task.id] = .failed(error.localizedDescription)
+                case .success(let approval):
+                    guard approval.task.id == task.id,
+                          approval.task.provider == task.provider,
+                          approval.task.account == task.account,
+                          approval.task.projectLabel == task.projectLabel,
+                          approval.task.isApproved else {
+                        self.popoverModel.resumeActivities[task.id] = .failed(
+                            StatusClientError.invalidResponse.localizedDescription
+                        )
+                        return
+                    }
+                    self.popoverModel.resumeActivities[task.id] = .opening
+                    self.resumeLauncher.openInTerminal(
+                        plan: approval.plan,
+                        expectedProvider: task.provider
+                    ) { [weak self] launchResult in
+                        DispatchQueue.main.async {
+                            self?.finishLaunch(
+                                task: task,
+                                actionToken: actionToken,
+                                result: launchResult
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A launch is recorded as resumed only after the one-shot file writes its
+    /// start receipt. A failure stays approved so the user can inspect Terminal
+    /// before deliberately resetting it; automatic retry could launch twice.
+    private func finishLaunch(
+        task: ResumeTask,
+        actionToken: String,
+        result: Result<Void, Error>
+    ) {
+        guard let client else { return }
+        popoverModel.resumeActivities[task.id] = .updating
+        switch result {
+        case .success:
+            client.transitionResumeTask(
+                id: task.id,
+                transition: .resumed,
+                actionToken: actionToken
+            ) { [weak self] transitionResult in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    switch transitionResult {
+                    case .success:
+                        self.popoverModel.resumeActivities.removeValue(forKey: task.id)
+                        self.refresh()
+                    case .failure(let error):
+                        self.popoverModel.resumeActivities[task.id] = .failed(error.localizedDescription)
+                    }
+                }
+            }
+        case .failure(let launchError):
+            popoverModel.resumeActivities[task.id] = .failed(launchError.localizedDescription)
+            refresh()
+        }
+    }
+
+    private func retry(_ task: ResumeTask) {
+        mutate(task, transition: .retry)
+    }
+
+    private func dismiss(_ task: ResumeTask) {
+        mutate(task, transition: .dismiss)
+    }
+
+    private func mutate(_ task: ResumeTask, transition: ResumeTaskTransition) {
+        guard popoverModel.resumeActivities[task.id]?.isBusy != true else { return }
+        guard let actionToken = currentActionToken else {
+            popoverModel.resumeActivities[task.id] = .failed(Strings.t("client.missingActionToken"))
+            return
+        }
+        guard let client else { return }
+        popoverModel.resumeActivities[task.id] = .updating
+        client.transitionResumeTask(id: task.id, transition: transition, actionToken: actionToken) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success:
+                    self.popoverModel.resumeActivities.removeValue(forKey: task.id)
+                    self.refresh()
+                case .failure(let error):
+                    self.popoverModel.resumeActivities[task.id] = .failed(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private var currentActionToken: String? {
+        guard popoverModel.lastError == nil else { return nil }
+        guard let token = popoverModel.payload?.actionToken, !token.isEmpty else { return nil }
+        return token
+    }
+
+    /// This native confirmation is the product boundary: QuotaPie may prepare
+    /// a session, but it never sends the first prompt or spends tokens itself.
+    private func confirmResume(_ task: ResumeTask) -> Bool {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = Strings.t("resume.confirmTitle")
+        alert.informativeText = Strings.t(
+            "resume.confirmMessage",
+            task.providerTitle,
+            task.accountTitle,
+            task.projectLabel,
+            task.shortReference,
+            DisplayFormat.clock(task.registeredAtMs)
+        )
+        alert.addButton(withTitle: Strings.t("resume.confirmOpen"))
+        alert.addButton(withTitle: Strings.t("resume.confirmCancel"))
+        alert.buttons.first?.keyEquivalent = "\r"
+        alert.buttons.last?.keyEquivalent = "\u{1b}"
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     @objc private func copyStatus() { copyToPasteboard(plainStatus()) }

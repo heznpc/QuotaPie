@@ -109,6 +109,86 @@ enum Strings {
             .english: "Run %@ in a terminal", .korean: "터미널에서 %@ 실행",
         ],
 
+        "resume.sectionTitle": [.english: "Paused work", .korean: "중단된 작업"],
+        "resume.readyCount": [.english: "▶ %@ ready", .korean: "▶ %@개 재개"],
+        "resume.readyTooltip": [.english: "%@ · %@ · %@", .korean: "%@ · %@ · %@"],
+        "resume.pausedReference": [
+            .english: "paused %@ · %@", .korean: "%@ 중단 · %@",
+        ],
+        "resume.waitingAction": [.english: "Waiting", .korean: "대기 중"],
+        "resume.waitingProvider": [
+            .english: "Waiting for provider-confirmed capacity · %@",
+            .korean: "공급자가 확인한 사용 가능 한도 대기 · %@",
+        ],
+        "resume.readyDetail": [
+            .english: "Fresh provider capacity confirmed", .korean: "공급자의 최신 사용 가능 한도 확인됨",
+        ],
+        "resume.approvedDetail": [
+            .english: "Opening was interrupted. Reset it before retrying.",
+            .korean: "열기가 중단되었습니다. 재시도 상태로 되돌리십시오.",
+        ],
+        "resume.unknownState": [
+            .english: "Resume state needs checking", .korean: "재개 상태 확인 필요",
+        ],
+        "resume.actionUnavailable": [
+            .english: "Actions unavailable. Refresh the local service.",
+            .korean: "작업을 실행할 수 없습니다. 로컬 서비스를 새로고침하십시오.",
+        ],
+        "resume.resumeInTerminal": [
+            .english: "Resume in Terminal", .korean: "Terminal에서 재개",
+        ],
+        "resume.retry": [.english: "Retry", .korean: "재시도"],
+        "resume.dismiss": [.english: "Dismiss", .korean: "제거"],
+        "resume.dismissHelp": [
+            .english: "Remove this paused-work item", .korean: "이 중단 작업 항목 제거",
+        ],
+        "resume.preparing": [.english: "Preparing…", .korean: "준비 중…"],
+        "resume.opening": [.english: "Opening Terminal…", .korean: "Terminal 여는 중…"],
+        "resume.updating": [.english: "Updating…", .korean: "업데이트 중…"],
+        "resume.confirmTitle": [.english: "Resume paused work?", .korean: "중단된 작업을 재개할까요?"],
+        "resume.confirmMessage": [
+            .english: "Open %@ · %@ · %@ (%@, paused %@). QuotaPie does not send a prompt. Tokens are used only after you type and submit one.",
+            .korean: "%@ · %@ · %@ (%@, %@ 중단)를 엽니다. QuotaPie는 prompt를 보내지 않으며 사용자가 입력한 뒤에만 토큰이 사용됩니다.",
+        ],
+        "resume.confirmOpen": [.english: "Open", .korean: "열기"],
+        "resume.confirmCancel": [.english: "Cancel", .korean: "취소"],
+
+        "resume.error.executableNotAllowed": [
+            .english: "The resume executable is not allowed.", .korean: "허용되지 않은 재개 실행 파일입니다.",
+        ],
+        "resume.error.executableNotFound": [
+            .english: "The approved CLI executable could not be found.",
+            .korean: "승인된 CLI 실행 파일을 찾을 수 없습니다.",
+        ],
+        "resume.error.argumentsNotAllowed": [
+            .english: "The resume arguments were rejected.", .korean: "재개 인수가 거부되었습니다.",
+        ],
+        "resume.error.environmentNotAllowed": [
+            .english: "The resume environment was rejected.", .korean: "재개 환경 변수가 거부되었습니다.",
+        ],
+        "resume.error.workingDirectoryNotAllowed": [
+            .english: "The project folder is not an existing absolute path.",
+            .korean: "프로젝트 폴더가 존재하는 절대 경로가 아닙니다.",
+        ],
+        "resume.error.launcherCreationFailed": [
+            .english: "Could not create the one-shot launcher: %@",
+            .korean: "일회용 실행 파일을 만들 수 없습니다: %@",
+        ],
+        "resume.error.cannotWriteLauncher": [
+            .english: "the launcher file could not be written",
+            .korean: "실행 파일을 쓸 수 없음",
+        ],
+        "resume.error.terminalUnavailable": [
+            .english: "Terminal.app is unavailable.", .korean: "Terminal.app을 사용할 수 없습니다.",
+        ],
+        "resume.error.terminalOpenFailed": [
+            .english: "Could not open Terminal: %@", .korean: "Terminal을 열 수 없습니다: %@",
+        ],
+        "resume.error.launcherStartUnconfirmed": [
+            .english: "Terminal accepted the request, but the resume command did not start.",
+            .korean: "Terminal이 요청을 받았지만 재개 명령 시작을 확인하지 못했습니다.",
+        ],
+
         "action.refresh": [.english: "Refresh", .korean: "새로고침"],
         "action.refreshHelp": [.english: "Refresh (⌘R)", .korean: "새로고침 (⌘R)"],
         "action.copyHelp": [.english: "Copy status (⌘C)", .korean: "상태 복사 (⌘C)"],
@@ -148,6 +228,12 @@ enum Strings {
         ],
         "client.badResponse": [
             .english: "Could not read the local API response.", .korean: "로컬 API 응답을 읽을 수 없습니다.",
+        ],
+        "client.badTaskID": [
+            .english: "The paused-work identifier is not valid.", .korean: "중단 작업 식별자가 올바르지 않습니다.",
+        ],
+        "client.missingActionToken": [
+            .english: "The local action token is missing.", .korean: "로컬 작업 토큰이 없습니다.",
         ],
         "client.httpStatus": [
             .english: "The local service returned HTTP %@.", .korean: "로컬 서비스가 HTTP %@를 반환했습니다.",

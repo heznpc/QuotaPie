@@ -13,6 +13,11 @@ let package = Package(
             path: "macos/QuotaPie",
             exclude: ["Info.plist", "QuotaPie.entitlements"]
         ),
+        .testTarget(
+            name: "QuotaPieTests",
+            dependencies: ["QuotaPie"],
+            path: "macos/QuotaPieTests"
+        ),
     ],
     swiftLanguageVersions: [.v5]
 )

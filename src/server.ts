@@ -1,5 +1,8 @@
 import { buildHeadline } from "./analytics";
 import type { Headline, QuotaEvent } from "./types";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { ResumeTargetError } from "./service";
+import { ResumeTaskStoreError } from "./storage/resume-task-store";
 
 // Deprecated compatibility aliases for the one consumer that can be a version
 // behind this daemon: the menu bar app, during the seconds between the backend
@@ -29,6 +32,13 @@ function json(value: unknown, status = 200): Response {
 
 export function startDashboard(service: QuotaPieService, config: AppConfig) {
   const dashboardFile = Bun.file(new URL("./dashboard.html", import.meta.url));
+  const actionToken = randomBytes(32).toString("base64url");
+  const tokenMatches = (candidate: string | null): boolean => {
+    if (candidate == null) return false;
+    const expected = Buffer.from(actionToken);
+    const received = Buffer.from(candidate);
+    return expected.length === received.length && timingSafeEqual(expected, received);
+  };
   return Bun.serve({
     hostname: config.dashboard.host,
     port: config.dashboard.port,
@@ -40,6 +50,49 @@ export function startDashboard(service: QuotaPieService, config: AppConfig) {
       const allowedHosts = new Set(["127.0.0.1", "localhost", "::1", config.dashboard.host.toLowerCase()]);
       if (!hostname || !allowedHosts.has(hostname)) return json({ error: "invalid_host" }, 403);
       const url = new URL(request.url);
+      const action = url.pathname.match(
+        /^\/api\/resume-tasks\/([0-9a-fA-F-]+)\/(approve|resumed|retry|dismiss)$/,
+      );
+      if (action) {
+        if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+        if (!tokenMatches(request.headers.get("x-quotapie-action-token"))) {
+          return json({ error: "forbidden" }, 403);
+        }
+        const id = action[1]!;
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+          return json({ error: "invalid_resume_task_id" }, 400);
+        }
+        try {
+          switch (action[2]) {
+            case "approve":
+              return json(await service.approveResumeTask(id));
+            case "resumed":
+              return json({ task: service.markResumeTaskResumed(id) });
+            case "retry":
+              return json({ task: service.retryResumeTask(id) });
+            case "dismiss":
+              return json({ task: service.dismissResumeTask(id) });
+          }
+        } catch (error) {
+          if (error instanceof ResumeTaskStoreError) {
+            return error.kind === "not-found"
+              ? json({ error: "resume_task_not_found" }, 404)
+              : json({ error: error.kind, detail: error.message }, 409);
+          }
+          if (error instanceof ResumeTargetError) {
+            return json({ error: "resume_target_unavailable", detail: error.message }, 409);
+          }
+          console.error(`[quotapie] resume task action failed: ${String(error)}`);
+          return json({ error: "resume_action_failed" }, 500);
+        }
+      }
+      if (url.pathname.startsWith("/api/resume-tasks/")) {
+        if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+        if (!tokenMatches(request.headers.get("x-quotapie-action-token"))) {
+          return json({ error: "forbidden" }, 403);
+        }
+        return json({ error: "invalid_resume_task_action" }, 400);
+      }
       if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
       if (url.pathname === "/" || url.pathname === "/index.html") {
         return new Response(dashboardFile, {
@@ -51,8 +104,10 @@ export function startDashboard(service: QuotaPieService, config: AppConfig) {
         const accounts = service.accountStates(nowMs);
         return json({
           nowMs,
+          actionToken,
           headline: headlineJson(buildHeadline(accounts, nowMs, service.locale)),
           accounts,
+          resumeTasks: service.resumeTaskSummaries(),
           // Kept for existing consumers. It only contains accounts that have
           // windows, so new consumers should read accounts instead.
           statuses: service.statuses(nowMs),
