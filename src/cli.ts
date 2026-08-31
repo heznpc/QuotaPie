@@ -18,6 +18,8 @@ import { collectionErrorText } from "./analytics";
 import { resolveLocale, t } from "./i18n";
 import { CLAUDE_OAUTH_SOURCE, CLAUDE_STATUSLINE_SOURCE, QuotaPieService } from "./service";
 import { deliverTrigger } from "./triggers";
+import type { AppConfig } from "./config";
+import type { Provider } from "./types";
 
 const ROOT = resolve(import.meta.dir, "..");
 const BIN = resolve(ROOT, "bin", "quotapie");
@@ -47,6 +49,9 @@ Usage:
   quotapie explain [--account ID] [--json]
                                  Explain resets, relief, re-bases, and paid-credit changes
   quotapie accounts [--json]    Show local account aliases and isolated profile roots
+  quotapie pause [--provider codex|claude] [--account ID] [--session UUID]
+                 [--cwd PATH] [--label NAME] [--bucket ID] [--json]
+                                 Register this task for an explicit resume after quota recovers
   quotapie claude-statusline [--account ID]
                                  Ingest Claude status-line JSON and render one account's compact line
   quotapie watch                Run the adaptive collector and macOS triggers
@@ -71,6 +76,35 @@ function optionValue(args: string[], name: string): string | null {
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function resumeAccount(config: AppConfig, provider: Provider, requested: string | null): string {
+  if (requested) return requested;
+  const profiles = provider === "codex"
+    ? config.accounts.codex.filter((profile) => profile.enabled).map((profile) => ({
+      id: profile.id,
+      // A null Codex root means the stable default profile. Do not let the
+      // caller's CODEX_HOME silently redefine that configured account while
+      // trying to identify a different active profile.
+      root: resolveUserPath(profile.codexHome ?? "~/.codex"),
+    }))
+    : config.accounts.claude.filter((profile) => profile.enabled).map((profile) => ({
+      id: profile.id,
+      root: resolveUserPath(profile.configDir),
+    }));
+  const environmentName = provider === "codex" ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR";
+  const environmentRoot = process.env[environmentName]?.trim();
+  if (environmentRoot) {
+    const activeRoot = resolveUserPath(environmentRoot);
+    const matching = profiles.filter((profile) => profile.root === activeRoot);
+    if (matching.length === 1) return matching[0]!.id;
+    throw new Error(`${environmentName} does not match one configured ${provider} account; pass --account`);
+  }
+  if (profiles.length === 1) return profiles[0]!.id;
+  if (profiles.length > 1) {
+    throw new Error(`multiple ${provider} accounts are enabled; pass --account or set ${environmentName}`);
+  }
+  throw new Error(`no enabled ${provider} account is configured`);
 }
 
 function claudeSnippet(account = "default"): string {
@@ -282,6 +316,42 @@ async function main(): Promise<number> {
             console.log("\nFor isolated Codex logins, set cli_auth_credentials_store = \"file\" in each CODEX_HOME/config.toml.");
           }
         }
+        return 0;
+      }
+      case "pause": {
+        const requestedProvider = optionValue(args, "--provider");
+        if (requestedProvider != null && requestedProvider !== "codex" && requestedProvider !== "claude") {
+          throw new Error("--provider must be codex or claude");
+        }
+        const codexSession = process.env.CODEX_THREAD_ID?.trim() || null;
+        const claudeSession = process.env.CLAUDE_SESSION_ID?.trim() || null;
+        let provider = requestedProvider as "codex" | "claude" | null;
+        if (provider == null) {
+          if (codexSession && claudeSession) {
+            throw new Error("both CODEX_THREAD_ID and CLAUDE_SESSION_ID are set; pass --provider");
+          }
+          if (codexSession) provider = "codex";
+          else if (claudeSession) provider = "claude";
+          else throw new Error("pass --provider, or run inside a Codex/Claude session environment");
+        }
+        const nativeId = optionValue(args, "--session") ?? (
+          provider === "codex" ? codexSession : claudeSession
+        );
+        if (!nativeId) {
+          const variable = provider === "codex" ? "CODEX_THREAD_ID" : "CLAUDE_SESSION_ID";
+          throw new Error(`--session is required because ${variable} is not set`);
+        }
+        const task = service.registerResumeTask({
+          provider,
+          account: resumeAccount(config, provider, selectedAccount),
+          nativeId,
+          cwd: optionValue(args, "--cwd") ?? process.cwd(),
+          projectLabel: optionValue(args, "--label") ?? undefined,
+          bucket: optionValue(args, "--bucket") ?? undefined,
+        });
+        console.log(jsonOutput
+          ? JSON.stringify(task, null, 2)
+          : t("resume.registered", { label: task.projectLabel }, resolveLocale(config.profile.locale)));
         return 0;
       }
       case "doctor": {

@@ -227,3 +227,47 @@ export interface Headline {
   displayText: string;
   displayDetail: string | null;
 }
+
+export type ResumeTaskState = "waiting" | "ready" | "approved" | "resumed" | "dismissed";
+
+// Only this privacy-reduced record is durable. The provider's native session
+// id and working directory are resolved again from its own local session
+// index when the user approves a resume.
+export interface ResumeTask {
+  id: string;
+  taskKey: string;
+  provider: Provider;
+  account: string;
+  projectLabel: string;
+  bucket: string;
+  registeredAtMs: number;
+  registeredRemainingPercent: number;
+  expectedResetAtMs: number | null;
+  state: ResumeTaskState;
+  readyAtMs: number | null;
+  approvedAtMs: number | null;
+  resumedAtMs: number | null;
+  dismissedAtMs: number | null;
+  updatedAtMs: number;
+  errorDetail: string | null;
+}
+
+export interface ResumeTaskSummary {
+  id: string;
+  provider: Provider;
+  account: string;
+  accountLabel: string;
+  projectLabel: string;
+  state: ResumeTaskState;
+  registeredAtMs: number;
+  expectedResetAtMs: number | null;
+  readyAtMs: number | null;
+  errorDetail: string | null;
+}
+
+export interface ResumePlan {
+  executable: string;
+  arguments: string[];
+  environment: Record<string, string>;
+  workingDirectory: string;
+}

@@ -231,6 +231,9 @@ quotapie status --account ID  show a single local account alias
 quotapie status --json        structured output for automation
 quotapie explain              show the reasoning behind recent changes
 quotapie accounts             show account aliases and profile roots
+quotapie pause                register the current task for a user-approved resume
+quotapie pause --provider codex --session UUID [--account ID] [--bucket ID]
+                               register explicitly when session environment variables are absent
 quotapie claude-statusline --account ID
                                store an observation for that Claude profile
 quotapie watch                run only the adaptive timer and alerts
@@ -248,6 +251,40 @@ Configuration lives in `~/.config/quotapie/config.json` and data in `~/.local/sh
 ```bash
 QUOTAPIE_CONFIG=/path/config.json QUOTAPIE_HOME=/path/data ./bin/quotapie status
 ```
+
+`quotapie pause` never launches an agent and never sends a prompt. It records a
+SHA-256 key for the current native session plus the blocking quota bucket; the
+raw session ID and working directory are not written to QuotaPie's database.
+When a newer, fresh provider snapshot for that same account and bucket reports
+capacity again, QuotaPie offers a resume action. Only an explicit approval
+returns a structured launch plan to the local menu bar app.
+
+Resume is intentionally bound to the same provider and account that owns the
+native session. QuotaPie does not copy session state into another profile,
+rotate credentials, or route a prompt to a different account. Opt-in is per
+task: if `quotapie pause` was not run, there is nothing to resume.
+
+Inside Codex or Claude, the command reads `CODEX_THREAD_ID` or
+`CLAUDE_SESSION_ID`. Outside those environments, pass `--provider` and
+`--session`. The account is inferred from `CODEX_HOME` or
+`CLAUDE_CONFIG_DIR` when it uniquely matches a configured profile. An explicit
+profile environment that matches none is rejected; without one, a sole enabled
+account is used and an ambiguous multi-account setup must pass `--account`.
+`--cwd` defaults to the current directory and `--label` to that directory's
+base name. `--bucket` pins a specific current quota window; otherwise the
+window with the least remaining capacity is captured. Codex resume also
+requires the configured command's executable name to remain `codex`; wrapper
+paths should therefore end with that name.
+
+The loopback API exposes active resume tasks in `GET /api/status` together with
+a process-random `actionToken`. State changes use
+`POST /api/resume-tasks/:id/approve|resumed|retry|dismiss` and require that
+token in `x-quotapie-action-token`. Approval returns only a structured local
+launch plan; the daemon itself does not execute the command. A task becomes ready
+only after a newer, fresh snapshot for the exact provider, account, and bucket
+reports more remaining capacity than it had at registration. Approval checks
+that fresh positive capacity again before and after session discovery. Passing
+the expected reset time alone does not change its state.
 
 The settings that matter most:
 
@@ -385,7 +422,7 @@ insert are a single unit of work.
 bun run check
 ```
 
-The tests cover low-usage normal and early resets, reset-clock rebases, allowance relief where only the ratio falls, null data, out-of-order responses, multi-session Claude consensus, multi-account isolation and validation, per-account alert keys, retirement of dynamic Codex entries, durable alert claims, file permissions, paid credits, personal burn rate, bottleneck selection, and dynamic rescheduling.
+The tests cover low-usage normal and early resets, reset-clock rebases, allowance relief where only the ratio falls, null data, out-of-order responses, multi-session Claude consensus, multi-account isolation and validation, per-account alert keys, retirement of dynamic Codex entries, durable alert claims, file permissions, paid credits, personal burn rate, bottleneck selection, dynamic rescheduling, exact-session resume races, API capability checks, and the native launcher's command boundary.
 
 ## Limitations
 

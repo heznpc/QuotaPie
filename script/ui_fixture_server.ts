@@ -6,6 +6,22 @@ import { buildHeadline } from "../src/analytics";
 import type { AccountState, CollectionSourceState, WindowAnalysis } from "../src/types";
 
 const NOW = Date.now();
+const ACTION_TOKEN = "quotapie-fixture-action-token";
+const CODEX_SESSION_ID = "2f269ad7-8463-4e25-b8a0-79aba5fd87ab";
+const CLAUDE_SESSION_ID = "5fe1279c-1ab6-48ee-aa10-e07237646039";
+
+type FixtureResumeTask = {
+  id: string;
+  provider: "codex" | "claude";
+  account: string;
+  accountLabel: string;
+  projectLabel: string;
+  state: "waiting" | "ready" | "approved";
+  registeredAtMs: number;
+  expectedResetAtMs: number | null;
+  readyAtMs: number | null;
+  errorDetail: string | null;
+};
 
 function window(overrides: Partial<WindowAnalysis> = {}): WindowAnalysis {
   return {
@@ -183,7 +199,40 @@ export const FIXTURES: Record<string, AccountState[]> = {
   // Long list: check that only the body scrolls while the header and the
   // action bar stay pinned.
   overflow: Array.from({ length: 6 }, (_, index) => overflowAccount(index)),
+  // Paused-work fixtures keep the normal quota rows beneath the new section.
+  "resume-waiting": [account({ windows: [fiveHour, window()] }), claudeHealthy],
+  "resume-ready": [account({ windows: [fiveHour, window()] }), claudeHealthy],
 };
+
+function waitingTask(): FixtureResumeTask {
+  return {
+    id: "6a0422b9-e0f3-4899-905c-960a3d09eebd",
+    provider: "claude",
+    account: "work",
+    accountLabel: "Work",
+    projectLabel: "QuotaPie docs",
+    state: "waiting",
+    registeredAtMs: NOW - 45 * 60_000,
+    expectedResetAtMs: NOW + 75 * 60_000,
+    readyAtMs: null,
+    errorDetail: null,
+  };
+}
+
+function readyTask(): FixtureResumeTask {
+  return {
+    id: "81f249fc-eb21-4e6c-8f36-c4037387aeaf",
+    provider: "codex",
+    account: "default",
+    accountLabel: "Main",
+    projectLabel: "QuotaPie",
+    state: "ready",
+    registeredAtMs: NOW - 6 * 3_600_000,
+    expectedResetAtMs: NOW - 5 * 60_000,
+    readyAtMs: NOW - 4 * 60_000,
+    errorDetail: null,
+  };
+}
 
 const state = process.argv[2] ?? "normal";
 const port = Number(process.argv[3] ?? 47_899);
@@ -193,22 +242,74 @@ if (!accounts) {
   process.exit(2);
 }
 
+let resumeTasks: FixtureResumeTask[] = state === "resume-waiting"
+  ? [waitingTask()]
+  : state === "resume-ready"
+    ? [readyTask(), waitingTask()]
+    : [];
+
+function json(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+  });
+}
+
 Bun.serve({
   hostname: "127.0.0.1",
   port,
   fetch(request) {
     const url = new URL(request.url);
-    if (url.pathname !== "/api/status") return new Response("not found", { status: 404 });
-    return new Response(
-      JSON.stringify({
+    if (request.method === "GET" && url.pathname === "/api/status") {
+      return json({
         nowMs: Date.now(),
         headline: buildHeadline(accounts, Date.now()),
         accounts,
         statuses: [],
         events: [],
-      }),
-      { headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } },
-    );
+        actionToken: ACTION_TOKEN,
+        resumeTasks,
+      });
+    }
+
+    const match = url.pathname.match(/^\/api\/resume-tasks\/([^/]+)\/(approve|resumed|retry|dismiss)$/);
+    if (request.method !== "POST" || !match) return new Response("not found", { status: 404 });
+    if (request.headers.get("x-quotapie-action-token") !== ACTION_TOKEN) {
+      return json({ error: "invalid action token" }, 403);
+    }
+
+    const [, taskID, action] = match;
+    const task = resumeTasks.find((item) => item.id === taskID);
+    if (!task) return json({ error: "resume task not found" }, 404);
+
+    if (action === "approve") {
+      if (task.state !== "ready") return json({ error: "resume task is not ready" }, 409);
+      task.state = "approved";
+      const workingDirectory = process.cwd();
+      const isCodex = task.provider === "codex";
+      return json({
+        task,
+        plan: {
+          executable: isCodex ? "codex" : "claude",
+          arguments: isCodex
+            ? ["resume", "-C", workingDirectory, CODEX_SESSION_ID]
+            : ["--resume", CLAUDE_SESSION_ID],
+          environment: isCodex
+            ? { CODEX_HOME: "/tmp/quotapie-fixture-codex" }
+            : { CLAUDE_CONFIG_DIR: "/tmp/quotapie-fixture-claude" },
+          workingDirectory,
+        },
+      });
+    }
+
+    if (action === "retry") {
+      task.state = "ready";
+      task.errorDetail = null;
+      return json({ task });
+    }
+
+    resumeTasks = resumeTasks.filter((item) => item.id !== task.id);
+    return json({ task: { ...task, state: action } });
   },
 });
 console.log(`fixture ${state} on http://127.0.0.1:${port}`);

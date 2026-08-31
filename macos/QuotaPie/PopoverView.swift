@@ -1,9 +1,24 @@
 import SwiftUI
 
+enum ResumeTaskActivity: Equatable {
+    case approving
+    case opening
+    case updating
+    case failed(String)
+
+    var isBusy: Bool {
+        switch self {
+        case .approving, .opening, .updating: return true
+        case .failed: return false
+        }
+    }
+}
+
 final class PopoverModel: ObservableObject {
     @Published var payload: StatusPayload?
     @Published var lastError: String?
     @Published var lastSuccessAt: Date?
+    @Published var resumeActivities: [String: ResumeTaskActivity] = [:]
 }
 
 /// The first thing on screen has to answer four questions without anything
@@ -16,6 +31,9 @@ struct PopoverView: View {
     let onOpenDashboard: () -> Void
     let onOpenConfig: () -> Void
     let onCopyCommand: (String) -> Void
+    let onResumeTask: (ResumeTask) -> Void
+    let onRetryTask: (ResumeTask) -> Void
+    let onDismissTask: (ResumeTask) -> Void
     let onQuit: () -> Void
 
     var body: some View {
@@ -59,6 +77,17 @@ struct PopoverView: View {
                 tone: .warning
             )
         }
+        if let payload, !activeResumeTasks.isEmpty {
+            PausedWorkSection(
+                tasks: activeResumeTasks,
+                hasActionToken: model.lastError == nil && !(payload.actionToken?.isEmpty ?? true),
+                activities: model.resumeActivities,
+                onResume: onResumeTask,
+                onRetry: onRetryTask,
+                onDismiss: onDismissTask
+            )
+            Divider()
+        }
         if let payload, !payload.accounts.isEmpty {
             ForEach(payload.accounts) { account in
                 AccountSection(
@@ -99,13 +128,18 @@ struct PopoverView: View {
                 }
             }
             if let detail = headlineDetail {
-                Text(detail).font(.caption).foregroundStyle(.secondary)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help(detail)
             }
         }
     }
 
     private var headlineTitle: String {
         if isDisconnected { return model.payload == nil ? Strings.t("headline.disconnected") : Strings.t("headline.degraded") }
+        if !readyTasks.isEmpty { return Strings.t("resume.readyCount", String(readyTasks.count)) }
         return model.payload?.headline?.localizedTitle ?? Strings.t("headline.checking")
     }
 
@@ -114,16 +148,33 @@ struct PopoverView: View {
             guard let cached = model.payload?.headline?.localizedTitle else { return nil }
             return Strings.t("headline.lastGood") + " · " + cached
         }
+        if let task = readyTasks.first {
+            return Strings.t(
+                "resume.readyTooltip",
+                task.providerTitle,
+                task.accountTitle,
+                "\(task.projectLabel) \(task.shortReference)"
+            )
+        }
         return model.payload?.headline?.localizedDetail
     }
 
     private var headlineTone: Color {
         if isDisconnected { return .orange }
+        if !readyTasks.isEmpty { return Color(nsColor: .systemBlue) }
         switch model.payload?.headline?.kind {
         case "pace-risk": return .orange
         case "degraded", "setup": return .secondary
         default: return .primary
         }
+    }
+
+    private var readyTasks: [ResumeTask] {
+        model.payload?.resumeTasks.filter(\.isReady) ?? []
+    }
+
+    private var activeResumeTasks: [ResumeTask] {
+        model.payload?.resumeTasks.filter(\.isActive) ?? []
     }
 
     private var footer: some View {
@@ -168,6 +219,155 @@ struct PopoverView: View {
         }
         .buttonStyle(.borderless)
         .controlSize(.small)
+    }
+}
+
+private struct PausedWorkSection: View {
+    let tasks: [ResumeTask]
+    let hasActionToken: Bool
+    let activities: [String: ResumeTaskActivity]
+    let onResume: (ResumeTask) -> Void
+    let onRetry: (ResumeTask) -> Void
+    let onDismiss: (ResumeTask) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(Strings.t("resume.sectionTitle"))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            ForEach(tasks) { task in
+                ResumeTaskRow(
+                    task: task,
+                    hasActionToken: hasActionToken,
+                    activity: activities[task.id],
+                    onResume: { onResume(task) },
+                    onRetry: { onRetry(task) },
+                    onDismiss: { onDismiss(task) }
+                )
+            }
+        }
+    }
+}
+
+private struct ResumeTaskRow: View {
+    let task: ResumeTask
+    let hasActionToken: Bool
+    let activity: ResumeTaskActivity?
+    let onResume: () -> Void
+    let onRetry: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: task.isReady ? "play.circle.fill" : "pause.circle")
+                    .foregroundStyle(task.isReady ? Color(nsColor: .systemBlue) : .secondary)
+                    .accessibilityHidden(true)
+                Text("\(task.providerTitle) · \(task.accountTitle)")
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Text("\(task.projectLabel) · \(task.shortReference)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help(task.projectLabel)
+            }
+
+            Text(detailText)
+                .font(.caption2)
+                .foregroundStyle(detailTone)
+                .lineLimit(2)
+
+            HStack(spacing: 7) {
+                primaryAction
+                Spacer(minLength: 4)
+                Button(action: onDismiss) {
+                    Label(Strings.t("resume.dismiss"), systemImage: "xmark")
+                        .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.borderless)
+                .disabled(!hasActionToken || isBusy)
+                .help(Strings.t("resume.dismissHelp"))
+                .accessibilityLabel(
+                    "\(Strings.t("resume.dismiss")): \(task.providerTitle), \(task.accountTitle), \(task.projectLabel), \(task.shortReference)"
+                )
+            }
+            .controlSize(.small)
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 7).fill(Color.secondary.opacity(0.09)))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(task.providerTitle), \(task.accountTitle), \(task.projectLabel)")
+    }
+
+    @ViewBuilder
+    private var primaryAction: some View {
+        if isBusy {
+            HStack(spacing: 5) {
+                ProgressView().controlSize(.small)
+                Text(activityText)
+            }
+            .font(.caption)
+            .accessibilityElement(children: .combine)
+        } else if task.isWaiting {
+            Button(Strings.t("resume.waitingAction"), action: {})
+                .buttonStyle(.bordered)
+                .disabled(true)
+        } else if task.isReady {
+            Button(Strings.t("resume.resumeInTerminal"), action: onResume)
+                .buttonStyle(.borderedProminent)
+                .disabled(!hasActionToken)
+                .accessibilityLabel(
+                    "\(Strings.t("resume.resumeInTerminal")): \(task.providerTitle), \(task.accountTitle), \(task.projectLabel)"
+                )
+        } else if task.isApproved {
+            Button(Strings.t("resume.retry"), action: onRetry)
+                .buttonStyle(.bordered)
+                .disabled(!hasActionToken)
+                .accessibilityLabel(
+                    "\(Strings.t("resume.retry")): \(task.providerTitle), \(task.accountTitle), \(task.projectLabel), \(task.shortReference)"
+                )
+        }
+    }
+
+    private var isBusy: Bool { activity?.isBusy ?? false }
+
+    private var activityText: String {
+        switch activity {
+        case .approving: return Strings.t("resume.preparing")
+        case .opening: return Strings.t("resume.opening")
+        case .updating: return Strings.t("resume.updating")
+        case .failed, .none: return ""
+        }
+    }
+
+    private var detailText: String {
+        if !hasActionToken { return Strings.t("resume.actionUnavailable") }
+        if case .failed(let message) = activity { return "\(message) · \(task.pausedReference)" }
+        if let errorDetail = task.errorDetail, !errorDetail.isEmpty {
+            return "\(errorDetail) · \(task.pausedReference)"
+        }
+        let stateText: String
+        if task.isWaiting {
+            stateText = Strings.t(
+                "resume.waitingProvider",
+                DisplayFormat.resetStamp(task.expectedResetAtMs)
+            )
+        } else if task.isReady {
+            stateText = Strings.t("resume.readyDetail")
+        } else if task.isApproved {
+            stateText = Strings.t("resume.approvedDetail")
+        } else {
+            stateText = Strings.t("resume.unknownState")
+        }
+        return "\(stateText) · \(task.pausedReference)"
+    }
+
+    private var detailTone: Color {
+        if !hasActionToken { return .orange }
+        if case .failed = activity { return .red }
+        return .secondary
     }
 }
 
