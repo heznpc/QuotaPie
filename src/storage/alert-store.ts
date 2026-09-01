@@ -1,7 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { ALERTABLE_EVENT_KINDS } from "../types";
-import type { QuotaEvent } from "../types";
+import { ALERTABLE_EVENT_KINDS, MACOS_NOTIFICATION_CHANNEL } from "../types";
+import type {
+  AppNotification,
+  AppNotificationClaim,
+  AppNotificationDisposition,
+  QuotaEvent,
+  TriggerDecision,
+} from "../types";
 import type { QuotaStorage } from "./database";
+
+export const APP_NOTIFICATION_DEFAULT_TTL_MS = 24 * 60 * 60 * 1_000;
 
 export interface AlertClaim {
   token: string;
@@ -21,6 +29,22 @@ interface EventRow {
   details_json: string;
 }
 
+interface AppNotificationRow {
+  id: string;
+  delivery_key: string;
+  alert_key: string;
+  title: string;
+  message: string;
+  severity: AppNotification["severity"];
+  created_at_ms: number;
+  expires_at_ms: number;
+}
+
+interface AppNotificationClaimRow extends AppNotificationRow {
+  claimed_at_ms: number;
+  claimed_token: string;
+}
+
 function eventFromRow(row: EventRow): QuotaEvent {
   return {
     id: row.id,
@@ -36,13 +60,34 @@ function eventFromRow(row: EventRow): QuotaEvent {
   };
 }
 
+function appNotificationFromRow(row: AppNotificationRow): AppNotification {
+  return {
+    id: row.id,
+    deliveryKey: row.delivery_key,
+    alertKey: row.alert_key,
+    title: row.title,
+    message: row.message,
+    severity: row.severity,
+    createdAtMs: row.created_at_ms,
+    expiresAtMs: row.expires_at_ms,
+  };
+}
+
+function appNotificationClaimFromRow(row: AppNotificationClaimRow): AppNotificationClaim {
+  return {
+    ...appNotificationFromRow(row),
+    claimToken: row.claimed_token,
+    claimedAtMs: row.claimed_at_ms,
+  };
+}
+
 /// The alert subsystem as one aggregate.
 ///
-/// alert_state, event_delivery, and alert_channel_delivery implement a single
-/// feature — claim, lease, complete, and remember which channels already
-/// succeeded — so one owner holds all three. Splitting them by table would put
-/// a transaction boundary through the middle of a claim, which is the one place
-/// it must not go.
+/// alert_state, event_delivery, alert_channel_delivery, and the native outbox
+/// implement a single feature — claim, lease, complete, and remember which
+/// channels already succeeded — so one owner holds them together. Splitting
+/// them by table would put a transaction boundary through the middle of a
+/// delivery, which is the one place it must not go.
 export class AlertStore {
   constructor(private readonly storage: QuotaStorage) {}
 
@@ -70,29 +115,32 @@ export class AlertStore {
     return row ? { lastFiredAtMs: row.last_fired_at_ms, armed: row.armed === 1 } : null;
   }
 
-  setState(key: string, lastFiredAtMs: number, armed: boolean): void {
-    this.storage.db
-      .query(`
-        INSERT INTO alert_state(
-          key, last_fired_at_ms, armed, claimed_at_ms, claimed_token, generation, occurrence_open
-        ) VALUES (?, ?, ?, NULL, NULL, 0, 0)
-        ON CONFLICT(key) DO UPDATE SET
-          last_fired_at_ms = excluded.last_fired_at_ms,
-          armed = excluded.armed,
-          claimed_at_ms = NULL,
-          claimed_token = NULL,
-          occurrence_open = 0
-      `)
-      .run(key, lastFiredAtMs, armed ? 1 : 0);
-    if (armed) {
-      const prefix = `threshold:${key}:`;
+  setState(key: string, lastFiredAtMs: number, armed: boolean, nowMs = Date.now()): void {
+    this.storage.transaction(() => {
       this.storage.db
         .query(`
-          DELETE FROM alert_channel_delivery
-          WHERE delivery_key = ? OR substr(delivery_key, 1, ?) = ?
+          INSERT INTO alert_state(
+            key, last_fired_at_ms, armed, claimed_at_ms, claimed_token, generation, occurrence_open
+          ) VALUES (?, ?, ?, NULL, NULL, 0, 0)
+          ON CONFLICT(key) DO UPDATE SET
+            last_fired_at_ms = excluded.last_fired_at_ms,
+            armed = excluded.armed,
+            claimed_at_ms = NULL,
+            claimed_token = NULL,
+            occurrence_open = 0
         `)
-        .run(`threshold:${key}`, prefix.length, prefix);
-    }
+        .run(key, lastFiredAtMs, armed ? 1 : 0);
+      if (armed) {
+        this.cancelAppNotificationsForAlert(key, nowMs);
+        const prefix = `threshold:${key}:`;
+        this.storage.db
+          .query(`
+            DELETE FROM alert_channel_delivery
+            WHERE delivery_key = ? OR substr(delivery_key, 1, ?) = ?
+          `)
+          .run(`threshold:${key}`, prefix.length, prefix);
+      }
+    });
   }
 
   claim(key: string, nowMs: number, cooldownMs: number, leaseMs = 5 * 60_000): AlertClaim | null {
@@ -273,6 +321,198 @@ export class AlertStore {
         .run(categoryKey, token);
       return result.changes > 0;
     });
+  }
+
+  setNativeNotificationConsumer(available: boolean, nowMs = Date.now()): void {
+    this.storage.db
+      .query(`
+        INSERT INTO app_notification_capability(singleton, native_consumer, updated_at_ms)
+        VALUES (1, ?, ?)
+        ON CONFLICT(singleton) DO UPDATE SET
+          native_consumer = excluded.native_consumer,
+          updated_at_ms = excluded.updated_at_ms
+      `)
+      .run(available ? 1 : 0, nowMs);
+  }
+
+  hasNativeNotificationConsumer(): boolean {
+    // This is intentionally a migration capability, not a liveness heartbeat.
+    // Falling back to osascript after the user denied QuotaPie permission would
+    // bypass that choice under a different sender. Once proven, native delivery
+    // therefore stays durable and waits for the app instead of silently
+    // changing identity when the app is temporarily absent.
+    const row = this.storage.db
+      .query<{ native_consumer: number }, []>(`
+        SELECT native_consumer FROM app_notification_capability WHERE singleton = 1
+      `)
+      .get();
+    return row?.native_consumer === 1;
+  }
+
+  queueMacOSNotification(
+    decision: TriggerDecision,
+    deliveryKey: string,
+    nowMs = Date.now(),
+    expiresAtMs = nowMs + APP_NOTIFICATION_DEFAULT_TTL_MS,
+  ): AppNotification {
+    return this.storage.transaction(() => {
+      const id = randomUUID();
+      this.storage.db
+        .query(`
+          INSERT OR IGNORE INTO app_notification_outbox(
+            id, delivery_key, alert_key, title, message, severity,
+            created_at_ms, expires_at_ms, claimed_at_ms, claimed_token,
+            completed_at_ms, disposition
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)
+        `)
+        .run(
+          id,
+          deliveryKey,
+          decision.key,
+          decision.title,
+          decision.message,
+          decision.severity,
+          nowMs,
+          expiresAtMs,
+        );
+      const row = this.storage.db
+        .query<AppNotificationRow, [string]>(`
+          SELECT id, delivery_key, alert_key, title, message, severity,
+                 created_at_ms, expires_at_ms
+          FROM app_notification_outbox WHERE delivery_key = ?
+        `)
+        .get(deliveryKey);
+      if (!row) throw new Error(`Failed to queue native notification: ${deliveryKey}`);
+
+      // The durable enqueue is the macOS delivery. Keeping this write in the
+      // same transaction prevents a crash from leaving either a duplicate
+      // notification or a channel success with no native work to consume.
+      this.markChannelDelivered(deliveryKey, MACOS_NOTIFICATION_CHANNEL, nowMs);
+      return appNotificationFromRow(row);
+    });
+  }
+
+  claimNextAppNotification(
+    nowMs = Date.now(),
+    leaseMs = 5 * 60_000,
+  ): AppNotificationClaim | null {
+    return this.storage.transaction(() => {
+      // Calling the native endpoint is itself proof that this installation can
+      // consume the outbox, even when there is currently nothing to claim.
+      this.setNativeNotificationConsumer(true, nowMs);
+      this.storage.db
+        .query(`
+          UPDATE app_notification_outbox SET
+            completed_at_ms = ?, disposition = 'expired'
+          WHERE completed_at_ms IS NULL AND expires_at_ms <= ?
+        `)
+        .run(nowMs, nowMs);
+
+      const token = randomUUID();
+      const row = this.storage.db
+        .query<AppNotificationClaimRow, [number, string, number, number, number]>(`
+          UPDATE app_notification_outbox SET
+            claimed_at_ms = ?, claimed_token = ?
+          WHERE id = (
+            SELECT id FROM app_notification_outbox
+            WHERE completed_at_ms IS NULL
+              AND expires_at_ms > ?
+              AND (
+                claimed_at_ms IS NULL
+                OR ? - claimed_at_ms >= ?
+              )
+            ORDER BY created_at_ms ASC, id ASC
+            LIMIT 1
+          )
+          RETURNING id, delivery_key, alert_key, title, message, severity,
+                    created_at_ms, expires_at_ms, claimed_at_ms, claimed_token
+        `)
+        .get(nowMs, token, nowMs, nowMs, Math.max(0, leaseMs));
+      return row ? appNotificationClaimFromRow(row) : null;
+    });
+  }
+
+  completeAppNotification(
+    id: string,
+    claimToken: string,
+    disposition: AppNotificationDisposition,
+    nowMs = Date.now(),
+  ): boolean {
+    const result = this.storage.db
+      .query(`
+        UPDATE app_notification_outbox SET
+          completed_at_ms = ?, disposition = ?
+        WHERE id = ? AND claimed_token = ? AND completed_at_ms IS NULL
+      `)
+      .run(nowMs, disposition, id, claimToken);
+    if (result.changes > 0) return true;
+
+    // The app can lose the HTTP response after scheduling a notification. A
+    // retry of that same receipt is success, while a stale lease or a changed
+    // disposition remains a failed compare-and-swap.
+    const completed = this.storage.db
+      .query<{ claimed_token: string | null; disposition: string | null }, [string]>(`
+        SELECT claimed_token, disposition FROM app_notification_outbox WHERE id = ?
+      `)
+      .get(id);
+    return completed?.claimed_token === claimToken && completed.disposition === disposition;
+  }
+
+  releaseAppNotification(id: string, claimToken: string): boolean {
+    const result = this.storage.db
+      .query(`
+        UPDATE app_notification_outbox SET claimed_at_ms = NULL, claimed_token = NULL
+        WHERE id = ? AND claimed_token = ? AND completed_at_ms IS NULL
+      `)
+      .run(id, claimToken);
+    return result.changes > 0;
+  }
+
+  renewAppNotification(id: string, claimToken: string, nowMs = Date.now()): boolean {
+    const result = this.storage.db
+      .query(`
+        UPDATE app_notification_outbox SET claimed_at_ms = ?
+        WHERE id = ? AND claimed_token = ? AND completed_at_ms IS NULL
+      `)
+      .run(nowMs, id, claimToken);
+    return result.changes > 0;
+  }
+
+  cancelAppNotificationsForAlert(alertKey: string, nowMs = Date.now()): number {
+    const result = this.storage.db
+      .query(`
+        UPDATE app_notification_outbox SET
+          completed_at_ms = ?, disposition = 'cancelled'
+        WHERE alert_key = ? AND completed_at_ms IS NULL
+      `)
+      .run(nowMs, alertKey);
+    return result.changes;
+  }
+
+  cancelAllAppNotifications(nowMs = Date.now()): number {
+    const result = this.storage.db
+      .query(`
+        UPDATE app_notification_outbox SET
+          completed_at_ms = ?, disposition = 'cancelled'
+        WHERE completed_at_ms IS NULL
+      `)
+      .run(nowMs);
+    return result.changes;
+  }
+
+  pendingAppNotifications(limit = 100): AppNotification[] {
+    const boundedLimit = Math.max(0, Math.min(500, Math.trunc(limit)));
+    return this.storage.db
+      .query<AppNotificationRow, [number]>(`
+        SELECT id, delivery_key, alert_key, title, message, severity,
+               created_at_ms, expires_at_ms
+        FROM app_notification_outbox
+        WHERE completed_at_ms IS NULL
+        ORDER BY created_at_ms ASC, id ASC
+        LIMIT ?
+      `)
+      .all(boundedLimit)
+      .map(appNotificationFromRow);
   }
 
   deliveredChannels(deliveryKey: string): string[] {

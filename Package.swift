@@ -11,7 +11,7 @@ let package = Package(
         .executableTarget(
             name: "QuotaPie",
             path: "macos/QuotaPie",
-            exclude: ["Info.plist", "QuotaPie.entitlements"]
+            exclude: ["Info.plist", "QuotaPie.entitlements", "QuotaPie.icns"]
         ),
         .testTarget(
             name: "QuotaPieTests",

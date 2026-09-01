@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 @main
 struct QuotaPieApp {
@@ -17,7 +18,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let popover = NSPopover()
     private let popoverModel = PopoverModel()
     private let resumeLauncher = ResumeLauncher()
+    private let userNotificationCenter = UNUserNotificationCenter.current()
     private var client: StatusClient?
+    private var notificationPresenter: NotificationPresenter?
     private var refreshTimer: Timer?
     private var isFetching = false
     private var failureIndex = 0
@@ -25,6 +28,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 #if DEBUG
     private var debugWindow: NSWindow?
 #endif
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        do {
+            let client = try StatusClient()
+            self.client = client
+            let presenter = NotificationPresenter(
+                client: client,
+                scheduler: UserNotificationScheduler(center: userNotificationCenter),
+                openPopover: { [weak self] in self?.showPopover() }
+            )
+            notificationPresenter = presenter
+            userNotificationCenter.delegate = presenter
+        } catch {
+            popoverModel.lastError = error.localizedDescription
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -35,12 +54,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.behavior = .transient
         popover.animates = false
         popover.delegate = self
-
-        do {
-            client = try StatusClient()
-        } catch {
-            popoverModel.lastError = error.localizedDescription
-        }
 
         installPopoverContent()
         installKeyboardShortcuts()
@@ -65,8 +78,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             popover.performClose(nil)
             return
         }
+        showPopover()
+    }
+
+    /// Notification clicks only open the UI. They never reuse the status-item
+    /// toggle, because clicking a banner while the popover is visible must not
+    /// close it again.
+    private func showPopover() {
         guard let button = statusItem.button else { return }
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
+        if !popover.isShown {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
+        }
         // Read again immediately so the values are not already ageing by the
         // time the popover finishes opening.
         refresh()
@@ -158,6 +180,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     self.popoverModel.lastSuccessAt = Date()
                     self.popoverModel.lastError = nil
                     self.failureIndex = 0
+                    if let actionToken = payload.actionToken, !actionToken.isEmpty {
+                        self.notificationPresenter?.statusDidRefresh(actionToken: actionToken)
+                    }
                     self.scheduleRefresh(after: 30)
                 case .failure(let error):
                     self.popoverModel.lastError = error.localizedDescription

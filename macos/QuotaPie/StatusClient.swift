@@ -4,7 +4,9 @@ enum StatusClientError: LocalizedError {
     case invalidLocalURL
     case invalidResponse
     case invalidTaskID
+    case invalidNotificationID
     case missingActionToken
+    case missingNotificationClaimToken
     case httpStatus(Int)
 
     var errorDescription: String? {
@@ -12,7 +14,9 @@ enum StatusClientError: LocalizedError {
         case .invalidLocalURL: return Strings.t("client.badURL")
         case .invalidResponse: return Strings.t("client.badResponse")
         case .invalidTaskID: return Strings.t("client.badTaskID")
+        case .invalidNotificationID: return Strings.t("client.badResponse")
         case .missingActionToken: return Strings.t("client.missingActionToken")
+        case .missingNotificationClaimToken: return Strings.t("client.badResponse")
         case .httpStatus(let code): return Strings.t("client.httpStatus", String(code))
         }
     }
@@ -66,29 +70,13 @@ final class StatusClient {
         let url = baseURL.appendingPathComponent("api/status")
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        session.dataTask(with: request) { data, response, error in
-            if let error {
-                completion(.failure(error))
-                return
-            }
-            guard let http = response as? HTTPURLResponse else {
-                completion(.failure(StatusClientError.invalidResponse))
-                return
-            }
-            guard (200..<300).contains(http.statusCode) else {
-                completion(.failure(StatusClientError.httpStatus(http.statusCode)))
-                return
-            }
-            guard let data else {
-                completion(.failure(StatusClientError.invalidResponse))
-                return
-            }
+        perform(request) { result in
             do {
-                completion(.success(try JSONDecoder().decode(StatusPayload.self, from: data)))
+                completion(.success(try JSONDecoder().decode(StatusPayload.self, from: result.get())))
             } catch {
                 completion(.failure(error))
             }
-        }.resume()
+        }
     }
 
     func approveResumeTask(
@@ -98,18 +86,13 @@ final class StatusClient {
     ) {
         do {
             let request = try resumeRequest(id: id, action: "approve", actionToken: actionToken)
-            session.dataTask(with: request) { data, response, error in
-                if let error {
-                    completion(.failure(error))
-                    return
-                }
+            perform(request) { result in
                 do {
-                    let data = try Self.successData(data: data, response: response)
-                    completion(.success(try JSONDecoder().decode(ResumeApprovalResponse.self, from: data)))
+                    completion(.success(try JSONDecoder().decode(ResumeApprovalResponse.self, from: result.get())))
                 } catch {
                     completion(.failure(error))
                 }
-            }.resume()
+            }
         } catch {
             completion(.failure(error))
         }
@@ -123,21 +106,87 @@ final class StatusClient {
     ) {
         do {
             let request = try resumeRequest(id: id, action: transition.rawValue, actionToken: actionToken)
-            session.dataTask(with: request) { data, response, error in
-                if let error {
-                    completion(.failure(error))
-                    return
-                }
+            perform(request) { result in
                 do {
-                    _ = try Self.successData(data: data, response: response)
+                    _ = try result.get()
                     completion(.success(()))
                 } catch {
                     completion(.failure(error))
                 }
-            }.resume()
+            }
         } catch {
             completion(.failure(error))
         }
+    }
+
+    func claimNotification(
+        actionToken: String,
+        completion: @escaping (Result<NotificationClaimResponse, Error>) -> Void
+    ) {
+        do {
+            let request = try authenticatedPOST(
+                pathComponents: ["api", "notifications", "claim"],
+                actionToken: actionToken
+            )
+            perform(request) { result in
+                do {
+                    completion(.success(try JSONDecoder().decode(NotificationClaimResponse.self, from: result.get())))
+                } catch {
+                    completion(.failure(error))
+                }
+            }
+        } catch {
+            completion(.failure(error))
+        }
+    }
+
+    func completeNotification(
+        id: String,
+        disposition: NotificationCompletionDisposition,
+        claimToken: String,
+        actionToken: String,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        mutateNotification(
+            id: id,
+            action: disposition.rawValue,
+            claimToken: claimToken,
+            actionToken: actionToken,
+            responseKeyPath: \.completed,
+            completion: completion
+        )
+    }
+
+    func releaseNotification(
+        id: String,
+        claimToken: String,
+        actionToken: String,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        mutateNotification(
+            id: id,
+            action: "release",
+            claimToken: claimToken,
+            actionToken: actionToken,
+            responseKeyPath: \.released,
+            completion: completion
+        )
+    }
+
+    func renewNotification(
+        id: String,
+        claimToken: String,
+        actionToken: String,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        mutateNotification(
+            id: id,
+            action: "renew",
+            claimToken: claimToken,
+            actionToken: actionToken,
+            responseKeyPath: \.renewed,
+            completion: completion
+        )
     }
 
     private func resumeRequest(id: String, action: String, actionToken: String) throws -> URLRequest {
@@ -151,21 +200,103 @@ final class StatusClient {
             .appendingPathComponent("resume-tasks", isDirectory: true)
             .appendingPathComponent(id, isDirectory: true)
             .appendingPathComponent(action)
+        return try authenticatedPOST(url: url, actionToken: actionToken)
+    }
+
+    private struct NotificationMutationResponse: Decodable {
+        let completed: Bool?
+        let released: Bool?
+        let renewed: Bool?
+    }
+
+    private func mutateNotification(
+        id: String,
+        action: String,
+        claimToken: String,
+        actionToken: String,
+        responseKeyPath: KeyPath<NotificationMutationResponse, Bool?>,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        guard UUID(uuidString: id) != nil else {
+            completion(.failure(StatusClientError.invalidNotificationID))
+            return
+        }
+        do {
+            let request = try authenticatedPOST(
+                pathComponents: ["api", "notifications", id, action],
+                actionToken: actionToken,
+                notificationClaimToken: claimToken
+            )
+            perform(request) { result in
+                do {
+                    let response = try JSONDecoder().decode(NotificationMutationResponse.self, from: result.get())
+                    guard response[keyPath: responseKeyPath] == true else {
+                        throw StatusClientError.invalidResponse
+                    }
+                    completion(.success(()))
+                } catch {
+                    completion(.failure(error))
+                }
+            }
+        } catch {
+            completion(.failure(error))
+        }
+    }
+
+    private func authenticatedPOST(
+        pathComponents: [String],
+        actionToken: String,
+        notificationClaimToken: String? = nil
+    ) throws -> URLRequest {
+        var url = baseURL
+        for component in pathComponents {
+            url.appendPathComponent(component)
+        }
+        return try authenticatedPOST(
+            url: url,
+            actionToken: actionToken,
+            notificationClaimToken: notificationClaimToken
+        )
+    }
+
+    private func authenticatedPOST(
+        url: URL,
+        actionToken: String,
+        notificationClaimToken: String? = nil
+    ) throws -> URLRequest {
+        guard !actionToken.isEmpty else { throw StatusClientError.missingActionToken }
+        if let notificationClaimToken, notificationClaimToken.isEmpty {
+            throw StatusClientError.missingNotificationClaimToken
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue(actionToken, forHTTPHeaderField: "x-quotapie-action-token")
+        if let notificationClaimToken {
+            request.setValue(notificationClaimToken, forHTTPHeaderField: "x-quotapie-notification-claim")
+        }
         request.setValue("0", forHTTPHeaderField: "content-length")
         return request
     }
 
-    private static func successData(data: Data?, response: URLResponse?) throws -> Data {
-        guard let http = response as? HTTPURLResponse else {
-            throw StatusClientError.invalidResponse
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            throw StatusClientError.httpStatus(http.statusCode)
-        }
-        return data ?? Data()
+    private func perform(
+        _ request: URLRequest,
+        completion: @escaping (Result<Data, Error>) -> Void
+    ) {
+        session.dataTask(with: request) { data, response, error in
+            if let error {
+                completion(.failure(error))
+                return
+            }
+            guard let http = response as? HTTPURLResponse else {
+                completion(.failure(StatusClientError.invalidResponse))
+                return
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                completion(.failure(StatusClientError.httpStatus(http.statusCode)))
+                return
+            }
+            completion(.success(data ?? Data()))
+        }.resume()
     }
 }

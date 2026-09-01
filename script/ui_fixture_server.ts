@@ -9,6 +9,8 @@ const NOW = Date.now();
 const ACTION_TOKEN = "quotapie-fixture-action-token";
 const CODEX_SESSION_ID = "2f269ad7-8463-4e25-b8a0-79aba5fd87ab";
 const CLAUDE_SESSION_ID = "5fe1279c-1ab6-48ee-aa10-e07237646039";
+const NOTIFICATION_ID = "f87f827d-7697-4507-bb3e-19e0f955dc25";
+const NOTIFICATION_CLAIM = "quotapie-fixture-notification-claim";
 
 type FixtureResumeTask = {
   id: string;
@@ -202,6 +204,8 @@ export const FIXTURES: Record<string, AccountState[]> = {
   // Paused-work fixtures keep the normal quota rows beneath the new section.
   "resume-waiting": [account({ windows: [fiveHour, window()] }), claudeHealthy],
   "resume-ready": [account({ windows: [fiveHour, window()] }), claudeHealthy],
+  // Native notification: exercise claim, UserNotifications scheduling, and ack.
+  notification: [account({ windows: [fiveHour, window()] }), claudeHealthy],
 };
 
 function waitingTask(): FixtureResumeTask {
@@ -247,6 +251,8 @@ let resumeTasks: FixtureResumeTask[] = state === "resume-waiting"
   : state === "resume-ready"
     ? [readyTask(), waitingTask()]
     : [];
+let notificationClaimed = false;
+let notificationCompleted = false;
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -270,6 +276,55 @@ Bun.serve({
         actionToken: ACTION_TOKEN,
         resumeTasks,
       });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/notifications/claim") {
+      if (request.headers.get("x-quotapie-action-token") !== ACTION_TOKEN) {
+        return json({ error: "invalid action token" }, 403);
+      }
+      if (state !== "notification" || notificationClaimed || notificationCompleted) {
+        return json({ notification: null });
+      }
+      notificationClaimed = true;
+      console.log(`notification claimed: ${NOTIFICATION_ID}`);
+      return json({
+        notification: {
+          id: NOTIFICATION_ID,
+          title: "QuotaPie native notification",
+          message: "This banner is sent by QuotaPie.app, not the script runner.",
+          severity: "info",
+          createdAtMs: Date.now(),
+          expiresAtMs: Date.now() + 60 * 60_000,
+          claimToken: NOTIFICATION_CLAIM,
+        },
+      });
+    }
+
+    const notificationAction = url.pathname.match(
+      /^\/api\/notifications\/([^/]+)\/(scheduled|suppressed|expired|release|renew)$/,
+    );
+    if (request.method === "POST" && notificationAction) {
+      if (request.headers.get("x-quotapie-action-token") !== ACTION_TOKEN) {
+        return json({ error: "invalid action token" }, 403);
+      }
+      const [, notificationID, action] = notificationAction;
+      if (notificationID !== NOTIFICATION_ID) return json({ error: "notification not found" }, 404);
+      if (request.headers.get("x-quotapie-notification-claim") !== NOTIFICATION_CLAIM) {
+        return json({ error: "claim conflict" }, 409);
+      }
+      if (action === "release") {
+        notificationClaimed = false;
+        console.log(`notification released: ${NOTIFICATION_ID}`);
+        return json({ released: true });
+      }
+      if (action === "renew") {
+        console.log(`notification renewed: ${NOTIFICATION_ID}`);
+        return json({ renewed: true });
+      }
+      notificationCompleted = true;
+      notificationClaimed = false;
+      console.log(`notification ${action}: ${NOTIFICATION_ID}`);
+      return json({ completed: true });
     }
 
     const match = url.pathname.match(/^\/api\/resume-tasks\/([^/]+)\/(approve|resumed|retry|dismiss)$/);

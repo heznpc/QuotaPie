@@ -73,6 +73,33 @@ struct ResumeApprovalResponse: Decodable {
     let plan: ResumePlan
 }
 
+/// A durable alert claimed from the local QuotaPie service. The claim token is
+/// an opaque, short-lived capability and must only be sent back to the matching
+/// completion or release endpoint.
+struct ClaimedNotification: Decodable, Identifiable {
+    let id: String
+    let title: String
+    let message: String
+    let severity: String
+    let createdAtMs: Double
+    let expiresAtMs: Double
+    let claimToken: String
+
+    var requestIdentifier: String {
+        "local.quotapie.notification.\(id.lowercased())"
+    }
+}
+
+struct NotificationClaimResponse: Decodable {
+    let notification: ClaimedNotification?
+}
+
+enum NotificationCompletionDisposition: String {
+    case scheduled
+    case suppressed
+    case expired
+}
+
 /// The conclusion for the menu bar. The service decides which one wins; the
 /// app only draws it.
 struct Headline: Decodable {

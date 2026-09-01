@@ -27,6 +27,7 @@ build_bundle() {
   mkdir -p "$APP_MACOS" "$APP_CONTENTS/Resources"
   cp "$build_binary" "$APP_BINARY"
   cp "$ROOT_DIR/macos/QuotaPie/Info.plist" "$APP_CONTENTS/Info.plist"
+  cp "$ROOT_DIR/macos/QuotaPie/QuotaPie.icns" "$APP_CONTENTS/Resources/QuotaPie.icns"
   chmod +x "$APP_BINARY"
 }
 
@@ -65,7 +66,7 @@ case "$MODE" in
   --verify|verify)
     open_app
     for _ in {1..20}; do
-      if pgrep -x "$APP_NAME" >/dev/null; then
+      if pgrep -f "^${APP_BINARY}$" >/dev/null; then
         exit 0
       fi
       sleep 0.1

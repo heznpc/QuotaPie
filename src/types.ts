@@ -129,6 +129,33 @@ export interface TriggerDecision {
   rearmWhenRemainingAbove?: number;
 }
 
+export type AppNotificationDisposition =
+  | "scheduled"
+  | "suppressed"
+  | "expired"
+  | "cancelled";
+
+export const MACOS_NOTIFICATION_CHANNEL = "macos-notification";
+
+// This is the durable hand-off from the daemon to the native menu bar app.
+// It intentionally contains presentation data only: no provider credentials,
+// session identifiers, or executable arguments cross this boundary.
+export interface AppNotification {
+  id: string;
+  deliveryKey: string;
+  alertKey: string;
+  title: string;
+  message: string;
+  severity: Severity;
+  createdAtMs: number;
+  expiresAtMs: number;
+}
+
+export interface AppNotificationClaim extends AppNotification {
+  claimToken: string;
+  claimedAtMs: number;
+}
+
 export type CollectionHealth =
   | "never-attempted"
   | "attempted-then-failed"

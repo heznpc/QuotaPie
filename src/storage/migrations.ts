@@ -198,6 +198,45 @@ export function migrate(db: Database): void {
       )
     `);
     db.run(`
+      CREATE TABLE IF NOT EXISTS app_notification_capability (
+        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+        native_consumer INTEGER NOT NULL CHECK(native_consumer IN (0, 1)),
+        updated_at_ms INTEGER NOT NULL
+      )
+    `);
+    db.run(`
+      CREATE TABLE IF NOT EXISTS app_notification_outbox (
+        id TEXT PRIMARY KEY,
+        delivery_key TEXT NOT NULL UNIQUE,
+        alert_key TEXT NOT NULL,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        severity TEXT NOT NULL CHECK(severity IN ('info', 'warning', 'critical')),
+        created_at_ms INTEGER NOT NULL,
+        expires_at_ms INTEGER NOT NULL,
+        claimed_at_ms INTEGER,
+        claimed_token TEXT,
+        completed_at_ms INTEGER,
+        disposition TEXT CHECK(disposition IN ('scheduled', 'suppressed', 'expired', 'cancelled')),
+        CHECK(
+          (claimed_at_ms IS NULL AND claimed_token IS NULL)
+          OR (claimed_at_ms IS NOT NULL AND claimed_token IS NOT NULL)
+        ),
+        CHECK(
+          (completed_at_ms IS NULL AND disposition IS NULL)
+          OR (completed_at_ms IS NOT NULL AND disposition IS NOT NULL)
+        )
+      )
+    `);
+    db.run(`
+      CREATE INDEX IF NOT EXISTS app_notification_pending
+      ON app_notification_outbox(completed_at_ms, created_at_ms, id)
+    `);
+    db.run(`
+      CREATE INDEX IF NOT EXISTS app_notification_alert
+      ON app_notification_outbox(alert_key, completed_at_ms)
+    `);
+    db.run(`
       CREATE TABLE IF NOT EXISTS claude_session_state (
         account TEXT NOT NULL,
         session_hash TEXT NOT NULL,

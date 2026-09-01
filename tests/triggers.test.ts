@@ -216,8 +216,10 @@ describe("trigger planning and claims", () => {
     const result = await deliverTrigger(
       { key: "test", title: "test", message: "test", severity: "info" },
       config,
-      ["command"],
-      "threshold:test",
+      {
+        alreadyDelivered: ["command"],
+        deliveryKey: "threshold:test",
+      },
     );
     expect(result.complete).toBeTrue();
     expect(result.succeededChannels).toEqual([]);
@@ -238,6 +240,76 @@ describe("trigger planning and claims", () => {
     expect(performance.now() - started).toBeLessThan(2_500);
     expect(errorLog.mock.calls.flat().join(" ")).toContain("timed out");
     errorLog.mockRestore();
+  });
+
+  test("queues macOS delivery through the native hook and records success", async () => {
+    if (process.platform !== "darwin") return;
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.alerts.macOSNotifications = true;
+    config.alerts.command = null;
+    const queued: Array<{ key: string; deliveryKey: string }> = [];
+    const recorded: string[] = [];
+    const decision = { key: "test", title: "test", message: "test", severity: "info" as const };
+    const result = await deliverTrigger(decision, config, {
+      deliveryKey: "threshold:test:1",
+      queueMacOSNotification: (item, deliveryKey) => {
+        queued.push({ key: item.key, deliveryKey });
+      },
+      onChannelSuccess: (channel) => {
+        recorded.push(channel);
+      },
+    });
+    expect(queued).toEqual([{ key: "test", deliveryKey: "threshold:test:1" }]);
+    expect(recorded).toEqual(["macos-notification"]);
+    expect(result).toEqual({
+      complete: true,
+      configuredChannels: ["macos-notification"],
+      succeededChannels: ["macos-notification"],
+      failedChannels: [],
+    });
+  });
+
+  test("reports a native queue failure without falling back to osascript", async () => {
+    if (process.platform !== "darwin") return;
+    const errorLog = spyOn(console, "error").mockImplementation(() => undefined);
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.alerts.macOSNotifications = true;
+    config.alerts.command = null;
+    const result = await deliverTrigger(
+      { key: "test", title: "test", message: "test", severity: "info" },
+      config,
+      {
+        queueMacOSNotification: () => {
+          throw new Error("queue unavailable");
+        },
+      },
+    );
+    expect(result.complete).toBeFalse();
+    expect(result.failedChannels).toEqual(["macos-notification"]);
+    expect(errorLog.mock.calls.flat().join(" ")).toContain("queue unavailable");
+    errorLog.mockRestore();
+  });
+
+  test("skips a native queue hook for a durably delivered macOS channel", async () => {
+    if (process.platform !== "darwin") return;
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.alerts.macOSNotifications = true;
+    config.alerts.command = null;
+    let calls = 0;
+    const result = await deliverTrigger(
+      { key: "test", title: "test", message: "test", severity: "info" },
+      config,
+      {
+        alreadyDelivered: ["macos-notification"],
+        deliveryKey: "threshold:test:1",
+        queueMacOSNotification: () => {
+          calls += 1;
+        },
+      },
+    );
+    expect(calls).toBe(0);
+    expect(result.complete).toBeTrue();
+    expect(result.succeededChannels).toEqual([]);
   });
 });
 

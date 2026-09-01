@@ -5,7 +5,7 @@ import type {
   TriggerDecision,
   WindowAnalysis,
 } from "./types";
-import { isAlertableEventKind } from "./types";
+import { isAlertableEventKind, MACOS_NOTIFICATION_CHANNEL } from "./types";
 
 export function alertScope(provider: string, account: string, bucket: string): string {
   // Preserve the original single-account keys so an upgrade does not discard
@@ -142,6 +142,16 @@ interface ChannelResult {
   detail: string;
 }
 
+export interface TriggerDeliveryOptions {
+  alreadyDelivered?: readonly string[];
+  deliveryKey?: string;
+  onChannelSuccess?: (channel: string) => void | Promise<void>;
+  queueMacOSNotification?: (
+    decision: TriggerDecision,
+    deliveryKey: string,
+  ) => unknown | Promise<unknown>;
+}
+
 function waitForExit(
   channel: string,
   process: ReturnType<typeof Bun.spawn>,
@@ -170,30 +180,67 @@ function waitForExit(
   });
 }
 
+function waitForWork(
+  channel: string,
+  work: () => unknown | Promise<unknown>,
+  timeoutMs: number,
+): Promise<ChannelResult> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: ChannelResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      finish({ channel, ok: false, detail: `timed out after ${Math.round(timeoutMs / 1_000)}s` });
+    }, timeoutMs);
+    void Promise.resolve()
+      .then(work)
+      .then(
+        () => finish({ channel, ok: true, detail: "queued" }),
+        (error) => finish({ channel, ok: false, detail: String(error) }),
+      );
+  });
+}
+
 export async function deliverTrigger(
   decision: TriggerDecision,
   config: AppConfig,
-  alreadyDelivered: readonly string[] = [],
-  deliveryKey = decision.key,
-  onChannelSuccess?: (channel: string) => void | Promise<void>,
+  options: TriggerDeliveryOptions = {},
 ): Promise<TriggerDeliveryResult> {
   const configuredChannels: string[] = [];
-  const completed = new Set(alreadyDelivered);
+  const completed = new Set(options.alreadyDelivered ?? []);
   const jobs: Promise<ChannelResult>[] = [];
+  const deliveryKey = options.deliveryKey ?? decision.key;
   const timeoutMs = Math.max(1_000, config.alerts.deliveryTimeoutSeconds * 1_000);
   if (config.alerts.macOSNotifications && process.platform === "darwin") {
-    const channel = "macos-notification";
+    const channel = MACOS_NOTIFICATION_CHANNEL;
     configuredChannels.push(channel);
     if (!completed.has(channel)) {
-      try {
+      if (options.queueMacOSNotification) {
         jobs.push(
-          waitForExit(channel, Bun.spawn(["osascript", "-e", APPLE_SCRIPT, "--", decision.title, decision.message], {
-            stdout: "ignore",
-            stderr: "ignore",
-          }), timeoutMs),
+          waitForWork(
+            channel,
+            () => options.queueMacOSNotification!(decision, deliveryKey),
+            timeoutMs,
+          ),
         );
-      } catch (error) {
-        jobs.push(Promise.resolve({ channel, ok: false, detail: `failed to start: ${String(error)}` }));
+      } else {
+        // Compatibility for daemon-only installations. Once a native app has
+        // claimed the durable outbox, service code supplies the queue hook and
+        // osascript is no longer the notification sender.
+        try {
+          jobs.push(
+            waitForExit(channel, Bun.spawn(["osascript", "-e", APPLE_SCRIPT, "--", decision.title, decision.message], {
+              stdout: "ignore",
+              stderr: "ignore",
+            }), timeoutMs),
+          );
+        } catch (error) {
+          jobs.push(Promise.resolve({ channel, ok: false, detail: `failed to start: ${String(error)}` }));
+        }
       }
     }
   }
@@ -220,8 +267,13 @@ export async function deliverTrigger(
   }
   const results = await Promise.all(jobs.map(async (job) => {
     const result = await job;
-    if (result.ok) await onChannelSuccess?.(result.channel);
-    return result;
+    if (!result.ok) return result;
+    try {
+      await options.onChannelSuccess?.(result.channel);
+      return result;
+    } catch (error) {
+      return { ...result, ok: false, detail: `failed to record success: ${String(error)}` };
+    }
   }));
   const succeededChannels: string[] = [];
   const failedChannels: string[] = [];
