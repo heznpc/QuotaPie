@@ -325,8 +325,8 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
         }
         let request = NativeNotificationRequest(
             identifier: notification.requestIdentifier,
-            title: notification.title,
-            body: notification.message,
+            title: notification.localizedTitle,
+            body: notification.localizedMessage,
             notificationID: notification.id,
             severity: notification.severity
         )

@@ -789,11 +789,14 @@ describe("a failing provider does not starve the process", () => {
     config.alerts.enabled = false;
     const service = new QuotaPieService(config, db);
     const spy = spyOn(service, "analyses");
+    const boundarySpy = spyOn(service, "publishBoundary").mockResolvedValue(undefined);
     await service.tick(1_000);
     // Recomputing it for the schedule, the triggers, and the boundary is what
     // multiplied a full history scan by three on every pass.
     expect(spy.mock.calls.length).toBe(1);
+    expect(boundarySpy.mock.calls.length).toBe(1);
     spy.mockRestore();
+    boundarySpy.mockRestore();
     service.close();
   });
 
@@ -803,6 +806,7 @@ describe("a failing provider does not starve the process", () => {
     config.collection.codexEnabled = false;
     config.alerts.enabled = false;
     const service = new QuotaPieService(config, db);
+    const boundarySpy = spyOn(service, "publishBoundary").mockResolvedValue(undefined);
     expect((await service.tick(1_000)).collected).toBeFalse();
 
     // A recent success from any source is what makes a tick count.
@@ -812,6 +816,7 @@ describe("a failing provider does not starve the process", () => {
     // An old success does not keep the loop at full speed forever.
     const staleMs = config.collection.staleAfterSeconds * 1_000 + 1_000;
     expect((await service.tick(1_000 + staleMs)).collected).toBeFalse();
+    boundarySpy.mockRestore();
     service.close();
   });
 

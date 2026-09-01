@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { QuotaStorage } from "../src/storage/database";
 import { AlertStore } from "../src/storage/alert-store";
 import { CollectionStore } from "../src/storage/collection-store";
 import { ClaudeSessionStore } from "../src/storage/claude-session-store";
+import { migrate } from "../src/storage/migrations";
 import { selectClaudeConsensus } from "../src/domain/claude-consensus";
 import type { ClaudeSessionState } from "../src/domain/claude-consensus";
 import type { QuotaEvent, TriggerDecision } from "../src/types";
@@ -31,6 +33,10 @@ function notification(overrides: Partial<TriggerDecision> = {}): TriggerDecision
     key: "codex:x:remaining:5",
     title: "Quota low",
     message: "Only 5% remains",
+    presentation: {
+      title: { key: "alert.test.title", params: {} },
+      message: { key: "alert.test.message", params: {} },
+    },
     severity: "warning",
     ...overrides,
   };
@@ -196,6 +202,58 @@ describe("alert claims stay atomic inside their own store", () => {
 });
 
 describe("native app notification outbox", () => {
+  test("adds semantic columns without losing legacy pending, claimed, or completed rows", () => {
+    const db = new Database(":memory:", { strict: true });
+    db.run(`
+      CREATE TABLE app_notification_outbox (
+        id TEXT PRIMARY KEY,
+        delivery_key TEXT NOT NULL UNIQUE,
+        alert_key TEXT NOT NULL,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        expires_at_ms INTEGER NOT NULL,
+        claimed_at_ms INTEGER,
+        claimed_token TEXT,
+        completed_at_ms INTEGER,
+        disposition TEXT
+      )
+    `);
+    db.run(`
+      INSERT INTO app_notification_outbox VALUES
+        ('pending', 'd-pending', 'a-pending', 'Pending', 'Pending body', 'info', 1000, 10000, NULL, NULL, NULL, NULL),
+        ('claimed', 'd-claimed', 'a-claimed', 'Claimed', 'Claimed body', 'warning', 1100, 10000, 1200, 'lease', NULL, NULL),
+        ('completed', 'd-completed', 'a-completed', 'Completed', 'Completed body', 'critical', 900, 10000, 950, 'receipt', 1000, 'scheduled')
+    `);
+
+    migrate(db);
+
+    const columns = db.query<{ name: string }, []>("PRAGMA table_info(app_notification_outbox)")
+      .all().map((column) => column.name);
+    for (const column of [
+      "title_key",
+      "title_params_json",
+      "message_key",
+      "message_params_json",
+    ]) expect(columns).toContain(column);
+    const rows = db.query<{
+      id: string;
+      claimed_token: string | null;
+      disposition: string | null;
+      title_key: string | null;
+    }, []>(`
+      SELECT id, claimed_token, disposition, title_key
+      FROM app_notification_outbox ORDER BY created_at_ms
+    `).all();
+    expect(rows).toEqual([
+      { id: "completed", claimed_token: "receipt", disposition: "scheduled", title_key: null },
+      { id: "pending", claimed_token: null, disposition: null, title_key: null },
+      { id: "claimed", claimed_token: "lease", disposition: null, title_key: null },
+    ]);
+    db.close();
+  });
+
   test("durably deduplicates enqueue and marks the macOS channel in the same unit", () => {
     const store = storage();
     const alerts = new AlertStore(store);
@@ -242,6 +300,22 @@ describe("native app notification outbox", () => {
       SELECT COUNT(*) AS count, disposition FROM app_notification_outbox WHERE delivery_key = 'd1'
     `).get();
     expect(row).toEqual({ count: 1, disposition: "scheduled" });
+  });
+
+  test("falls back to finished text when persisted semantic params are not JSON scalars", () => {
+    const store = storage();
+    const alerts = new AlertStore(store);
+    const queued = alerts.queueMacOSNotification(notification(), "damaged-params", 1_000, 10_000);
+    store.db.query(`
+      UPDATE app_notification_outbox
+      SET title_params_json = ?
+      WHERE id = ?
+    `).run('{"provider":{"nested":"codex"}}', queued.id);
+
+    const claim = alerts.claimNextAppNotification(2_000)!;
+    expect(claim.presentation).toBeNull();
+    expect(claim.title).toBe("Quota low");
+    expect(claim.message).toBe("Only 5% remains");
   });
 
   test("claims one oldest eligible row and protects a reclaimed lease with CAS", () => {

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ko">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -80,23 +80,18 @@
       </section>
     </main>
     <script>
-      const escapeHtml = (value) => String(value ?? "")
-        .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
-      const duration = (ms) => {
-        if (ms == null) return t("time.unknown");
-        const minutes = Math.max(0, Math.round(ms / 60000));
-        const days = Math.floor(minutes / 1440);
-        const hours = Math.floor((minutes % 1440) / 60);
-        const rest = minutes % 60;
-        return days ? `${days}${t("time.days")} ${hours}${t("time.hours")}` : hours ? `${hours}${t("time.hours")} ${rest}${t("time.minutes")}` : `${rest}${t("time.minutes")}`;
-      };
-      const number = (value, suffix = "") => value == null ? "—" : `${Number(value).toFixed(1)}${suffix}`;
-      const exactTime = (ms) => ms == null ? "—" : new Date(ms).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
       // This page renders in the browser's language, not the daemon's. The keys
       // mirror src/i18n.ts so the same concept is named the same on both sides.
-      const LOCALE = (navigator.language || "en").toLowerCase().startsWith("ko") ? "ko" : "en";
-      const STRINGS = {
+      const SUPPORTED_LOCALES = new Set(["en", "ko"]);
+      const DEFAULT_LOCALE = "en";
+      const preferredLocales = navigator.languages?.length ? navigator.languages : [navigator.language];
+      const LOCALE = preferredLocales
+        .map((value) => String(value ?? "").toLowerCase().split(/[-_]/)[0])
+        .find((value) => SUPPORTED_LOCALES.has(value)) ?? DEFAULT_LOCALE;
+      const DATE_LOCALE = LOCALE === "ko" ? "ko-KR" : "en-US";
+      document.documentElement.lang = LOCALE;
+
+      const STRING_TABLE = {
         en: {
           "collection.auth-required": "Sign-in required",
           "collection.auth-expired": "Sign-in expired",
@@ -151,20 +146,46 @@
           "detail.credits": "credits",
           "detail.confidence": "confidence",
           "unit.min": "min",
-          "event.first_observation": "First observation",
-          "event.scheduled_reset": "Scheduled reset",
-          "event.external_relief": "Early refill",
-          "event.allowance_relief": "Possible allowance change",
-          "event.schedule_rebased": "Reset clock rebased",
-          "event.meter_correction": "Meter correction",
-          "event.source_unknown": "Source value missing",
-          "event.source_changed": "Data source changed",
-          "event.paid_usage": "Paid credits used",
-          "event.credit_topup": "Credit balance increased",
-          "event.banked_reset_consumed": "Banked reset used",
-          "event.bucket_retired": "Tracking stopped",
-          "event.out_of_order": "Out-of-order response ignored",
-          "event.window_changed": "Limit window changed",
+          "confidence.none": "not enough data",
+          "confidence.low": "low",
+          "confidence.medium": "medium",
+          "confidence.high": "high",
+          "quality.authoritative": "authoritative",
+          "quality.fallback": "fallback",
+          "quality.derived": "derived",
+          "source.codex-app-server": "Codex app server",
+          "source.codex-appserver": "Codex app server",
+          "source.claude-oauth": "Claude OAuth",
+          "source.claude-statusline": "Claude status line",
+          "source.claude-statusline-consensus": "Claude status-line consensus",
+          "event.label.first_observation": "First observation",
+          "event.label.scheduled_reset": "Scheduled reset",
+          "event.label.external_relief": "Early refill",
+          "event.label.allowance_relief": "Possible allowance change",
+          "event.label.schedule_rebased": "Reset clock rebased",
+          "event.label.meter_correction": "Meter correction",
+          "event.label.source_unknown": "Source value missing",
+          "event.label.source_changed": "Data source changed",
+          "event.label.paid_usage": "Paid credits used",
+          "event.label.credit_topup": "Credit balance increased",
+          "event.label.banked_reset_consumed": "Banked reset used",
+          "event.label.bucket_retired": "Tracking stopped",
+          "event.label.out_of_order": "Out-of-order response ignored",
+          "event.label.window_changed": "Limit window changed",
+          "event.first_observation": "Started tracking {label}.",
+          "event.out_of_order": "Ignored an out-of-order response for {label}.",
+          "event.source_changed": "{label} switched data source.",
+          "event.source_unknown": "{label} temporarily reported no value.",
+          "event.scheduled_reset": "{label} reset on schedule.",
+          "event.external_relief": "{label} was refilled ahead of schedule.",
+          "event.allowance_relief": "{label} usage fell sharply — a reset, a larger allowance, or a server correction.",
+          "event.meter_correction": "{label} usage moved slightly backwards.",
+          "event.schedule_rebased": "{label} reset time was rescheduled.",
+          "event.paid_usage": "{provider} paid credits were used.",
+          "event.credit_topup": "{provider} credit balance increased.",
+          "event.banked_reset_consumed": "A banked reset appears to have been used.",
+          "event.bucket_retired": "{label} disappeared from the provider's full response; tracking stopped.",
+          "event.window_changed": "{limitId} {lane} window changed: {fromLabel} → {toLabel}",
         },
         ko: {
           "collection.auth-required": "로그인이 필요합니다",
@@ -181,7 +202,7 @@
           "window.used": "% 사용",
           "window.remaining": "% 남음",
           "window.noWindows": "표시할 한도 창이 없습니다.",
-          "window.resetUnknown": t("window.resetUnknown"),
+          "window.resetUnknown": "갱신 시각 미확인",
           "window.resetsIn": " 뒤 리셋",
           "freshness.fresh": "정상",
           "freshness.stale": "오래됨",
@@ -209,7 +230,7 @@
           "fact.safetyEta": "안전 여유 ETA",
           "fact.observed": "원본 관측",
           "fact.observedAge": "관측 경과",
-          "unit.perActiveHour": t("unit.perActiveHour"),
+          "unit.perActiveHour": "%/활동 시간",
           "unit.times": "×",
           "unit.hours": "h",
           "fact.source": "데이터 출처",
@@ -220,28 +241,76 @@
           "detail.credits": "크레딧",
           "detail.confidence": "신뢰도",
           "unit.min": "분",
-          "event.first_observation": "첫 관측",
-          "event.scheduled_reset": "정상 리셋",
-          "event.external_relief": "예정 밖 충전",
-          "event.allowance_relief": "한도 완화 가능성",
-          "event.schedule_rebased": "리셋 시각 조정",
-          "event.meter_correction": "사용률 보정",
-          "event.source_unknown": "원본 누락",
-          "event.source_changed": "데이터 소스 변경",
-          "event.paid_usage": "유료 크레딧 사용",
-          "event.credit_topup": "크레딧 증가",
-          "event.banked_reset_consumed": "저장형 리셋 사용",
-          "event.bucket_retired": "항목 추적 종료",
-          "event.out_of_order": "오래된 응답 무시",
-          "event.window_changed": "한도 창 전환",
+          "confidence.none": "데이터 부족",
+          "confidence.low": "낮음",
+          "confidence.medium": "보통",
+          "confidence.high": "높음",
+          "quality.authoritative": "공식 원본",
+          "quality.fallback": "보조 원본",
+          "quality.derived": "합성",
+          "source.codex-app-server": "Codex 앱 서버",
+          "source.codex-appserver": "Codex 앱 서버",
+          "source.claude-oauth": "Claude OAuth",
+          "source.claude-statusline": "Claude 상태줄",
+          "source.claude-statusline-consensus": "Claude 상태줄 합의값",
+          "event.label.first_observation": "첫 관측",
+          "event.label.scheduled_reset": "정상 리셋",
+          "event.label.external_relief": "예정 밖 충전",
+          "event.label.allowance_relief": "한도 완화 가능성",
+          "event.label.schedule_rebased": "리셋 시각 조정",
+          "event.label.meter_correction": "사용률 보정",
+          "event.label.source_unknown": "원본 누락",
+          "event.label.source_changed": "데이터 소스 변경",
+          "event.label.paid_usage": "유료 크레딧 사용",
+          "event.label.credit_topup": "크레딧 증가",
+          "event.label.banked_reset_consumed": "저장형 리셋 사용",
+          "event.label.bucket_retired": "항목 추적 종료",
+          "event.label.out_of_order": "오래된 응답 무시",
+          "event.label.window_changed": "한도 창 전환",
+          "event.first_observation": "{label} 관측을 시작했습니다.",
+          "event.out_of_order": "{label}의 오래된 응답을 무시했습니다.",
+          "event.source_changed": "{label} 데이터 소스가 변경됐습니다.",
+          "event.source_unknown": "{label} 원본 값이 일시적으로 사라졌습니다.",
+          "event.scheduled_reset": "{label} 한도가 예정대로 갱신됐습니다.",
+          "event.external_relief": "{label}에 예정 밖 충전이 감지됐습니다.",
+          "event.allowance_relief": "{label} 사용률이 크게 낮아졌습니다. 리셋·한도 증액·서버 보정 중 하나일 수 있습니다.",
+          "event.meter_correction": "{label} 사용률이 소폭 역행했습니다.",
+          "event.schedule_rebased": "{label} 리셋 시각이 재조정됐습니다.",
+          "event.paid_usage": "{provider} 유료 크레딧이 사용됐습니다.",
+          "event.credit_topup": "{provider} 크레딧 잔액이 증가했습니다.",
+          "event.banked_reset_consumed": "저장형 리셋이 사용된 것으로 보입니다.",
+          "event.bucket_retired": "{label} 항목이 공급자 전체 응답에서 사라져 추적을 종료했습니다.",
+          "event.window_changed": "{limitId} {lane} 한도 창 전환: {fromLabel} → {toLabel}",
         },
       };
-      const t = (key) => (STRINGS[LOCALE] ?? STRINGS.en)[key] ?? STRINGS.en[key] ?? key;
+      const template = (key) => STRING_TABLE[LOCALE]?.[key] ?? STRING_TABLE[DEFAULT_LOCALE]?.[key];
+      const t = (key, params = {}) => {
+        const value = template(key);
+        if (value == null) return key;
+        return value.replace(/\{([a-zA-Z0-9]+)\}/g, (_match, name) => String(params[name] ?? ""));
+      };
+      const enumText = (namespace, value) => {
+        if (value == null) return t("time.unknown");
+        return template(`${namespace}.${value}`) ?? String(value);
+      };
+
+      const escapeHtml = (value) => String(value ?? "")
+        .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
+      const duration = (ms) => {
+        if (ms == null) return t("time.unknown");
+        const minutes = Math.max(0, Math.round(ms / 60000));
+        const days = Math.floor(minutes / 1440);
+        const hours = Math.floor((minutes % 1440) / 60);
+        const rest = minutes % 60;
+        return days ? `${days}${t("time.days")} ${hours}${t("time.hours")}` : hours ? `${hours}${t("time.hours")} ${rest}${t("time.minutes")}` : `${rest}${t("time.minutes")}`;
+      };
+      const number = (value, suffix = "") => value == null ? "—" : `${Number(value).toFixed(1)}${suffix}`;
+      const exactTime = (ms) => ms == null ? "—" : new Date(ms).toLocaleString(DATE_LOCALE, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
       const collectionText = (collection) =>
-        t(`collection.${collection.errorCategory ?? collection.health}`);
+        enumText("collection", collection.errorCategory ?? collection.health);
 
-      const statusName = new Proxy({}, { get: (_target, key) => t(`freshness.${String(key)}`) });
       const windowHtml = (window, bottleneck) => {
         const remaining = window.remainingPercent;
         // The fill is the used percentage, exactly as the native app draws it.
@@ -252,34 +321,60 @@
           ? "unknown"
           : remaining <= window.reservePercent ? "hot" : window.paceRatio > 1 ? "warm" : "";
         return `<div class="window ${heat}">
-          <div class="row"><span class="label ${bottleneck ? "bottleneck" : ""}">${bottleneck ? "● " : ""}${escapeHtml(window.label)}</span><span class="badge">${escapeHtml(statusName[window.freshness] ?? window.freshness)}</span></div>
+          <div class="row"><span class="label ${bottleneck ? "bottleneck" : ""}">${bottleneck ? "● " : ""}${escapeHtml(window.label)}</span><span class="badge">${escapeHtml(enumText("freshness", window.freshness))}</span></div>
           <div class="row"><span class="remaining">${used == null ? "—" : `${used.toFixed(1)}${t("window.used")}`}</span><span class="muted">${remaining == null ? "" : `${remaining.toFixed(1)}${t("window.remaining")}`}</span><span class="muted">${window.resetsAtMs == null ? t("window.resetUnknown") : `${duration(window.timeToResetMs)}${t("window.resetsIn")}`}</span></div>
           <div class="bar"><div class="fill" style="width:${used == null ? 0 : Math.max(0, Math.min(100, used))}%"></div></div>
           <div class="facts">
             <div class="fact">${t("fact.recent")} <strong>${number(window.recentBurnPerHour, t("unit.perActiveHour"))}</strong></div>
             <div class="fact">${t("fact.personal")} <strong>${number(window.personalBurnPerHour, t("unit.perActiveHour"))}</strong></div>
-            <div class="fact">${t("fact.vsSafe")} <strong>${number(window.paceRatio, "×")}</strong></div>
-            <div class="fact">${t("fact.confidence")} <strong>${escapeHtml(window.confidence)}</strong></div>
-            <div class="fact">${t("fact.activeHours")} <strong>${number(window.activeHoursUntilReset, "h")}</strong></div>
+            <div class="fact">${t("fact.vsSafe")} <strong>${number(window.paceRatio, t("unit.times"))}</strong></div>
+            <div class="fact">${t("fact.confidence")} <strong>${escapeHtml(enumText("confidence", window.confidence))}</strong></div>
+            <div class="fact">${t("fact.activeHours")} <strong>${number(window.activeHoursUntilReset, t("unit.hours"))}</strong></div>
             <div class="fact">${t("fact.samples")} <strong>${window.sampleCount}</strong></div>
             <div class="fact">${t("fact.providerReset")} <strong>${exactTime(window.resetsAtMs)}</strong></div>
             <div class="fact">${t("fact.safetyEta")} <strong>${exactTime(window.exhaustsAtMs)}</strong></div>
             <div class="fact">${t("fact.observed")} <strong>${exactTime(window.observedAtMs)}</strong></div>
             <div class="fact">${t("fact.observedAge")} <strong>${duration(Date.now() - window.observedAtMs)}</strong></div>
-            <div class="fact">${t("fact.source")} <strong>${escapeHtml(window.source)}</strong></div>
-            <div class="fact">${t("fact.provenance")} <strong>${escapeHtml(window.quality)}</strong></div>
+            <div class="fact">${t("fact.source")} <strong>${escapeHtml(enumText("source", window.source))}</strong></div>
+            <div class="fact">${t("fact.provenance")} <strong>${escapeHtml(enumText("quality", window.quality))}</strong></div>
           </div>
         </div>`;
       };
-      const eventName = new Proxy({}, { get: (_target, key) => t(`event.${String(key)}`) });
+
+      // Stored displayText is only a compatibility fallback: it was rendered in
+      // the daemon's locale at write time. Known events are rebuilt here from
+      // their semantic kind and parameters in the viewer's current language.
+      const EVENT_MESSAGE_PARAMS = Object.freeze({
+        first_observation: ["label"],
+        out_of_order: ["label"],
+        source_changed: ["label"],
+        source_unknown: ["label"],
+        scheduled_reset: ["label"],
+        external_relief: ["label"],
+        allowance_relief: ["label"],
+        meter_correction: ["label"],
+        schedule_rebased: ["label"],
+        paid_usage: ["provider"],
+        credit_topup: ["provider"],
+        banked_reset_consumed: [],
+        bucket_retired: ["label"],
+        window_changed: ["limitId", "lane", "fromLabel", "toLabel"],
+      });
+      const eventMessage = (event) => {
+        const required = EVENT_MESSAGE_PARAMS[event.kind];
+        if (required == null) return event.displayText ?? event.kind;
+        const params = { provider: event.provider, account: event.account, ...(event.details ?? {}) };
+        if (required.some((name) => params[name] == null)) return event.displayText ?? event.kind;
+        return t(`event.${event.kind}`, params);
+      };
 
       const eventDetails = (event) => {
         const d = event.details ?? {};
         const bits = [];
-        if (d.usedPercentBefore != null) bits.push(`${t("detail.used")} ${d.usedPercentBefore}%→${d.usedPercentAfter}%`);
-        if (d.previousResetsAtMs != null) bits.push(`${t("detail.reset")} ${exactTime(d.previousResetsAtMs)}→${exactTime(d.nextResetsAtMs)}`);
+        if (d.usedPercentBefore != null && d.usedPercentAfter != null) bits.push(`${t("detail.used")} ${d.usedPercentBefore}%→${d.usedPercentAfter}%`);
+        if (d.previousResetsAtMs != null && d.nextResetsAtMs != null) bits.push(`${t("detail.reset")} ${exactTime(d.previousResetsAtMs)}→${exactTime(d.nextResetsAtMs)}`);
         if (d.shiftMinutes != null) bits.push(`${t("detail.shift")} ${d.shiftMinutes > 0 ? "+" : ""}${d.shiftMinutes}${t("unit.min")}`);
-        if (d.balanceBefore != null) bits.push(`${t("detail.credits")} ${d.balanceBefore}→${d.balanceAfter}`);
+        if (d.balanceBefore != null && d.balanceAfter != null) bits.push(`${t("detail.credits")} ${d.balanceBefore}→${d.balanceAfter}`);
         return bits.length ? ` · ${bits.join(" · ")}` : "";
       };
       async function refresh() {
@@ -288,7 +383,7 @@
         try {
           const response = await fetch("/api/status", { cache: "no-store" });
           const data = await response.json();
-          document.getElementById("updated").textContent = new Date(data.nowMs).toLocaleTimeString() + t("updated");
+          document.getElementById("updated").textContent = new Date(data.nowMs).toLocaleTimeString(DATE_LOCALE) + t("updated");
           // Render from accounts, not the legacy statuses projection: statuses
           // only carries accounts that already have windows, so a configured
           // account with zero samples disappeared here while the menu bar app
@@ -306,13 +401,15 @@
                 return `<article class="provider"><h2>${escapeHtml(account.provider)} · ${label}</h2>${notice}${windows}</article>`;
               }).join("")
             : `<div class="empty">${escapeHtml(t("empty"))}</div>`;
-          document.getElementById("events").innerHTML = data.events.length
-            ? data.events.slice(0, 15).map((event) => `<div class="event"><span>${new Date(event.occurredAtMs).toLocaleString()}</span><span class="kind">${escapeHtml(eventName[event.kind] ?? event.kind)}</span><span>${escapeHtml(`${event.account} · ${event.displayText}${eventDetails(event)}`)} · ${t("detail.confidence")} ${escapeHtml(event.confidence)}</span></div>`).join("")
+          const events = data.events ?? [];
+          document.getElementById("events").innerHTML = events.length
+            ? events.slice(0, 15).map((event) => `<div class="event"><span>${new Date(event.occurredAtMs).toLocaleString(DATE_LOCALE)}</span><span class="kind">${escapeHtml(enumText("event.label", event.kind))}</span><span>${escapeHtml(`${event.account} · ${eventMessage(event)}${eventDetails(event)}`)} · ${t("detail.confidence")} ${escapeHtml(enumText("confidence", event.confidence))}</span></div>`).join("")
             : t("noEvents");
         } catch (error) {
           document.getElementById("updated").textContent = t("failed");
         }
       }
+      document.getElementById("updated").textContent = t("page.connecting");
       refresh();
       setInterval(refresh, 15000);
     </script>

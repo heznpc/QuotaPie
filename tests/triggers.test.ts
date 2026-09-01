@@ -89,6 +89,16 @@ describe("trigger planning and claims", () => {
     const decision = planTriggers([], [event], DEFAULT_CONFIG, 0, 2_000)[0];
     expect(decision?.title).toBe("codex/default limit window changed");
     expect(decision?.message).toBe(event.displayText);
+    expect(decision?.presentation).toEqual({
+      title: {
+        key: "alert.event.title.window",
+        params: { provider: "codex", account: "default" },
+      },
+      message: {
+        key: "event.window_changed",
+        params: { provider: "codex", account: "default" },
+      },
+    });
   });
 
   test("durably claims and coalesces event alerts by cooldown", () => {
@@ -346,6 +356,10 @@ describe("pace alert honesty", () => {
       [], DEFAULT_CONFIG, 0, 1_000,
     ).find((decision) => decision.key.endsWith(":pace"));
     expect(measured?.title).toContain("burning too fast");
+    expect(measured?.presentation?.message).toEqual({
+      key: "alert.pace.message.measured",
+      params: expect.objectContaining({ minutes: 60 }),
+    });
   });
 });
 

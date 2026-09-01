@@ -64,6 +64,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig) {
                     id: claim.id,
                     title: claim.title,
                     message: claim.message,
+                    presentation: claim.presentation,
                     severity: claim.severity,
                     createdAtMs: claim.createdAtMs,
                     expiresAtMs: claim.expiresAtMs,

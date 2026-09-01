@@ -859,6 +859,10 @@ export class QuotaPieService {
       key: `manual:test:${randomUUID()}`,
       title: t("alert.test.title", {}, this.locale),
       message: t("alert.test.message", {}, this.locale),
+      presentation: {
+        title: { key: "alert.test.title", params: {} },
+        message: { key: "alert.test.message", params: {} },
+      },
       severity: "info",
     };
     const nativeConsumerAvailable = this.nativeNotificationTransportAvailable &&
@@ -877,13 +881,16 @@ export class QuotaPieService {
     ) || Boolean(this.config.alerts.command?.length);
     if (!hasChannel) return;
     for (const task of this.resumeTasks.active().filter((item) => item.state === "ready")) {
+      const titleParams = { provider: task.provider, account: task.account };
+      const messageParams = { label: task.projectLabel };
       const decision: TriggerDecision = {
         key: `resume:${task.id}:ready`,
-        title: t("alert.resume.ready.title", {
-          provider: task.provider,
-          account: task.account,
-        }, this.locale),
-        message: t("alert.resume.ready.message", { label: task.projectLabel }, this.locale),
+        title: t("alert.resume.ready.title", titleParams, this.locale),
+        message: t("alert.resume.ready.message", messageParams, this.locale),
+        presentation: {
+          title: { key: "alert.resume.ready.title", params: titleParams },
+          message: { key: "alert.resume.ready.message", params: messageParams },
+        },
         severity: "info",
       };
       const claim = this.alerts.claim(decision.key, Date.now(), 0);

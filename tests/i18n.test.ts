@@ -1,5 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_LOCALE, humanGap, LOCALES, resolveLocale, t, windowKindOf } from "../src/i18n";
+import {
+  DEFAULT_LOCALE,
+  humanGap,
+  isMessageKey,
+  LOCALES,
+  MESSAGE_KEYS,
+  resolveLocale,
+  t,
+  windowKindOf,
+} from "../src/i18n";
+import type { MessageKey } from "../src/i18n";
 import { ALERTABLE_EVENT_KINDS } from "../src/types";
 
 describe("locale resolution", () => {
@@ -39,8 +49,8 @@ describe("message catalog", () => {
     const keys = [
       "auth-required", "auth-expired", "rate-limited", "network", "not-configured",
       "isolation-unsafe", "provider-error", "no-windows",
-      "never-attempted", "stale-success", "attempted-then-failed",
-    ];
+      "never-attempted", "stale-success", "attempted-then-failed", "recent-success",
+    ] as const;
     for (const key of keys) {
       for (const locale of LOCALES) {
         expect(t(`collection.${key}`, {}, locale)).not.toBe(`collection.${key}`);
@@ -49,7 +59,18 @@ describe("message catalog", () => {
   });
 
   test("an unknown key surfaces itself rather than rendering as empty", () => {
-    expect(t("nope.not.here", {}, "en")).toBe("nope.not.here");
+    expect(isMessageKey("headline.setup")).toBe(true);
+    expect(isMessageKey("nope.not.here")).toBe(false);
+    // Persistence migrations can still encounter a key written by a newer
+    // binary. The runtime fallback stays visible even though ordinary callers
+    // are compile-time restricted to MessageKey.
+    expect(t("nope.not.here" as MessageKey, {}, "en")).toBe("nope.not.here");
+  });
+
+  test("the exported key contract is immutable and recognised by the runtime guard", () => {
+    expect(Object.isFrozen(MESSAGE_KEYS)).toBe(true);
+    expect(new Set(MESSAGE_KEYS).size).toBe(MESSAGE_KEYS.length);
+    expect(MESSAGE_KEYS.every(isMessageKey)).toBe(true);
   });
 
   test("the same key says different things in different locales", () => {

@@ -246,6 +246,50 @@ final class NotificationPresenterTests: XCTestCase {
         XCTAssertTrue(scheduler.added.isEmpty)
     }
 
+    func testSemanticNotificationIsRenderedByTheNativeApp() {
+        let presentation = NotificationPresentationPayload(
+            title: LocalizedMessagePayload(
+                key: "alert.remaining.title",
+                params: ["provider": .string("codex"), "account": .string("work")]
+            ),
+            message: LocalizedMessagePayload(
+                key: "alert.remaining.message",
+                params: [
+                    "label": .string("weekly"),
+                    "percent": .number(5),
+                    "threshold": .number(10),
+                ]
+            )
+        )
+        let notification = makeNotification(presentation: presentation)
+        let client = FakeNotificationClient(claims: [
+            .success(NotificationClaimResponse(notification: notification)),
+            .success(NotificationClaimResponse(notification: nil)),
+        ])
+        let scheduler = FakeNotificationScheduler(status: .authorized)
+        let drained = expectation(description: "semantic notification drained")
+        client.onClaim = { count in
+            if count == 2 { drained.fulfill() }
+        }
+
+        let presenter = makePresenter(
+            client: client,
+            scheduler: scheduler,
+            ledger: InMemoryNotificationLedger()
+        )
+        presenter.statusDidRefresh(actionToken: "action-token")
+        wait(for: [drained], timeout: 1)
+
+        XCTAssertEqual(
+            scheduler.added.first?.title,
+            Strings.t("alert.remaining.title", "codex", "work")
+        )
+        XCTAssertEqual(
+            scheduler.added.first?.body,
+            Strings.t("alert.remaining.message", "weekly", "5", "10")
+        )
+    }
+
     func testUserDefaultsLedgerPrunesByAgeAndBoundsEntryCount() {
         let suiteName = "NotificationPresenterTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -285,12 +329,14 @@ final class NotificationPresenterTests: XCTestCase {
 
     private func makeNotification(
         id: String = "11111111-1111-4111-8111-111111111111",
-        expiresAtMs: Double? = nil
+        expiresAtMs: Double? = nil,
+        presentation: NotificationPresentationPayload? = nil
     ) -> ClaimedNotification {
         ClaimedNotification(
             id: id,
             title: "Quota available",
             message: "The weekly window is available again.",
+            presentation: presentation,
             severity: "info",
             createdAtMs: fixedNow.timeIntervalSince1970 * 1_000 - 1_000,
             expiresAtMs: expiresAtMs ?? fixedNow.timeIntervalSince1970 * 1_000 + 60_000,
