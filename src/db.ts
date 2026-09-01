@@ -470,6 +470,13 @@ export class QuotaDatabase {
         `)
         .run(eventCutoff);
       this.db
+        .query(`
+          DELETE FROM app_notification_outbox
+          WHERE completed_at_ms < ?
+             OR (completed_at_ms IS NULL AND expires_at_ms < ?)
+        `)
+        .run(eventCutoff, eventCutoff);
+      this.db
         .query("DELETE FROM event_delivery WHERE event_id IN (SELECT id FROM events WHERE occurred_at_ms < ?)")
         .run(eventCutoff);
       this.db.query("DELETE FROM events WHERE occurred_at_ms < ?").run(eventCutoff);

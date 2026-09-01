@@ -24,8 +24,11 @@ import {
   resumeTaskKey,
   resumeWorkingDirectoryAvailable,
 } from "./session-discovery";
+import { MACOS_NOTIFICATION_CHANNEL } from "./types";
 import type {
   AccountState,
+  AppNotificationClaim,
+  AppNotificationDisposition,
   CollectionHealth,
   CollectionSourceState,
   Headline,
@@ -87,6 +90,7 @@ export class QuotaPieService {
   private codexClients = new Map<string, CodexAppServerClient>();
   private stopped = false;
   private closing = false;
+  private nativeNotificationTransportAvailable = false;
   private codexPollState = new Map<string, { count: number; error: string | null }>();
   private claudeOAuthLastPollMs = new Map<string, number>();
   // The official usage endpoint is rate limited on the provider side, so this
@@ -108,6 +112,9 @@ export class QuotaPieService {
     this.claudeSessions = new ClaudeSessionStore(this.storage);
     this.resumeTasks = new ResumeTaskStore(this.storage);
     this.locale = resolveLocale(config.profile.locale);
+    if (!config.alerts.enabled || !config.alerts.macOSNotifications) {
+      this.alerts.cancelAllAppNotifications();
+    }
   }
 
   ingest(observations: QuotaObservation[]): QuotaEvent[] {
@@ -628,7 +635,7 @@ export class QuotaPieService {
     }
     if (!this.hasFreshResumeCapacity(task, initialNowMs)) {
       this.resumeTasks.markWaiting(id, initialNowMs);
-      this.rearmResumeReadyNotification(task);
+      this.rearmResumeReadyNotification(task, initialNowMs);
       throw new ResumeTargetError("fresh quota is no longer available; waiting for provider confirmation");
     }
     try {
@@ -636,12 +643,16 @@ export class QuotaPieService {
       const finalNowMs = nowMs ?? Date.now();
       if (!this.hasFreshResumeCapacity(task, finalNowMs)) {
         this.resumeTasks.markWaiting(id, finalNowMs);
-        this.rearmResumeReadyNotification(task);
+        this.rearmResumeReadyNotification(task, finalNowMs);
         throw new ResumeTargetError("fresh quota is no longer available; waiting for provider confirmation");
       }
       // Discovery is asynchronous. This final guarded transition both closes
       // a concurrent dismiss race and makes a second approval lose cleanly.
-      const approved = this.resumeTasks.approve(id, finalNowMs);
+      const approved = this.storage.transaction(() => {
+        const value = this.resumeTasks.approve(id, finalNowMs);
+        this.alerts.cancelAppNotificationsForAlert(`resume:${id}:ready`, finalNowMs);
+        return value;
+      });
       return { task: this.resumeTaskSummary(approved), plan };
     } catch (error) {
       if (error instanceof ResumeTaskStoreError) throw error;
@@ -657,7 +668,11 @@ export class QuotaPieService {
   }
 
   markResumeTaskResumed(id: string, nowMs = Date.now()): ResumeTaskSummary {
-    return this.resumeTaskSummary(this.resumeTasks.markResumed(id, nowMs));
+    return this.resumeTaskSummary(this.storage.transaction(() => {
+      const task = this.resumeTasks.markResumed(id, nowMs);
+      this.alerts.cancelAppNotificationsForAlert(`resume:${id}:ready`, nowMs);
+      return task;
+    }));
   }
 
   retryResumeTask(id: string, nowMs = Date.now()): ResumeTaskSummary {
@@ -665,7 +680,11 @@ export class QuotaPieService {
   }
 
   dismissResumeTask(id: string, nowMs = Date.now()): ResumeTaskSummary {
-    return this.resumeTaskSummary(this.resumeTasks.dismiss(id, nowMs));
+    return this.resumeTaskSummary(this.storage.transaction(() => {
+      const task = this.resumeTasks.dismiss(id, nowMs);
+      this.alerts.cancelAppNotificationsForAlert(`resume:${id}:ready`, nowMs);
+      return task;
+    }));
   }
 
   private async buildResumePlan(task: ResumeTask): Promise<ResumePlan> {
@@ -728,7 +747,7 @@ export class QuotaPieService {
       ) continue;
       try {
         this.resumeTasks.markWaiting(task.id, nowMs);
-        this.rearmResumeReadyNotification(task);
+        this.rearmResumeReadyNotification(task, nowMs);
       } catch (error) {
         if (error instanceof ResumeTaskStoreError && (
           error.kind === "state-conflict" || error.kind === "not-found"
@@ -773,11 +792,82 @@ export class QuotaPieService {
     return ready.map((task) => this.resumeTaskSummary(task));
   }
 
-  private rearmResumeReadyNotification(task: ResumeTask): void {
+  private rearmResumeReadyNotification(task: ResumeTask, nowMs = Date.now()): void {
     if (!this.config.alerts.enabled) return;
     const key = `resume:${task.id}:ready`;
     const state = this.alerts.state(key);
-    if (state) this.alerts.setState(key, state.lastFiredAtMs, true);
+    if (state) this.rearmAlertNotification(key, state.lastFiredAtMs, nowMs);
+  }
+
+  private rearmAlertNotification(key: string, lastFiredAtMs: number, nowMs = Date.now()): void {
+    this.alerts.setState(key, lastFiredAtMs, true, nowMs);
+  }
+
+  private async deliverDecision(
+    decision: TriggerDecision,
+    deliveryKey: string,
+    rememberChannels = true,
+  ) {
+    const nativeConsumerAvailable = this.nativeNotificationTransportAvailable &&
+      this.alerts.hasNativeNotificationConsumer();
+    return deliverTrigger(decision, this.config, {
+      alreadyDelivered: rememberChannels ? this.alerts.deliveredChannels(deliveryKey) : [],
+      deliveryKey,
+      onChannelSuccess: rememberChannels
+        ? (channel) => this.alerts.markChannelDelivered(deliveryKey, channel, Date.now())
+        : undefined,
+      queueMacOSNotification: nativeConsumerAvailable
+        ? (notification, key) => this.alerts.queueMacOSNotification(notification, key)
+        : undefined,
+    });
+  }
+
+  claimNextAppNotification(nowMs = Date.now()): AppNotificationClaim | null {
+    if (!this.config.alerts.enabled || !this.config.alerts.macOSNotifications) {
+      this.alerts.cancelAllAppNotifications(nowMs);
+      return null;
+    }
+    return this.alerts.claimNextAppNotification(nowMs);
+  }
+
+  completeAppNotification(
+    id: string,
+    claimToken: string,
+    disposition: AppNotificationDisposition,
+    nowMs = Date.now(),
+  ): boolean {
+    return this.alerts.completeAppNotification(id, claimToken, disposition, nowMs);
+  }
+
+  releaseAppNotification(id: string, claimToken: string): boolean {
+    return this.alerts.releaseAppNotification(id, claimToken);
+  }
+
+  renewAppNotification(id: string, claimToken: string, nowMs = Date.now()): boolean {
+    return this.alerts.renewAppNotification(id, claimToken, nowMs);
+  }
+
+  setNativeNotificationTransportAvailable(available: boolean): void {
+    this.nativeNotificationTransportAvailable = available;
+  }
+
+  async deliverTestAlert(): Promise<{
+    complete: boolean;
+    nativeAppQueued: boolean;
+  }> {
+    const decision: TriggerDecision = {
+      key: `manual:test:${randomUUID()}`,
+      title: t("alert.test.title", {}, this.locale),
+      message: t("alert.test.message", {}, this.locale),
+      severity: "info",
+    };
+    const nativeConsumerAvailable = this.nativeNotificationTransportAvailable &&
+      this.alerts.hasNativeNotificationConsumer();
+    const result = await this.deliverDecision(decision, decision.key, false);
+    return {
+      complete: result.complete,
+      nativeAppQueued: nativeConsumerAvailable && result.succeededChannels.includes(MACOS_NOTIFICATION_CHANNEL),
+    };
   }
 
   private async deliverResumeReadyNotifications(): Promise<void> {
@@ -801,13 +891,7 @@ export class QuotaPieService {
       const deliveryKey = `threshold:${decision.key}:${claim.generation}`;
       let complete = false;
       try {
-        const result = await deliverTrigger(
-          decision,
-          this.config,
-          this.alerts.deliveredChannels(deliveryKey),
-          deliveryKey,
-          (channel) => this.alerts.markChannelDelivered(deliveryKey, channel, Date.now()),
-        );
+        const result = await this.deliverDecision(decision, deliveryKey);
         complete = result.complete;
       } catch (error) {
         console.error(`[quotapie] Resume-ready notification error: ${String(error)}`);
@@ -838,13 +922,13 @@ export class QuotaPieService {
     return this.db.recentEvents(limit);
   }
 
-  private rearmRecovered(windows: WindowAnalysis[]): void {
+  private rearmRecovered(windows: WindowAnalysis[], nowMs = Date.now()): void {
     for (const window of windows) {
       if (window.freshness === "fresh") {
         const staleKey = `${alertScope(window.provider, window.account, window.bucket)}:stale`;
         const staleState = this.alerts.state(staleKey);
         if (staleState) {
-          this.alerts.setState(staleKey, staleState.lastFiredAtMs, true);
+          this.rearmAlertNotification(staleKey, staleState.lastFiredAtMs, nowMs);
         }
       }
       if (window.remainingPercent != null) {
@@ -852,14 +936,14 @@ export class QuotaPieService {
           const key = `${alertScope(window.provider, window.account, window.bucket)}:remaining:${threshold}`;
           const state = this.alerts.state(key);
           if (state && window.remainingPercent > threshold + 5) {
-            this.alerts.setState(key, state.lastFiredAtMs, true);
+            this.rearmAlertNotification(key, state.lastFiredAtMs, nowMs);
           }
         }
       }
       const paceKey = `${alertScope(window.provider, window.account, window.bucket)}:pace`;
       const paceState = this.alerts.state(paceKey);
       if (paceState && (window.paceRatio == null || window.paceRatio < 0.9)) {
-        this.alerts.setState(paceKey, paceState.lastFiredAtMs, true);
+        this.rearmAlertNotification(paceKey, paceState.lastFiredAtMs, nowMs);
       }
     }
   }
@@ -867,7 +951,7 @@ export class QuotaPieService {
   async evaluateTriggers(nowMs = Date.now(), analysed?: WindowAnalysis[]): Promise<TriggerDecision[]> {
     if (!this.config.alerts.enabled) return [];
     const windows = analysed ?? this.analyses(nowMs);
-    this.rearmRecovered(windows);
+    this.rearmRecovered(windows, nowMs);
     const decisions = planTriggers(
       windows,
       this.alerts.pendingEvents().filter((event) => this.isEnabledAccount(event.provider, event.account)),
@@ -892,13 +976,7 @@ export class QuotaPieService {
         : `threshold:${decision.key}:${thresholdClaim!.generation}`;
       let deliveryComplete = false;
       try {
-        const result = await deliverTrigger(
-          decision,
-          this.config,
-          this.alerts.deliveredChannels(deliveryKey),
-          deliveryKey,
-          (channel) => this.alerts.markChannelDelivered(deliveryKey, channel, Date.now()),
-        );
+        const result = await this.deliverDecision(decision, deliveryKey);
         deliveryComplete = result.complete;
       } catch (error) {
         console.error(`[quotapie] Trigger delivery error: ${String(error)}`);
@@ -1013,6 +1091,7 @@ export class QuotaPieService {
   async close(): Promise<void> {
     this.stop();
     this.closing = true;
+    this.nativeNotificationTransportAvailable = false;
     await Promise.all([...this.codexClients.values()].map((client) => client.close().catch(() => undefined)));
     this.codexClients.clear();
     this.db.close();

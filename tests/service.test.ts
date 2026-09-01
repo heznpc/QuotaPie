@@ -9,7 +9,7 @@ import { ALERTABLE_EVENT_KINDS } from "../src/types";
 import { QuotaDatabase } from "../src/db";
 import { nextWakeDelayMs } from "../src/scheduler";
 import { QuotaPieService } from "../src/service";
-import type { QuotaObservation, WindowAnalysis } from "../src/types";
+import type { QuotaObservation, TriggerDecision, WindowAnalysis } from "../src/types";
 import { AlertStore } from "../src/storage/alert-store";
 import { CollectionStore } from "../src/storage/collection-store";
 
@@ -263,6 +263,61 @@ describe("state persistence and scheduler", () => {
     expect(db.history("codex", "default", "codex:primary:300")).toHaveLength(1);
     expect(db.latest("codex", "default", "codex:primary:300")?.usedPercent).toBe(20);
     db.close();
+  });
+
+  test("prunes only old completed or long-expired native notifications", () => {
+    const db = new QuotaDatabase(":memory:");
+    const alerts = new AlertStore(db.storage);
+    const item = (key: string): TriggerDecision => ({
+      key,
+      title: "Quota alert",
+      message: key,
+      severity: "info",
+    });
+    const now = 200 * 86_400_000;
+
+    alerts.queueMacOSNotification(item("old-complete"), "old-complete", 1_000, 10_000);
+    const completed = alerts.claimNextAppNotification(2_000)!;
+    alerts.completeAppNotification(completed.id, completed.claimToken, "scheduled", 3_000);
+    alerts.queueMacOSNotification(item("old-expired"), "old-expired", 1_100, 10_000);
+    alerts.queueMacOSNotification(
+      item("recent"),
+      "recent",
+      now - 86_400_000,
+      now + 86_400_000,
+    );
+
+    expect(db.maybePrune(now, 28, true)).toBeTrue();
+    const rows = db.db.query<{ delivery_key: string }, []>(`
+      SELECT delivery_key FROM app_notification_outbox ORDER BY delivery_key
+    `).all();
+    expect(rows).toEqual([{ delivery_key: "recent" }]);
+    db.close();
+  });
+
+  test("turning native alerts off across a restart permanently cancels queued work", async () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "quotapie-notification-off-"));
+    const path = resolve(directory, "quotapie.sqlite3");
+    const enabled = structuredClone(DEFAULT_CONFIG);
+    const first = new QuotaPieService(enabled, new QuotaDatabase(path));
+    first.alerts.queueMacOSNotification(
+      { key: "old", title: "Old", message: "Do not show", severity: "info" },
+      "old",
+      1_000,
+      Date.now() + 86_400_000,
+    );
+    await first.close();
+
+    const disabled = structuredClone(DEFAULT_CONFIG);
+    disabled.alerts.macOSNotifications = false;
+    const second = new QuotaPieService(disabled, new QuotaDatabase(path));
+    expect(second.alerts.pendingAppNotifications()).toEqual([]);
+    await second.close();
+
+    const third = new QuotaPieService(enabled, new QuotaDatabase(path));
+    expect(third.claimNextAppNotification()).toBeNull();
+    await third.close();
+    rmSync(directory, { recursive: true, force: true });
   });
 
   test("keeps a long-retired bucket inactive across retention and restart", () => {

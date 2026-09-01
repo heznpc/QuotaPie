@@ -21,7 +21,7 @@ The everyday surface is a **native macOS menu bar app**. The CLI is for diagnosi
 - Normal resets, early external resets, possible allowance increases or server corrections, reset-clock rebases, and paid credit changes are each recorded as distinct events.
 - The exhaustion forecast blends your burn over the last two hours with your personal pace over the last 28 days, split by weekday/weekend and neighbouring hours.
 - Only your configured active hours count as remaining working time, and whichever of the 5-hour or weekly window is more dangerous is shown as the current bottleneck.
-- macOS notifications and an optional external command trigger are supported.
+- With the resident menu bar app connected, macOS notifications are posted by QuotaPie itself, so Notification Center attributes them to QuotaPie rather than to a script runner. `watch` and a clean older-app installation retain the legacy script notification as an upgrade fallback. An optional external command trigger is also supported.
 - Multiple Codex and Claude accounts are separated by profile directory and local alias; history, personal pace, bottleneck, and alert cooldowns are all isolated per account.
 - Alerts follow an honesty rule: if recent measured usage is zero, no pace warning is sent. Present-tense wording ("burning too fast") is reserved for a measured burn rate above the safe pace; when only the habitual pattern exceeds it, the wording is forward-looking ("pace forecast").
 - Collection state is a four-state heartbeat (never-attempted / attempted-then-failed / stale-success / recent-success) so that a stalled collector and a disabled one do not wear the same face.
@@ -155,7 +155,9 @@ pkill -x QuotaPie 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/local.quotapie.menubar.plist
 ```
 
-Collection and alerts keep running even if the menu bar app quits. Quitting from the menu deliberately does not immediately relaunch it, but the LaunchAgent does restart it after an abnormal exit.
+Collection and alert evaluation keep running even if the menu bar app quits. Native alerts already accepted into the outbox wait for the app to return; optional command triggers keep running. Quitting from the menu deliberately does not immediately relaunch it, but the LaunchAgent does restart it after an abnormal exit.
+
+The first native alert asks for macOS notification permission. The collector commits each alert to a local outbox, and the app claims it before handing it to Notification Center. This keeps alerts durable while the app restarts without giving the collector any notification credentials. Once an app has registered this native path, that database stays on the app-owned outbox rather than later bypassing a denied app permission through `osascript`; queued items wait up to 24 hours for the app. Run `serve`, rather than `watch`, when using the menu bar app; `serve` owns the loopback API that drains this outbox.
 
 ## Connecting Claude
 
@@ -239,7 +241,7 @@ quotapie claude-statusline --account ID
 quotapie watch                run only the adaptive timer and alerts
 quotapie serve                run the timer, alerts, and the local dashboard
 quotapie doctor               check collectors and connection state
-quotapie test-alert           actually deliver through the configured alert channels
+quotapie test-alert           hand a test alert to the configured channels
 quotapie launchd              print a plist for running as a resident service
 quotapie menubar-launchd      print a plist for launching the menu bar app
 ```
@@ -325,7 +327,7 @@ The settings that matter most:
 - `alerts.deliveryTimeoutSeconds`: the longest a single alert channel may hold up the resident collection loop.
 - `collection.claudeSessionTtlSeconds`: how long the highest usage among several Claude sessions in the same reset window is held as the consensus.
 
-With both macOS notifications and an external command enabled, delivery counts as complete only when every configured channel succeeds. Channels that already succeeded are recorded individually so a retry does not run them twice. An explicit failure logs the channel and its exit code and is retried on the next collection cycle; a claim left behind by a process that died mid-delivery is reclaimed after a five-minute lease.
+With both macOS notifications and an external command enabled, delivery counts as complete only when every configured channel accepts the alert. The native channel's acceptance point is a committed SQLite outbox row; QuotaPie.app then claims that row and schedules it with Notification Center. Channels that already succeeded are recorded individually so a retry does not run them twice. An explicit failure logs the channel and its exit code and is retried on the next collection cycle; a claim left behind by a process that died mid-delivery is reclaimed after a five-minute lease.
 
 For example, to run a macOS Shortcut alongside the notification:
 
@@ -385,7 +387,7 @@ One connection, one transaction owner, several collaborators.
 ```text
 QuotaPieService
  ├─ QuotaDatabase        snapshot / bucket / event ingestion
- ├─ AlertStore           alert_state + event_delivery + alert_channel_delivery
+ ├─ AlertStore           alert claims + channel receipts + native app outbox
  ├─ CollectionStore      per-source collection heartbeat
  └─ ClaudeSessionStore   session rows in and out
       └─ selectClaudeConsensus()   pure decision, no database
@@ -405,9 +407,10 @@ half-state the boundary exists to prevent. Sub-units meant to be independently
 recoverable would need `SAVEPOINT`, which is a different contract than the one
 stated here.
 
-`alert_state`, `event_delivery`, and `alert_channel_delivery` implement one
-feature between them, so one store owns all three; a claim must never have a
-transaction boundary through the middle of it.
+`alert_state`, `event_delivery`, `alert_channel_delivery`, and the native app
+outbox implement one feature between them, so one store owns them together; a
+claim or durable hand-off must never have a transaction boundary through the
+middle of it.
 
 Which source is authoritative and what an account's health is are not stored
 facts — they are policy, and they live in `QuotaPieService.accountStates()`.
@@ -422,7 +425,7 @@ insert are a single unit of work.
 bun run check
 ```
 
-The tests cover low-usage normal and early resets, reset-clock rebases, allowance relief where only the ratio falls, null data, out-of-order responses, multi-session Claude consensus, multi-account isolation and validation, per-account alert keys, retirement of dynamic Codex entries, durable alert claims, file permissions, paid credits, personal burn rate, bottleneck selection, dynamic rescheduling, exact-session resume races, API capability checks, and the native launcher's command boundary.
+The tests cover low-usage normal and early resets, reset-clock rebases, allowance relief where only the ratio falls, null data, out-of-order responses, multi-session Claude consensus, multi-account isolation and validation, per-account alert keys, retirement of dynamic Codex entries, durable alert and native-notification claims, file permissions, paid credits, personal burn rate, bottleneck selection, dynamic rescheduling, exact-session resume races, API capability checks, and the native launcher's command boundary.
 
 ## Limitations
 

@@ -5,7 +5,7 @@ import { CollectionStore } from "../src/storage/collection-store";
 import { ClaudeSessionStore } from "../src/storage/claude-session-store";
 import { selectClaudeConsensus } from "../src/domain/claude-consensus";
 import type { ClaudeSessionState } from "../src/domain/claude-consensus";
-import type { QuotaEvent } from "../src/types";
+import type { QuotaEvent, TriggerDecision } from "../src/types";
 
 function storage(): QuotaStorage {
   return new QuotaStorage(":memory:");
@@ -22,6 +22,16 @@ function event(overrides: Partial<QuotaEvent> = {}): QuotaEvent {
     confidence: "high",
     displayText: "relief",
     details: {},
+    ...overrides,
+  };
+}
+
+function notification(overrides: Partial<TriggerDecision> = {}): TriggerDecision {
+  return {
+    key: "codex:x:remaining:5",
+    title: "Quota low",
+    message: "Only 5% remains",
+    severity: "warning",
     ...overrides,
   };
 }
@@ -182,6 +192,167 @@ describe("alert claims stay atomic inside their own store", () => {
     `).run("f2", "codex", "default", "b", "first_observation", "info", 1_000, "high", "s", "{}");
     expect(alerts.pendingEvents().map((item) => item.kind)).toEqual(["external_relief"]);
     expect(event().kind).toBe("external_relief");
+  });
+});
+
+describe("native app notification outbox", () => {
+  test("durably deduplicates enqueue and marks the macOS channel in the same unit", () => {
+    const store = storage();
+    const alerts = new AlertStore(store);
+    const first = alerts.queueMacOSNotification(
+      notification(),
+      "threshold:codex:x:remaining:5:1",
+      1_000,
+      10_000,
+    );
+    expect(first.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(alerts.pendingAppNotifications()).toEqual([first]);
+    expect(alerts.deliveredChannels(first.deliveryKey)).toEqual(["macos-notification"]);
+
+    const duplicate = alerts.queueMacOSNotification(
+      notification({ title: "replacement must not win" }),
+      first.deliveryKey,
+      2_000,
+      20_000,
+    );
+    expect(duplicate).toEqual(first);
+    expect(alerts.pendingAppNotifications()).toHaveLength(1);
+
+    expect(() => alerts.queueMacOSNotification(
+      notification({ severity: "invalid" as TriggerDecision["severity"] }),
+      "invalid-delivery",
+      3_000,
+      30_000,
+    )).toThrow();
+    expect(alerts.deliveredChannels("invalid-delivery")).toEqual([]);
+  });
+
+  test("does not recreate a completed delivery when it is enqueued again", () => {
+    const store = storage();
+    const alerts = new AlertStore(store);
+    const queued = alerts.queueMacOSNotification(notification(), "d1", 1_000, 10_000);
+    const claim = alerts.claimNextAppNotification(2_000, 1_000)!;
+    expect(alerts.completeAppNotification(claim.id, claim.claimToken, "scheduled", 2_100)).toBeTrue();
+    expect(alerts.pendingAppNotifications()).toEqual([]);
+
+    const duplicate = alerts.queueMacOSNotification(notification(), "d1", 3_000, 20_000);
+    expect(duplicate.id).toBe(queued.id);
+    expect(alerts.pendingAppNotifications()).toEqual([]);
+    const row = store.db.query<{ count: number; disposition: string }, []>(`
+      SELECT COUNT(*) AS count, disposition FROM app_notification_outbox WHERE delivery_key = 'd1'
+    `).get();
+    expect(row).toEqual({ count: 1, disposition: "scheduled" });
+  });
+
+  test("claims one oldest eligible row and protects a reclaimed lease with CAS", () => {
+    const store = storage();
+    const alerts = new AlertStore(store);
+    alerts.queueMacOSNotification(notification(), "older", 1_000, 20_000);
+    const first = alerts.claimNextAppNotification(2_000, 5_000)!;
+    expect(first.deliveryKey).toBe("older");
+    expect(alerts.claimNextAppNotification(3_000, 5_000)).toBeNull();
+
+    const current = alerts.claimNextAppNotification(7_001, 5_000)!;
+    expect(current.id).toBe(first.id);
+    expect(current.claimToken).not.toBe(first.claimToken);
+    expect(alerts.releaseAppNotification(first.id, first.claimToken)).toBeFalse();
+    expect(alerts.releaseAppNotification(current.id, current.claimToken)).toBeTrue();
+  });
+
+  test("claim records native capability, expires stale rows, and preserves FIFO order", () => {
+    const store = storage();
+    const alerts = new AlertStore(store);
+    expect(alerts.hasNativeNotificationConsumer()).toBeFalse();
+    alerts.queueMacOSNotification(notification({ key: "stale" }), "stale", 1_000, 1_500);
+    alerts.queueMacOSNotification(notification({ key: "old-live" }), "old-live", 1_100, 10_000);
+    alerts.queueMacOSNotification(notification({ key: "new-live" }), "new-live", 1_200, 10_000);
+
+    const claim = alerts.claimNextAppNotification(2_000, 1_000)!;
+    expect(alerts.hasNativeNotificationConsumer()).toBeTrue();
+    expect(claim.deliveryKey).toBe("old-live");
+    const expired = store.db.query<{ disposition: string; completed_at_ms: number }, [string]>(`
+      SELECT disposition, completed_at_ms FROM app_notification_outbox WHERE delivery_key = ?
+    `).get("stale");
+    expect(expired).toEqual({ disposition: "expired", completed_at_ms: 2_000 });
+  });
+
+  test("completion is idempotent only for the same receipt and disposition", () => {
+    const store = storage();
+    const alerts = new AlertStore(store);
+    alerts.queueMacOSNotification(notification(), "d1", 1_000, 10_000);
+    const claim = alerts.claimNextAppNotification(2_000)!;
+    expect(alerts.completeAppNotification(claim.id, claim.claimToken, "suppressed", 2_100)).toBeTrue();
+    expect(alerts.completeAppNotification(claim.id, claim.claimToken, "suppressed", 2_200)).toBeTrue();
+    expect(alerts.completeAppNotification(claim.id, claim.claimToken, "scheduled", 2_200)).toBeFalse();
+    expect(alerts.completeAppNotification(claim.id, "stale-token", "suppressed", 2_200)).toBeFalse();
+    expect(alerts.releaseAppNotification(claim.id, claim.claimToken)).toBeFalse();
+  });
+
+  test("renews only the current live claim and extends its lease", () => {
+    const store = storage();
+    const alerts = new AlertStore(store);
+    alerts.queueMacOSNotification(notification(), "d1", 1_000, 20_000);
+    const first = alerts.claimNextAppNotification(2_000, 5_000)!;
+    expect(alerts.renewAppNotification(first.id, "wrong", 6_000)).toBeFalse();
+    expect(alerts.renewAppNotification(first.id, first.claimToken, 6_000)).toBeTrue();
+    expect(alerts.claimNextAppNotification(7_001, 5_000)).toBeNull();
+
+    const reclaimed = alerts.claimNextAppNotification(11_001, 5_000)!;
+    expect(reclaimed.id).toBe(first.id);
+    expect(reclaimed.claimToken).not.toBe(first.claimToken);
+    expect(alerts.renewAppNotification(first.id, first.claimToken, 12_000)).toBeFalse();
+  });
+
+  test("cancels pending work by alert key, including a leased row", () => {
+    const store = storage();
+    const alerts = new AlertStore(store);
+    alerts.queueMacOSNotification(notification({ key: "same" }), "d1", 1_000, 10_000);
+    alerts.queueMacOSNotification(notification({ key: "same" }), "d2", 1_100, 10_000);
+    alerts.queueMacOSNotification(notification({ key: "other" }), "d3", 1_200, 10_000);
+    const claim = alerts.claimNextAppNotification(2_000)!;
+    expect(claim.deliveryKey).toBe("d1");
+
+    expect(alerts.cancelAppNotificationsForAlert("same", 2_100)).toBe(2);
+    expect(alerts.completeAppNotification(claim.id, claim.claimToken, "scheduled", 2_200)).toBeFalse();
+    expect(alerts.pendingAppNotifications()).toEqual([
+      expect.objectContaining({ deliveryKey: "d3" }),
+    ]);
+  });
+
+  test("cancels every pending native notification when the channel is disabled", () => {
+    const store = storage();
+    const alerts = new AlertStore(store);
+    alerts.queueMacOSNotification(notification({ key: "one" }), "d1", 1_000, 10_000);
+    alerts.queueMacOSNotification(notification({ key: "two" }), "d2", 1_100, 10_000);
+    expect(alerts.cancelAllAppNotifications(2_000)).toBe(2);
+    expect(alerts.pendingAppNotifications()).toEqual([]);
+    const dispositions = store.db.query<{ disposition: string }, []>(`
+      SELECT disposition FROM app_notification_outbox ORDER BY delivery_key
+    `).all();
+    expect(dispositions).toEqual([{ disposition: "cancelled" }, { disposition: "cancelled" }]);
+  });
+
+  test("rearming a threshold cancels its pending native notification", () => {
+    const store = storage();
+    const alerts = new AlertStore(store);
+    const alertKey = "codex:x:remaining:5";
+    alerts.queueMacOSNotification(notification({ key: alertKey }), `threshold:${alertKey}:1`, 1_000, 10_000);
+    alerts.setState(alertKey, 500, true, 2_000);
+    expect(alerts.pendingAppNotifications()).toEqual([]);
+    expect(alerts.deliveredChannels(`threshold:${alertKey}:1`)).toEqual([]);
+    const row = store.db.query<{ disposition: string }, [string]>(`
+      SELECT disposition FROM app_notification_outbox WHERE delivery_key = ?
+    `).get(`threshold:${alertKey}:1`);
+    expect(row?.disposition).toBe("cancelled");
+  });
+
+  test("bounds pending inspection", () => {
+    const store = storage();
+    const alerts = new AlertStore(store);
+    alerts.queueMacOSNotification(notification(), "d1", 1_000, 10_000);
+    alerts.queueMacOSNotification(notification(), "d2", 2_000, 10_000);
+    expect(alerts.pendingAppNotifications(1)).toHaveLength(1);
+    expect(alerts.pendingAppNotifications(-1)).toEqual([]);
   });
 });
 

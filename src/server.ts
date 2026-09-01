@@ -1,5 +1,5 @@
 import { buildHeadline } from "./analytics";
-import type { Headline, QuotaEvent } from "./types";
+import type { AppNotificationDisposition, Headline, QuotaEvent } from "./types";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { ResumeTargetError } from "./service";
 import { ResumeTaskStoreError } from "./storage/resume-task-store";
@@ -39,7 +39,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig) {
     const received = Buffer.from(candidate);
     return expected.length === received.length && timingSafeEqual(expected, received);
   };
-  return Bun.serve({
+  const server = Bun.serve({
     hostname: config.dashboard.host,
     port: config.dashboard.port,
     async fetch(request) {
@@ -50,6 +50,68 @@ export function startDashboard(service: QuotaPieService, config: AppConfig) {
       const allowedHosts = new Set(["127.0.0.1", "localhost", "::1", config.dashboard.host.toLowerCase()]);
       if (!hostname || !allowedHosts.has(hostname)) return json({ error: "invalid_host" }, 403);
       const url = new URL(request.url);
+      if (url.pathname === "/api/notifications" || url.pathname.startsWith("/api/notifications/")) {
+        if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+        if (!tokenMatches(request.headers.get("x-quotapie-action-token"))) {
+          return json({ error: "forbidden" }, 403);
+        }
+        try {
+          if (url.pathname === "/api/notifications/claim") {
+            const claim = service.claimNextAppNotification();
+            return json({
+              notification: claim
+                ? {
+                    id: claim.id,
+                    title: claim.title,
+                    message: claim.message,
+                    severity: claim.severity,
+                    createdAtMs: claim.createdAtMs,
+                    expiresAtMs: claim.expiresAtMs,
+                    claimToken: claim.claimToken,
+                  }
+                : null,
+            });
+          }
+          if (url.pathname === "/api/notifications/test") {
+            return json(await service.deliverTestAlert());
+          }
+          const action = url.pathname.match(/^\/api\/notifications\/([^/]+)\/([^/]+)$/);
+          if (!action) return json({ error: "invalid_notification_action" }, 400);
+          const id = action[1]!;
+          if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+            return json({ error: "invalid_notification_id" }, 400);
+          }
+          const operation = action[2]!;
+          if (!["scheduled", "suppressed", "expired", "release", "renew"].includes(operation)) {
+            return json({ error: "invalid_notification_action" }, 400);
+          }
+          const claimToken = request.headers.get("x-quotapie-notification-claim")?.trim();
+          if (!claimToken) return json({ error: "notification_claim_required" }, 403);
+          if (operation === "release") {
+            const released = service.releaseAppNotification(id, claimToken);
+            return released
+              ? json({ released: true })
+              : json({ error: "notification_claim_conflict" }, 409);
+          }
+          if (operation === "renew") {
+            const renewed = service.renewAppNotification(id, claimToken);
+            return renewed
+              ? json({ renewed: true })
+              : json({ error: "notification_claim_conflict" }, 409);
+          }
+          const completed = service.completeAppNotification(
+            id,
+            claimToken,
+            operation as AppNotificationDisposition,
+          );
+          return completed
+            ? json({ completed: true })
+            : json({ error: "notification_claim_conflict" }, 409);
+        } catch (error) {
+          console.error(`[quotapie] app notification action failed: ${String(error)}`);
+          return json({ error: "notification_action_failed" }, 500);
+        }
+      }
       const action = url.pathname.match(
         /^\/api\/resume-tasks\/([0-9a-fA-F-]+)\/(approve|resumed|retry|dismiss)$/,
       );
@@ -150,4 +212,6 @@ export function startDashboard(service: QuotaPieService, config: AppConfig) {
       return json({ error: "not_found" }, 404);
     },
   });
+  service.setNativeNotificationTransportAvailable(true);
+  return server;
 }

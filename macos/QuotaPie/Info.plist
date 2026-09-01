@@ -4,6 +4,10 @@
 <dict>
   <key>CFBundleExecutable</key>
   <string>QuotaPie</string>
+  <key>CFBundleDisplayName</key>
+  <string>QuotaPie</string>
+  <key>CFBundleIconFile</key>
+  <string>QuotaPie.icns</string>
   <key>CFBundleIdentifier</key>
   <string>local.quotapie.menubar</string>
   <key>CFBundleName</key>

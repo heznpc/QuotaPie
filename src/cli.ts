@@ -17,7 +17,6 @@ import { startDashboard } from "./server";
 import { collectionErrorText } from "./analytics";
 import { resolveLocale, t } from "./i18n";
 import { CLAUDE_OAUTH_SOURCE, CLAUDE_STATUSLINE_SOURCE, QuotaPieService } from "./service";
-import { deliverTrigger } from "./triggers";
 import type { AppConfig } from "./config";
 import type { Provider } from "./types";
 
@@ -156,6 +155,51 @@ function apiOrigin(host: string, port: number): string {
   const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
   const authority = bare.includes(":") ? `[${bare}]` : bare;
   return `http://${authority}:${port}`;
+}
+
+async function deliverTestAlertThroughDaemon(config: AppConfig): Promise<{
+  complete: boolean;
+  nativeAppQueued: boolean;
+} | null> {
+  const origin = apiOrigin(config.dashboard.host, config.dashboard.port);
+  let actionToken: string;
+  try {
+    const statusResponse = await fetch(`${origin}/api/status`, {
+      signal: AbortSignal.timeout(1_500),
+    });
+    if (!statusResponse.ok) return null;
+    const status = await statusResponse.json() as { actionToken?: unknown };
+    if (typeof status.actionToken !== "string" || !status.actionToken) return null;
+    actionToken = status.actionToken;
+  } catch {
+    return null;
+  }
+  try {
+    const response = await fetch(`${origin}/api/notifications/test`, {
+      method: "POST",
+      headers: { "x-quotapie-action-token": actionToken },
+      signal: AbortSignal.timeout(Math.max(
+        5_000,
+        config.alerts.deliveryTimeoutSeconds * 1_000 + 2_000,
+      )),
+    });
+    // A running daemon from before native notifications were introduced does
+    // not have the endpoint. Let the local compatibility path use osascript.
+    if (response.status === 404 || response.status === 405) return null;
+    if (!response.ok) return { complete: false, nativeAppQueued: false };
+    const result = await response.json() as {
+      complete?: unknown;
+      nativeAppQueued?: unknown;
+    };
+    return {
+      complete: result.complete === true,
+      nativeAppQueued: result.nativeAppQueued === true,
+    };
+  } catch {
+    // Once the POST has left this process, falling back could duplicate a
+    // notification whose success response alone was lost.
+    return { complete: false, nativeAppQueued: false };
+  }
 }
 
 function menubarLaunchdPlist(host: string, port: number): string {
@@ -474,17 +518,15 @@ async function main(): Promise<number> {
         return checks.some((check) => !check.ok && check.check !== "config") ? 1 : 0;
       }
       case "test-alert": {
-        const delivery = await deliverTrigger(
-          {
-            key: "manual:test",
-            title: t("alert.test.title", {}, resolveLocale(config.profile.locale)),
-            message: t("alert.test.message", {}, resolveLocale(config.profile.locale)),
-            severity: "info",
-          },
-          config,
-        );
+        const delivery = await deliverTestAlertThroughDaemon(config) ?? await service.deliverTestAlert();
         const ok = delivery.complete;
-        console.log(ok ? "Test alert delivered." : "Test alert failed; check notification settings and command.");
+        console.log(delivery.nativeAppQueued
+          ? ok
+            ? "Test alert queued for QuotaPie."
+            : "Test alert queued for QuotaPie, but another configured channel failed."
+          : ok
+            ? "Test alert handed off to configured notification channels."
+            : "Test alert could not be handed off; check notification settings and command.");
         return ok ? 0 : 1;
       }
       case "watch": {
