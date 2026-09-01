@@ -6,12 +6,19 @@
   <string>QuotaPie</string>
   <key>CFBundleDisplayName</key>
   <string>QuotaPie</string>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
   <key>CFBundleIconFile</key>
   <string>QuotaPie.icns</string>
   <key>CFBundleIdentifier</key>
   <string>local.quotapie.menubar</string>
   <key>CFBundleName</key>
   <string>QuotaPie</string>
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>en</string>
+    <string>ko</string>
+  </array>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

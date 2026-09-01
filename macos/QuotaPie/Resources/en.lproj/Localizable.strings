@@ -1,0 +1,160 @@
+/* Menu bar headline */
+"headline.checking" = "Checking";
+"headline.disconnected" = "Disconnected";
+"headline.degraded" = "Limits unconfirmed";
+"headline.setup" = "Setup needed";
+"headline.lastGood" = "Last good reading";
+"headline.atRisk" = "⚠ %@ at risk";
+"headline.runsDryOn" = "runs dry around %@";
+"headline.pace-risk" = "⚠ %@ at risk";
+"headline.pace-risk.detail" = "%@ · %@ · %@%@";
+"headline.normal" = "%@%% left";
+"headline.normal.unknown" = "Limits confirmed";
+"headline.detail" = "%@ · %@ · %@";
+"headline.noAccounts" = "No account is configured for tracking.";
+
+/* Window labels and formatting */
+"window.five-hour" = "5-hour";
+"window.weekly" = "weekly";
+"window.monthly" = "monthly";
+"window.used" = "%@%% used";
+"window.remaining" = "%@%% left";
+"window.usageUnknown" = "Usage unknown";
+"window.resetsAt" = "resets %@";
+"window.resetUnknown" = "Reset time unknown";
+"window.exhausted" = "Exhausted";
+"window.paceComfortable" = "Pace is comfortable";
+"window.paceTight" = "On this pattern it will be tight";
+"window.runsDry" = "⚠ runs dry around %@";
+"window.stale" = "Stale value";
+"window.resetDue" = "Confirming reset";
+"window.unknown" = "Needs checking";
+"format.dayMonth" = "MMM d";
+
+/* Collection health */
+"collection.auth-required" = "Sign-in required";
+"collection.auth-expired" = "Sign-in expired";
+"collection.rate-limited" = "Provider rate limit reached";
+"collection.network" = "Cannot reach the network";
+"collection.not-configured" = "Collection is not configured";
+"collection.isolation-unsafe" = "Account credentials need isolating";
+"collection.provider-error" = "Could not read the provider's response";
+"collection.no-windows" = "The response carried no limit windows";
+"collection.never-attempted" = "Not collected yet";
+"collection.stale-success" = "Collection is running late";
+"collection.attempted-then-failed" = "Collection failed";
+"collection.recent-success" = "Collection is current";
+
+/* Data provenance */
+"source.official" = "official";
+"source.statusline" = "status line";
+
+/* Popover */
+"popover.noAccounts" = "No accounts to track";
+"popover.noAccountsDetail" = "Enable a Codex or Claude account in the settings file.";
+"popover.noWindows" = "No limit windows to show.";
+"popover.disconnected" = "Cannot reach the local service";
+"popover.cachedNotice" = "The values below are the last good reading · %@";
+"popover.recentChanges" = "Recent changes";
+"popover.runInTerminal" = "Run %@ in a terminal";
+"popover.runCommand" = "Run %@ in a terminal.";
+
+/* Paused-work resume flow */
+"resume.sectionTitle" = "Paused work";
+"resume.readyCount" = "▶ %@ ready";
+"resume.readyTooltip" = "%@ · %@ · %@";
+"resume.pausedReference" = "paused %@ · %@";
+"resume.waitingAction" = "Waiting";
+"resume.waitingProvider" = "Waiting for provider-confirmed capacity · %@";
+"resume.readyDetail" = "Fresh provider capacity confirmed";
+"resume.approvedDetail" = "Opening was interrupted. Reset it before retrying.";
+"resume.unknownState" = "Resume state needs checking";
+"resume.actionUnavailable" = "Actions unavailable. Refresh the local service.";
+"resume.resumeInTerminal" = "Resume in Terminal";
+"resume.retry" = "Retry";
+"resume.dismiss" = "Dismiss";
+"resume.dismissHelp" = "Remove this paused-work item";
+"resume.preparing" = "Preparing…";
+"resume.opening" = "Opening Terminal…";
+"resume.updating" = "Updating…";
+"resume.confirmTitle" = "Resume paused work?";
+"resume.confirmMessage" = "Open %@ · %@ · %@ (%@, paused %@). QuotaPie does not send a prompt. Tokens are used only after you type and submit one.";
+"resume.confirmOpen" = "Open";
+"resume.confirmCancel" = "Cancel";
+"resume.registered" = "%@ will be offered for resume after fresh quota is confirmed.";
+
+/* Resume validation errors */
+"resume.error.executableNotAllowed" = "The resume executable is not allowed.";
+"resume.error.executableNotFound" = "The approved CLI executable could not be found.";
+"resume.error.argumentsNotAllowed" = "The resume arguments were rejected.";
+"resume.error.environmentNotAllowed" = "The resume environment was rejected.";
+"resume.error.workingDirectoryNotAllowed" = "The project folder is not an existing absolute path.";
+"resume.error.launcherCreationFailed" = "Could not create the one-shot launcher: %@";
+"resume.error.cannotWriteLauncher" = "the launcher file could not be written";
+"resume.error.terminalUnavailable" = "Terminal.app is unavailable.";
+"resume.error.terminalOpenFailed" = "Could not open Terminal: %@";
+"resume.error.launcherStartUnconfirmed" = "Terminal accepted the request, but the resume command did not start.";
+
+/* Commands */
+"action.refresh" = "Refresh";
+"action.refreshHelp" = "Refresh (⌘R)";
+"action.copyHelp" = "Copy status (⌘C)";
+"action.copyCommandHelp" = "Copy the recovery command to run in a terminal";
+"action.openSettingsHelp" = "Open the QuotaPie settings file";
+"action.copy" = "Copy status";
+"action.openDashboard" = "Open web view";
+"action.openSettings" = "Open settings";
+"action.copyCommand" = "Copy recovery command";
+"action.more" = "More";
+"action.moreHelp" = "Settings and quit";
+"action.quit" = "Quit QuotaPie";
+
+/* Relative time */
+"time.justNow" = "just now";
+"time.minutesAgo" = "%@ min ago";
+"time.hoursAgo" = "%@ h ago";
+"time.days" = "%@ d %@ h";
+"time.hours" = "%@ h %@ m";
+"time.minutes" = "%@ min";
+
+/* App and local service state */
+"status.tooltip" = "Codex and Claude usage limits";
+"status.noData" = "QuotaPie: no limit data yet.";
+"client.badURL" = "The local API address is not valid.";
+"client.badResponse" = "Could not read the local API response.";
+"client.badTaskID" = "The paused-work identifier is not valid.";
+"client.missingActionToken" = "The local action token is missing.";
+"client.httpStatus" = "The local service returned HTTP %@.";
+
+/* Semantic event messages received from the local service */
+"event.first_observation" = "Started tracking %@.";
+"event.out_of_order" = "Ignored an out-of-order response for %@.";
+"event.source_changed" = "%@ switched data source.";
+"event.source_unknown" = "%@ temporarily reported no value.";
+"event.scheduled_reset" = "%@ reset on schedule.";
+"event.external_relief" = "%@ was refilled ahead of schedule.";
+"event.allowance_relief" = "%@ usage fell sharply — a reset, a larger allowance, or a server correction.";
+"event.meter_correction" = "%@ usage moved slightly backwards.";
+"event.schedule_rebased" = "%@ reset time was rescheduled.";
+"event.paid_usage" = "%@ paid credits were used.";
+"event.credit_topup" = "%@ credit balance increased.";
+"event.banked_reset_consumed" = "A banked reset appears to have been used.";
+"event.bucket_retired" = "%@ disappeared from the provider's full response; tracking stopped.";
+"event.window_changed" = "%@ %@ window changed: %@ → %@";
+
+/* Semantic notification messages received from the local service */
+"alert.remaining.title" = "%@/%@ limit running low";
+"alert.remaining.message" = "%@ has %@%% left (threshold %@%%).";
+"alert.pace.title.measured" = "%@/%@ burning too fast";
+"alert.pace.title.projected" = "%@/%@ pace forecast";
+"alert.pace.message.measured" = "%@ is on course to exhaust its safety margin about %@ before the reset.";
+"alert.pace.message.projected" = "%@: on this pattern the safety margin runs out about %@ before the reset.";
+"alert.stale.title" = "%@/%@ collection stalled";
+"alert.stale.message" = "%@ has had no fresh value for a while.";
+"alert.event.title.payment" = "%@/%@ billable usage changed";
+"alert.event.title.window" = "%@/%@ limit window changed";
+"alert.event.title.resync" = "%@/%@ timer resynchronised";
+"alert.test.title" = "QuotaPie test";
+"alert.test.message" = "The notification channel is connected.";
+"alert.resume.ready.title" = "%@/%@ task is ready";
+"alert.resume.ready.message" = "%@ has fresh quota again. Open QuotaPie to approve resuming it.";

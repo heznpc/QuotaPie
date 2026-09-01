@@ -211,6 +211,10 @@ export function migrate(db: Database): void {
         alert_key TEXT NOT NULL,
         title TEXT NOT NULL,
         message TEXT NOT NULL,
+        title_key TEXT,
+        title_params_json TEXT,
+        message_key TEXT,
+        message_params_json TEXT,
         severity TEXT NOT NULL CHECK(severity IN ('info', 'warning', 'critical')),
         created_at_ms INTEGER NOT NULL,
         expires_at_ms INTEGER NOT NULL,
@@ -228,6 +232,21 @@ export function migrate(db: Database): void {
         )
       )
     `);
+    const notificationColumns = db
+      .query<{ name: string }, []>("PRAGMA table_info(app_notification_outbox)")
+      .all();
+    if (!notificationColumns.some((column) => column.name === "title_key")) {
+      db.run("ALTER TABLE app_notification_outbox ADD COLUMN title_key TEXT");
+    }
+    if (!notificationColumns.some((column) => column.name === "title_params_json")) {
+      db.run("ALTER TABLE app_notification_outbox ADD COLUMN title_params_json TEXT");
+    }
+    if (!notificationColumns.some((column) => column.name === "message_key")) {
+      db.run("ALTER TABLE app_notification_outbox ADD COLUMN message_key TEXT");
+    }
+    if (!notificationColumns.some((column) => column.name === "message_params_json")) {
+      db.run("ALTER TABLE app_notification_outbox ADD COLUMN message_params_json TEXT");
+    }
     db.run(`
       CREATE INDEX IF NOT EXISTS app_notification_pending
       ON app_notification_outbox(completed_at_ms, created_at_ms, id)

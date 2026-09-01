@@ -1,5 +1,6 @@
 import type { AppConfig } from "./config";
 import { humanGap, resolveLocale, t } from "./i18n";
+import type { MessageKey, MessageParams } from "./i18n";
 import type {
   QuotaEvent,
   TriggerDecision,
@@ -24,7 +25,19 @@ export function planTriggers(
 ): TriggerDecision[] {
   const decisions: TriggerDecision[] = [];
   const locale = resolveLocale(config.profile.locale);
-  const say = (key: string, params: Parameters<typeof t>[1] = {}) => t(key, params, locale);
+  const present = (
+    titleKey: MessageKey,
+    titleParams: MessageParams,
+    messageKey: MessageKey,
+    messageParams: MessageParams,
+  ): Pick<TriggerDecision, "title" | "message" | "presentation"> => ({
+    title: t(titleKey, titleParams, locale),
+    message: t(messageKey, messageParams, locale),
+    presentation: {
+      title: { key: titleKey, params: titleParams },
+      message: { key: messageKey, params: messageParams },
+    },
+  });
 
   for (const window of windows) {
     const windowKey = alertScope(window.provider, window.account, window.bucket);
@@ -37,10 +50,10 @@ export function planTriggers(
         nowMs - window.resetsAtMs > config.collection.staleAfterSeconds * 1_000)
     );
     if (staleNeedsAlert) {
+      const wording = present("alert.stale.title", who, "alert.stale.message", who);
       decisions.push({
         key: `${windowKey}:stale`,
-        title: say("alert.stale.title", who),
-        message: say("alert.stale.message", who),
+        ...wording,
         severity: "warning",
       });
       continue;
@@ -52,14 +65,20 @@ export function planTriggers(
         .sort((a, b) => a - b)
         .find((threshold) => window.remainingPercent! <= threshold);
       if (crossed != null) {
+        const messageParams = {
+          ...who,
+          percent: Number(window.remainingPercent.toFixed(1)),
+          threshold: crossed,
+        };
+        const wording = present(
+          "alert.remaining.title",
+          who,
+          "alert.remaining.message",
+          messageParams,
+        );
         decisions.push({
           key: `${windowKey}:remaining:${crossed}`,
-          title: say("alert.remaining.title", who),
-          message: say("alert.remaining.message", {
-            ...who,
-            percent: Number(window.remainingPercent.toFixed(1)),
-            threshold: crossed,
-          }),
+          ...wording,
           severity: crossed <= 5 ? "critical" : "warning",
           rearmWhenRemainingAbove: crossed + 5,
         });
@@ -82,13 +101,18 @@ export function planTriggers(
       // pattern" never get conflated.
       const measuredOverPace = window.safePacePerActiveHour != null &&
         window.recentBurnPerHour > window.safePacePerActiveHour;
+      const titleKey = measuredOverPace ? "alert.pace.title.measured" : "alert.pace.title.projected";
+      const messageKey = measuredOverPace ? "alert.pace.message.measured" : "alert.pace.message.projected";
+      const messageParams = {
+        ...who,
+        // `minutes` is the semantic value used by native clients. `detail` is
+        // the daemon-locale compatibility rendering for older consumers.
+        minutes: window.minutesBeforeReset,
+        detail: humanGap(window.minutesBeforeReset, locale),
+      };
       decisions.push({
         key: `${windowKey}:pace`,
-        title: say(measuredOverPace ? "alert.pace.title.measured" : "alert.pace.title.projected", who),
-        message: say(measuredOverPace ? "alert.pace.message.measured" : "alert.pace.message.projected", {
-          ...who,
-          detail: humanGap(window.minutesBeforeReset, locale),
-        }),
+        ...present(titleKey, who, messageKey, messageParams),
         severity: window.paceRatio >= 1.5 && measuredOverPace ? "critical" : "warning",
       });
     }
@@ -100,21 +124,26 @@ export function planTriggers(
     const key = `event:${alertScope(event.provider, event.account, event.bucket)}:${event.kind}`;
     if (plannedEventKeys.has(key)) continue;
     plannedEventKeys.add(key);
+    const titleKey = event.kind === "paid_usage" || event.kind === "credit_topup"
+      ? "alert.event.title.payment"
+      : event.kind === "window_changed"
+        ? "alert.event.title.window"
+        : "alert.event.title.resync";
+    const titleParams = { provider: event.provider, account: event.account };
+    const messageKey = `event.${event.kind}` as MessageKey;
+    const messageParams = {
+      provider: event.provider,
+      account: event.account,
+      ...event.details,
+    };
+    const wording = present(titleKey, titleParams, messageKey, messageParams);
     decisions.push({
       key,
       eventId: event.id,
-      title: t(
-        event.kind === "paid_usage" || event.kind === "credit_topup"
-          ? "alert.event.title.payment"
-          : event.kind === "window_changed"
-            ? "alert.event.title.window"
-            : "alert.event.title.resync",
-        { provider: event.provider, account: event.account },
-        locale,
-      ),
-      // The stored summary was rendered in this process's locale when the event
-      // was recorded, so it needs no re-rendering here. A consumer that wants a
-      // different language has the kind and details to render from instead.
+      ...wording,
+      // Keep the stored rendering for shell/command compatibility, including
+      // old rows whose details predate the semantic contract. Native clients
+      // use `presentation.message` and localise from kind + details instead.
       message: event.displayText,
       severity: event.severity,
     });

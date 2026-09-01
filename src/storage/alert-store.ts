@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { isMessageKey } from "../i18n";
+import type { MessageParams } from "../i18n";
 import { ALERTABLE_EVENT_KINDS, MACOS_NOTIFICATION_CHANNEL } from "../types";
 import type {
   AppNotification,
@@ -35,6 +37,10 @@ interface AppNotificationRow {
   alert_key: string;
   title: string;
   message: string;
+  title_key: string | null;
+  title_params_json: string | null;
+  message_key: string | null;
+  message_params_json: string | null;
   severity: AppNotification["severity"];
   created_at_ms: number;
   expires_at_ms: number;
@@ -60,13 +66,40 @@ function eventFromRow(row: EventRow): QuotaEvent {
   };
 }
 
+function isMessageParams(value: unknown): value is MessageParams {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.values(value).every((item) =>
+    item == null ||
+    typeof item === "string" ||
+    typeof item === "boolean" ||
+    (typeof item === "number" && Number.isFinite(item))
+  );
+}
+
 function appNotificationFromRow(row: AppNotificationRow): AppNotification {
+  const presentation = (() => {
+    if (!isMessageKey(row.title_key) || !isMessageKey(row.message_key)) return null;
+    try {
+      const titleParams: unknown = JSON.parse(row.title_params_json ?? "{}");
+      const messageParams: unknown = JSON.parse(row.message_params_json ?? "{}");
+      if (!isMessageParams(titleParams) || !isMessageParams(messageParams)) return null;
+      return {
+        title: { key: row.title_key, params: titleParams },
+        message: { key: row.message_key, params: messageParams },
+      };
+    } catch {
+      // Rows queued by an older or interrupted migration retain their finished
+      // strings and remain deliverable instead of poisoning the whole outbox.
+      return null;
+    }
+  })();
   return {
     id: row.id,
     deliveryKey: row.delivery_key,
     alertKey: row.alert_key,
     title: row.title,
     message: row.message,
+    presentation,
     severity: row.severity,
     createdAtMs: row.created_at_ms,
     expiresAtMs: row.expires_at_ms,
@@ -360,10 +393,11 @@ export class AlertStore {
       this.storage.db
         .query(`
           INSERT OR IGNORE INTO app_notification_outbox(
-            id, delivery_key, alert_key, title, message, severity,
+            id, delivery_key, alert_key, title, message,
+            title_key, title_params_json, message_key, message_params_json, severity,
             created_at_ms, expires_at_ms, claimed_at_ms, claimed_token,
             completed_at_ms, disposition
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)
         `)
         .run(
           id,
@@ -371,13 +405,18 @@ export class AlertStore {
           decision.key,
           decision.title,
           decision.message,
+          decision.presentation?.title.key ?? null,
+          decision.presentation ? JSON.stringify(decision.presentation.title.params) : null,
+          decision.presentation?.message.key ?? null,
+          decision.presentation ? JSON.stringify(decision.presentation.message.params) : null,
           decision.severity,
           nowMs,
           expiresAtMs,
         );
       const row = this.storage.db
         .query<AppNotificationRow, [string]>(`
-          SELECT id, delivery_key, alert_key, title, message, severity,
+          SELECT id, delivery_key, alert_key, title, message,
+                 title_key, title_params_json, message_key, message_params_json, severity,
                  created_at_ms, expires_at_ms
           FROM app_notification_outbox WHERE delivery_key = ?
         `)
@@ -424,7 +463,8 @@ export class AlertStore {
             ORDER BY created_at_ms ASC, id ASC
             LIMIT 1
           )
-          RETURNING id, delivery_key, alert_key, title, message, severity,
+          RETURNING id, delivery_key, alert_key, title, message,
+                    title_key, title_params_json, message_key, message_params_json, severity,
                     created_at_ms, expires_at_ms, claimed_at_ms, claimed_token
         `)
         .get(nowMs, token, nowMs, nowMs, Math.max(0, leaseMs));
@@ -504,7 +544,8 @@ export class AlertStore {
     const boundedLimit = Math.max(0, Math.min(500, Math.trunc(limit)));
     return this.storage.db
       .query<AppNotificationRow, [number]>(`
-        SELECT id, delivery_key, alert_key, title, message, severity,
+        SELECT id, delivery_key, alert_key, title, message,
+               title_key, title_params_json, message_key, message_params_json, severity,
                created_at_ms, expires_at_ms
         FROM app_notification_outbox
         WHERE completed_at_ms IS NULL

@@ -10,6 +10,10 @@ interface ClaimedNotificationWire {
   id: string;
   title: string;
   message: string;
+  presentation: {
+    title: { key: string; params: Record<string, unknown> };
+    message: { key: string; params: Record<string, unknown> };
+  } | null;
   severity: string;
   createdAtMs: number;
   expiresAtMs: number;
@@ -100,11 +104,16 @@ describe("native app notification API", () => {
         "expiresAtMs",
         "id",
         "message",
+        "presentation",
         "severity",
         "title",
       ]);
       expect(typeof claimed.title).toBe("string");
       expect(typeof claimed.message).toBe("string");
+      expect(claimed.presentation).toEqual({
+        title: { key: "alert.test.title", params: {} },
+        message: { key: "alert.test.message", params: {} },
+      });
       expect(claimed.severity).toBe("info");
       expect(typeof claimed.claimToken).toBe("string");
       expect(claimed.id).toMatch(/^[0-9a-f-]{36}$/i);

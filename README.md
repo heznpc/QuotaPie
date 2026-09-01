@@ -68,8 +68,11 @@ The interface is English by default. Korean is a locale, not the substrate.
 The backend moves meaning rather than prose: an event carries its kind and its
 parameters, a headline carries what it concluded and about which window. Each
 surface then makes the sentence — the menu bar app in the viewer's macOS
-language, the web view in the browser's, the CLI and macOS notifications in
-whatever `profile.locale` resolves to.
+language, the web view in the browser's, and the CLI in whatever
+`profile.locale` resolves to. Native notifications carry a message key and
+parameters through the durable outbox, then the app renders them in its own
+language. The finished backend sentence remains only as a rolling-upgrade and
+non-native integration fallback.
 
 ```json
 { "profile": { "locale": "auto" } }
@@ -79,10 +82,12 @@ whatever `profile.locale` resolves to.
 back to English. Set `"en"` or `"ko"` to pin it. The menu bar app follows the
 system language on its own and also honours `QUOTAPIE_LOCALE`.
 
-Adding a language means adding one column to two tables — `src/i18n.ts` for the
-backend and `macos/QuotaPie/Strings.swift` for the app — plus the table in the
-web view. The keys are deliberately identical across all three, and a missing
-key renders as the key itself rather than as blank space.
+Adding a language means extending the typed catalog in `src/i18n.ts`, adding a
+standard `.lproj/Localizable.strings` resource for the macOS app, and extending
+the browser catalog. Native alert and event keys match the backend contract;
+event keys also match the browser catalog. Tests reject a key missing from one
+of those consumers. A missing or newer key falls back to the compatibility
+sentence instead of silently producing a blank notification.
 
 ## Reading collection state
 

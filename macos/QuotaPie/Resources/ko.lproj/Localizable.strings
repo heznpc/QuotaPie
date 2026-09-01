@@ -1,0 +1,160 @@
+/* 메뉴 막대 헤드라인 */
+"headline.checking" = "확인 중";
+"headline.disconnected" = "연결 끊김";
+"headline.degraded" = "한도 확인 지연";
+"headline.setup" = "설정 필요";
+"headline.lastGood" = "마지막 정상값";
+"headline.atRisk" = "⚠ %@ 위험";
+"headline.runsDryOn" = "%@경 소진 예상";
+"headline.pace-risk" = "⚠ %@ 위험";
+"headline.pace-risk.detail" = "%@ · %@ · %@%@";
+"headline.normal" = "%@%% 남음";
+"headline.normal.unknown" = "한도 확인됨";
+"headline.detail" = "%@ · %@ · %@";
+"headline.noAccounts" = "추적할 계정이 설정되지 않았습니다.";
+
+/* 한도 창과 표시 형식 */
+"window.five-hour" = "5시간";
+"window.weekly" = "주간";
+"window.monthly" = "월간";
+"window.used" = "%@%% 사용";
+"window.remaining" = "%@%% 남음";
+"window.usageUnknown" = "사용량 미확인";
+"window.resetsAt" = "%@ 갱신";
+"window.resetUnknown" = "갱신 시각 미확인";
+"window.exhausted" = "소진됨";
+"window.paceComfortable" = "현재 속도는 여유 있음";
+"window.paceTight" = "이 패턴이면 갱신 전에 빠듯합니다";
+"window.runsDry" = "⚠ %@경 소진 예상";
+"window.stale" = "오래된 값";
+"window.resetDue" = "갱신 확인 중";
+"window.unknown" = "확인 필요";
+"format.dayMonth" = "M월 d일";
+
+/* 수집 상태 */
+"collection.auth-required" = "로그인이 필요합니다";
+"collection.auth-expired" = "로그인이 만료됐습니다";
+"collection.rate-limited" = "공급자 요청 한도에 걸렸습니다";
+"collection.network" = "네트워크에 연결할 수 없습니다";
+"collection.not-configured" = "수집이 설정되지 않았습니다";
+"collection.isolation-unsafe" = "계정 자격증명 격리가 필요합니다";
+"collection.provider-error" = "공급자 응답을 읽지 못했습니다";
+"collection.no-windows" = "응답에 한도 창이 없습니다";
+"collection.never-attempted" = "아직 수집을 시도하지 않았습니다";
+"collection.stale-success" = "한도 확인이 지연되고 있습니다";
+"collection.attempted-then-failed" = "수집에 실패했습니다";
+"collection.recent-success" = "한도가 최신 상태입니다";
+
+/* 데이터 출처 */
+"source.official" = "공식";
+"source.statusline" = "상태줄";
+
+/* 팝오버 */
+"popover.noAccounts" = "추적할 계정이 없습니다";
+"popover.noAccountsDetail" = "설정 파일에서 Codex 또는 Claude 계정을 활성화하십시오.";
+"popover.noWindows" = "표시할 한도 창이 없습니다.";
+"popover.disconnected" = "로컬 서비스에 연결할 수 없습니다";
+"popover.cachedNotice" = "아래는 마지막 정상값입니다 · %@";
+"popover.recentChanges" = "최근 변화";
+"popover.runInTerminal" = "터미널에서 %@ 실행";
+"popover.runCommand" = "%@ 명령을 터미널에서 실행하십시오.";
+
+/* 중단 작업 재개 흐름 */
+"resume.sectionTitle" = "중단된 작업";
+"resume.readyCount" = "▶ %@개 재개";
+"resume.readyTooltip" = "%@ · %@ · %@";
+"resume.pausedReference" = "%@ 중단 · %@";
+"resume.waitingAction" = "대기 중";
+"resume.waitingProvider" = "공급자가 확인한 사용 가능 한도 대기 · %@";
+"resume.readyDetail" = "공급자의 최신 사용 가능 한도 확인됨";
+"resume.approvedDetail" = "열기가 중단되었습니다. 재시도 상태로 되돌리십시오.";
+"resume.unknownState" = "재개 상태 확인 필요";
+"resume.actionUnavailable" = "작업을 실행할 수 없습니다. 로컬 서비스를 새로고침하십시오.";
+"resume.resumeInTerminal" = "Terminal에서 재개";
+"resume.retry" = "재시도";
+"resume.dismiss" = "제거";
+"resume.dismissHelp" = "이 중단 작업 항목 제거";
+"resume.preparing" = "준비 중…";
+"resume.opening" = "Terminal 여는 중…";
+"resume.updating" = "업데이트 중…";
+"resume.confirmTitle" = "중단된 작업을 재개할까요?";
+"resume.confirmMessage" = "%@ · %@ · %@ (%@, %@ 중단)를 엽니다. QuotaPie는 prompt를 보내지 않으며 사용자가 입력한 뒤에만 토큰이 사용됩니다.";
+"resume.confirmOpen" = "열기";
+"resume.confirmCancel" = "취소";
+"resume.registered" = "%@ 한도가 다시 확인되면 재개할 수 있도록 알려드립니다.";
+
+/* 재개 유효성 검사 오류 */
+"resume.error.executableNotAllowed" = "허용되지 않은 재개 실행 파일입니다.";
+"resume.error.executableNotFound" = "승인된 CLI 실행 파일을 찾을 수 없습니다.";
+"resume.error.argumentsNotAllowed" = "재개 인수가 거부되었습니다.";
+"resume.error.environmentNotAllowed" = "재개 환경 변수가 거부되었습니다.";
+"resume.error.workingDirectoryNotAllowed" = "프로젝트 폴더가 존재하는 절대 경로가 아닙니다.";
+"resume.error.launcherCreationFailed" = "일회용 실행 파일을 만들 수 없습니다: %@";
+"resume.error.cannotWriteLauncher" = "실행 파일을 쓸 수 없음";
+"resume.error.terminalUnavailable" = "Terminal.app을 사용할 수 없습니다.";
+"resume.error.terminalOpenFailed" = "Terminal을 열 수 없습니다: %@";
+"resume.error.launcherStartUnconfirmed" = "Terminal이 요청을 받았지만 재개 명령 시작을 확인하지 못했습니다.";
+
+/* 명령 */
+"action.refresh" = "새로고침";
+"action.refreshHelp" = "새로고침 (⌘R)";
+"action.copyHelp" = "상태 복사 (⌘C)";
+"action.copyCommandHelp" = "터미널에서 실행할 복구 명령 복사";
+"action.openSettingsHelp" = "QuotaPie 설정 파일 열기";
+"action.copy" = "상태 복사";
+"action.openDashboard" = "웹 화면 열기";
+"action.openSettings" = "설정 열기";
+"action.copyCommand" = "복구 명령 복사";
+"action.more" = "더 보기";
+"action.moreHelp" = "설정 및 종료";
+"action.quit" = "QuotaPie 종료";
+
+/* 상대 시각 */
+"time.justNow" = "방금";
+"time.minutesAgo" = "%@분 전";
+"time.hoursAgo" = "%@시간 전";
+"time.days" = "%@일 %@시간";
+"time.hours" = "%@시간 %@분";
+"time.minutes" = "%@분";
+
+/* 앱 및 로컬 서비스 상태 */
+"status.tooltip" = "Codex와 Claude의 실사용 한도";
+"status.noData" = "QuotaPie: 아직 한도 데이터가 없습니다.";
+"client.badURL" = "로컬 API 주소가 올바르지 않습니다.";
+"client.badResponse" = "로컬 API 응답을 읽을 수 없습니다.";
+"client.badTaskID" = "중단 작업 식별자가 올바르지 않습니다.";
+"client.missingActionToken" = "로컬 작업 토큰이 없습니다.";
+"client.httpStatus" = "로컬 서비스가 HTTP %@를 반환했습니다.";
+
+/* 로컬 서비스가 전달하는 의미 기반 이벤트 메시지 */
+"event.first_observation" = "%@ 관측을 시작했습니다.";
+"event.out_of_order" = "%@의 오래된 응답을 무시했습니다.";
+"event.source_changed" = "%@ 데이터 소스가 변경됐습니다.";
+"event.source_unknown" = "%@ 원본 값이 일시적으로 사라졌습니다.";
+"event.scheduled_reset" = "%@ 한도가 예정대로 갱신됐습니다.";
+"event.external_relief" = "%@에 예정 밖 충전이 감지됐습니다.";
+"event.allowance_relief" = "%@ 사용률이 크게 낮아졌습니다. 리셋·한도 증액·서버 보정 중 하나일 수 있습니다.";
+"event.meter_correction" = "%@ 사용률이 소폭 역행했습니다.";
+"event.schedule_rebased" = "%@ 리셋 시각이 재조정됐습니다.";
+"event.paid_usage" = "%@ 유료 크레딧이 사용됐습니다.";
+"event.credit_topup" = "%@ 크레딧 잔액이 증가했습니다.";
+"event.banked_reset_consumed" = "저장형 리셋이 사용된 것으로 보입니다.";
+"event.bucket_retired" = "%@ 항목이 공급자 전체 응답에서 사라져 추적을 종료했습니다.";
+"event.window_changed" = "%@ %@ 한도 창 전환: %@ → %@";
+
+/* 로컬 서비스가 전달하는 의미 기반 알림 메시지 */
+"alert.remaining.title" = "%@/%@ 잔여 한도 경고";
+"alert.remaining.message" = "%@ 잔여 %@%% (기준 %@%%).";
+"alert.pace.title.measured" = "%@/%@ 사용 속도 과열";
+"alert.pace.title.projected" = "%@/%@ 사용 패턴 전망";
+"alert.pace.message.measured" = "%@ 안전 여유가 리셋보다 약 %@ 먼저 소진될 전망입니다.";
+"alert.pace.message.projected" = "%@ 이 패턴이면 안전 여유가 리셋보다 약 %@ 먼저 소진될 전망입니다.";
+"alert.stale.title" = "%@/%@ 수집 중단";
+"alert.stale.message" = "%@ 값이 한동안 갱신되지 않았습니다.";
+"alert.event.title.payment" = "%@/%@ 결제성 사용 변화";
+"alert.event.title.window" = "%@/%@ 한도 창 전환";
+"alert.event.title.resync" = "%@/%@ 타이머 재동기화";
+"alert.test.title" = "QuotaPie 테스트";
+"alert.test.message" = "알림 채널이 정상적으로 연결됐습니다.";
+"alert.resume.ready.title" = "%@/%@ 작업 재개 가능";
+"alert.resume.ready.message" = "%@ 한도가 다시 확인됐습니다. QuotaPie에서 재개를 승인해 주세요.";

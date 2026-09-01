@@ -1,4 +1,4 @@
-import type { WindowKind } from "./i18n";
+import type { MessageKey, MessageParams, WindowKind } from "./i18n";
 
 export type Provider = "codex" | "claude";
 
@@ -124,9 +124,27 @@ export interface TriggerDecision {
   key: string;
   title: string;
   message: string;
+  /// Required for QuotaPie-produced alerts. Optional only so third-party
+  /// command integrations and rows queued by an older daemon keep working
+  /// during a rolling upgrade.
+  presentation?: NotificationPresentation;
   severity: Severity;
   eventId?: number;
   rearmWhenRemainingAbove?: number;
+}
+
+// Finished strings are retained for shell integrations and rolling upgrades,
+// but native clients receive this semantic form and render it in the viewer's
+// language. This is the localisation boundary: keys and data cross it; prose
+// does not.
+export interface LocalizedMessage {
+  key: MessageKey;
+  params: MessageParams;
+}
+
+export interface NotificationPresentation {
+  title: LocalizedMessage;
+  message: LocalizedMessage;
 }
 
 export type AppNotificationDisposition =
@@ -146,6 +164,7 @@ export interface AppNotification {
   alertKey: string;
   title: string;
   message: string;
+  presentation: NotificationPresentation | null;
   severity: Severity;
   createdAtMs: number;
   expiresAtMs: number;

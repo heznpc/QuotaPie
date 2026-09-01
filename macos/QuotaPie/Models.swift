@@ -73,6 +73,101 @@ struct ResumeApprovalResponse: Decodable {
     let plan: ResumePlan
 }
 
+/// JSON-safe values carried beside a localisation key. The daemon never sends
+/// prose as meaning here: numbers and identifiers stay data until this app
+/// renders them in the viewer's language.
+enum MessageParameter: Decodable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case null
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        if value.decodeNil() { self = .null }
+        else if let decoded = try? value.decode(Bool.self) { self = .bool(decoded) }
+        else if let decoded = try? value.decode(Double.self) { self = .number(decoded) }
+        else if let decoded = try? value.decode(String.self) { self = .string(decoded) }
+        else {
+            throw DecodingError.typeMismatch(
+                MessageParameter.self,
+                .init(codingPath: decoder.codingPath, debugDescription: "Expected a JSON scalar")
+            )
+        }
+    }
+
+    var text: String? {
+        switch self {
+        case .string(let value): return value
+        case .number(let value):
+            return value.rounded() == value ? String(Int(value)) : String(value)
+        case .bool(let value): return String(value)
+        case .null: return nil
+        }
+    }
+
+    var number: Double? {
+        if case .number(let value) = self { return value }
+        return nil
+    }
+}
+
+struct LocalizedMessagePayload: Decodable {
+    let key: String
+    let params: [String: MessageParameter]
+
+    func rendered(fallback: String) -> String {
+        guard let arguments else { return fallback }
+        let result = Strings.format(key, arguments: arguments)
+        return result == key ? fallback : result
+    }
+
+    private var arguments: [CVarArg]? {
+        func text(_ name: String) -> String? { params[name]?.text }
+        func required(_ names: String...) -> [CVarArg]? {
+            let values = names.compactMap(text)
+            return values.count == names.count ? values.map { $0 as CVarArg } : nil
+        }
+
+        switch key {
+        case "alert.remaining.title", "alert.stale.title",
+             "alert.event.title.payment", "alert.event.title.window",
+             "alert.event.title.resync", "alert.pace.title.measured",
+             "alert.pace.title.projected", "alert.resume.ready.title":
+            return required("provider", "account")
+        case "alert.remaining.message":
+            return required("label", "percent", "threshold")
+        case "alert.stale.message", "alert.resume.ready.message":
+            return required("label")
+        case "alert.pace.message.measured", "alert.pace.message.projected":
+            guard let label = text("label") else { return nil }
+            let gap = params["minutes"]?.number.map {
+                DisplayFormat.interval(milliseconds: $0 * 60_000)
+            } ?? text("detail")
+            guard let gap else { return nil }
+            return [label, gap]
+        case "alert.test.title", "alert.test.message", "event.banked_reset_consumed":
+            return []
+        case "event.paid_usage", "event.credit_topup":
+            return required("provider")
+        case "event.window_changed":
+            return required("limitId", "lane", "fromLabel", "toLabel")
+        case "event.first_observation", "event.out_of_order", "event.source_changed",
+             "event.source_unknown", "event.scheduled_reset", "event.external_relief",
+             "event.allowance_relief", "event.meter_correction", "event.schedule_rebased",
+             "event.bucket_retired":
+            return required("label")
+        default:
+            return nil
+        }
+    }
+}
+
+struct NotificationPresentationPayload: Decodable {
+    let title: LocalizedMessagePayload
+    let message: LocalizedMessagePayload
+}
+
 /// A durable alert claimed from the local QuotaPie service. The claim token is
 /// an opaque, short-lived capability and must only be sent back to the matching
 /// completion or release endpoint.
@@ -80,6 +175,7 @@ struct ClaimedNotification: Decodable, Identifiable {
     let id: String
     let title: String
     let message: String
+    let presentation: NotificationPresentationPayload?
     let severity: String
     let createdAtMs: Double
     let expiresAtMs: Double
@@ -87,6 +183,14 @@ struct ClaimedNotification: Decodable, Identifiable {
 
     var requestIdentifier: String {
         "local.quotapie.notification.\(id.lowercased())"
+    }
+
+    var localizedTitle: String {
+        presentation?.title.rendered(fallback: title) ?? title
+    }
+
+    var localizedMessage: String {
+        presentation?.message.rendered(fallback: message) ?? message
     }
 }
 
@@ -296,6 +400,15 @@ struct QuotaEvent: Decodable {
     let severity: String
     let occurredAtMs: Double
     let displayText: String
+    let details: [String: MessageParameter]
+
+    var localizedText: String {
+        var params = details
+        params["provider"] = .string(provider)
+        params["account"] = .string(account)
+        return LocalizedMessagePayload(key: "event.\(kind)", params: params)
+            .rendered(fallback: displayText)
+    }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -308,10 +421,11 @@ struct QuotaEvent: Decodable {
         displayText = try values.decodeIfPresent(String.self, forKey: .displayText)
             ?? values.decodeIfPresent(String.self, forKey: .summary)
             ?? ""
+        details = try values.decodeIfPresent([String: MessageParameter].self, forKey: .details) ?? [:]
     }
 
     private enum CodingKeys: String, CodingKey {
-        case provider, account, kind, severity, occurredAtMs, displayText, summary
+        case provider, account, kind, severity, occurredAtMs, displayText, summary, details
     }
 }
 

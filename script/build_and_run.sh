@@ -28,6 +28,10 @@ build_bundle() {
   cp "$build_binary" "$APP_BINARY"
   cp "$ROOT_DIR/macos/QuotaPie/Info.plist" "$APP_CONTENTS/Info.plist"
   cp "$ROOT_DIR/macos/QuotaPie/QuotaPie.icns" "$APP_CONTENTS/Resources/QuotaPie.icns"
+  # Keep localizations in the main app bundle so macOS can apply its system and
+  # per-app language preference before QuotaPie renders its first view.
+  cp -R "$ROOT_DIR/macos/QuotaPie/Resources/en.lproj" "$APP_CONTENTS/Resources/en.lproj"
+  cp -R "$ROOT_DIR/macos/QuotaPie/Resources/ko.lproj" "$APP_CONTENTS/Resources/ko.lproj"
   chmod +x "$APP_BINARY"
 }
 

@@ -18,6 +18,7 @@ import { collectionErrorText } from "./analytics";
 import { resolveLocale, t } from "./i18n";
 import { CLAUDE_OAUTH_SOURCE, CLAUDE_STATUSLINE_SOURCE, QuotaPieService } from "./service";
 import type { AppConfig } from "./config";
+import type { Locale } from "./i18n";
 import type { Provider } from "./types";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -37,39 +38,17 @@ function xmlEscape(value: string): string {
     .replaceAll("'", "&apos;");
 }
 
-function help(): string {
-  return `QuotaPie — provider clocks + personal burn-rate timer
-
-Usage:
-  quotapie init                 Create a private default config and print integrations
-  quotapie poll [--json]        Fetch Codex once and update history
-  quotapie status [--account ID] [--json]
-                                 Show current windows, pace, and predicted exhaustion
-  quotapie explain [--account ID] [--json]
-                                 Explain resets, relief, re-bases, and paid-credit changes
-  quotapie accounts [--json]    Show local account aliases and isolated profile roots
-  quotapie pause [--provider codex|claude] [--account ID] [--session UUID]
-                 [--cwd PATH] [--label NAME] [--bucket ID] [--json]
-                                 Register this task for an explicit resume after quota recovers
-  quotapie claude-statusline [--account ID]
-                                 Ingest Claude status-line JSON and render one account's compact line
-  quotapie watch                Run the adaptive collector and macOS triggers
-  quotapie serve                Watch and serve the local dashboard
-  quotapie doctor               Verify the local data sources
-  quotapie test-alert           Send a test through configured notification channels
-  quotapie launchd              Print a launchd plist for an always-on local service
-  quotapie menubar-launchd      Print a launchd plist for the native menu bar app
-
-Environment:
-  QUOTAPIE_CONFIG=/path/config.json
-  QUOTAPIE_HOME=/path/data-dir`;
+function help(locale: Locale): string {
+  return t("cli.help", {}, locale);
 }
 
-function optionValue(args: string[], name: string): string | null {
+function optionValue(args: string[], name: string, locale: Locale): string | null {
   const index = args.indexOf(name);
   if (index < 0) return null;
   const value = args[index + 1];
-  if (!value || value.startsWith("--")) throw new Error(`${name} requires a value`);
+  if (!value || value.startsWith("--")) {
+    throw new Error(t("cli.option.value-required", { label: name }, locale));
+  }
   return value;
 }
 
@@ -77,7 +56,12 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-function resumeAccount(config: AppConfig, provider: Provider, requested: string | null): string {
+function resumeAccount(
+  config: AppConfig,
+  provider: Provider,
+  requested: string | null,
+  locale: Locale,
+): string {
   if (requested) return requested;
   const profiles = provider === "codex"
     ? config.accounts.codex.filter((profile) => profile.enabled).map((profile) => ({
@@ -97,13 +81,19 @@ function resumeAccount(config: AppConfig, provider: Provider, requested: string 
     const activeRoot = resolveUserPath(environmentRoot);
     const matching = profiles.filter((profile) => profile.root === activeRoot);
     if (matching.length === 1) return matching[0]!.id;
-    throw new Error(`${environmentName} does not match one configured ${provider} account; pass --account`);
+    throw new Error(t("cli.error.profile-mismatch", {
+      variable: environmentName,
+      provider,
+    }, locale));
   }
   if (profiles.length === 1) return profiles[0]!.id;
   if (profiles.length > 1) {
-    throw new Error(`multiple ${provider} accounts are enabled; pass --account or set ${environmentName}`);
+    throw new Error(t("cli.error.multiple-accounts", {
+      provider,
+      variable: environmentName,
+    }, locale));
   }
-  throw new Error(`no enabled ${provider} account is configured`);
+  throw new Error(t("cli.error.no-account", { provider }, locale));
 }
 
 function claudeSnippet(account = "default"): string {
@@ -232,27 +222,47 @@ function menubarLaunchdPlist(host: string, port: number): string {
 </plist>`;
 }
 
+function configuredLocale(): Locale {
+  try {
+    return resolveLocale(loadConfig().profile.locale);
+  } catch {
+    // Configuration errors are reported by the command itself. Locale
+    // selection still has a safe environment/default path for that report.
+    return resolveLocale("auto");
+  }
+}
+
+let outputLocale = resolveLocale("auto");
+
 async function main(): Promise<number> {
   const [command = "status", ...args] = process.argv.slice(2);
+  outputLocale = configuredLocale();
   const jsonOutput = args.includes("--json");
-  const selectedAccount = optionValue(args, "--account");
+  const selectedAccount = optionValue(args, "--account", outputLocale);
   if (command === "help" || command === "--help" || command === "-h") {
-    console.log(help());
+    console.log(help(outputLocale));
     return 0;
   }
   if (command === "init") {
     const path = writeDefaultConfig(configPath(), args.includes("--force"));
     const initialized = loadConfig(path);
+    outputLocale = resolveLocale(initialized.profile.locale);
     mkdirSync(dataDirectory(), { recursive: true, mode: 0o700 });
     chmodSync(dataDirectory(), 0o700);
-    console.log(`Config: ${path}`);
-    console.log(`Data:   ${dataDirectory()}`);
+    console.log(t("cli.init.config", { path }, outputLocale));
+    console.log(t("cli.init.data", { path: dataDirectory() }, outputLocale));
     for (const profile of initialized.accounts.claude.filter((item) => item.enabled)) {
       const settingsPath = resolve(resolveUserPath(profile.configDir), "settings.json");
-      console.log(`\nMerge this into ${settingsPath} for ${profile.label} (${profile.id}):\n`);
+      console.log(`\n${t("cli.init.merge", {
+        path: settingsPath,
+        label: profile.label,
+        account: profile.id,
+      }, outputLocale)}\n`);
       console.log(claudeSnippet(profile.id));
     }
-    console.log(`\nThen run: ${preferredBin()} serve`);
+    console.log(`\n${t("cli.init.then-run", {
+      command: `${preferredBin()} serve`,
+    }, outputLocale)}`);
     return 0;
   }
   if (command === "launchd") {
@@ -268,11 +278,14 @@ async function main(): Promise<number> {
   }
 
   const config = loadConfig();
+  outputLocale = resolveLocale(config.profile.locale);
   const configuredAccount = selectedAccount == null || [
     ...config.accounts.codex,
     ...config.accounts.claude,
   ].some((profile) => profile.id === selectedAccount && profile.enabled);
-  if (!configuredAccount) throw new Error(`unknown or disabled account alias: ${selectedAccount}`);
+  if (!configuredAccount) {
+    throw new Error(t("cli.error.unknown-account", { account: selectedAccount ?? "" }, outputLocale));
+  }
   const service = new QuotaPieService(config);
   let dashboard: ReturnType<typeof startDashboard> | null = null;
 
@@ -290,24 +303,26 @@ async function main(): Promise<number> {
         await service.pollCodex();
         await service.evaluateTriggers();
         const statuses = service.statuses().filter((status) => selectedAccount == null || status.account === selectedAccount);
-        console.log(jsonOutput ? JSON.stringify(statuses, null, 2) : formatStatuses(statuses));
+        console.log(jsonOutput ? JSON.stringify(statuses, null, 2) : formatStatuses(statuses, outputLocale));
         return 0;
       }
       case "status": {
         const statuses = service.statuses().filter((status) => selectedAccount == null || status.account === selectedAccount);
-        console.log(jsonOutput ? JSON.stringify(statuses, null, 2) : formatStatuses(statuses));
+        console.log(jsonOutput ? JSON.stringify(statuses, null, 2) : formatStatuses(statuses, outputLocale));
         return 0;
       }
       case "explain": {
         const events = service.recentEvents(100)
           .filter((event) => selectedAccount == null || event.account === selectedAccount);
-        console.log(jsonOutput ? JSON.stringify(events, null, 2) : formatEvents(events));
+        console.log(jsonOutput ? JSON.stringify(events, null, 2) : formatEvents(events, outputLocale));
         return 0;
       }
       case "claude-statusline": {
         const account = selectedAccount ?? "default";
         const profile = config.accounts.claude.find((item) => item.id === account && item.enabled);
-        if (!profile) throw new Error(`unknown or disabled Claude account alias: ${account}`);
+        if (!profile) {
+          throw new Error(t("cli.error.unknown-claude-account", { account }, outputLocale));
+        }
         const input = await Bun.stdin.text();
         const payload = JSON.parse(input) as unknown;
         const observations = parseClaudeStatusLine(payload, Date.now(), account);
@@ -319,6 +334,7 @@ async function main(): Promise<number> {
         console.log(compactClaudeLine(
           service.analyses(Date.now(), "claude").filter((window) => window.account === account),
           profile.label,
+          outputLocale,
         ));
         return 0;
       }
@@ -348,68 +364,80 @@ async function main(): Promise<number> {
         } else {
           for (const row of rows) {
             console.log(`${row.enabled ? "●" : "○"} ${row.provider}/${row.id} · ${row.label}`);
-            console.log(`  profile root: ${row.profileRoot}${row.inherited ? " (inherited default)" : ""}`);
+            console.log(t("cli.accounts.profile-root", {
+              root: row.profileRoot,
+              detail: row.inherited ? t("cli.accounts.inherited", {}, outputLocale) : "",
+            }, outputLocale));
             if (row.provider === "codex") {
-              console.log(`  login: env CODEX_HOME=${shellQuote(row.profileRoot)} ${config.collection.codexCommand} login`);
+              console.log(t("cli.accounts.login", {
+                command: `env CODEX_HOME=${shellQuote(row.profileRoot)} ${config.collection.codexCommand} login`,
+              }, outputLocale));
             } else {
-              console.log(`  login: env CLAUDE_CONFIG_DIR=${shellQuote(row.profileRoot)} claude auth login`);
-              console.log(`  status line: ${preferredBin()} claude-statusline --account ${row.id}`);
+              console.log(t("cli.accounts.login", {
+                command: `env CLAUDE_CONFIG_DIR=${shellQuote(row.profileRoot)} claude auth login`,
+              }, outputLocale));
+              console.log(t("cli.accounts.status-line", {
+                command: `${preferredBin()} claude-statusline --account ${row.id}`,
+              }, outputLocale));
             }
           }
           if (config.accounts.codex.filter((profile) => profile.enabled).length > 1) {
-            console.log("\nFor isolated Codex logins, set cli_auth_credentials_store = \"file\" in each CODEX_HOME/config.toml.");
+            console.log(`\n${t("cli.accounts.codex-isolation", {}, outputLocale)}`);
           }
         }
         return 0;
       }
       case "pause": {
-        const requestedProvider = optionValue(args, "--provider");
+        const requestedProvider = optionValue(args, "--provider", outputLocale);
         if (requestedProvider != null && requestedProvider !== "codex" && requestedProvider !== "claude") {
-          throw new Error("--provider must be codex or claude");
+          throw new Error(t("cli.error.provider-invalid", {}, outputLocale));
         }
         const codexSession = process.env.CODEX_THREAD_ID?.trim() || null;
         const claudeSession = process.env.CLAUDE_SESSION_ID?.trim() || null;
         let provider = requestedProvider as "codex" | "claude" | null;
         if (provider == null) {
           if (codexSession && claudeSession) {
-            throw new Error("both CODEX_THREAD_ID and CLAUDE_SESSION_ID are set; pass --provider");
+            throw new Error(t("cli.error.session-ambiguous", {}, outputLocale));
           }
           if (codexSession) provider = "codex";
           else if (claudeSession) provider = "claude";
-          else throw new Error("pass --provider, or run inside a Codex/Claude session environment");
+          else throw new Error(t("cli.error.provider-required", {}, outputLocale));
         }
-        const nativeId = optionValue(args, "--session") ?? (
+        const nativeId = optionValue(args, "--session", outputLocale) ?? (
           provider === "codex" ? codexSession : claudeSession
         );
         if (!nativeId) {
           const variable = provider === "codex" ? "CODEX_THREAD_ID" : "CLAUDE_SESSION_ID";
-          throw new Error(`--session is required because ${variable} is not set`);
+          throw new Error(t("cli.error.session-required", { variable }, outputLocale));
         }
         const task = service.registerResumeTask({
           provider,
-          account: resumeAccount(config, provider, selectedAccount),
+          account: resumeAccount(config, provider, selectedAccount, outputLocale),
           nativeId,
-          cwd: optionValue(args, "--cwd") ?? process.cwd(),
-          projectLabel: optionValue(args, "--label") ?? undefined,
-          bucket: optionValue(args, "--bucket") ?? undefined,
+          cwd: optionValue(args, "--cwd", outputLocale) ?? process.cwd(),
+          projectLabel: optionValue(args, "--label", outputLocale) ?? undefined,
+          bucket: optionValue(args, "--bucket", outputLocale) ?? undefined,
         });
         console.log(jsonOutput
           ? JSON.stringify(task, null, 2)
-          : t("resume.registered", { label: task.projectLabel }, resolveLocale(config.profile.locale)));
+          : t("resume.registered", { label: task.projectLabel }, outputLocale));
         return 0;
       }
       case "doctor": {
         const checks: Array<{ check: string; ok: boolean; detail: string }> = [];
+        const configCheck = t("cli.doctor.check.config", {}, outputLocale);
         checks.push({
-          check: "config",
+          check: configCheck,
           ok: existsSync(configPath()),
-          detail: existsSync(configPath()) ? configPath() : `not created; defaults active (${configPath()})`,
+          detail: existsSync(configPath())
+            ? configPath()
+            : t("cli.doctor.not-created", { path: configPath() }, outputLocale),
         });
         if (config.collection.codexEnabled) {
           checks.push({
-            check: "codex binary",
+            check: t("cli.doctor.check.codex-binary", {}, outputLocale),
             ok: Bun.which(config.collection.codexCommand) != null,
-            detail: Bun.which(config.collection.codexCommand) ?? "not found",
+            detail: Bun.which(config.collection.codexCommand) ?? t("cli.doctor.not-found", {}, outputLocale),
           });
           try {
             await service.pollCodex();
@@ -420,12 +448,15 @@ async function main(): Promise<number> {
           for (const result of service.codexPollResults()) {
             const profile = config.accounts.codex.find((item) => item.id === result.account)!;
             checks.push({
-              check: `codex rate limits [${result.account}]`,
+              check: t("cli.doctor.check.codex-rate-limits", { account: result.account }, outputLocale),
               ok: result.error == null && result.count > 0,
               detail: result.error ?? (
                 result.count > 0
-                  ? `${result.count} windows · ${profile.label}`
-                  : `current response contained no windows · ${profile.label}`
+                  ? t("cli.doctor.windows", {
+                    count: result.count,
+                    label: profile.label,
+                  }, outputLocale)
+                  : t("cli.doctor.no-windows", { label: profile.label }, outputLocale)
               ),
             });
             if (config.accounts.codex.filter((item) => item.enabled).length > 1) {
@@ -433,11 +464,13 @@ async function main(): Promise<number> {
               const configToml = resolve(root, "config.toml");
               const fileCredentials = codexUsesFileCredentials(profile);
               checks.push({
-                check: `codex auth isolation [${result.account}]`,
+                check: t("cli.doctor.check.codex-auth-isolation", {
+                  account: result.account,
+                }, outputLocale),
                 ok: fileCredentials,
                 detail: fileCredentials
-                  ? `${configToml} uses file-scoped credentials`
-                  : `set cli_auth_credentials_store = \"file\" in ${configToml}`,
+                  ? t("cli.doctor.file-credentials", { path: configToml }, outputLocale)
+                  : t("cli.doctor.set-file-credentials", { path: configToml }, outputLocale),
               });
             }
           }
@@ -455,28 +488,36 @@ async function main(): Promise<number> {
           );
           const healthy = account.collection.health === "recent-success";
           const detail = healthy
-            ? `${account.collection.activeSource} · ${account.windows.length} windows · ${account.accountLabel}`
-            : `${collectionErrorText(account.collection)}${
+            ? t("cli.doctor.healthy-collection", {
+              source: account.collection.activeSource ?? "—",
+              count: account.windows.length,
+              label: account.accountLabel,
+            }, outputLocale)
+            : `${collectionErrorText(account.collection, outputLocale)}${
               account.collection.errorDetail ? ` (${account.collection.errorDetail})` : ""
             }`;
           checks.push({
-            check: `claude collection [${account.account}]`,
+            check: t("cli.doctor.check.claude-collection", {
+              account: account.account,
+            }, outputLocale),
             ok: healthy,
             detail,
           });
           // The fallback source is optional, but its state is worth showing.
           if (!healthy && statusLine?.health === "recent-success") {
             checks.push({
-              check: `claude status line [${account.account}]`,
+              check: t("cli.doctor.check.claude-status-line", {
+                account: account.account,
+              }, outputLocale),
               ok: true,
-              detail: "fallback source is delivering while OAuth is unavailable",
+              detail: t("cli.doctor.fallback-delivering", {}, outputLocale),
             });
           }
           if (oauth?.errorCategory === "auth-required" || oauth?.errorCategory === "auth-expired") {
             checks.push({
-              check: `claude login [${account.account}]`,
+              check: t("cli.doctor.check.claude-login", { account: account.account }, outputLocale),
               ok: false,
-              detail: "run `claude auth login` in a terminal, then re-run doctor",
+              detail: t("cli.doctor.login-instruction", {}, outputLocale),
             });
           }
           // With OAuth off, the status line is the only path left, so report
@@ -500,12 +541,16 @@ async function main(): Promise<number> {
               (profile.id === "default" && !statusCommand.includes("--account"))
             );
             checks.push({
-              check: `claude status line [${account.account}]`,
+              check: t("cli.doctor.check.claude-status-line", {
+                account: account.account,
+              }, outputLocale),
               ok: configured || statusLine?.health === "recent-success",
               detail: configured
-                ? `configured in ${claudeSettings}`
-                : `OAuth collection is off; merge this into ${claudeSettings}: ${preferredBin()} claude-statusline ${accountFlag}` +
-                  " — or set collection.claudeOAuthEnabled = true",
+                ? t("cli.doctor.configured-in", { path: claudeSettings }, outputLocale)
+                : t("cli.doctor.oauth-off", {
+                  path: claudeSettings,
+                  command: `${preferredBin()} claude-statusline ${accountFlag}`,
+                }, outputLocale),
             });
           }
         }
@@ -515,33 +560,35 @@ async function main(): Promise<number> {
         }
         // A collection failure now fails the command. Only a missing config
         // file stays informational.
-        return checks.some((check) => !check.ok && check.check !== "config") ? 1 : 0;
+        return checks.some((check) => !check.ok && check.check !== configCheck) ? 1 : 0;
       }
       case "test-alert": {
         const delivery = await deliverTestAlertThroughDaemon(config) ?? await service.deliverTestAlert();
         const ok = delivery.complete;
         console.log(delivery.nativeAppQueued
           ? ok
-            ? "Test alert queued for QuotaPie."
-            : "Test alert queued for QuotaPie, but another configured channel failed."
+            ? t("cli.test-alert.native-ok", {}, outputLocale)
+            : t("cli.test-alert.native-partial", {}, outputLocale)
           : ok
-            ? "Test alert handed off to configured notification channels."
-            : "Test alert could not be handed off; check notification settings and command.");
+            ? t("cli.test-alert.channels-ok", {}, outputLocale)
+            : t("cli.test-alert.channels-failed", {}, outputLocale));
         return ok ? 0 : 1;
       }
       case "watch": {
-        console.log("QuotaPie is watching provider clocks. Press Ctrl-C to stop.");
+        console.log(t("cli.watch.started", {}, outputLocale));
         await service.watch();
         return 0;
       }
       case "serve": {
         dashboard = startDashboard(service, config);
-        console.log(`QuotaPie dashboard: http://${config.dashboard.host}:${dashboard.port}`);
+        console.log(t("cli.serve.started", {
+          url: `http://${config.dashboard.host}:${dashboard.port}`,
+        }, outputLocale));
         await service.watch();
         return 0;
       }
       default:
-        console.error(`Unknown command: ${command}\n\n${help()}`);
+        console.error(`${t("cli.error.unknown-command", { command }, outputLocale)}\n\n${help(outputLocale)}`);
         return 2;
     }
   } finally {
@@ -552,7 +599,7 @@ async function main(): Promise<number> {
 
 const exitCode = await main().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
-  console.error(`[quotapie] ${message}`);
+  console.error(`[quotapie] ${t("cli.error.prefix", {}, outputLocale)}: ${message}`);
   return 1;
 });
 process.exitCode = exitCode;
