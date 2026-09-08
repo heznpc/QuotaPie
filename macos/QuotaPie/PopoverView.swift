@@ -25,6 +25,7 @@ final class PopoverModel: ObservableObject {
 /// being expanded: which account, how much is used and left, when it resets,
 /// and whether this pace lasts.
 struct PopoverView: View {
+    @ObservedObject var awake = AwakeController.shared
     @ObservedObject var model: PopoverModel
     let onRefresh: () -> Void
     let onCopy: () -> Void
@@ -77,6 +78,8 @@ struct PopoverView: View {
                 tone: .warning
             )
         }
+        awakeSection
+        Divider()
         if let payload, !activeResumeTasks.isEmpty {
             PausedWorkSection(
                 tasks: activeResumeTasks,
@@ -106,6 +109,31 @@ struct PopoverView: View {
         if let events = payload?.events, !events.isEmpty {
             Divider()
             RecentChanges(events: Array(events.prefix(3)))
+        }
+    }
+
+    private var awakeSection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Toggle(Strings.t("awake.title"), isOn: $awake.enabled)
+                .toggleStyle(.switch)
+            Text(awake.summary).font(.caption).foregroundStyle(.secondary)
+            if awake.enabled {
+                Toggle(Strings.t("awake.closedLid"), isOn: $awake.closedLid)
+                    .toggleStyle(.switch)
+                if awake.closedLid || awake.helperState != "not-installed" {
+                    Text(awake.lidSummary).font(.caption).foregroundStyle(.secondary)
+                }
+                HStack {
+                    Button(Strings.t("awake.connect")) { awake.connectAgents() }
+                    if awake.helperState == "not-installed" {
+                        Button(Strings.t("awake.install")) { awake.installHelper() }
+                    }
+                }.disabled(awake.busy)
+                Text(Strings.t("awake.limits")).font(.caption2).foregroundStyle(.secondary)
+            }
+            if let message = awake.message {
+                Text(message).font(.caption).fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

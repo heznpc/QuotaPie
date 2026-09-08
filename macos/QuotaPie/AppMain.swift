@@ -55,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.animates = false
         popover.delegate = self
 
+        AwakeController.shared.start()
         installPopoverContent()
         installKeyboardShortcuts()
         render()
@@ -69,8 +70,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 #endif
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showPopover()
+        return true
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
+        AwakeController.shared.stop()
     }
 
     @objc private func togglePopover() {

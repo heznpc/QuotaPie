@@ -20,6 +20,7 @@ import { CLAUDE_OAUTH_SOURCE, CLAUDE_STATUSLINE_SOURCE, QuotaPieService } from "
 import type { AppConfig } from "./config";
 import type { Locale } from "./i18n";
 import type { Provider } from "./types";
+import { configureAwakeHooks, releaseAwakeTask } from "./awake";
 
 const ROOT = resolve(import.meta.dir, "..");
 const BIN = resolve(ROOT, "bin", "quotapie");
@@ -286,6 +287,13 @@ async function main(): Promise<number> {
   if (!configuredAccount) {
     throw new Error(t("cli.error.unknown-account", { account: selectedAccount ?? "" }, outputLocale));
   }
+  if (command === "awake") {
+    const action = args[0];
+    if (action !== "connect" && action !== "disconnect") throw new Error("Usage: quotapie awake connect|disconnect");
+    const paths = configureAwakeHooks(config, action === "connect");
+    console.log(JSON.stringify({ changed: paths, next: action === "connect" ? "Review and trust the new hooks in Codex /hooks, then start a new turn. Enable Keep awake while working in QuotaPie." : "Hooks disconnected. Turn off Keep awake while working to release existing holds." }, null, 2));
+    return 0;
+  }
   const service = new QuotaPieService(config);
   let dashboard: ReturnType<typeof startDashboard> | null = null;
 
@@ -418,6 +426,10 @@ async function main(): Promise<number> {
           projectLabel: optionValue(args, "--label", outputLocale) ?? undefined,
           bucket: optionValue(args, "--bucket", outputLocale) ?? undefined,
         });
+        const profileRoot = provider === "codex"
+          ? resolveUserPath(config.accounts.codex.find(p => p.id === task.account)!.codexHome ?? "~/.codex")
+          : resolveUserPath(config.accounts.claude.find(p => p.id === task.account)!.configDir);
+        await releaseAwakeTask(provider, profileRoot, nativeId);
         console.log(jsonOutput
           ? JSON.stringify(task, null, 2)
           : t("resume.registered", { label: task.projectLabel }, outputLocale));

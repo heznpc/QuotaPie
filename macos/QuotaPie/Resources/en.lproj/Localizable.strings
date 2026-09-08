@@ -158,3 +158,34 @@
 "alert.test.message" = "The notification channel is connected.";
 "alert.resume.ready.title" = "%@/%@ task is ready";
 "alert.resume.ready.message" = "%@ has fresh quota again. Open QuotaPie to approve resuming it.";
+
+// Working-task power control
+"awake.title" = "Keep awake while agents work";
+"awake.closedLid" = "Also with the lid closed";
+"awake.holding" = "Keeping awake for %@ working tasks";
+"awake.off" = "Normal macOS sleep rules apply.";
+"awake.waiting" = "Waiting for a new task event.";
+"awake.powerLimit" = "Released: low battery (20 percent or less) or high temperature.";
+"awake.timeLimit" = "Released after 8 hours. Turn off and on to start again.";
+"awake.failed" = "Could not prevent idle sleep.";
+"awake.connect" = "Connect coding agents";
+"awake.install" = "Set up closed-lid support…";
+"awake.limits" = "Releases when work stops, at 20% battery, or high temperature. A missing event expires after 30 minutes; continuous holds last at most 8 hours.";
+"awake.connected" = "Connected. Review the QuotaPie hooks in Codex /hooks and trust them, then start a new turn. Existing sessions may need restarting.";
+"awake.disconnected" = "Agent connections removed.";
+"awake.connectFailed" = "Could not connect. Check that the QuotaPie CLI is installed.";
+"awake.writeFailed" = "Could not update the power request.";
+"awake.helperInstalled" = "Closed-lid support updated.";
+"awake.helperFailed" = "Setup was cancelled or failed. Closed-lid protection is unconfirmed.";
+"awake.helper.not-installed" = "Closed-lid support needs administrator setup.";
+"awake.helper.ready" = "Closed-lid support is ready; sleep is currently allowed.";
+"awake.helper.holding" = "Closed-lid sleep prevention confirmed.";
+"awake.helper.power-limit" = "Closed-lid hold released for battery or temperature.";
+"awake.helper.time-limit" = "Closed-lid hold reached the 8-hour limit.";
+"awake.helper.external-override" = "Another sleep override is already active. QuotaPie will not change it.";
+"awake.helper.restore-failed" = "Sleep restoration failed. Check macOS power settings.";
+"awake.helper.enable-failed" = "Could not enable closed-lid protection.";
+"awake.helper.ownership-failed" = "Could not save the sleep restoration record.";
+"awake.helper.override-lost" = "The sleep setting changed outside QuotaPie.";
+"awake.helper.stopped" = "Closed-lid support stopped.";
+"awake.anotherInstance" = "Another QuotaPie instance owns working-task protection.";

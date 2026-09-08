@@ -20,6 +20,7 @@ APP_BINARY="$APP_MACOS/$APP_NAME"
 build_bundle() {
   cd "$ROOT_DIR"
   swift build -c release --product "$APP_NAME"
+  swift build -c release --product QuotaPiePowerHelper
   local build_binary
   build_binary="$(swift build -c release --show-bin-path)/$APP_NAME"
 
@@ -32,6 +33,9 @@ build_bundle() {
   # per-app language preference before QuotaPie renders its first view.
   cp -R "$ROOT_DIR/macos/QuotaPie/Resources/en.lproj" "$APP_CONTENTS/Resources/en.lproj"
   cp -R "$ROOT_DIR/macos/QuotaPie/Resources/ko.lproj" "$APP_CONTENTS/Resources/ko.lproj"
+  mkdir -p "$APP_CONTENTS/Helpers"
+  cp "$(dirname "$build_binary")/QuotaPiePowerHelper" "$APP_CONTENTS/Helpers/QuotaPiePowerHelper"
+  cp "$ROOT_DIR/script/install_power_helper.sh" "$APP_CONTENTS/Resources/"
   chmod +x "$APP_BINARY"
 }
 
@@ -46,6 +50,7 @@ fi
 
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 build_bundle
+codesign --force --sign - --timestamp=none "$APP_CONTENTS/Helpers/QuotaPiePowerHelper"
 codesign --force --sign - --timestamp=none "$APP_BUNDLE" >/dev/null
 
 open_app() {

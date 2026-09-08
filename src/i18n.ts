@@ -285,6 +285,8 @@ Usage:
   quotapie pause [--provider codex|claude] [--account ID] [--session UUID]
                  [--cwd PATH] [--label NAME] [--bucket ID] [--json]
                                  Register this task for an explicit resume after quota recovers
+  quotapie awake connect|disconnect
+                                 Connect or remove working-task sleep hooks
   quotapie claude-statusline [--account ID]
                                  Ingest Claude status-line JSON and render one account's compact line
   quotapie watch                Run the adaptive collector and macOS triggers
@@ -310,6 +312,8 @@ Environment:
   quotapie pause [--provider codex|claude] [--account ID] [--session UUID]
                  [--cwd PATH] [--label NAME] [--bucket ID] [--json]
                                  한도 회복 후 명시적으로 재개할 작업 등록
+  quotapie awake connect|disconnect
+                                 작업 중 잠자기 방지 훅 연결 또는 해제
   quotapie claude-statusline [--account ID]
                                  Claude 상태 표시줄 JSON을 받아 한 계정의 요약 표시
   quotapie watch                적응형 수집기와 macOS 트리거 실행

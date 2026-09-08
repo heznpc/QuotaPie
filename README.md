@@ -444,3 +444,64 @@ The tests cover low-usage normal and early resets, reset-clock rebases, allowanc
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Keep working with the lid closed
+
+**Currently implemented:** the menu bar has an opt-in **Keep awake while agents
+work** switch. **Connect coding agents** adds QuotaPie-owned lifecycle hooks to
+enabled Codex and Claude account profiles, preserving other settings and making
+backups. The equivalent CLI is `quotapie awake connect`; use
+`quotapie awake disconnect` to remove those hooks. In Codex, review and trust the
+new definitions in `/hooks` and start a new turn. Restart existing sessions if
+necessary. Connecting does not bypass provider hook trust.
+
+A working task holds ordinary idle sleep off. Separate sessions and profiles
+have separate requests; one task finishing cannot release another task's hold.
+Completion, interruption, permission/input waiting, and `quotapie pause` release
+that task's request. The Mac follows its existing sleep settings afterward;
+QuotaPie does not change screen timeout or force immediate sleep. An AC profile
+configured to never sleep will therefore still need its normal sleep settings.
+
+Enable **Also with the lid closed** and choose **Set up closed-lid support…** for
+closed-lid operation. macOS asks for administrator authorization to install a
+fixed-function helper. The UI reports ready/holding only from fresh helper
+feedback, after the helper reads back `pmset`'s `SleepDisabled` state. A missing
+or failed helper does not imply closed-lid protection.
+
+The helper can only set `pmset -a disablesleep 1` and restore it to `0`. It runs
+as `local.quotapie.power`, reads a bounded owner-only heartbeat, verifies its
+user and the live QuotaPie process, and accepts no executable or shell commands
+from that heartbeat. It does not take ownership of a pre-existing sleep
+override from another utility. A durable root-owned marker restores QuotaPie's
+own override after helper crashes/reboots. App exit stops the idle assertion;
+a missing app heartbeat releases the closed-lid override within about 30–32
+seconds while the helper is running. `launchd` restarts a crashed helper.
+
+Both paths release at 20% battery or lower, unknown battery level while on
+battery, or serious/critical macOS thermal pressure. An uninterrupted hold is
+limited to eight hours. A task with no lifecycle event for 30 minutes expires;
+this deliberately includes unusually long silent reasoning/tools. An app
+restart requires a new task event, rather than reviving an old request.
+
+**Design intent:** protect actual work, not the presence of an open agent app or
+an increase in quota usage. The bridge parses hook input in memory but persists
+only a hashed session/profile key, provider, event type, process ID, and times.
+It never writes prompts, responses, tool arguments, or conversation bodies.
+
+**Non-goals:** waking a sleeping Mac at quota reset, automatically approving
+resume, observing cloud/SSH work, or guaranteeing that detached jobs/subagents
+outlive their parent turn. Hooks must actually run on the Mac doing the work.
+Power assertions and helper flag readback can be tested automatically; physical
+lid closure and installed client hook delivery must be verified on each target
+macOS/client version. Keep a working closed Mac ventilated.
+
+To remove closed-lid support, use the built bundle's installer in uninstall mode:
+
+```bash
+sudo /bin/bash /path/to/QuotaPie.app/Contents/Resources/install_power_helper.sh uninstall "$(id -u)"
+```
+
+It stops the helper, restores only QuotaPie's owned override, then removes the
+helper and launch daemon. Turn off the working-task switch and run
+`quotapie awake disconnect` to remove the agent hooks as well. The original
+settings backups are retained for inspection.
