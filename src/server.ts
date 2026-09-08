@@ -171,6 +171,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig) {
           headline: headlineJson(buildHeadline(accounts, nowMs, service.locale)),
           accounts,
           resumeTasks: service.resumeTaskSummaries(),
+          resetSignals: service.signalCollector.status(nowMs),
           // Kept for existing consumers. It only contains accounts that have
           // windows, so new consumers should read accounts instead.
           statuses: service.statuses(nowMs),

@@ -189,3 +189,28 @@
 "awake.helper.override-lost" = "QuotaPie 외부에서 잠자기 설정이 변경됐습니다.";
 "awake.helper.stopped" = "덮개 제어가 중지됐습니다.";
 "awake.anotherInstance" = "다른 QuotaPie 실행본이 작업 중 전원 유지를 관리하고 있습니다.";
+
+// Public reset signals
+"signal.section" = "Codex 리셋 소식";
+"signal.possible" = "Codex 리셋 가능성 감지";
+"signal.announced" = "Codex 리셋 예고";
+"signal.reported" = "Codex 리셋 시행 소식";
+"signal.updated" = "Codex 리셋 예고 변경";
+"signal.withdrawn" = "Codex 리셋 소식 정정·철회";
+"signal.message.relay" = "공개 피드 경유 · %@: %@ — 내 계정 적용은 별도 확인. %@";
+"signal.message.direct" = "%@: %@ — 내 계정 적용은 별도 확인. %@";
+"signal.coverage.direct" = "X 직접 수집 · Tibo, VB, Dominik, OpenAIDevs, OpenAI";
+"signal.coverage.relay" = "Reset Beacon 경유 · 일부 소식만 수집, X 원문 미검증";
+"signal.health.waiting" = "첫 소식 수집 대기 중";
+"signal.health.error" = "수집 실패 · 저장된 소식 표시 중";
+"signal.health.stale" = "수집 지연 · 저장된 소식 표시 중";
+"signal.health.off" = "소식 수집 꺼짐";
+"signal.checked" = "마지막 수집 %@";
+"signal.empty" = "아직 수집된 리셋 소식이 없습니다";
+"signal.source" = "원문 보기";
+"signal.kind.banked" = "저장형 리셋 지급";
+"signal.kind.direct" = "즉시 한도 리셋";
+"signal.kind.unknown" = "리셋 종류 미확인";
+"signal.elapsed" = "피드 예상 시각 %@ 지남 · 계정 적용 미확인";
+"signal.feedTime" = "피드 예상 시각 %@ · 원문 시간 표현 확인";
+"signal.accountNotice" = "공개 소식과 내 계정 한도·리셋 시각은 별개입니다.";

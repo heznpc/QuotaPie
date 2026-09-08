@@ -60,6 +60,43 @@ struct PopoverView: View {
     }
 
     @ViewBuilder
+    private var resetSignalSection: some View {
+        if let feed = model.payload?.resetSignals, feed.enabled {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(Strings.t("signal.section")).font(.headline)
+                Text(Strings.t(feed.source == "x-api" ? "signal.coverage.direct" : "signal.coverage.relay"))
+                    .font(.caption).foregroundStyle(.secondary)
+                if feed.state != "ready" {
+                    Text(Strings.t("signal.health." + feed.state)).font(.caption).foregroundStyle(.orange)
+                }
+                if let last = feed.lastSuccessMs {
+                    Text(Strings.t("signal.checked", DisplayFormat.clock(last))).font(.caption2).foregroundStyle(.secondary)
+                }
+                if feed.signals.isEmpty { Text(Strings.t("signal.empty")).font(.caption) }
+                ForEach(Array(feed.signals.prefix(3)), id: \.fingerprint) { signal in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text(Strings.t("signal." + signal.state)).font(.caption).bold()
+                            Spacer()
+                            if let url = signal.safeSourceURL { Link(Strings.t("signal.source"), destination: url).font(.caption) }
+                        }
+                        Text("@\(signal.author) · \(Date(timeIntervalSince1970: signal.publishedAtMs / 1000).formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption2).foregroundStyle(.secondary)
+                        Text(signal.text).font(.caption).lineLimit(3)
+                        Text(Strings.t("signal.kind." + signal.resetKind)).font(.caption2).foregroundStyle(.secondary)
+                        if let target = signal.targetAtMs {
+                            Text(Strings.t(target < Date().timeIntervalSince1970 * 1000 ? "signal.elapsed" : "signal.feedTime",
+                                           Date(timeIntervalSince1970: target / 1000).formatted(date: .abbreviated, time: .shortened))).font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }.padding(.vertical, 4)
+                }
+                Text(Strings.t("signal.accountNotice")).font(.caption2).foregroundStyle(.secondary)
+            }
+            Divider()
+        }
+    }
+
+    @ViewBuilder
     private var content: some View {
         let payload = model.payload
         let lastError = model.lastError
@@ -78,6 +115,7 @@ struct PopoverView: View {
                 tone: .warning
             )
         }
+        resetSignalSection
         awakeSection
         Divider()
         if let payload, !activeResumeTasks.isEmpty {

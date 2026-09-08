@@ -307,6 +307,11 @@ async function main(): Promise<number> {
 
   try {
     switch (command) {
+      case "signals": {
+        if (args.includes("--refresh")) await service.signalCollector.poll(true);
+        console.log(JSON.stringify(service.signalCollector.status(), null, 2));
+        return 0;
+      }
       case "poll": {
         await service.pollCodex();
         await service.evaluateTriggers();

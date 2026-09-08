@@ -23,6 +23,11 @@ function inTransaction(db: Database, work: () => void): void {
 }
 
 export function migrate(db: Database): void {
+    db.run(`CREATE TABLE IF NOT EXISTS reset_signals (
+      id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, published_ms INTEGER NOT NULL,
+      payload TEXT NOT NULL, notified INTEGER NOT NULL DEFAULT 0)`);
+    db.run(`CREATE INDEX IF NOT EXISTS reset_signals_pending ON reset_signals(notified,published_ms)`);
+    db.run(`CREATE TABLE IF NOT EXISTS reset_signal_source (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL)`);
     db.run(`
       CREATE TABLE IF NOT EXISTS snapshots (
         id INTEGER PRIMARY KEY,

@@ -67,6 +67,7 @@ export interface AppConfig {
     macOSNotifications: boolean;
     command: string[] | null;
   };
+  resetSignals: { enabled: boolean; tokenFile: string | null; pollSeconds: number };
   dashboard: {
     host: string;
     port: number;
@@ -117,6 +118,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     macOSNotifications: true,
     command: null,
   },
+  resetSignals: { enabled: false, tokenFile: null, pollSeconds: 300 },
   dashboard: {
     host: "127.0.0.1",
     port: 47831,
@@ -187,6 +189,7 @@ function mergeConfig(base: AppConfig, patch: Partial<AppConfig>): AppConfig {
     },
     collection: { ...base.collection, ...patch.collection },
     alerts: { ...base.alerts, ...patch.alerts },
+    resetSignals: { ...base.resetSignals, ...patch.resetSignals },
     dashboard: { ...base.dashboard, ...patch.dashboard },
     detection: { ...base.detection, ...patch.detection },
   };
@@ -318,6 +321,9 @@ function validateProfile(config: AppConfig): void {
     }
   }
 
+  if (typeof config.resetSignals.enabled !== "boolean") throw new Error("resetSignals.enabled must be boolean");
+  if (config.resetSignals.tokenFile !== null && (typeof config.resetSignals.tokenFile !== "string" || !config.resetSignals.tokenFile.trim())) throw new Error("resetSignals.tokenFile must be a path or null");
+  requireNumber(config.resetSignals.pollSeconds, "resetSignals.pollSeconds", { min: 300, max: 86400, integer: true });
   requireNumber(config.collection.pollSeconds, "collection.pollSeconds", { min: 1, max: 86_400, integer: true });
   requireNumber(config.collection.staleAfterSeconds, "collection.staleAfterSeconds", { min: 1, max: 86_400, integer: true });
   requireNumber(
