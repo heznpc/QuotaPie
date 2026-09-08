@@ -158,3 +158,34 @@
 "alert.test.message" = "알림 채널이 정상적으로 연결됐습니다.";
 "alert.resume.ready.title" = "%@/%@ 작업 재개 가능";
 "alert.resume.ready.message" = "%@ 한도가 다시 확인됐습니다. QuotaPie에서 재개를 승인해 주세요.";
+
+// Working-task power control
+"awake.title" = "에이전트 작업 중 깨어 있기";
+"awake.closedLid" = "덮개를 닫아도 유지";
+"awake.holding" = "작업 %@개를 위해 깨어 있습니다";
+"awake.off" = "macOS의 기존 잠자기 설정을 따릅니다.";
+"awake.waiting" = "새 작업 이벤트를 기다리고 있습니다.";
+"awake.powerLimit" = "해제됨: 배터리 20퍼센트 이하 또는 높은 온도.";
+"awake.timeLimit" = "8시간이 지나 해제했습니다. 다시 시작하려면 껐다 켜세요.";
+"awake.failed" = "자동 잠자기를 막지 못했습니다.";
+"awake.connect" = "코딩 에이전트 연결";
+"awake.install" = "덮개 제어 설정…";
+"awake.limits" = "작업 중단·배터리 20%·고온 시 해제합니다. 이벤트가 30분간 없거나 연속 8시간이 지나도 해제합니다.";
+"awake.connected" = "연결했습니다. Codex /hooks에서 QuotaPie 훅을 검토·신뢰한 뒤 새 작업을 시작하세요. 기존 세션은 재시작이 필요할 수 있습니다.";
+"awake.disconnected" = "에이전트 연결을 제거했습니다.";
+"awake.connectFailed" = "연결하지 못했습니다. QuotaPie CLI 설치를 확인하세요.";
+"awake.writeFailed" = "전원 유지 요청을 갱신하지 못했습니다.";
+"awake.helperInstalled" = "덮개 제어 설정을 갱신했습니다.";
+"awake.helperFailed" = "설정이 취소되었거나 실패했습니다. 덮개 제어는 확인되지 않았습니다.";
+"awake.helper.not-installed" = "덮개 제어에는 관리자 설정이 필요합니다.";
+"awake.helper.ready" = "덮개 제어 준비됨 · 현재 잠자기 허용.";
+"awake.helper.holding" = "덮개 잠자기 방지 설정을 확인했습니다.";
+"awake.helper.power-limit" = "배터리 또는 온도로 덮개 제어를 해제했습니다.";
+"awake.helper.time-limit" = "덮개 제어가 8시간 제한에 도달했습니다.";
+"awake.helper.external-override" = "다른 잠자기 해제가 이미 적용돼 있어 QuotaPie가 변경하지 않습니다.";
+"awake.helper.restore-failed" = "잠자기 복원 실패. macOS 전원 설정을 확인하세요.";
+"awake.helper.enable-failed" = "덮개 잠자기 방지를 활성화하지 못했습니다.";
+"awake.helper.ownership-failed" = "잠자기 복원 기록을 저장하지 못했습니다.";
+"awake.helper.override-lost" = "QuotaPie 외부에서 잠자기 설정이 변경됐습니다.";
+"awake.helper.stopped" = "덮개 제어가 중지됐습니다.";
+"awake.anotherInstance" = "다른 QuotaPie 실행본이 작업 중 전원 유지를 관리하고 있습니다.";

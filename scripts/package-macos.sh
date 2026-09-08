@@ -7,7 +7,7 @@
 # nowhere else. Developer ID signing plus notarization is what makes a
 # downloaded copy open, and this script is the only path that produces one.
 #
-# What gets signed is the menu bar client alone. QuotaPie is two processes: this
+# The bundle includes the menu bar client and its fixed-function power helper. QuotaPie is two processes: this
 # SwiftUI app, and a Bun backend run separately from bin/quotapie. The backend is
 # the half that reads ~/.claude/.credentials.json, queries the keychain, and
 # binds 127.0.0.1:47831; none of it is inside the bundle. The app is a plain HTTP
@@ -150,6 +150,9 @@ while IFS= read -r -d '' b; do
   fi
   sign "${b}"
 done < <(find "${APP}" -depth \( -name '*.framework' -o -name '*.xpc' -o -name '*.app' \) -print0)
+
+# Fixed-function privileged helper must carry the same release signature.
+sign "${APP}/Contents/Helpers/QuotaPiePowerHelper"
 
 # Then the main executable, then the wrapper with the app's entitlements.
 sign "${APP}/Contents/MacOS/${EXECUTABLE}"
