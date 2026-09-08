@@ -271,6 +271,13 @@ const CATALOG = {
 
   // CLI. Commands and environment-variable names stay literal; every phrase
   // around them is selected by locale here.
+  "signal.possible": { en: () => "Possible Codex reset", ko: () => "Codex 리셋 가능성 감지" },
+  "signal.announced": { en: () => "Codex reset announced", ko: () => "Codex 리셋 예고" },
+  "signal.reported": { en: () => "Codex reset reported", ko: () => "Codex 리셋 시행 소식" },
+  "signal.updated": { en: () => "Codex reset update", ko: () => "Codex 리셋 예고 변경" },
+  "signal.withdrawn": { en: () => "Codex reset signal withdrawn", ko: () => "Codex 리셋 소식 정정·철회" },
+  "signal.message.relay": { en: p => `Public feed · ${p.source}: ${p.detail} — Check your account. ${p.url}`, ko: p => `공개 피드 경유 · ${p.source}: ${p.detail} — 내 계정 적용은 별도 확인. ${p.url}` },
+  "signal.message.direct": { en: p => `${p.source}: ${p.detail} — Check your account. ${p.url}`, ko: p => `${p.source}: ${p.detail} — 내 계정 적용은 별도 확인. ${p.url}` },
   "cli.help": {
     en: () => `QuotaPie — provider clocks + personal burn-rate timer
 
@@ -285,6 +292,7 @@ Usage:
   quotapie pause [--provider codex|claude] [--account ID] [--session UUID]
                  [--cwd PATH] [--label NAME] [--bucket ID] [--json]
                                  Register this task for an explicit resume after quota recovers
+  quotapie signals [--refresh]  Show public reset signals
   quotapie awake connect|disconnect
                                  Connect or remove working-task sleep hooks
   quotapie claude-statusline [--account ID]
@@ -312,6 +320,7 @@ Environment:
   quotapie pause [--provider codex|claude] [--account ID] [--session UUID]
                  [--cwd PATH] [--label NAME] [--bucket ID] [--json]
                                  한도 회복 후 명시적으로 재개할 작업 등록
+  quotapie signals [--refresh]  공개 리셋 소식 조회
   quotapie awake connect|disconnect
                                  작업 중 잠자기 방지 훅 연결 또는 해제
   quotapie claude-statusline [--account ID]

@@ -189,3 +189,28 @@
 "awake.helper.override-lost" = "The sleep setting changed outside QuotaPie.";
 "awake.helper.stopped" = "Closed-lid support stopped.";
 "awake.anotherInstance" = "Another QuotaPie instance owns working-task protection.";
+
+// Public reset signals
+"signal.section" = "Codex reset signals";
+"signal.possible" = "Possible Codex reset";
+"signal.announced" = "Codex reset announced";
+"signal.reported" = "Codex reset reported";
+"signal.updated" = "Codex reset update";
+"signal.withdrawn" = "Codex reset signal withdrawn";
+"signal.message.relay" = "Public feed · %@: %@ — Check your account. %@";
+"signal.message.direct" = "%@: %@ — Check your account. %@";
+"signal.coverage.direct" = "X · Tibo, VB, Dominik, OpenAIDevs, OpenAI";
+"signal.coverage.relay" = "Via Reset Beacon · partial coverage, X originals not verified";
+"signal.health.waiting" = "Waiting for first collection";
+"signal.health.error" = "Collection failed · showing saved signals";
+"signal.health.stale" = "Collection is stale · showing saved signals";
+"signal.health.off" = "Signal collection off";
+"signal.checked" = "Last collected %@";
+"signal.empty" = "No reset signals collected yet";
+"signal.source" = "Original post";
+"signal.kind.banked" = "Banked reset credit";
+"signal.kind.direct" = "Direct reset";
+"signal.kind.unknown" = "Reset type unspecified";
+"signal.elapsed" = "Feed estimate %@ has passed · account application unverified";
+"signal.feedTime" = "Feed estimate %@ · see original time wording";
+"signal.accountNotice" = "Public signals do not change your account’s quota clock.";

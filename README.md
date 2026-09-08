@@ -505,3 +505,45 @@ It stops the helper, restores only QuotaPie's owned override, then removes the
 helper and launch daemon. Turn off the working-task switch and run
 `quotapie awake disconnect` to remove the agent hooks as well. The original
 settings backups are retained for inspection.
+
+## Public Codex reset signals
+
+QuotaPie can notify on **possible resets**, announcements, changes, and
+withdrawals before your own quota meter changes. Enable in the local config:
+
+```json
+"resetSignals": { "enabled": true, "tokenFile": null, "pollSeconds": 300 }
+```
+
+Without a token it polls the public [Reset Beacon alert feed](https://resetbeacon.com/api/docs/).
+This is **partial, third-party coverage**: it is not a direct watch of every X
+post. The menu bar and web dashboard label the relay, show saved original-post
+links and timestamps, and distinguish stale/failed collection from no news.
+Feed classifications and time conversions are attributed to the feed; the app
+does not certify the source post or account eligibility. A future promise is
+not displayed as already executed merely because the feed calls it an action.
+
+For direct X collection, set `tokenFile` to an owner-only (0600) file containing
+an X API Bearer Token. Tokens are read at request time, never placed in the
+SQLite records or status API. The official X API requires developer access and
+can incur usage charges. Five fixed accounts are watched: **thsottiaux,
+reach_vb, dkundel, OpenAIDevs, OpenAI**. Search includes replies and quote posts;
+referenced posts and conversation roots supply bounded context. A deterministic
+first version classifies English reset phrases and several contextual hints;
+it can miss jokes, images, and novel wording. No LLM key is required. Relative
+times remain as original wording instead of guessing the author's timezone.
+
+Collection runs independently of quota polling, at most every five minutes by
+default. Errors preserve history and the last successful cursor; API responses,
+pagination, and context lookups are bounded. `quotapie signals --refresh` reads
+once and prints collection health and records; `quotapie signals` reads the
+saved state. Restart `quotapie serve` after changing configuration.
+
+Signals are kept for 30 days. Notifications use the existing durable delivery
+queue and channel deduplication. Linked announcements with the same classified
+conditions share an alert identity in direct-X mode; changed times and
+withdrawals get new identities. Unlinked paraphrases can still produce separate
+alerts. Old signals (>24 hours), already-passed feed schedule estimates, and
+superseded signals are not newly notified. Existing account-observation alerts
+continue to report actual quota changes independently; a public post never
+changes your quota timer, resumes a task, or spends a banked reset.

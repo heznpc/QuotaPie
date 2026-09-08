@@ -1,3 +1,6 @@
+import { ResetSignalStore } from "./storage/reset-signal-store";
+import { ResetSignalCollector } from "./signals/collector";
+import { signalDecision } from "./signals/presentation";
 import { analyzeWindow, analysisHistoryStart, buildHeadline, groupStatuses } from "./analytics";
 import { buildQuotaBoundary, cachedLeaderboard, collectionHealth, writeQuotaBoundary } from "./boundary";
 import type { AppConfig, CodexAccountConfig } from "./config";
@@ -87,6 +90,10 @@ export class QuotaPieService {
   readonly collection: CollectionStore;
   readonly claudeSessions: ClaudeSessionStore;
   readonly resumeTasks: ResumeTaskStore;
+  readonly resetSignals: ResetSignalStore;
+  readonly signalCollector: ResetSignalCollector;
+  private signalTimer: ReturnType<typeof setInterval> | null = null;
+  private signalWork: Promise<void> | null = null;
   private codexClients = new Map<string, CodexAppServerClient>();
   private stopped = false;
   private closing = false;
@@ -112,6 +119,8 @@ export class QuotaPieService {
     this.claudeSessions = new ClaudeSessionStore(this.storage);
     this.resumeTasks = new ResumeTaskStore(this.storage);
     this.locale = resolveLocale(config.profile.locale);
+    this.resetSignals = new ResetSignalStore(this.storage);
+    this.signalCollector = new ResetSignalCollector(this.resetSignals, config.resetSignals);
     if (!config.alerts.enabled || !config.alerts.macOSNotifications) {
       this.alerts.cancelAllAppNotifications();
     }
@@ -1071,8 +1080,35 @@ export class QuotaPieService {
   /// to starve the HTTP server that the menu bar app depends on.
   static readonly FAILURE_BACKOFF_MS = [5_000, 15_000, 60_000, 300_000];
 
+  async collectResetSignals(): Promise<void> {
+    if (this.signalWork) return this.signalWork;
+    this.signalWork = (async () => {
+      await this.signalCollector.poll();
+      if (this.closing || !this.config.resetSignals.enabled || !this.config.alerts.enabled) return;
+      for (const signal of this.resetSignals.pending(Date.now())) {
+        if (this.closing) break;
+        const decision = signalDecision(signal, this.locale);
+        const claim = this.alerts.claim(decision.key, Date.now(), 0);
+        if (!claim) continue;
+        try {
+          const result = await this.deliverDecision(decision, decision.key);
+          if (result.complete) {
+            this.resetSignals.delivered(signal.fingerprint);
+            this.alerts.completeClaim(decision.key, claim.token, Date.now());
+          } else this.alerts.releaseClaim(decision.key, claim.token);
+        } catch { this.alerts.releaseClaim(decision.key, claim.token); }
+      }
+    })().finally(() => { this.signalWork = null; });
+    return this.signalWork;
+  }
+
   async watch(): Promise<void> {
     this.stopped = false;
+    if (this.config.resetSignals.enabled && !this.signalTimer) {
+      const collect = () => { void this.collectResetSignals().catch(() => undefined); };
+      collect();
+      this.signalTimer = setInterval(collect, 30_000);
+    }
     let consecutiveFailures = 0;
     while (!this.stopped) {
       const { collected, windows } = await this.tick();
@@ -1093,12 +1129,16 @@ export class QuotaPieService {
 
   stop(): void {
     this.stopped = true;
+    if (this.signalTimer) clearInterval(this.signalTimer);
+    this.signalTimer = null;
   }
 
   async close(): Promise<void> {
     this.stop();
     this.closing = true;
     this.nativeNotificationTransportAvailable = false;
+    await this.signalWork;
+    await this.signalCollector.settle();
     await Promise.all([...this.codexClients.values()].map((client) => client.close().catch(() => undefined)));
     this.codexClients.clear();
     this.db.close();

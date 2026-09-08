@@ -9,6 +9,7 @@ struct StatusPayload: Decodable {
     /// kept in memory and is required for every resume-task mutation.
     let actionToken: String?
     let resumeTasks: [ResumeTask]
+    let resetSignals: ResetSignalPayload?
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -18,10 +19,11 @@ struct StatusPayload: Decodable {
         events = try values.decodeIfPresent([QuotaEvent].self, forKey: .events) ?? []
         actionToken = try values.decodeIfPresent(String.self, forKey: .actionToken)
         resumeTasks = try values.decodeIfPresent([ResumeTask].self, forKey: .resumeTasks) ?? []
+        resetSignals = try values.decodeIfPresent(ResetSignalPayload.self, forKey: .resetSignals)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case nowMs, headline, accounts, events, actionToken, resumeTasks
+        case nowMs, headline, accounts, events, actionToken, resumeTasks, resetSignals
     }
 }
 
@@ -130,6 +132,10 @@ struct LocalizedMessagePayload: Decodable {
         }
 
         switch key {
+        case "signal.possible", "signal.announced", "signal.reported", "signal.updated", "signal.withdrawn":
+            return []
+        case "signal.message.relay", "signal.message.direct":
+            return required("source", "detail", "url")
         case "alert.remaining.title", "alert.stale.title",
              "alert.event.title.payment", "alert.event.title.window",
              "alert.event.title.resync", "alert.pace.title.measured",
@@ -485,4 +491,37 @@ enum DisplayFormat {
         formatter.dateFormat = Strings.t("format.dayMonth")
         return formatter
     }()
+}
+
+struct ResetSignalPayload: Decodable {
+    let enabled: Bool
+    let source: String
+    let state: String
+    let lastSuccessMs: Double?
+    let error: String?
+    let signals: [ResetSignal]
+}
+
+struct ResetSignal: Decodable, Identifiable {
+    let id: String
+    let fingerprint: String
+    let author: String
+    let sourceUrl: String
+    let text: String
+    let publishedAtMs: Double
+    let state: String
+    let resetKind: String
+    let timeHint: String?
+    let scopeHint: String?
+    let observedVia: String
+    let targetAtMs: Double?
+
+    var safeSourceURL: URL? {
+        guard let url = URL(string: sourceUrl), url.scheme == "https", url.host == "x.com",
+              url.user == nil, url.password == nil, url.port == nil,
+              url.path == "/\(author)/status/\(id)", id.allSatisfy({ $0.isNumber }), !id.isEmpty,
+              ["thsottiaux", "reach_vb", "dkundel", "openaidevs", "openai"].contains(author.lowercased())
+        else { return nil }
+        return url
+    }
 }

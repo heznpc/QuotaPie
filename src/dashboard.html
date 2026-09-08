@@ -73,6 +73,7 @@
         </div>
         <div id="updated" class="muted"></div>
       </header>
+      <section id="resetSignals"></section>
       <div id="providers" class="grid"></div>
       <section class="events">
         <h2 id="whyChanged"></h2>
@@ -388,6 +389,14 @@
           // only carries accounts that already have windows, so a configured
           // account with zero samples disappeared here while the menu bar app
           // was correctly showing why it was empty.
+          const feed = data.resetSignals;
+          const words = LOCALE === "ko"
+            ? { title: "Codex 리셋 소식", relay: "Reset Beacon 경유 · 일부 소식만 수집, X 원문 미검증", direct: "X 직접 수집 · 다섯 계정", source: "원문 보기", empty: "아직 수집된 소식이 없습니다", possible: "가능성", announced: "예고", reported: "시행 소식", updated: "변경", withdrawn: "철회", ready: "수집 정상", waiting: "첫 수집 대기", error: "수집 실패 · 저장된 소식", stale: "수집 지연 · 저장된 소식", note: "공개 소식과 내 계정 한도는 별개입니다." }
+            : { title: "Codex reset signals", relay: "Via Reset Beacon · partial coverage, X originals not verified", direct: "X direct · five accounts", source: "Original post", empty: "No signals collected", possible: "Possible", announced: "Announced", reported: "Reported", updated: "Updated", withdrawn: "Withdrawn", ready: "Collection healthy", waiting: "Waiting", error: "Collection failed · saved signals", stale: "Stale · saved signals", note: "Public signals are separate from your account quota." };
+          document.getElementById("resetSignals").innerHTML = feed?.enabled ? `<article class="provider"><h2>${words.title}</h2><p class="notice">${feed.source === "x-api" ? words.direct : words.relay} · ${escapeHtml(words[feed.state] ?? feed.state)}</p>${(feed.signals ?? []).slice(0,5).map(signal => {
+            const safe = /^https:\/\/x\.com\/(thsottiaux|reach_vb|dkundel|OpenAIDevs|OpenAI)\/status\/\d+$/.test(signal.sourceUrl);
+            return `<div class="event"><strong>${escapeHtml(words[signal.state] ?? signal.state)}</strong><span>@${escapeHtml(signal.author)} · ${escapeHtml(exactTime(signal.publishedAtMs))}</span><span>${escapeHtml(signal.text)} ${safe ? `<a href="${escapeHtml(signal.sourceUrl)}" target="_blank" rel="noopener noreferrer">${words.source}</a>` : ""}</span></div>`;
+          }).join("") || words.empty}<p class="notice">${words.note}</p></article>` : "";
           const accounts = Array.isArray(data.accounts) && data.accounts.length ? data.accounts : (data.statuses ?? []);
           document.getElementById("providers").innerHTML = accounts.length
             ? accounts.map((account) => {
