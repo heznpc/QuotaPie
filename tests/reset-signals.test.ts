@@ -21,6 +21,9 @@ describe("reset signal classification", () => {
     expect(classify(post("Please reset Codex", "100", "randomuser"))).toBeNull();
     expect(classify(post("Codex will reset tomorrow"))?.state).toBe("announced");
     expect(classify(post("We have reset Codex usage"))?.state).toBe("reported");
+    expect(classify(post("All reset for everyone. Enjoy the week with Astra."))?.state).toBe("reported");
+    expect(classify(post("All reset for everyone tomorrow?"))?.state).toBe("possible");
+    expect(classify(post("We will get all reset for everyone tomorrow"))?.state).toBe("announced");
   });
   test("short replies use parents without inheriting their certainty", () => {
     const parent = post("We will reset Codex usage tomorrow");

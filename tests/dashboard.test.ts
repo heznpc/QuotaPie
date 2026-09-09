@@ -73,7 +73,7 @@ function statusPayload() {
   };
 }
 
-async function render(language: string) {
+async function render(language: string, payload: object = statusPayload()) {
   const elements = new Map<string, FakeElement>();
   const element = (id: string) => {
     let value = elements.get(id);
@@ -84,7 +84,6 @@ async function render(language: string) {
     return value;
   };
   const documentElement = { lang: "" };
-  const payload = statusPayload();
   const context = createContext({
     navigator: { language, languages: [language] },
     document: { documentElement, getElementById: element },
@@ -101,6 +100,28 @@ async function render(language: string) {
 }
 
 describe("dashboard localization", () => {
+  test("recovery evidence distinguishes observation interval from a later public post in both languages", async () => {
+    const payload = { ...statusPayload(), resetTracking: { recoveries: [{
+      provider: "codex", account: "<work>", bucket: "weekly", reason: "time-proximity-only",
+      observedBetween: { afterMs: Date.parse("2026-09-08T00:55:00Z"), byMs: Date.parse("2026-09-08T01:00:00Z") },
+      remainingBefore: 5, remainingAfter: 100, previousResetsAtMs: null, nextResetsAtMs: null,
+      candidates: [{ sourceUrl: "https://x.com/thsottiaux/status/100", publishedAtMs: Date.parse("2026-09-08T04:05:00Z"),
+        publicationAfterObservation: true, observedVia: "public-feed" },
+        { sourceUrl: "javascript:alert(1)", publishedAtMs: 0, observedVia: "public-feed" }],
+    }] } };
+    const ko = (await render("ko", payload)).element("resetTracking").innerHTML;
+    expect(ko).toContain("정확한 리셋 시각 아님");
+    expect(ko).toContain("추가 리셋을 뜻하지 않음");
+    expect(ko).toContain("동일 사건 미확정");
+    expect(ko).toContain("원문 미검증");
+    expect(ko).toContain("&lt;work&gt;");
+    expect(ko).not.toContain("javascript:");
+    const en = (await render("en", payload)).element("resetTracking").innerHTML;
+    expect(en).toContain("not an exact reset time");
+    expect(en).toContain("not another reset");
+    expect(en).toContain("original unverified");
+    expect((await render("en")).element("resetTracking").innerHTML).toContain("Public posts alone do not create");
+  });
   test("uses the semantic wire key for sentences and a label namespace for short names", () => {
     expect(dashboard).toContain('"event.external_relief": "{label} was refilled ahead of schedule."');
     expect(dashboard).toContain('"event.label.external_relief": "Early refill"');

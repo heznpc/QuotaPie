@@ -172,6 +172,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig) {
           accounts,
           resumeTasks: service.resumeTaskSummaries(),
           resetSignals: service.signalCollector.status(nowMs),
+          resetTracking: service.resetTracking(nowMs),
           // Kept for existing consumers. It only contains accounts that have
           // windows, so new consumers should read accounts instead.
           statuses: service.statuses(nowMs),
@@ -185,6 +186,10 @@ export function startDashboard(service: QuotaPieService, config: AppConfig) {
           ? Math.min(200, Math.max(1, Math.trunc(requested)))
           : 50;
         return json({ events: service.recentEvents(limit).map(eventJson) });
+      }
+      if (url.pathname === "/api/reset-tracking") {
+        const nowMs = Date.now();
+        return json({ nowMs, publicSignals: service.signalCollector.status(nowMs), ...service.resetTracking(nowMs) });
       }
       if (url.pathname === "/health") {
         // Health is judged by the state of collection itself, not by window
