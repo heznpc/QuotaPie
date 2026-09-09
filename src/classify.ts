@@ -51,20 +51,6 @@ export function classifyDelta(
   }
 
   const events: QuotaEvent[] = [];
-  // Preserve the observation interval, never substitute a public post's time.
-  // Stored in the existing event transaction alongside the accepted snapshot.
-  const evidence = {
-    previousObservedAtMs: previous.observedAtMs,
-    nextObservedAtMs: next.observedAtMs,
-    previousResetsAtMs: previous.resetsAtMs,
-    nextResetsAtMs: next.resetsAtMs,
-    previousSource: previous.source,
-    nextSource: next.source,
-    previousQuality: previous.quality,
-    nextQuality: next.quality,
-    resetCreditDecreased: previous.resetCreditsAvailable != null && next.resetCreditsAvailable != null
-      && next.resetCreditsAvailable < previous.resetCreditsAvailable,
-  };
   if (next.source !== previous.source) {
     events.push(
       event(next, "source_changed", "info", "high", config, {
@@ -110,7 +96,6 @@ export function classifyDelta(
           strongDrop ? "high" : smallDrop ? "medium" : "low",
           config,
           {
-            ...evidence,
             usedPercentBefore: previousUsed,
             usedPercentAfter: next.usedPercent,
             previousResetsAtMs: previousReset,
@@ -131,7 +116,6 @@ export function classifyDelta(
           strongDrop ? "high" : smallDrop ? "medium" : "low",
           config,
           {
-            ...evidence,
             usedPercentBefore: previousUsed,
             usedPercentAfter: next.usedPercent,
             minutesEarly: Math.round((previousReset - next.observedAtMs) / 60_000),
@@ -149,7 +133,6 @@ export function classifyDelta(
           "medium",
           config,
           {
-            ...evidence,
             usedPercentBefore: previousUsed,
             usedPercentAfter: next.usedPercent,
             resetChanged,

@@ -26,7 +26,7 @@ export function parsePublicFeed(body: any, nowMs: number): ResetSignal[] {
     const target = Date.parse(item.targetAt);
     signals.push({ id: match[2]!, groupId, fingerprint, author: match[1]!, sourceUrl: `https://x.com/${match[1]}/status/${match[2]}`,
       text, contextText: typeof item.withdrawnReason === "string" ? item.withdrawnReason.slice(0, 1000) : null,
-      publishedAtMs: at, state, resetKind: local?.resetKind ?? "unknown",
+      publishedAtMs: at, state, resetKind: /\bbanked\b|reset\s+(?:card|credit)/i.test(text) ? "banked" : "unknown",
       timeHint: item.topic === "schedule" ? text : null, scopeHint: null,
       observedVia: "public-feed", targetAtMs: Number.isFinite(target) ? target : null });
   }
