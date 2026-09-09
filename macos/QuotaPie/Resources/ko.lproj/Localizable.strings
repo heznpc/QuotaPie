@@ -214,3 +214,23 @@
 "signal.elapsed" = "피드 예상 시각 %@ 지남 · 계정 적용 미확인";
 "signal.feedTime" = "피드 예상 시각 %@ · 원문 시간 표현 확인";
 "signal.accountNotice" = "공개 소식과 내 계정 한도·리셋 시각은 별개입니다.";
+
+// Account recovery evidence
+"recovery.section" = "한도 회복 · 최근 24시간";
+"recovery.state.recovery-observed" = "회복 관측";
+"recovery.state.no-recovery-observed" = "회복 변화 미관측";
+"recovery.state.unavailable" = "현재 관측 확인 불가";
+"recovery.interval" = "회복 관측 구간: %@ ~ %@";
+"recovery.remaining" = "잔량: %@ → %@";
+"recovery.resetDates" = "다음 초기화: %@ → %@";
+"recovery.candidate" = "관련 후보 공지 · %@ 게시";
+"recovery.comparison" = "최근 비교 구간: %@ ~ %@";
+"recovery.disclaimer" = "관측만으로 공지의 계정 적용을 확정하지 않습니다. 수집 공백이나 관측 사이 회복은 놓칠 수 있습니다.";
+"recovery.reason.no-public-match" = "연결 가능한 공개 보고 없음 · 원인 미확정";
+"recovery.reason.insufficient-evidence" = "이 변화를 확인할 관측 증거 부족";
+"recovery.reason.source-changed" = "수집 출처 변경 · 회복 여부 불확실";
+"recovery.reason.window-changed" = "한도 기간 변경 · 회복 여부 불확실";
+"recovery.reason.observation-gap" = "긴 관측 공백 · 시점 불확실";
+"recovery.reason.reset-credit-decreased" = "리셋권 수 감소 관측 · 공개 리셋과의 관계 미확정";
+"recovery.reason.scheduled" = "정기 초기화 예정 시각 부근에서 관측";
+"recovery.reason.time-proximity-only" = "시간상 관련 후보일 뿐 · 동일 사건 미확정";

@@ -1,3 +1,4 @@
+import { buildResetTracking } from "./signals/correlation";
 import { ResetSignalStore } from "./storage/reset-signal-store";
 import { ResetSignalCollector } from "./signals/collector";
 import { signalDecision } from "./signals/presentation";
@@ -936,6 +937,11 @@ export class QuotaPieService {
 
   recentEvents(limit = 50): QuotaEvent[] {
     return this.db.recentEvents(limit);
+  }
+
+  resetTracking(nowMs = Date.now(), accounts = this.accountStates(nowMs)) {
+    return buildResetTracking(this.db, accounts, this.resetSignals.list(200), nowMs,
+      this.config.collection.staleAfterSeconds * 1000);
   }
 
   private rearmRecovered(windows: WindowAnalysis[], nowMs = Date.now()): void {
