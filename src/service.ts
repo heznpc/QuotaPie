@@ -1,7 +1,6 @@
 import { ResetSignalStore } from "./storage/reset-signal-store";
 import { ResetSignalCollector } from "./signals/collector";
 import { signalDecision } from "./signals/presentation";
-import { correlateRecoveries, RESET_MATCH_WINDOW_MS, MAX_RECOVERY_OBSERVATION_GAP_MS } from "./signals/correlation";
 import { analyzeWindow, analysisHistoryStart, buildHeadline, groupStatuses } from "./analytics";
 import { buildQuotaBoundary, cachedLeaderboard, collectionHealth, writeQuotaBoundary } from "./boundary";
 import type { AppConfig, CodexAccountConfig } from "./config";
@@ -937,15 +936,6 @@ export class QuotaPieService {
 
   recentEvents(limit = 50): QuotaEvent[] {
     return this.db.recentEvents(limit);
-  }
-
-  resetTracking(nowMs = Date.now()) {
-    return {
-      matchWindowMs: RESET_MATCH_WINDOW_MS,
-      maxObservationGapMs: MAX_RECOVERY_OBSERVATION_GAP_MS,
-      attribution: "unconfirmed" as const,
-      recoveries: correlateRecoveries(this.db.recentRecoveries(50), this.resetSignals.list(200), nowMs),
-    };
   }
 
   private rearmRecovered(windows: WindowAnalysis[], nowMs = Date.now()): void {

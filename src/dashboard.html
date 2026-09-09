@@ -75,7 +75,6 @@
       </header>
       <section id="resetSignals"></section>
       <div id="providers" class="grid"></div>
-      <section id="resetTracking" class="events"></section>
       <section class="events">
         <h2 id="whyChanged"></h2>
         <div id="events" class="muted"></div>
@@ -118,24 +117,6 @@
           "empty": "Run `quotapie poll`, then connect the Claude status line.",
           "updated": " refreshed",
           "noEvents": "No events recorded yet.",
-          "tracking.title": "Account recovery history",
-          "tracking.note": "Observed recovery is separate from public posts. Time proximity does not prove cause or eligibility. Latest 10 window records.",
-          "tracking.empty": "No account recovery observed yet. Public posts alone do not create a recovery record.",
-          "tracking.interval": "Observed between (not an exact reset time)",
-          "tracking.remaining": "Remaining",
-          "tracking.schedule": "Next reset before → after",
-          "tracking.publication": "Post published",
-          "tracking.candidate": "Related candidate · unconfirmed",
-          "tracking.later": "Published after recovery was observed; not another reset",
-          "tracking.relay": "Third-party relay · original unverified",
-          "tracking.direct": "Direct X collection",
-          "tracking.time-proximity-only": "Time proximity only; account applicability unknown",
-          "tracking.no-public-match": "No matching public post in collected coverage",
-          "tracking.scheduled": "Near the scheduled reset; no public attribution",
-          "tracking.reset-credit-decreased": "Reset-credit count decreased; no public attribution",
-          "tracking.insufficient-evidence": "Insufficient evidence for matching (including older records)",
-          "tracking.source-changed": "Collection source changed; no public attribution",
-          "tracking.observation-gap": "Observation gap exceeds 30 minutes; no public attribution",
           "failed": "Connection failed",
           "page.subtitle": "Provider clock + personal burn rate",
           "page.connecting": "Connecting…",
@@ -231,24 +212,6 @@
           "empty": "`quotapie poll` 실행 후 Claude status-line을 연결해 주세요.",
           "updated": " 화면 갱신",
           "noEvents": "아직 기록된 이벤트가 없습니다.",
-          "tracking.title": "내 계정 회복 기록",
-          "tracking.note": "계정 회복과 공개 공지는 별개입니다. 시각이 가깝다고 원인이나 적용 대상을 확정하지 않습니다. 최근 한도 창 기록 10개입니다.",
-          "tracking.empty": "아직 관측된 계정 회복이 없습니다. 공개 공지만으로 회복 기록을 만들지 않습니다.",
-          "tracking.interval": "관측 구간 (정확한 리셋 시각 아님)",
-          "tracking.remaining": "잔량",
-          "tracking.schedule": "다음 초기화 예정: 변경 전 → 후",
-          "tracking.publication": "공지 게시",
-          "tracking.candidate": "관련 후보 · 동일 사건 미확정",
-          "tracking.later": "회복 관측 뒤 게시된 공지 · 추가 리셋을 뜻하지 않음",
-          "tracking.relay": "제3자 전달 · 원문 미검증",
-          "tracking.direct": "X 직접 수집",
-          "tracking.time-proximity-only": "시각상 관련 가능성만 있음 · 계정 적용 대상 미확정",
-          "tracking.no-public-match": "수집 범위에서 관련 공지를 찾지 못함",
-          "tracking.scheduled": "예정된 초기화 시각 부근 · 공개 공지에 귀속하지 않음",
-          "tracking.reset-credit-decreased": "리셋권 수 감소 관측 · 공개 공지에 귀속하지 않음",
-          "tracking.insufficient-evidence": "연결 근거 부족 (이전 버전 기록 포함)",
-          "tracking.source-changed": "수집 출처 변경 · 공개 공지에 귀속하지 않음",
-          "tracking.observation-gap": "관측 간격 30분 초과 · 공개 공지에 귀속하지 않음",
           "failed": "연결 실패",
           "page.subtitle": "공급자 원본 시계 + 개인 사용 속도",
           "page.connecting": "연결 중…",
@@ -432,23 +395,9 @@
             : { title: "Codex reset signals", relay: "Via Reset Beacon · partial coverage, X originals not verified", direct: "X direct · five accounts", source: "Original post", empty: "No signals collected", possible: "Possible", announced: "Announced", reported: "Reported", updated: "Updated", withdrawn: "Withdrawn", ready: "Collection healthy", waiting: "Waiting", error: "Collection failed · saved signals", stale: "Stale · saved signals", note: "Public signals are separate from your account quota." };
           document.getElementById("resetSignals").innerHTML = feed?.enabled ? `<article class="provider"><h2>${words.title}</h2><p class="notice">${feed.source === "x-api" ? words.direct : words.relay} · ${escapeHtml(words[feed.state] ?? feed.state)}</p>${(feed.signals ?? []).slice(0,5).map(signal => {
             const safe = /^https:\/\/x\.com\/(thsottiaux|reach_vb|dkundel|OpenAIDevs|OpenAI)\/status\/\d+$/.test(signal.sourceUrl);
-            return `<div class="event"><strong>${escapeHtml(words[signal.state] ?? signal.state)}</strong><span>@${escapeHtml(signal.author)} · ${t("tracking.publication")} ${escapeHtml(exactTime(signal.publishedAtMs))}</span><span>${escapeHtml(signal.text)} ${safe ? `<a href="${escapeHtml(signal.sourceUrl)}" target="_blank" rel="noopener noreferrer">${words.source}</a>` : ""}</span></div>`;
+            return `<div class="event"><strong>${escapeHtml(words[signal.state] ?? signal.state)}</strong><span>@${escapeHtml(signal.author)} · ${escapeHtml(exactTime(signal.publishedAtMs))}</span><span>${escapeHtml(signal.text)} ${safe ? `<a href="${escapeHtml(signal.sourceUrl)}" target="_blank" rel="noopener noreferrer">${words.source}</a>` : ""}</span></div>`;
           }).join("") || words.empty}<p class="notice">${words.note}</p></article>` : "";
           const accounts = Array.isArray(data.accounts) && data.accounts.length ? data.accounts : (data.statuses ?? []);
-          const recoveries = data.resetTracking?.recoveries ?? [];
-          document.getElementById("resetTracking").innerHTML = `<h2>${t("tracking.title")}</h2><p class="notice">${t("tracking.note")}</p>${recoveries.slice(0, 10).map(recovery => {
-            const account = accounts.find(a => a.provider === recovery.provider && a.account === recovery.account);
-            const percent = value => value == null ? t("time.unknown") : `${Number(value).toFixed(1)}%`;
-            return `<article class="provider"><h3>${escapeHtml(recovery.provider)} · ${escapeHtml(account?.accountLabel ?? recovery.account)} · ${escapeHtml(recovery.bucket)}</h3>
-              <p>${t("tracking.interval")}: ${escapeHtml(exactTime(recovery.observedBetween.afterMs))} → ${escapeHtml(exactTime(recovery.observedBetween.byMs))}</p>
-              <p>${t("tracking.remaining")}: ${percent(recovery.remainingBefore)} → ${percent(recovery.remainingAfter)}</p>
-              <p>${t("tracking.schedule")}: ${escapeHtml(exactTime(recovery.previousResetsAtMs))} → ${escapeHtml(exactTime(recovery.nextResetsAtMs))}</p>
-              <p class="notice">${escapeHtml(t(`tracking.${recovery.reason}`))}</p>
-              ${(recovery.candidates ?? []).map(candidate => {
-                const safe = /^https:\/\/x\.com\/(thsottiaux|reach_vb|dkundel|OpenAIDevs|OpenAI)\/status\/\d+$/.test(candidate.sourceUrl);
-                return `<p>${safe ? `<a href="${escapeHtml(candidate.sourceUrl)}" target="_blank" rel="noopener noreferrer">${t("tracking.candidate")}</a>` : t("tracking.candidate")} · ${t("tracking.publication")} ${escapeHtml(exactTime(candidate.publishedAtMs))}<br><span class="notice">${t(candidate.observedVia === "public-feed" ? "tracking.relay" : "tracking.direct")}${candidate.publicationAfterObservation ? ` · ${t("tracking.later")}` : ""}</span></p>`;
-              }).join("")}</article>`;
-          }).join("") || `<p class="muted">${t("tracking.empty")}</p>`}`;
           document.getElementById("providers").innerHTML = accounts.length
             ? accounts.map((account) => {
                 const label = escapeHtml(account.accountLabel ?? account.account);
