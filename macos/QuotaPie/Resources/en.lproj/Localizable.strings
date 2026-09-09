@@ -214,3 +214,23 @@
 "signal.elapsed" = "Feed estimate %@ has passed · account application unverified";
 "signal.feedTime" = "Feed estimate %@ · see original time wording";
 "signal.accountNotice" = "Public signals do not change your account’s quota clock.";
+
+// Account recovery evidence
+"recovery.section" = "Recovery · last 24 hours";
+"recovery.state.recovery-observed" = "Recovery observed";
+"recovery.state.no-recovery-observed" = "No recovery observed";
+"recovery.state.unavailable" = "Current observation unavailable";
+"recovery.interval" = "Recovery observation: %@ – %@";
+"recovery.remaining" = "Remaining: %@ → %@";
+"recovery.resetDates" = "Next reset: %@ → %@";
+"recovery.candidate" = "Possible related post · %@";
+"recovery.comparison" = "Latest comparison: %@ – %@";
+"recovery.disclaimer" = "Observations do not prove a public reset applied. Gaps and recovery between polls can be missed.";
+"recovery.reason.no-public-match" = "No matching public report; cause unknown.";
+"recovery.reason.insufficient-evidence" = "Insufficient evidence to confirm this change.";
+"recovery.reason.source-changed" = "Collection source changed; recovery uncertain.";
+"recovery.reason.window-changed" = "Quota window changed; recovery uncertain.";
+"recovery.reason.observation-gap" = "Long observation gap; timing uncertain.";
+"recovery.reason.reset-credit-decreased" = "Reset credit count decreased; public cause unconfirmed.";
+"recovery.reason.scheduled" = "Observed near the scheduled reset.";
+"recovery.reason.time-proximity-only" = "Time proximity only; same event unconfirmed.";

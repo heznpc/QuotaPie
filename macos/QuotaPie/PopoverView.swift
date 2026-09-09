@@ -133,6 +133,8 @@ struct PopoverView: View {
             ForEach(payload.accounts) { account in
                 AccountSection(
                     account: account,
+                    recovery: payload.resetTracking?.accounts.first { $0.provider == account.provider && $0.account == account.account },
+                    transportUnavailable: model.lastError != nil,
                     onOpenConfig: onOpenConfig,
                     onCopyCommand: onCopyCommand
                 )
@@ -439,6 +441,8 @@ private struct ResumeTaskRow: View {
 
 private struct AccountSection: View {
     let account: AccountState
+    let recovery: AccountRecovery?
+    let transportUnavailable: Bool
     let onOpenConfig: () -> Void
     let onCopyCommand: (String) -> Void
 
@@ -483,6 +487,9 @@ private struct AccountSection: View {
             }
             ForEach(account.windows) { window in
                 WindowRow(window: window)
+            }
+            if let recovery {
+                AccountRecoveryView(account: recovery, transportUnavailable: transportUnavailable)
             }
         }
     }

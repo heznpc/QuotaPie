@@ -445,6 +445,18 @@ export class QuotaDatabase {
     return rows.map(eventFromRow);
   }
 
+  latestRecovery(provider: Provider, account: string, bucket: string, sinceMs: number, nowMs: number): QuotaEvent | null {
+    const row = this.db.query<EventRow, [Provider, string, string, number, number]>(`
+      SELECT id, provider, account, bucket, kind, severity, occurred_at_ms,
+             confidence, summary, details_json
+      FROM events WHERE provider = ? AND account = ? AND bucket = ?
+        AND kind IN ('scheduled_reset', 'external_relief', 'allowance_relief')
+        AND occurred_at_ms >= ? AND occurred_at_ms <= ?
+      ORDER BY occurred_at_ms DESC, id DESC LIMIT 1
+    `).get(provider, account, bucket, sinceMs, nowMs);
+    return row ? eventFromRow(row) : null;
+  }
+
   maybePrune(nowMs: number, historyDays: number, force = false): boolean {
     const previous = this.db
       .query<{ value_ms: number }, [string]>("SELECT value_ms FROM maintenance_state WHERE key = ?")

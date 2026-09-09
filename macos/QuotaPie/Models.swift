@@ -10,6 +10,7 @@ struct StatusPayload: Decodable {
     let actionToken: String?
     let resumeTasks: [ResumeTask]
     let resetSignals: ResetSignalPayload?
+    let resetTracking: ResetTracking?
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -20,10 +21,11 @@ struct StatusPayload: Decodable {
         actionToken = try values.decodeIfPresent(String.self, forKey: .actionToken)
         resumeTasks = try values.decodeIfPresent([ResumeTask].self, forKey: .resumeTasks) ?? []
         resetSignals = try values.decodeIfPresent(ResetSignalPayload.self, forKey: .resetSignals)
+        resetTracking = try values.decodeIfPresent(ResetTracking.self, forKey: .resetTracking)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case nowMs, headline, accounts, events, actionToken, resumeTasks, resetSignals
+        case nowMs, headline, accounts, events, actionToken, resumeTasks, resetSignals, resetTracking
     }
 }
 

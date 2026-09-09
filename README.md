@@ -547,3 +547,29 @@ alerts. Old signals (>24 hours), already-passed feed schedule estimates, and
 superseded signals are not newly notified. Existing account-observation alerts
 continue to report actual quota changes independently; a public post never
 changes your quota timer, resumes a task, or spends a banked reset.
+
+### Account recovery evidence in the menu bar
+
+Each account has a **Recovery · last 24 hours** disclosure. It shows the latest
+recorded recovery per current quota window: the interval between observations,
+remaining allowance before/after, and both next-reset dates. Current observation
+coverage is separate: failed/stale collection, a missing comparison, a source or
+window change, and gaps over 30 minutes are unavailable, not proof of non-application.
+Accounts with no snapshots remain visible. With no recorded recovery, the latest
+comparison interval is shown; this is not continuous coverage of the whole day.
+Past evidence remains visible during a service outage.
+
+`GET /api/status` carries `resetTracking` for the native app. Evidence is saved in
+the existing event transaction; older events without evidence are not backfilled
+from posts. The 24-hour view is a bounded summary, not a complete history browser.
+Public candidates are recomputed from up to 200 saved posts, not permanent causal
+links. They can change when a report is corrected or leaves that bounded set.
+
+Only explicit, universal, completed direct Codex reset reports are candidates.
+Plan-specific or unknown-scope reports stay in the news section because account
+plan eligibility is not collected. Explicit weekly/five-hour scope must match the
+observed window. Future schedules, corrections, withdrawals, reset-credit decreases,
+and uncertain observations cannot provide candidates. The six-hour proximity window
+and 30-minute observation-gap limit are conservative display rules, not calibrated
+confidence scores. A candidate never establishes that the public event caused the
+recovery, modifies quota records, or requeues the recovery notification.
