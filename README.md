@@ -547,3 +547,40 @@ alerts. Old signals (>24 hours), already-passed feed schedule estimates, and
 superseded signals are not newly notified. Existing account-observation alerts
 continue to report actual quota changes independently; a public post never
 changes your quota timer, resumes a task, or spends a banked reset.
+
+### Account recovery evidence and public-post candidates
+
+The web dashboard's **Account recovery history** and `GET /api/reset-tracking`
+keep two independent evidence streams:
+
+- Public posts remain in `reset_signals`, with publication time, original URL,
+  classification and direct-X/third-party provenance.
+- Accepted account observations create the existing quota events. New recovery
+  events also persist the previous/next observation times, meter values, reset
+  dates, source quality and whether the banked-reset count decreased, in the
+  same transaction as the snapshot. The event time is when recovery was first
+  observed, not its exact occurrence time.
+- A read-only projection attaches **unconfirmed candidates** from collected
+  Codex posts published within six hours either side of the observation
+  interval. This is a bounded search heuristic, not a measured propagation
+  delay or proof of cause/plan eligibility. There is no cross-provider match.
+
+For example, synthetic readings at 09:55 and 10:00 followed by a 13:05 public
+confirmation produce **one window recovery record**, with a 09:55–10:00 interval
+and a later-publication candidate. Repeated reads/posts do not create another
+account event or notification. Multiple quota windows remain separate records;
+they are not counted as separate global-reset incidents. Existing public-news
+and account-change notifications remain distinct channels of information.
+
+Matching is withheld for scheduled resets, source changes, non-authoritative
+readings, observation gaps over 30 minutes, reset-credit count decreases, and
+legacy records lacking the observation evidence. Banked-reset posts, hints,
+withdrawals and superseded schedules are not matching candidates. No candidate
+means **no match in the collected coverage**, not that no public reset happened.
+Saved relay posts are still unverified originals. Candidates can change when a
+correction arrives or public posts age out of the 30-day retention period;
+account evidence is never rewritten by that projection.
+
+This first version exposes correlation on the web/API, not the native menu-bar
+popover. It does not reconstruct missing historical readings (including a
+user-reported approximate time) or enable collection/change accounts on its own.
