@@ -192,4 +192,24 @@ describe("Codex compaction request routing", () => {
     expect(wrapped[3]).toContain("supports_websockets=false");
     expect(wrapped[3]).toContain("requires_openai_auth=true");
   });
+
+  test("desktop health counts routed requests and supports Codex HTTP fallback", async () => {
+    const routeState = { ...route };
+    const proxy = startCompactionProxy({ route: routeState, token: "f".repeat(48), fetchUpstream: async () => new Response("ok") });
+    try {
+      const upgrade = await fetch(`${proxy.baseUrl}/responses`, { headers: { upgrade: "websocket" } });
+      expect(upgrade.status).toBe(426);
+      await (await fetch(`${proxy.baseUrl}/responses`, { method: "POST", body: JSON.stringify(compact) })).text();
+      const health = await (await fetch(`${proxy.baseUrl}/quotapie-health`)).json();
+      expect(health.requests).toBe(1);
+      expect(health.compactions).toBe(1);
+      expect(health.lastRequest.to).toBe(route.to);
+      routeState.to = routeState.from;
+      await (await fetch(`${proxy.baseUrl}/responses`, { method: "POST", body: JSON.stringify(compact) })).text();
+      const disabled = await (await fetch(`${proxy.baseUrl}/quotapie-health`)).json();
+      expect(disabled.requests).toBe(2);
+      expect(disabled.compactions).toBe(1);
+      expect(disabled.lastRequest.routed).toBe(false);
+    } finally { proxy.stop(); }
+  });
 });
