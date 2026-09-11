@@ -21,6 +21,7 @@ import type { AppConfig } from "./config";
 import type { Locale } from "./i18n";
 import type { Provider } from "./types";
 import { configureAwakeHooks, releaseAwakeTask } from "./awake";
+import { runCompactionCodex } from "./codex-compaction";
 
 const ROOT = resolve(import.meta.dir, "..");
 const BIN = resolve(ROOT, "bin", "quotapie");
@@ -238,6 +239,9 @@ let outputLocale = resolveLocale("auto");
 async function main(): Promise<number> {
   const [command = "status", ...args] = process.argv.slice(2);
   outputLocale = configuredLocale();
+  if (command === "codex") {
+    return runCompactionCodex(args, loadConfig().collection.codexCommand);
+  }
   const jsonOutput = args.includes("--json");
   const selectedAccount = optionValue(args, "--account", outputLocale);
   if (command === "help" || command === "--help" || command === "-h") {

@@ -249,7 +249,69 @@ quotapie doctor               check collectors and connection state
 quotapie test-alert           hand a test alert to the configured channels
 quotapie launchd              print a plist for running as a resident service
 quotapie menubar-launchd      print a plist for launching the menu bar app
+quotapie codex -- -m gpt-6-astra
+                               run Codex with experimental Sol compaction routing
 ```
+
+## Experimental Codex compaction routing
+
+`quotapie codex` launches a Codex process through a private loopback relay. By
+default, Astra performs the task and Sol handles only its compaction requests,
+including automatic compaction in the middle of a turn. The next ordinary
+request still uses Astra; QuotaPie does not interrupt or replay the turn.
+
+```bash
+quotapie codex -- -m gpt-6-astra
+quotapie codex -- resume -m gpt-6-astra SESSION_UUID
+quotapie codex --codex-bin /path/to/codex -- app-server --stdio
+```
+
+From an uninstalled source checkout, replace `quotapie` with `bun run src/cli.ts`.
+The command uses `collection.codexCommand` unless `--codex-bin` is supplied, and
+inherits the current Codex login and `CODEX_HOME`. It requires a ChatGPT login;
+API-key providers are outside this experiment. `--compact-from` and
+`--compact-model` override the source and compaction model names. Other model
+pairs require their own compatibility check.
+
+The relay recognizes the final `compaction_trigger` input control on
+`/responses`, or the legacy `/responses/compact` endpoint. Existing summaries
+and text mentioning compaction do not trigger routing. Only the request's
+`model` changes; reasoning settings and the rest of the request are retained.
+This follows Codex's [native compaction request construction](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact_remote_v2_attempt.rs).
+
+The relay forwards to the fixed ChatGPT Codex backend over HTTPS, with streaming
+HTTP rather than WebSocket transport. It binds only to `127.0.0.1`, uses an
+unguessable per-process path, and stops with the child process. Credentials and
+conversation bodies pass through memory; QuotaPie does not save them. Its own
+stderr messages contain only the compaction model pair and HTTP status. Codex
+continues to manage its own session storage and authentication. Cancellation
+reaches the upstream request, and provider errors retain Codex's normal retry
+handling. QuotaPie adds no retry or fallback to a different account.
+
+This is an opt-in **CLI/app-server launch path**. It does not attach to a Codex
+desktop task that is already running, and the menu bar does not enable it yet.
+It makes no persistent changes to Codex configuration. Resume through the same
+wrapper to keep routing active. HTTP transport can also change ordinary request
+latency, so this is not a promise of faster end-to-end work.
+
+### Reproduce the live check
+
+This explicitly uses the existing account's quota. The probe creates a private
+temporary profile and empty workspace, then provides synthetic facts only in a
+single synthetic tool result. A lower compaction threshold forces native
+mid-turn compaction. No manual compaction or model-switch RPC is sent.
+
+```bash
+python3 scripts/probe-codex-compaction.py --codex-bin /path/to/codex
+```
+
+Verified with Codex CLI **0.153.4** on **2026-09-12**: native automatic compaction
+was routed Astra → Sol, the Astra turn completed, and all three facts survived
+even though the original fact was absent from the plaintext replacement
+history. The reproducible probe observed one compaction taking about 5.2 seconds.
+That small synthetic result establishes interoperability, not the latency or
+memory quality of long real sessions. Legacy routing has unit coverage; only
+the native v2 path was exercised against the live service.
 
 ## Personalisation
 

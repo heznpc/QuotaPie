@@ -295,6 +295,8 @@ Usage:
   quotapie signals [--refresh]  Show public reset signals
   quotapie awake connect|disconnect
                                  Connect or remove working-task sleep hooks
+  quotapie codex [--compact-model MODEL] -- [Codex arguments]
+                                 Run Codex with experimental Astra → Sol compaction routing
   quotapie claude-statusline [--account ID]
                                  Ingest Claude status-line JSON and render one account's compact line
   quotapie watch                Run the adaptive collector and macOS triggers
@@ -323,6 +325,8 @@ Environment:
   quotapie signals [--refresh]  공개 리셋 소식 조회
   quotapie awake connect|disconnect
                                  작업 중 잠자기 방지 훅 연결 또는 해제
+  quotapie codex [--compact-model MODEL] -- [Codex 인자]
+                                 Astra 압축 요청을 Sol로 자동 전환하여 Codex 실행 (실험 기능)
   quotapie claude-statusline [--account ID]
                                  Claude 상태 표시줄 JSON을 받아 한 계정의 요약 표시
   quotapie watch                적응형 수집기와 macOS 트리거 실행
