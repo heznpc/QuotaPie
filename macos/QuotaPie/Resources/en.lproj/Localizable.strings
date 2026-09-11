@@ -234,3 +234,16 @@
 "recovery.reason.reset-credit-decreased" = "Reset credit count decreased; public cause unconfirmed.";
 "recovery.reason.scheduled" = "Observed near the scheduled reset.";
 "recovery.reason.time-proximity-only" = "Time proximity only; same event unconfirmed.";
+
+/* Observed quota and notification status */
+"headline.remaining" = "%@ %@ %@%% left";
+"alert.rapid.title" = "%@/%@ quota dropping quickly";
+"alert.rapid.message" = "%@: %@ min · %@ percentage points used · %@%% left.";
+"window.recentUsage" = "Last %@ min · %@ percentage points used";
+"window.measuredRate" = "Recent rate · %@ percentage points/hour";
+"notification.disabled" = "Notifications are off. Low quota and rapid usage alerts cannot appear.";
+"notification.enabled" = "Quota notifications enabled";
+"notification.checking" = "Checking notification permission…";
+"notification.settings" = "Notification settings";
+"account.recoveryDetails" = "Reset and recovery details";
+"account.previousReadings" = "Previous readings";

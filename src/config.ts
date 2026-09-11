@@ -62,6 +62,9 @@ export interface AppConfig {
     staleProviders: Provider[];
     remainingThresholds: number[];
     predictedEarlyMinutes: number;
+    rapidDropPercent: number;
+    rapidWindowMinutes: number;
+    paceForecasts: boolean;
     cooldownMinutes: number;
     deliveryTimeoutSeconds: number;
     macOSNotifications: boolean;
@@ -113,6 +116,9 @@ export const DEFAULT_CONFIG: AppConfig = {
     staleProviders: ["codex"],
     remainingThresholds: [20, 10, 5],
     predictedEarlyMinutes: 30,
+    rapidDropPercent: 10,
+    rapidWindowMinutes: 10,
+    paceForecasts: false,
     cooldownMinutes: 30,
     deliveryTimeoutSeconds: 30,
     macOSNotifications: true,
@@ -338,6 +344,9 @@ function validateProfile(config: AppConfig): void {
   requireNumber(config.alerts.cooldownMinutes, "alerts.cooldownMinutes", { min: 0, max: 10_080 });
   requireNumber(config.alerts.deliveryTimeoutSeconds, "alerts.deliveryTimeoutSeconds", { min: 1, max: 600 });
   requireNumber(config.alerts.predictedEarlyMinutes, "alerts.predictedEarlyMinutes", { min: 0, max: 10_080 });
+  requireNumber(config.alerts.rapidDropPercent, "alerts.rapidDropPercent", { min: 1, max: 100 });
+  requireNumber(config.alerts.rapidWindowMinutes, "alerts.rapidWindowMinutes", { min: 1, max: 120 });
+  if (typeof config.alerts.paceForecasts !== "boolean") throw new Error("alerts.paceForecasts must be boolean");
 }
 
 export function loadConfig(path = configPath()): AppConfig {

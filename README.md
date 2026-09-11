@@ -12,18 +12,18 @@ The everyday surface is a **native macOS menu bar app**. The CLI is for diagnosi
 - Claude collects through one of two paths. The default is the official status-line JSON. Turning on `collection.claudeOAuthEnabled` makes the official `api/oauth/usage` endpoint — read with Claude Code's local OAuth credentials — the primary source. If you only use the desktop app, the status line never runs, so samples never accumulate; that is the case where you want this switch on.
 - When both sources are alive, a recent OAuth reading is authoritative and the status-line value stays out of the history. This stops equivalent values from arriving under a different source name and manufacturing noise events.
 - Collection health is stored **per source**, not per account, and account health is derived from the best of them. An OAuth failure cannot overwrite a status-line collection that just succeeded.
-- The menu bar title is one conclusion, not a row of provider abbreviations. It picks the **highest risk**, not the lowest remaining percentage — 89% left still reads as `⚠ weekly at risk` if you are on course to run dry six days before the reset.
+- The menu bar shows the provider, window, and measured remaining percentage (for example, `Codex weekly 89% left`). The lowest fresh remaining quota leads; a forecast never replaces that number. Account limits appear first in the popover, with reset news, recovery history, and power controls collapsed below them.
 - `doctor` and `/health` judge by actual collection results, not by whether configuration exists. An account with zero samples does not pass.
 - Provider emails, remote account IDs, OAuth tokens, cookies, prompts, and conversation content are never stored. Multiple accounts are distinguished only by a local alias you choose.
 - 5-hour, weekly, and per-model windows are tracked independently.
 - With several Claude sessions open at once, the raw session IDs are never stored; the latest value per short hash is reconciled so that a stale window cannot roll back a newer usage figure.
 - Codex promotional and per-model entries retire automatically after disappearing from two consecutive full responses, so no ghost timers are left behind.
 - Normal resets, early external resets, possible allowance increases or server corrections, reset-clock rebases, and paid credit changes are each recorded as distinct events.
-- The exhaustion forecast blends your burn over the last two hours with your personal pace over the last 28 days, split by weekday/weekend and neighbouring hours.
-- Only your configured active hours count as remaining working time, and whichever of the 5-hour or weekly window is more dangerous is shown as the current bottleneck.
+- Measured consumption uses elapsed time, including overnight work. A refill, reset-clock change, or authenticated collector change starts a new rate baseline. Forecasts require recent measured usage and estimate actual exhaustion, not entry into a hidden safety reserve.
+- Codex reloads its resident collector when the profile credential file changes. Opaque collection epochs keep old account history and disappeared windows out of the current display; raw account identifiers and credential-file contents are not stored.
 - With the resident menu bar app connected, macOS notifications are posted by QuotaPie itself, so Notification Center attributes them to QuotaPie rather than to a script runner. `watch` and a clean older-app installation retain the legacy script notification as an upgrade fallback. An optional external command trigger is also supported.
 - Multiple Codex and Claude accounts are separated by profile directory and local alias; history, personal pace, bottleneck, and alert cooldowns are all isolated per account.
-- Alerts follow an honesty rule: if recent measured usage is zero, no pace warning is sent. Present-tense wording ("burning too fast") is reserved for a measured burn rate above the safe pace; when only the habitual pattern exceeds it, the wording is forward-looking ("pace forecast").
+- Notifications default to remaining-quota thresholds (20%, 10%, 5%) and an observed drop of at least 10 percentage points within 10 minutes. `alerts.rapidDropPercent` and `alerts.rapidWindowMinutes` set that rule. Speculative pace notifications require `alerts.paceForecasts: true`. The app shows notification permission status and a settings shortcut. After permission returns, it re-evaluates suppressed thresholds against current quota instead of replaying old messages.
 - Collection state is a four-state heartbeat (never-attempted / attempted-then-failed / stale-success / recent-success) so that a stalled collector and a disabled one do not wear the same face.
 - The burn leaderboard reads only token counts, paths, and timestamps (`cwd`, `usage`, `timestamp`) from Claude Code transcripts. Conversation content is never used, stored, or transmitted. Transcripts are line-delimited JSON, so reaching those fields does require parsing the lines that contain them — the accurate claim is "the content is not used", not "the content is never touched". Lines without the fields of interest are not parsed at all.
 
@@ -41,9 +41,9 @@ External consumers (for example [Modore](https://github.com/heznpc/Modore)) read
   },
   "window": { "provider": "codex", "usedPercent": 66, "resetsAt": "…" },  // the single global bottleneck
   "headline": {                             // semantic fields are the contract
-    "kind": "pace-risk", "windowKind": "weekly", "remainingPercent": 89,
+    "kind": "normal", "windowKind": "weekly", "remainingPercent": 89,
     "exhaustsAt": "…", "errorCategory": null,
-    "displayText": "⚠ weekly at risk"       // convenience for consumers that do not localise
+    "displayText": "Codex weekly 89% left"       // convenience for consumers that do not localise
   },
   "topBurn": [ { "remote": "github.com/…", "percent": 42.0, "lastActiveAt": "…" } ]
 }
