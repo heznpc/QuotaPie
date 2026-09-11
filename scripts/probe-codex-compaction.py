@@ -15,6 +15,7 @@ import secrets
 import shutil
 import tempfile
 import time
+import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -40,6 +41,12 @@ class Probe:
             'model_auto_compact_token_limit = 12000\n'
             '[features]\nremote_plugin = false\napps = false\n'
         )
+        self.relay_settings = json.loads(Path(args.relay_settings).read_text()) if args.relay_settings else None
+        if self.relay_settings:
+            settings = self.relay_settings
+            self.relay_url = f"http://127.0.0.1:{settings['port']}/{settings['token']}/backend-api/codex"
+            config_path = self.profile / "config.toml"
+            config_path.write_text("openai_base_url = " + json.dumps(self.relay_url) + "\n" + config_path.read_text())
         self.facts = {
             "project_code": secrets.token_hex(8),
             "release_color": "copper",
@@ -50,6 +57,11 @@ class Probe:
         self.seq = 0
         self.tool_calls = 0
         self.report = {"normal_model": "gpt-6-astra", "compact_model": "gpt-5.6-sol", "threshold": 12000}
+
+    def relay_health(self):
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(self.relay_url + "/quotapie-health", timeout=2) as response:
+            return json.load(response)
 
     def write(self, value):
         self.process.stdin.write((json.dumps(value) + "\n").encode())
@@ -97,10 +109,13 @@ class Probe:
         environment = dict(os.environ, CODEX_HOME=str(self.profile))
         for key in ["CODEX_THREAD_ID", "CODEX_SESSION_ID"]:
             environment.pop(key, None)
+        command = [self.args.bun, str(ROOT / "src/cli.ts"), "codex", "--codex-bin", self.args.codex_bin, "--", "app-server", "--stdio"]
+        if self.relay_settings:
+            command = [self.args.codex_bin, "app-server", "--stdio"]
+            self.before_relay = self.relay_health()
         with (self.run / "transport.log").open("w") as log:
             self.process = await asyncio.create_subprocess_exec(
-                self.args.bun, str(ROOT / "src/cli.ts"), "codex", "--codex-bin", self.args.codex_bin,
-                "--", "app-server", "--stdio", cwd=self.workspace, env=environment,
+                *command, cwd=self.workspace, env=environment,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=log,
                 limit=8 * 1024 * 1024,
             )
@@ -118,6 +133,7 @@ class Probe:
                     "dynamicTools": [{"name": "read_probe_record", "description": "Read synthetic project facts and expendable observations.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}],
                 })
                 self.report["thread_id"] = result["thread"]["id"]
+                self.report["provider"] = result.get("modelProvider")
                 await self.request("turn/start", {
                     "threadId": result["thread"]["id"], "model": "gpt-6-astra", "effort": "low",
                     "input": [{"type": "text", "text": "Read the probe record once, then return its three authoritative facts as JSON."}],
@@ -159,6 +175,8 @@ class Probe:
                 await asyncio.gather(reader, return_exceptions=True)
         transport = (self.run / "transport.log").read_text()
         self.report["routed_requests"] = transport.count("[QuotaPie] compaction gpt-6-astra → gpt-5.6-sol (HTTP 200)")
+        if self.relay_settings:
+            self.report["routed_requests"] = self.relay_health()["compactions"] - self.before_relay["compactions"]
         plaintext = []
         turn_models = []
         for rollout in self.profile.glob("sessions/**/*.jsonl"):
@@ -184,6 +202,7 @@ async def main():
     parser.add_argument("--codex-bin", default=shutil.which("codex"))
     parser.add_argument("--bun", default=shutil.which("bun"))
     parser.add_argument("--codex-home", default=os.environ.get("CODEX_HOME", "~/.codex"))
+    parser.add_argument("--relay-settings", help="Use an installed persistent relay via the built-in OpenAI provider")
     args = parser.parse_args()
     if not args.codex_bin or not args.bun:
         parser.error("Codex and Bun must be installed or passed explicitly")

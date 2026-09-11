@@ -72,6 +72,8 @@ function decodeBody(bytes: Uint8Array, encoding: string | null): Uint8Array {
 /** One loopback relay per launched Codex process. Credentials and bodies stay in memory. */
 export function startCompactionProxy(options: {
   route?: CompactionRoute;
+  port?: number;
+  token?: string;
   onRequest?: (event: CompactionRequestEvent) => void;
   fetchUpstream?: (url: string, init: RequestInit) => Promise<Response>;
 } = {}) {
@@ -79,11 +81,16 @@ export function startCompactionProxy(options: {
   for (const model of [route.from, route.to]) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(model)) throw new Error("Invalid model name");
   }
-  const prefix = `/${randomBytes(24).toString("hex")}/backend-api/codex`;
+  const token = options.token ?? randomBytes(24).toString("hex");
+  if (!/^[a-f0-9]{48}$/.test(token)) throw new Error("Invalid relay token");
+  const prefix = `/${token}/backend-api/codex`;
+  let requests = 0;
+  let compactions = 0;
+  let lastRequest: (CompactionRequestEvent & { receivedAt: string }) | null = null;
   const upstreamFetch = options.fetchUpstream ?? fetch;
   const server = Bun.serve({
     hostname: "127.0.0.1",
-    port: 0,
+    port: options.port ?? 0,
     idleTimeout: 0,
     maxRequestBodySize: MAX_BODY_BYTES,
     async fetch(request) {
@@ -92,6 +99,14 @@ export function startCompactionProxy(options: {
         return new Response("Not found", { status: 404 });
       }
       const path = url.pathname.slice(prefix.length);
+      if (path === "/quotapie-health" && request.method === "GET") {
+        return Response.json({ service: "quotapie-compaction", pid: process.pid, route, requests, compactions, lastRequest });
+      }
+      // Codex explicitly recognizes 426 and falls back to HTTP for this session.
+      // This keeps the built-in OpenAI provider identity in the desktop app.
+      if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
+        return new Response("Use streaming HTTP", { status: 426 });
+      }
       if (!/^\/[a-zA-Z0-9_/-]+$/.test(path) || !["GET", "POST"].includes(request.method)) {
         return new Response("Unsupported route", { status: 400 });
       }
@@ -140,7 +155,12 @@ export function startCompactionProxy(options: {
           await response.body?.cancel();
           return new Response("Unexpected Codex upstream redirect", { status: 502 });
         }
-        if (event) options.onRequest?.({ ...event, status: response.status });
+        if (event) {
+          requests++;
+          if (event.routed) compactions++;
+          lastRequest = { ...event, status: response.status, receivedAt: new Date().toISOString() };
+          options.onRequest?.({ ...event, status: response.status });
+        }
         const responseHeaders = transportHeaders(response.headers);
         responseHeaders.delete("content-encoding");
         return new Response(response.body, { status: response.status, headers: responseHeaders });

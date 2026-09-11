@@ -288,11 +288,53 @@ continues to manage its own session storage and authentication. Cancellation
 reaches the upstream request, and provider errors retain Codex's normal retry
 handling. QuotaPie adds no retry or fallback to a different account.
 
-This is an opt-in **CLI/app-server launch path**. It does not attach to a Codex
-desktop task that is already running, and the menu bar does not enable it yet.
-It makes no persistent changes to Codex configuration. Resume through the same
-wrapper to keep routing active. HTTP transport can also change ordinary request
-latency, so this is not a promise of faster end-to-end work.
+The wrapper is an opt-in **CLI/app-server launch path** and makes no persistent
+changes to Codex configuration. Resume through the same wrapper to keep routing
+active. The optional desktop installation below configures a resident relay.
+The menu bar does not enable it yet. HTTP transport can also change ordinary
+request latency, so this is not a promise of faster end-to-end work.
+
+### Install locally for the Codex desktop app
+
+On macOS with Bun and Python 3.11+, explicitly install the resident relay:
+
+```bash
+python3 scripts/codex-compaction-local.py install
+quotapie-compaction status
+```
+
+The installer builds a standalone relay in `~/.local/lib/quotapie-compaction`,
+registers `local.quotapie.compaction` with launchd, and verifies its loopback
+health before updating `~/.codex/config.toml`. It adds a marked `openai_base_url`
+override and backs up the original configuration. This keeps the built-in
+`openai` provider identity, existing tasks, and selected model. An existing
+custom endpoint or different provider is rejected rather than overwritten.
+The relay responds to WebSocket upgrades with HTTP 426, which Codex uses to
+switch that session to streaming HTTP.
+
+**Quit and reopen Codex once after installing.** Already-loaded tasks keep their
+old connection settings; a live turn cannot be redirected by changing the file.
+Newly loaded tasks use the configured endpoint. `status` distinguishes installed,
+configured, and running, and reports counts of received response headers and
+routed compactions without saving conversation bodies or credentials. These
+counts include probes and do not establish that any particular desktop task has
+switched. No automatic compaction threshold is changed in the real profile.
+
+To roll back:
+
+```bash
+quotapie-compaction disable
+# Quit and reopen Codex, then:
+quotapie-compaction stop
+```
+
+Disable removes only QuotaPie's marked config block, preserving subsequent
+unrelated edits. It changes the live relay into a pass-through so loaded tasks
+can continue while you restart Codex. Stop unloads the launch agent after the
+configuration has been disconnected. Configuration backups remain available.
+The relay starts again at login while enabled; if it stops unexpectedly, launchd
+restarts it. Codex requests depend on this local service until the configuration
+is disabled and the task is reloaded.
 
 ### Reproduce the live check
 
@@ -303,6 +345,9 @@ mid-turn compaction. No manual compaction or model-switch RPC is sent.
 
 ```bash
 python3 scripts/probe-codex-compaction.py --codex-bin /path/to/codex
+# Exercise the installed daemon through the built-in OpenAI provider:
+python3 scripts/probe-codex-compaction.py --codex-bin /path/to/codex \
+  --relay-settings ~/.local/lib/quotapie-compaction/settings.json
 ```
 
 Verified with Codex CLI **0.153.4** on **2026-09-12**: native automatic compaction
@@ -312,6 +357,10 @@ history. The reproducible probe observed one compaction taking about 5.2 seconds
 That small synthetic result establishes interoperability, not the latency or
 memory quality of long real sessions. Legacy routing has unit coverage; only
 the native v2 path was exercised against the live service.
+The installed desktop relay was also exercised with the built-in OpenAI provider:
+one native mid-turn compaction was routed to Sol, then Astra completed with all
+three facts preserved. This verifies the persistent service and configuration
+path, while existing desktop tasks still require reloading.
 
 ## Personalisation
 
