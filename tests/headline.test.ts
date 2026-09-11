@@ -71,7 +71,7 @@ function account(overrides: AccountOverrides = {}): AccountState {
 describe("menu bar headline", () => {
   // The contradiction measured in production: 90% remaining looked healthy
   // while a 7.57x pace put it six days short of the reset.
-  test("high remaining with a projected shortfall is a risk headline, not a healthy percentage", () => {
+  test("keeps the measured percentage visible despite a projected shortfall", () => {
     const headline = buildHeadline([account({
       windows: [window({
         usedPercent: 10,
@@ -83,13 +83,13 @@ describe("menu bar headline", () => {
         bottleneckScore: 2.1,
       })],
     })], NOW);
-    expect(headline.kind).toBe("pace-risk");
+    expect(headline.kind).toBe("normal");
     // The semantic fields are the contract; the sentence is a rendering of them.
     expect(headline.windowKind).toBe("weekly");
     expect(headline.bucket).toBe("codex:primary:10080");
     expect(headline.remainingPercent).toBe(90);
-    expect(headline.displayText).toBe("⚠ weekly at risk");
-    expect(headline.displayText).not.toContain("90");
+    expect(headline.displayText).toBe("Codex weekly 90% left");
+    expect(headline.displayText).toContain("90");
   });
 
   // The other direction: little left is not a risk when the reset is close.
@@ -106,10 +106,10 @@ describe("menu bar headline", () => {
     })], NOW);
     expect(headline.kind).toBe("normal");
     expect(headline.remainingPercent).toBe(10);
-    expect(headline.displayText).toBe("10% left");
+    expect(headline.displayText).toBe("Codex weekly 10% left");
   });
 
-  test("a riskier account outranks a healthier one with less remaining", () => {
+  test("selects the lowest measured remaining quota instead of the strongest forecast", () => {
     const healthy = account({
       windows: [window({ bucket: "codex:primary:300", usedPercent: 95, remainingPercent: 5, riskLevel: "none" })],
     });
@@ -138,8 +138,8 @@ describe("menu bar headline", () => {
         }],
     });
     const headline = buildHeadline([healthy, risky], NOW);
-    expect(headline.kind).toBe("pace-risk");
-    expect(headline.provider).toBe("claude");
+    expect(headline.kind).toBe("normal");
+    expect(headline.provider).toBe("codex");
   });
 
   test("a login-less account reports setup instead of claiming everything is fine", () => {
@@ -205,8 +205,8 @@ describe("menu bar headline", () => {
     expect(korean.kind).toBe(english.kind);
     expect(korean.windowKind).toBe(english.windowKind);
     expect(korean.remainingPercent).toBe(english.remainingPercent);
-    expect(english.displayText).toBe("⚠ weekly at risk");
-    expect(korean.displayText).toBe("⚠ 주간 위험");
+    expect(english.displayText).toBe("Codex weekly 90% left");
+    expect(korean.displayText).toBe("Codex 주간 90% 남음");
   });
 });
 

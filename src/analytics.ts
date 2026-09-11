@@ -1,5 +1,5 @@
 import type { AppConfig, TimeRange } from "./config";
-import { DEFAULT_LOCALE, formatDay, t, windowKindOf } from "./i18n";
+import { DEFAULT_LOCALE, t, windowKindOf } from "./i18n";
 import type { Locale } from "./i18n";
 import type {
   AccountCollectionState,
@@ -102,7 +102,22 @@ interface BurnSample {
   activeHours: number;
 }
 
-function burnSamples(history: QuotaObservation[], config: AppConfig): BurnSample[] {
+function currentHistory(history: QuotaObservation[], latest: QuotaObservation): QuotaObservation[] {
+  const ordered = history.filter((item) => item.observedAtMs <= latest.observedAtMs)
+    .sort((a, b) => a.observedAtMs - b.observedAtMs);
+  let start = 0;
+  for (let index = 1; index < ordered.length; index++) {
+    const previous = ordered[index - 1]!;
+    const current = ordered[index]!;
+    if (current.metadata?.collectorEpoch !== previous.metadata?.collectorEpoch ||
+        (current.usedPercent != null && previous.usedPercent != null && current.usedPercent < previous.usedPercent) ||
+        (current.resetsAtMs != null && previous.resetsAtMs != null &&
+          Math.abs(current.resetsAtMs - previous.resetsAtMs) > 120_000)) start = index;
+  }
+  return ordered.slice(start);
+}
+
+function burnSamples(history: QuotaObservation[]): BurnSample[] {
   const result: BurnSample[] = [];
   for (let index = 1; index < history.length; index += 1) {
     const previous = history[index - 1];
@@ -119,12 +134,10 @@ function burnSamples(history: QuotaObservation[], config: AppConfig): BurnSample
     }
     const increase = current.usedPercent - previous.usedPercent;
     if (increase < 0) continue;
-    const activeHours = gapMs <= 5 * 60_000
-      ? (isActiveTime(previous.observedAtMs + gapMs / 2, config) ? gapMs / HOUR_MS : 0)
-      : activeHoursBetween(previous.observedAtMs, current.observedAtMs, config);
-    if (activeHours <= 0) continue;
+    // Actual consumption counts at every hour, including outside a saved schedule.
+    const activeHours = gapMs / HOUR_MS;
     const rate = increase / activeHours;
-    if (Number.isFinite(rate) && rate >= 0 && rate < 500) {
+    if (Number.isFinite(rate) && rate >= 0) {
       result.push({ rate, increase, atMs: current.observedAtMs, gapMs, activeHours });
     }
   }
@@ -177,10 +190,18 @@ export function analyzeWindow(
   else if (nowMs >= latest.resetsAtMs) freshness = "reset_due";
   else if (ageMs > config.collection.staleAfterSeconds * 1_000) freshness = "stale";
 
-  const samples = burnSamples(history, config);
+  const segment = currentHistory(history, latest);
+  const samples = burnSamples(segment);
   const recentCutoff = nowMs - config.profile.recentLookbackMinutes * 60_000;
   const recentSamples = samples.filter((sample) => sample.atMs >= recentCutoff && sample.gapMs <= 30 * 60_000);
   const recentBurn = weightedBurn(recentSamples);
+  const rapidCutoff = nowMs - config.alerts.rapidWindowMinutes * 60_000;
+  // Direct endpoints also retain fast push updates that are too close
+  // together for a stable hourly-rate estimate.
+  const rapidBaseline = segment.find((item) => item.observedAtMs >= rapidCutoff && item.usedPercent != null);
+  const rapidDropPercent = rapidBaseline?.usedPercent != null && latest.usedPercent != null
+    ? Math.max(0, latest.usedPercent - rapidBaseline.usedPercent) : 0;
+  const rapidIntervalMinutes = rapidBaseline == null ? 0 : (latest.observedAtMs - rapidBaseline.observedAtMs) / 60_000;
 
   const currentLocal = localParts(nowMs, config.profile.timeZone);
   const samePeriod = samples.filter((sample) => {
@@ -207,9 +228,7 @@ export function analyzeWindow(
     ? null
     : Math.max(0, 100 - reservePercent - latest.usedPercent);
   const timeToResetMs = latest.resetsAtMs == null ? null : Math.max(0, latest.resetsAtMs - nowMs);
-  const activeHours = latest.resetsAtMs == null
-    ? null
-    : activeHoursBetween(nowMs, latest.resetsAtMs, config);
+  const activeHours = timeToResetMs == null ? null : timeToResetMs / HOUR_MS;
   const safePace = safeRemaining != null && activeHours != null && activeHours > 0
     ? safeRemaining / activeHours
     : null;
@@ -221,13 +240,12 @@ export function analyzeWindow(
   let minutesBeforeReset: number | null = null;
   if (
     freshness === "fresh" &&
-    safeRemaining != null &&
-    blendedBurn != null &&
-    blendedBurn > 0 &&
+    remainingPercent != null && latest.usedPercent !== 0 &&
+    recentBurn != null && recentBurn > 0 &&
     latest.resetsAtMs != null
   ) {
-    const activeHoursNeeded = safeRemaining / blendedBurn;
-    exhaustsAtMs = addActiveHours(nowMs, activeHoursNeeded, config, latest.resetsAtMs);
+    const forecast = nowMs + remainingPercent / recentBurn * HOUR_MS;
+    exhaustsAtMs = forecast < latest.resetsAtMs ? forecast : null;
     if (exhaustsAtMs != null) {
       minutesBeforeReset = (latest.resetsAtMs - exhaustsAtMs) / 60_000;
     }
@@ -279,6 +297,8 @@ export function analyzeWindow(
     timeToResetMs,
     reservePercent,
     recentBurnPerHour: recentBurn,
+    rapidDropPercent,
+    rapidIntervalMinutes,
     personalBurnPerHour: personalBurn,
     blendedBurnPerHour: blendedBurn,
     safePacePerActiveHour: safePace,
@@ -333,11 +353,8 @@ export function windowShortLabel(window: WindowAnalysis, locale: Locale = DEFAUL
   return kind === "other" ? window.label : t(`window.${kind}`, {}, locale);
 }
 
-const RISK_ORDER: Record<WindowAnalysis["riskLevel"], number> = { "at-risk": 2, watch: 1, none: 0 };
-
-// Picks the single conclusion for the menu bar. The point is that it picks
-// the highest risk, not the lowest remaining percentage: 90% left still wins
-// the title if it is projected to run out six days before the reset.
+// Keep the actual remaining quota visible. Forecasts belong beside their
+// measured evidence, not in place of the percentage in the menu bar.
 export function buildHeadline(
   states: AccountState[],
   nowMs = Date.now(),
@@ -345,7 +362,9 @@ export function buildHeadline(
 ): Headline {
   const enabled = states.filter((state) => state.enabled);
   const freshWindows = enabled.flatMap((state) =>
-    state.windows.filter((window) => window.freshness === "fresh")
+    state.collection.health === "recent-success"
+      ? state.windows.filter((window) => window.freshness === "fresh" && window.remainingPercent != null)
+      : []
   );
   const owner = (window: WindowAnalysis) =>
     enabled.find((state) => state.provider === window.provider && state.account === window.account) ?? null;
@@ -365,29 +384,25 @@ export function buildHeadline(
     displayDetail: null,
   });
 
-  const riskiest = [...freshWindows]
-    .filter((window) => window.riskLevel === "at-risk")
-    .sort((left, right) => (left.minutesBeforeReset ?? 0) - (right.minutesBeforeReset ?? 0))
-    .sort((left, right) => right.bottleneckScore - left.bottleneckScore)[0];
-  if (riskiest) {
-    const account = owner(riskiest);
-    const windowKind = windowKindOf(riskiest.windowSeconds);
+  const leader = [...freshWindows].sort((a, b) => a.remainingPercent! - b.remainingPercent!)[0];
+  if (leader) {
+    const account = owner(leader);
+    const windowKind = windowKindOf(leader.windowSeconds);
     return {
-      ...base("pace-risk"),
-      provider: riskiest.provider,
-      account: riskiest.account,
-      accountLabel: account?.accountLabel ?? riskiest.account,
-      bucket: riskiest.bucket,
+      ...base("normal"),
+      provider: leader.provider,
+      account: leader.account,
+      accountLabel: account?.accountLabel ?? leader.account,
+      bucket: leader.bucket,
       windowKind,
-      windowLabel: riskiest.label,
-      remainingPercent: riskiest.remainingPercent,
-      exhaustsAtMs: riskiest.exhaustsAtMs,
-      displayText: t("headline.pace-risk", { windowKind, label: riskiest.label }, locale),
-      displayDetail: t("headline.pace-risk.detail", {
-        provider: providerName(riskiest.provider),
-        account: account?.accountLabel ?? riskiest.account,
-        label: riskiest.label,
-        date: riskiest.exhaustsAtMs != null ? formatDay(riskiest.exhaustsAtMs, locale) : undefined,
+      windowLabel: leader.label,
+      remainingPercent: leader.remainingPercent,
+      exhaustsAtMs: leader.exhaustsAtMs,
+      displayText: t("headline.remaining", {
+        provider: providerName(leader.provider), windowKind, label: leader.label, percent: leader.remainingPercent!,
+      }, locale),
+      displayDetail: t("headline.detail", {
+        provider: providerName(leader.provider), account: account?.accountLabel ?? leader.account, label: leader.label,
       }, locale),
     };
   }
@@ -432,31 +447,7 @@ export function buildHeadline(
     };
   }
 
-  const leader = [...freshWindows].sort((left, right) => {
-    const rank = RISK_ORDER[right.riskLevel] - RISK_ORDER[left.riskLevel];
-    if (rank !== 0) return rank;
-    return right.bottleneckScore - left.bottleneckScore;
-  })[0]!;
-  const account = owner(leader);
-  return {
-    ...base("normal"),
-    provider: leader.provider,
-    account: leader.account,
-    accountLabel: account?.accountLabel ?? leader.account,
-    bucket: leader.bucket,
-    windowKind: windowKindOf(leader.windowSeconds),
-    windowLabel: leader.label,
-    remainingPercent: leader.remainingPercent,
-    exhaustsAtMs: leader.exhaustsAtMs,
-    displayText: leader.remainingPercent != null
-      ? t("headline.normal", { percent: leader.remainingPercent }, locale)
-      : t("headline.normal.unknown", {}, locale),
-    displayDetail: t("headline.detail", {
-      provider: providerName(leader.provider),
-      account: account?.accountLabel ?? leader.account,
-      label: leader.label,
-    }, locale),
-  };
+  return { ...base("setup"), displayText: t("headline.setup", {}, locale) };
 }
 
 function providerName(provider: ProviderStatus["provider"]): string {

@@ -194,7 +194,12 @@ export class QuotaDatabase {
       return events.filter((value) => this.insertEvent(value));
     }
     const previous = this.latest(observation.provider, observation.account, observation.bucket);
-    const events = classifyDelta(previous, observation, config);
+    const newCollector = observation.provider === "codex" && previous != null &&
+      observation.observedAtMs >= previous.observedAtMs &&
+      observation.metadata?.collectorEpoch !== previous.metadata?.collectorEpoch;
+    // Different authenticated collection epochs are separate baselines, not
+    // evidence that the same account received an allowance/reset/credit change.
+    const events = classifyDelta(newCollector ? null : previous, observation, config);
     if (previous && observation.observedAtMs < previous.observedAtMs) {
       return events.filter((value) => this.insertEvent(value));
     }

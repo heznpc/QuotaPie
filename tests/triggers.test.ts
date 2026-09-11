@@ -336,7 +336,7 @@ describe("pace alert honesty", () => {
         minutesBeforeReset: 4_080,
       })],
       [],
-      DEFAULT_CONFIG,
+      { ...DEFAULT_CONFIG, alerts: { ...DEFAULT_CONFIG.alerts, paceForecasts: true } },
       0,
       1_000,
     );
@@ -346,14 +346,14 @@ describe("pace alert honesty", () => {
   test("uses forecast wording when only habit pattern exceeds pace, current wording when measured burn does", () => {
     const habitOnly = planTriggers(
       [window({ recentBurnPerHour: 2, safePacePerActiveHour: 5, blendedBurnPerHour: 9, paceRatio: 1.8 })],
-      [], DEFAULT_CONFIG, 0, 1_000,
+      [], { ...DEFAULT_CONFIG, alerts: { ...DEFAULT_CONFIG.alerts, paceForecasts: true } }, 0, 1_000,
     ).find((decision) => decision.key.endsWith(":pace"));
     expect(habitOnly?.title).toContain("pace forecast");
     expect(habitOnly?.message).toContain("on this pattern");
 
     const measured = planTriggers(
       [window({ recentBurnPerHour: 12, safePacePerActiveHour: 5, blendedBurnPerHour: 10, paceRatio: 2 })],
-      [], DEFAULT_CONFIG, 0, 1_000,
+      [], { ...DEFAULT_CONFIG, alerts: { ...DEFAULT_CONFIG.alerts, paceForecasts: true } }, 0, 1_000,
     ).find((decision) => decision.key.endsWith(":pace"));
     expect(measured?.title).toContain("burning too fast");
     expect(measured?.presentation?.message).toEqual({
@@ -377,7 +377,7 @@ describe("alert wording stays readable", () => {
         exhaustsAtMs: 1_000,
       })],
       [],
-      DEFAULT_CONFIG,
+      { ...DEFAULT_CONFIG, alerts: { ...DEFAULT_CONFIG.alerts, paceForecasts: true } },
       0,
       1_000,
     );

@@ -109,6 +109,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             onCopy: { [weak self] in self?.copyStatus() },
             onOpenDashboard: { [weak self] in self?.openDashboard() },
             onOpenConfig: { [weak self] in self?.openConfig() },
+            onOpenNotificationSettings: {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=local.quotapie.menubar") {
+                    NSWorkspace.shared.open(url)
+                }
+            },
             onCopyCommand: { [weak self] command in self?.copyToPasteboard(command) },
             onResumeTask: { [weak self] task in self?.resume(task) },
             onRetryTask: { [weak self] task in self?.retry(task) },
@@ -188,9 +193,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     self.popoverModel.lastError = nil
                     self.failureIndex = 0
                     if let actionToken = payload.actionToken, !actionToken.isEmpty {
-                        self.notificationPresenter?.statusDidRefresh(actionToken: actionToken)
+                        self.userNotificationCenter.getNotificationSettings { [weak self] settings in
+                            DispatchQueue.main.async {
+                                guard let self else { return }
+                                let allowed = settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
+                                self.popoverModel.notificationsAllowed = allowed
+                                self.client?.notificationsAuthorized = allowed
+                                self.notificationPresenter?.statusDidRefresh(actionToken: actionToken)
+                            }
+                        }
                     }
-                    self.scheduleRefresh(after: 30)
+                    self.scheduleRefresh(after: 10)
                 case .failure(let error):
                     self.popoverModel.lastError = error.localizedDescription
                     let delay = self.retrySeconds[min(self.failureIndex, self.retrySeconds.count - 1)]
@@ -232,11 +245,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             toolTip = popoverModel.lastError ?? Strings.t("status.tooltip")
         } else {
             title = headline?.localizedTitle ?? Strings.t("headline.checking")
-            switch headline?.kind {
-            case "pace-risk": color = .systemOrange
-            case "degraded", "setup": color = .secondaryLabelColor
-            default: color = .labelColor
-            }
+            if headline?.kind == "degraded" || headline?.kind == "setup" { color = .secondaryLabelColor }
+            else if let remaining = headline?.remainingPercent, remaining <= 5 { color = .systemRed }
+            else if let remaining = headline?.remainingPercent, remaining <= 20 { color = .systemOrange }
+            else { color = .labelColor }
             toolTip = headline?.localizedDetail ?? Strings.t("status.tooltip")
         }
         statusItem.button?.attributedTitle = NSAttributedString(

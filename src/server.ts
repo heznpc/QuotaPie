@@ -57,6 +57,10 @@ export function startDashboard(service: QuotaPieService, config: AppConfig) {
         }
         try {
           if (url.pathname === "/api/notifications/claim") {
+            if (request.headers.get("x-quotapie-notifications-authorized") === "true") {
+              service.alerts.setNativeNotificationConsumer(true);
+              await service.retrySuppressedNotifications();
+            }
             const claim = service.claimNextAppNotification();
             return json({
               notification: claim

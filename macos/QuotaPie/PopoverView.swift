@@ -18,6 +18,7 @@ final class PopoverModel: ObservableObject {
     @Published var payload: StatusPayload?
     @Published var lastError: String?
     @Published var lastSuccessAt: Date?
+    @Published var notificationsAllowed: Bool?
     @Published var resumeActivities: [String: ResumeTaskActivity] = [:]
 }
 
@@ -31,6 +32,7 @@ struct PopoverView: View {
     let onCopy: () -> Void
     let onOpenDashboard: () -> Void
     let onOpenConfig: () -> Void
+    let onOpenNotificationSettings: () -> Void
     let onCopyCommand: (String) -> Void
     let onResumeTask: (ResumeTask) -> Void
     let onRetryTask: (ResumeTask) -> Void
@@ -51,6 +53,10 @@ struct PopoverView: View {
                 .padding(14)
             }
             .frame(maxHeight: 460)
+            Divider()
+            notificationStatus
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
             Divider()
             footer
                 .padding(.horizontal, 10)
@@ -115,9 +121,6 @@ struct PopoverView: View {
                 tone: .warning
             )
         }
-        resetSignalSection
-        awakeSection
-        Divider()
         if let payload, !activeResumeTasks.isEmpty {
             PausedWorkSection(
                 tasks: activeResumeTasks,
@@ -148,8 +151,28 @@ struct PopoverView: View {
         }
         if let events = payload?.events, !events.isEmpty {
             Divider()
-            RecentChanges(events: Array(events.prefix(3)))
+            DisclosureGroup(Strings.t("popover.recentChanges")) {
+                RecentChanges(events: Array(events.prefix(3)))
+            }
         }
+        Divider()
+        DisclosureGroup(Strings.t("awake.title")) { awakeSection.padding(.top, 8) }
+        if payload?.resetSignals?.enabled == true {
+            DisclosureGroup(Strings.t("signal.section")) { resetSignalSection.padding(.top, 8) }
+        }
+    }
+
+    private var notificationStatus: some View {
+        HStack(alignment: .top) {
+            Image(systemName: model.notificationsAllowed == true ? "bell.badge" : "bell.slash")
+            Text(Strings.t(model.notificationsAllowed == false ? "notification.disabled" :
+                            model.notificationsAllowed == true ? "notification.enabled" : "notification.checking"))
+                .font(.caption)
+            Spacer()
+            Button(Strings.t("notification.settings"), action: onOpenNotificationSettings)
+                .buttonStyle(.borderless).font(.caption)
+        }
+        .foregroundStyle(model.notificationsAllowed == false ? Color.orange : Color.secondary)
     }
 
     private var awakeSection: some View {
@@ -230,11 +253,10 @@ struct PopoverView: View {
     private var headlineTone: Color {
         if isDisconnected { return .orange }
         if !readyTasks.isEmpty { return Color(nsColor: .systemBlue) }
-        switch model.payload?.headline?.kind {
-        case "pace-risk": return .orange
-        case "degraded", "setup": return .secondary
-        default: return .primary
-        }
+        if let kind = model.payload?.headline?.kind, ["degraded", "setup"].contains(kind) { return .secondary }
+        if let remaining = model.payload?.headline?.remainingPercent, remaining <= 5 { return .red }
+        if let remaining = model.payload?.headline?.remainingPercent, remaining <= 20 { return .orange }
+        return .primary
     }
 
     private var readyTasks: [ResumeTask] {
@@ -485,11 +507,16 @@ private struct AccountSection: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
             }
-            ForEach(account.windows) { window in
-                WindowRow(window: window)
+            if account.collection.isHealthy {
+                quotaRows
+            } else if !account.windows.isEmpty {
+                DisclosureGroup(Strings.t("account.previousReadings")) { quotaRows }
+                    .font(.caption)
             }
             if let recovery {
-                AccountRecoveryView(account: recovery, transportUnavailable: transportUnavailable)
+                DisclosureGroup(Strings.t("account.recoveryDetails")) {
+                    AccountRecoveryView(account: recovery, transportUnavailable: transportUnavailable)
+                }.font(.caption)
             }
         }
     }
@@ -499,29 +526,31 @@ private struct AccountSection: View {
             .map { DisplayFormat.age(since: Date(timeIntervalSince1970: $0 / 1_000)) } ?? "—"
         return "\(account.collection.sourceLabel) · \(age)"
     }
+
+    private var quotaRows: some View {
+        ForEach(account.windows.sorted { left, right in
+            let leftPrimary = left.bucket.hasPrefix("codex:")
+            let rightPrimary = right.bucket.hasPrefix("codex:")
+            if leftPrimary != rightPrimary { return leftPrimary }
+            return (left.windowSeconds ?? 0) < (right.windowSeconds ?? 0)
+        }) { WindowRow(window: $0) }
+    }
 }
 
 private struct WindowRow: View {
     let window: QuotaWindow
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 8) {
                 Text(window.shortLabel)
-                    .font(.system(size: 11, weight: .medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .frame(width: 44, alignment: .leading)
-                Text(usedText)
-                    .font(.system(size: 11).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(width: 76, alignment: .trailing)
-                UsageBar(window: window)
+                    .font(.system(size: 12, weight: .medium))
+                Spacer()
                 Text(remainingText)
-                    .font(.system(size: 11).monospacedDigit())
+                    .font(.system(size: 15, weight: .semibold).monospacedDigit())
                     .foregroundStyle(window.isExhausted ? Color.red : Color.primary)
-                    .frame(width: 74, alignment: .trailing)
             }
+            UsageBar(window: window)
             VStack(alignment: .leading, spacing: 1) {
                 Text(DisplayFormat.resetStamp(window.resetsAtMs))
                     .font(.caption2)
@@ -535,7 +564,6 @@ private struct WindowRow: View {
                     Text(freshnessText).font(.caption2).foregroundStyle(.orange)
                 }
             }
-            .padding(.leading, 52)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(window.shortLabel)
@@ -560,7 +588,6 @@ private struct WindowRow: View {
 
     private var paceTone: Color {
         if window.isExhausted { return .red }
-        if window.isAtRisk { return .orange }
         return .secondary
     }
 
@@ -599,8 +626,7 @@ private struct UsageBar: View {
 
     private var fillColor: Color {
         if window.isExhausted { return Color(nsColor: .systemRed) }
-        if window.isAtRisk { return Color(nsColor: .systemOrange) }
-        if window.isWatch { return Color(nsColor: .systemYellow) }
+        if let remaining = window.remainingPercent, remaining <= 20 { return Color(nsColor: .systemOrange) }
         return Color(nsColor: .systemBlue)
     }
 }
