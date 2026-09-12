@@ -55,7 +55,7 @@ test("announcement, changed deadline and withdrawal travel through collection to
   config.resetSignals={enabled:true,tokenFile:null,pollSeconds:300};
   config.alerts.enabled=true;config.alerts.macOSNotifications=true;config.alerts.command=null;
   const service=new QuotaPieService(config,new QuotaDatabase(":memory:"));
-  const server=startDashboard(service,config);
+  const server=startDashboard(service,config, { compactionRoot: new URL("fixtures/no-relays", import.meta.url).pathname });
   const origin=`http://127.0.0.1:${server.port}`;
   const now=Date.now(); let text="Codex reset is landing by midnight today";
   const fetcher=(async(input:any)=> String(input).includes("resetbeacon") ? Response.json(emptyFeed(now)) : new Response(page(text,now))) as typeof fetch;

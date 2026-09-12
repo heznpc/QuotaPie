@@ -289,7 +289,7 @@
 "signal.summary.delayed" = "News check delayed";
 
 "compaction.title" = "Compaction history";
-"compaction.explanation" = "Model and reasoning effort from actual compaction requests. Task settings in the composer stay unchanged. Completion requires evidence in the response body.";
+"compaction.explanation" = "Actual request models are shown together: compression and a later work request observed for the same task. The composer settings stay unchanged; a missing follow-up does not prove a model switch.";
 "compaction.running" = "Compacting";
 "compaction.completed" = "Compaction completed";
 "compaction.failed" = "Compaction failed";
@@ -337,3 +337,33 @@
 "alert.event.title.account" = "Codex %@ · login changed";
 
 "alert.event.title.plan" = "Codex %@ · plan changed";
+
+"compaction.startedAt" = "Compression started · %@";
+
+"compaction.finishedAt" = "Compression ended · %@";
+
+"compaction.followup" = "Later work request observed · %@ · %@";
+
+"compaction.followupUnknown" = "Later work model not yet verified";
+
+"compaction.settings.title" = "Automatic compression";
+
+"compaction.settings.scope" = "Choose the model for Astra compression requests. Set the work model in Codex; its composer settings stay unchanged.";
+
+"compaction.settings.model" = "Compression model";
+
+"compaction.settings.effort" = "Reasoning: Low · native compression verified with Sol, Luna and Terra. Relative speed and quality are not established.";
+
+"compaction.settings.applied" = "Saved: %@ · confirmed on %@ of %@ installed routes";
+
+"compaction.settings.partial" = "Older or unavailable routes may retain their previous model. Their running tasks stay connected.";
+
+"compaction.settings.save" = "Apply to future compression";
+
+"compaction.settings.saving" = "Saving…";
+
+"compaction.settings.saved" = "Saved. Applies to future compression requests; a request already running keeps its model.";
+
+"compaction.settings.error" = "Could not confirm the change. Check the selected model and route status, then retry.";
+
+"compaction.settings.unavailable" = "Compression settings are unavailable. Check the local relay installation.";

@@ -31,8 +31,8 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
-export function startDashboard(service: QuotaPieService, config: AppConfig) {
-  const compaction = new CompactionStatusReader();
+export function startDashboard(service: QuotaPieService, config: AppConfig, options: { compactionRoot?: string } = {}) {
+  const compaction = new CompactionStatusReader(options.compactionRoot);
   const dashboardFile = Bun.file(new URL("./dashboard.html", import.meta.url));
   const actionToken = randomBytes(32).toString("base64url");
   const tokenMatches = (candidate: string | null): boolean => {
@@ -52,6 +52,20 @@ export function startDashboard(service: QuotaPieService, config: AppConfig) {
       const allowedHosts = new Set(["127.0.0.1", "localhost", "::1", config.dashboard.host.toLowerCase()]);
       if (!hostname || !allowedHosts.has(hostname)) return json({ error: "invalid_host" }, 403);
       const url = new URL(request.url);
+      if (url.pathname === "/api/compaction/policy") {
+        if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+        if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token"))) {
+          return json({ error: "forbidden" }, 403);
+        }
+        try {
+          const text = await request.text();
+          if (text.length > 1024) return json({ error: "invalid_policy" }, 400);
+          const input = JSON.parse(text);
+          return json({ policy: await compaction.policy.configure(input.model) });
+        } catch {
+          return json({ error: "policy_update_failed" }, 409);
+        }
+      }
       if (url.pathname === "/api/notifications" || url.pathname.startsWith("/api/notifications/")) {
         if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
         if (!tokenMatches(request.headers.get("x-quotapie-action-token"))) {
@@ -223,5 +237,14 @@ export function startDashboard(service: QuotaPieService, config: AppConfig) {
     },
   });
   service.setNativeNotificationTransportAvailable(true);
+  // Older relays retain only a small live history. Collect sanitized follow-up
+  // evidence even while the popover is closed, without restarting those relays.
+  const observationTimer = setInterval(() => { void compaction.status().catch(() => {}); }, 2000);
+  observationTimer.unref();
+  const stop = server.stop.bind(server);
+  server.stop = ((closeActiveConnections?: boolean) => {
+    clearInterval(observationTimer);
+    return stop(closeActiveConnections);
+  }) as typeof server.stop;
   return server;
 }

@@ -103,6 +103,8 @@ struct DetailsView: View {
 
     private var settingsContent: some View {
         VStack(alignment: .leading, spacing: 20) {
+            CompactionSettingsView(model: model, save: actions.configureCompaction)
+            Divider()
             VStack(alignment: .leading, spacing: 8) {
                 Text(Strings.t("detail.notifications")).font(.headline)
                 Text(Strings.t(model.notificationsAllowed == false ? "notification.disabled" :

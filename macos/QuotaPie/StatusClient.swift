@@ -80,6 +80,20 @@ final class StatusClient {
         }
     }
 
+    func configureCompaction(model: String, actionToken: String,
+                             completion: @escaping (Result<CompactionPolicyResponse, Error>) -> Void) {
+        do {
+            var request = try authenticatedPOST(pathComponents: ["api", "compaction", "policy"], actionToken: actionToken)
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["model": model])
+            request.setValue(nil, forHTTPHeaderField: "content-length")
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.timeoutInterval = 8
+            perform(request) { result in
+                completion(Result { try JSONDecoder().decode(CompactionPolicyResponse.self, from: result.get()) })
+            }
+        } catch { completion(.failure(error)) }
+    }
+
     func approveResumeTask(
         id: String,
         actionToken: String,

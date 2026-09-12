@@ -131,7 +131,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             resumeTask: { [weak self] task in self?.resume(task) },
             retryTask: { [weak self] task in self?.retry(task) },
             dismissTask: { [weak self] task in self?.dismiss(task) },
-            quit: { NSApp.terminate(nil) }
+            quit: { NSApp.terminate(nil) },
+            configureCompaction: { [weak self] model in self?.configureCompaction(model) }
         )
     }
 
@@ -193,6 +194,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.refresh()
         }
         if let refreshTimer { RunLoop.main.add(refreshTimer, forMode: .common) }
+    }
+
+    private func configureCompaction(_ model: String) {
+        guard !popoverModel.compactionSaving, let client, let token = currentActionToken else { return }
+        popoverModel.compactionSaving = true
+        popoverModel.compactionSaveMessage = nil
+        client.configureCompaction(model: model, actionToken: token) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.popoverModel.compactionSaving = false
+                switch result {
+                case .success(let response):
+                    self.popoverModel.compactionSaveMessage = Strings.t(response.policy?.model == model
+                        ? "compaction.settings.saved" : "compaction.settings.error")
+                case .failure:
+                    self.popoverModel.compactionSaveMessage = Strings.t("compaction.settings.error")
+                }
+                self.refresh()
+            }
+        }
     }
 
     @objc private func refresh() {

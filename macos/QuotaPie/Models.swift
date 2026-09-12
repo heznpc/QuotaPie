@@ -552,7 +552,27 @@ struct CompactionPayload: Decodable {
     let reachable: Int
     let active: [CompactionRecord]
     let recent: [CompactionRecord]
+    let policy: CompactionPolicy?
     var latest: CompactionRecord? { active.first ?? recent.first }
+}
+
+struct CompactionPolicy: Decodable {
+    let model: String
+    let effort: String
+    let models: [String]
+    let configurable: Bool
+    let generations: Int
+    let applied: Int
+}
+
+struct CompactionPolicyResponse: Decodable { let policy: CompactionPolicy? }
+
+struct CompactionFollowup: Decodable {
+    let requestId: String
+    let model: String
+    let effort: String?
+    let startedAtMs: Double
+    var modelText: String { [CompactionRecord.shortModel(model), effort?.capitalized].compactMap { $0 }.joined(separator: " ") }
 }
 
 struct CompactionRecord: Decodable, Identifiable {
@@ -570,18 +590,21 @@ struct CompactionRecord: Decodable, Identifiable {
     let elapsedMs: Double
     let active: Bool
     let errorCode: String?
+    let finishedAtMs: Double?
+    let followup: CompactionFollowup?
     var id: String { requestId }
     var phaseKey: String { "compaction." + (active ? "running" : phase) }
-    var modelText: String { [shortModel(to), reasoningEffort?.capitalized].compactMap { $0 }.joined(separator: " ") }
+    var modelText: String { [Self.shortModel(to), reasoningEffort?.capitalized].compactMap { $0 }.joined(separator: " ") }
     var routeText: String {
-        let original = [shortModel(from), requestedEffort?.capitalized].compactMap { $0 }.joined(separator: " ")
-        return routed ? "\(original) → \(modelText)" : modelText
+        let original = [Self.shortModel(from), requestedEffort?.capitalized].compactMap { $0 }.joined(separator: " ")
+        let compression = routed ? "\(original) → \(modelText)" : modelText
+        return followup.map { compression + " → " + $0.modelText } ?? compression
     }
     func elapsed(at date: Date) -> String {
         let ms = active ? max(elapsedMs, date.timeIntervalSince1970 * 1000 - startedAtMs) : elapsedMs
         return String(format: "%.1f", ms / 1000) + Strings.t("compaction.seconds")
     }
-    private func shortModel(_ value: String) -> String {
+    static func shortModel(_ value: String) -> String {
         switch value {
         case "gpt-6-astra": return "Astra"
         case "gpt-5.6-sol": return "Sol"

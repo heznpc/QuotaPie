@@ -39,8 +39,17 @@ struct CompactionHistory: View {
                                 .monospacedDigit()
                         }
                     }
-                    Text(Date(timeIntervalSince1970: record.startedAtMs / 1000).formatted(date: .abbreviated, time: .standard))
+                    Text(Strings.t("compaction.startedAt", stamp(record.startedAtMs)))
                         .foregroundStyle(.secondary)
+                    if let end = record.finishedAtMs {
+                        Text(Strings.t("compaction.finishedAt", stamp(end))).foregroundStyle(.secondary)
+                    }
+                    if let followup = record.followup {
+                        Text(Strings.t("compaction.followup", followup.modelText, stamp(followup.startedAtMs)))
+                            .foregroundStyle(.secondary)
+                    } else if !record.active {
+                        Text(Strings.t("compaction.followupUnknown")).foregroundStyle(.secondary)
+                    }
                     if let threadId = record.threadId {
                         Text(Strings.t("compaction.task", threadId)).foregroundStyle(.secondary).textSelection(.enabled)
                     }
@@ -48,6 +57,53 @@ struct CompactionHistory: View {
                         Text(Strings.t("compaction.evidence", error)).foregroundStyle(.secondary)
                     }
                 }.font(.caption).padding(.vertical, 5)
+            }
+        }
+    }
+
+    private func stamp(_ ms: Double) -> String {
+        Date(timeIntervalSince1970: ms / 1000).formatted(date: .abbreviated, time: .standard)
+    }
+}
+
+struct CompactionSettingsView: View {
+    @ObservedObject var model: PopoverModel
+    let save: (String) -> Void
+    @State private var draft = ""
+    @State private var loaded = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(Strings.t("compaction.settings.title")).font(.headline)
+            Text(Strings.t("compaction.settings.scope")).font(.callout).foregroundStyle(.secondary)
+            if let policy = model.payload?.compaction?.policy {
+                Picker(Strings.t("compaction.settings.model"), selection: $draft) {
+                    if !policy.models.contains(policy.model) {
+                        Text(CompactionRecord.shortModel(policy.model)).tag(policy.model)
+                    }
+                    ForEach(policy.models, id: \.self) { value in
+                        Text(CompactionRecord.shortModel(value)).tag(value)
+                    }
+                }.frame(maxWidth: 300)
+                    .disabled(model.compactionSaving || !policy.configurable)
+                    .onAppear { draft = policy.model; loaded = policy.model }
+                    .onChange(of: policy.model) { value in
+                        if draft == loaded { draft = value }
+                        loaded = value
+                    }
+                Text(Strings.t("compaction.settings.effort")).font(.caption).foregroundStyle(.secondary)
+                Text(Strings.t("compaction.settings.applied", CompactionRecord.shortModel(policy.model), String(policy.applied), String(policy.generations)))
+                    .font(.caption).foregroundStyle(.secondary)
+                if policy.applied < policy.generations {
+                    Text(Strings.t("compaction.settings.partial")).font(.caption).foregroundStyle(.orange)
+                }
+                Button(Strings.t(model.compactionSaving ? "compaction.settings.saving" : "compaction.settings.save")) { save(draft) }
+                    .disabled(model.compactionSaving || !policy.configurable || !policy.models.contains(draft))
+            } else {
+                Text(Strings.t("compaction.settings.unavailable")).font(.caption).foregroundStyle(.secondary)
+            }
+            if let message = model.compactionSaveMessage {
+                Text(message).font(.caption).foregroundStyle(.secondary)
             }
         }
     }

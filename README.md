@@ -33,6 +33,8 @@ The everyday surface is a **native macOS menu bar app**. The CLI is for diagnosi
 - Collection state is a four-state heartbeat (never-attempted / attempted-then-failed / stale-success / recent-success) so that a stalled collector and a disabled one do not wear the same face.
 - The burn leaderboard reads only token counts, paths, and timestamps (`cwd`, `usage`, `timestamp`) from Claude Code transcripts. Conversation content is never used, stored, or transmitted. Transcripts are line-delimited JSON, so reaching those fields does require parsing the lines that contain them — the accurate claim is "the content is not used", not "the content is never touched". Lines without the fields of interest are not parsed at all.
 
+The native settings window lets you select Sol, Luna, or Terra for future Astra compression requests, with the validated Low effort. It applies the choice to reachable relay generations that support live policy changes and shows how many acknowledge the selected model; older routes may retain their previous policy. Running requests keep their original policy snapshot. Activity groups compression start/end and the model of a later observed request from the same task (and the same turn when the turn ID is known). Unobserved follow-up models stay unverified. A bounded private metadata record preserves observed continuations after the relay’s live history rolls over.
+
 ## Integration boundary: quota.json
 
 External consumers (for example [Modore](https://github.com/heznpc/Modore)) read exactly one file: `~/Library/Application Support/QuotaPie/quota.json`. The service rewrites it atomically (temp + rename, `0600`) on every tick.

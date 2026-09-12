@@ -20,7 +20,7 @@ if (!Number.isInteger(settings.port) || settings.port < 1024 || settings.port > 
 const proxy = startCompactionProxy({
   ...settings,
   onRequest: (event) => {
-    if (event.routed || event.status >= 400) {
+    if (event.kind === "compaction" || event.kind === "response") {
       console.log(JSON.stringify(event));
     }
   },
