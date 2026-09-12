@@ -283,9 +283,16 @@ struct Headline: Decodable {
     }
 
     var cachedTitle: String {
-        guard let remainingPercent, remainingPercent.isFinite else { return Strings.t("headline.degraded") }
+        cachedTitle(reason: nil)
+    }
+
+    func cachedTitle(reason: String?) -> String {
+        guard let remainingPercent, remainingPercent.isFinite else { return reason ?? Strings.t("headline.degraded") }
         let providerName = provider == "codex" ? "Codex" : provider == "claude" ? "Claude" : provider ?? ""
         let name = windowKind.flatMap(Self.windowName) ?? windowLabel ?? ""
+        if let reason {
+            return Strings.t("headline.cachedReason", providerName, name, String(Int(remainingPercent.rounded())), reason)
+        }
         return Strings.t("headline.cached", providerName, name, String(Int(remainingPercent.rounded())))
     }
 
@@ -385,6 +392,7 @@ struct QuotaWindow: Decodable, Identifiable {
     var isAtRisk: Bool { riskLevel == "at-risk" }
     var isWatch: Bool { riskLevel == "watch" }
     var isExhausted: Bool { (remainingPercent ?? 1) <= 0 }
+    var isLowRemaining: Bool { QuotaPresentation.isLow(remainingPercent) }
 
     var shortLabel: String {
         guard let windowSeconds else { return label }

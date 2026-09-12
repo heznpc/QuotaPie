@@ -70,12 +70,13 @@ struct AccountSection: View {
             let rightPrimary = right.bucket.hasPrefix("codex:")
             if leftPrimary != rightPrimary { return leftPrimary }
             return (left.windowSeconds ?? 0) < (right.windowSeconds ?? 0)
-        }) { WindowRow(window: $0) }
+        }) { WindowRow(window: $0, current: !transportUnavailable && account.collection.isHealthy && $0.freshness == "fresh") }
     }
 }
 
 private struct WindowRow: View {
     let window: QuotaWindow
+    let current: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -85,9 +86,9 @@ private struct WindowRow: View {
                 Spacer()
                 Text(remainingText)
                     .font(.system(size: 15, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(window.isExhausted ? Color.red : Color.primary)
+                    .foregroundStyle(current ? (window.isLowRemaining ? Color.red : Color.primary) : Color.secondary)
             }
-            UsageBar(window: window)
+            UsageBar(window: window, current: current)
             VStack(alignment: .leading, spacing: 1) {
                 Text(DisplayFormat.resetStamp(window.resetsAtMs))
                     .font(.caption2)
@@ -124,7 +125,7 @@ private struct WindowRow: View {
     }
 
     private var paceTone: Color {
-        if window.isExhausted { return .red }
+        if current && window.isExhausted { return .red }
         return .secondary
     }
 
@@ -138,6 +139,7 @@ private struct WindowRow: View {
 /// reserve you decided to leave.
 private struct UsageBar: View {
     let window: QuotaWindow
+    let current: Bool
 
     var body: some View {
         GeometryReader { geometry in
@@ -162,7 +164,8 @@ private struct UsageBar: View {
     }
 
     private var fillColor: Color {
-        if window.isExhausted { return Color(nsColor: .systemRed) }
+        guard current else { return .secondary }
+        if window.isLowRemaining { return Color(nsColor: .systemRed) }
         return Color(nsColor: .systemBlue)
     }
 }

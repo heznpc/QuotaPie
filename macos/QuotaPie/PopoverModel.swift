@@ -17,6 +17,11 @@ enum ResumeTaskActivity: Equatable {
 final class PopoverModel: ObservableObject {
     @Published var payload: StatusPayload?
     @Published var lastError: String?
+    @Published var statusFailure: StatusFailure?
+
+    var statusFailureText: String {
+        statusFailure?.detailText ?? Strings.t("popover.disconnected")
+    }
     @Published var lastSuccessAt: Date?
     @Published var notificationsAllowed: Bool?
     @Published var resumeActivities: [String: ResumeTaskActivity] = [:]

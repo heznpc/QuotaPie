@@ -321,7 +321,14 @@
 "signal.timeUnresolved" = "원문의 시간 표현입니다. 시간대·기준일 확인 전에는 내 지역의 확정 시각으로 환산하지 않습니다.";
 "signal.summary.timeHint" = "리셋 시간 언급 있음 · 확정 시각 미확인";
 
-"headline.cached" = "%@ %@ %@%% · 갱신 안 됨";
+"headline.cached" = "%@ %@ %@%% · 이전 값";
+"headline.cachedReason" = "%@ %@ %@%% · %@";
+"status.failure.timeout" = "응답 지연";
+"status.failure.timeout.detail" = "로컬 서비스의 응답이 늦습니다. 다시 확인 중입니다.";
+"status.failure.connection" = "연결 끊김";
+"status.failure.connection.detail" = "로컬 서비스 연결을 다시 시도하고 있습니다.";
+"status.failure.response" = "응답 오류";
+"status.failure.response.detail" = "로컬 서비스 응답을 읽지 못했습니다. 다시 확인 중입니다.";
 
 "event.account_changed" = "다른 Codex 계정으로 로그인한 것을 확인했습니다. 새 계정의 잔량을 별도로 추적합니다.";
 

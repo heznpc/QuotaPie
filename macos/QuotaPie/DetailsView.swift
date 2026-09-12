@@ -22,7 +22,7 @@ struct DetailsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     if let error = model.lastError {
-                        CalloutView(text: Strings.t("popover.disconnected"), detail: error, tone: .warning)
+                        CalloutView(text: model.statusFailureText, detail: error, tone: .warning)
                     }
                     detailContent
                 }

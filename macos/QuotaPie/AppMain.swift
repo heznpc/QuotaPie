@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import UserNotifications
+import OSLog
 
 @main
 struct QuotaPieApp {
@@ -26,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var isFetching = false
     private var failureIndex = 0
     private let retrySeconds: [TimeInterval] = [2, 5, 15, 30]
+    private let statusLogger = Logger(subsystem: "local.quotapie.menubar", category: "StatusSync")
 #if DEBUG
     private var debugWindow: NSWindow?
 #endif
@@ -43,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             userNotificationCenter.delegate = presenter
         } catch {
             popoverModel.lastError = error.localizedDescription
+            popoverModel.statusFailure = StatusFailure(error)
         }
     }
 
@@ -201,6 +204,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 self.isFetching = false
                 switch result {
                 case .success(let payload):
+                    if self.popoverModel.statusFailure != nil {
+                        self.statusLogger.notice("Status connection recovered")
+                    }
                     self.popoverModel.payload = payload
                     let activeTaskIDs = Set(payload.resumeTasks.filter(\.isActive).map(\.id))
                     self.popoverModel.resumeActivities = self.popoverModel.resumeActivities.filter {
@@ -208,6 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     }
                     self.popoverModel.lastSuccessAt = Date()
                     self.popoverModel.lastError = nil
+                    self.popoverModel.statusFailure = nil
                     self.failureIndex = 0
                     if let actionToken = payload.actionToken, !actionToken.isEmpty {
                         self.userNotificationCenter.getNotificationSettings { [weak self] settings in
@@ -222,6 +229,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     }
                     self.scheduleRefresh(after: payload.compaction?.active.isEmpty == false || self.popover.isShown ? 2 : 10)
                 case .failure(let error):
+                    let failure = StatusFailure(error)
+                    if self.popoverModel.statusFailure != failure {
+                        self.statusLogger.error("Status fetch failed: kind=\(failure.rawValue, privacy: .public) code=\((error as NSError).code)")
+                    }
+                    self.popoverModel.statusFailure = failure
                     self.popoverModel.lastError = error.localizedDescription
                     let delay = self.retrySeconds[min(self.failureIndex, self.retrySeconds.count - 1)]
                     self.failureIndex = min(self.failureIndex + 1, self.retrySeconds.count - 1)
@@ -270,14 +282,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 "\(task.projectLabel) \(task.shortReference)"
             )
         } else if popoverModel.lastError != nil {
-            title = popoverModel.payload == nil ? Strings.t("headline.disconnected") : headline?.cachedTitle ?? Strings.t("headline.degraded")
+            title = headline?.cachedTitle(reason: popoverModel.statusFailure?.shortText)
+                ?? popoverModel.statusFailure?.shortText ?? Strings.t("headline.disconnected")
             color = .systemOrange
             toolTip = popoverModel.lastError ?? Strings.t("status.tooltip")
         } else {
             title = headline?.localizedTitle ?? Strings.t("headline.checking")
             if headline?.kind == "degraded" || headline?.kind == "setup" { color = .secondaryLabelColor }
-            else if let remaining = headline?.remainingPercent, remaining <= 5 { color = .systemRed }
-            else if let remaining = headline?.remainingPercent, remaining <= 20 { color = .systemOrange }
+            else if QuotaPresentation.isLow(headline?.remainingPercent) { color = .systemRed }
             else { color = .labelColor }
             toolTip = headline?.localizedDetail ?? Strings.t("status.tooltip")
         }

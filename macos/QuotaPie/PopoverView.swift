@@ -62,7 +62,7 @@ struct PopoverView: View {
                 }
                 if model.lastError != nil || !account.collection.isHealthy {
                     Button { openDetails(.quota) } label: {
-                        Label(model.lastError != nil ? Strings.t("popover.disconnected") : account.collection.actionText,
+                        Label(model.lastError != nil ? model.statusFailureText : account.collection.actionText,
                               systemImage: "exclamationmark.circle")
                             .font(.caption).foregroundStyle(.orange)
                             .multilineTextAlignment(.leading)
@@ -90,7 +90,7 @@ struct PopoverView: View {
                     .buttonStyle(.plain)
                 }
             } else {
-                Text(Strings.t(model.lastError == nil ? "popover.noAccounts" : "popover.disconnected"))
+                Text(model.lastError == nil ? Strings.t("popover.noAccounts") : model.statusFailureText)
                     .font(.callout).foregroundStyle(.secondary)
                 detailButton("overview.quotaDetail", section: .quota)
             }
@@ -139,7 +139,7 @@ struct PopoverView: View {
                             Text("%").font(.system(size: 21, weight: .medium))
                         }
                     }
-                    .foregroundStyle(current ? (window.isExhausted ? Color.red : Color.primary) : Color.secondary)
+                    .foregroundStyle(current ? (window.isLowRemaining ? Color.red : Color.primary) : Color.secondary)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(Strings.t(current ? "overview.remaining" : "overview.cachedRemaining", window.shortLabel))
                     .accessibilityValue(percent.map { "\(Int($0.rounded()))%" } ?? "—")
@@ -152,7 +152,7 @@ struct PopoverView: View {
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.primary.opacity(0.10))
-                    Capsule().fill(current && window.isExhausted ? Color.red : Color.primary.opacity(current ? 0.75 : 0.28))
+                    Capsule().fill(current && window.isLowRemaining ? Color.red : Color.primary.opacity(current ? 0.75 : 0.28))
                         .frame(width: geometry.size.width * (percent ?? 0) / 100)
                 }
             }

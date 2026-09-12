@@ -196,7 +196,7 @@ const CATALOG = {
   "headline.degraded": { en: () => "Quota unavailable", ko: () => "잔량 조회 실패" },
   "headline.cached": {
     en: p => `${p.provider} ${windowName(p.windowKind, "en", p.label)} ${Math.round(Number(p.percent))}% · last checked`,
-    ko: p => `${p.provider} ${windowName(p.windowKind, "ko", p.label)} ${Math.round(Number(p.percent))}% · 갱신 안 됨`,
+    ko: p => `${p.provider} ${windowName(p.windowKind, "ko", p.label)} ${Math.round(Number(p.percent))}% · 이전 값`,
   },
   "headline.setup": { en: () => "Setup needed", ko: () => "설정 필요" },
   "headline.normal": {
