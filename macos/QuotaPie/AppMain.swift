@@ -215,18 +215,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
-    /// The title is one conclusion. The service decides which one; this only
-    /// gives it a colour.
-    ///
-    /// While the transport is down, the last value received is not used as the
-    /// title. Cached numbers are fine in the popover, labelled as the last good
-    /// reading, but the menu bar states what is true now — showing an old
-    /// number in the normal colour there is simply a lie.
+    /// Show measured quota as a battery. Recovery actions and collection errors
+    /// keep their text labels; cached quota must not look like a fresh reading.
     private func render() {
+        guard let button = statusItem.button else { return }
         let headline = popoverModel.payload?.headline
         let readyTasks = popoverModel.lastError == nil
             ? (popoverModel.payload?.resumeTasks.filter(\.isReady) ?? [])
             : []
+        if readyTasks.isEmpty, popoverModel.lastError == nil,
+           let headline, ["normal", "pace-risk"].contains(headline.kind),
+           let provider = headline.provider,
+           let remaining = headline.remainingPercent, remaining.isFinite {
+            let providerName = provider == "codex" ? "Codex" : provider == "claude" ? "Claude" : provider
+            let windowName = headline.windowKind.flatMap(Headline.windowName) ?? headline.windowLabel ?? ""
+            let label = [providerName, windowName].filter { !$0.isEmpty }.joined(separator: " ")
+            button.attributedTitle = NSAttributedString(string: "")
+            button.image = MenuBarQuotaIndicator.image(label: label, remainingPercent: remaining)
+            button.imagePosition = .imageOnly
+            button.imageScaling = .scaleNone
+            button.setAccessibilityLabel(headline.localizedTitle)
+            button.toolTip = [headline.localizedTitle, headline.localizedDetail].compactMap { $0 }.joined(separator: "\n")
+            return
+        }
+        button.image = nil
+        button.imagePosition = .noImage
         let title: String
         let color: NSColor
         let toolTip: String
@@ -251,14 +264,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             else { color = .labelColor }
             toolTip = headline?.localizedDetail ?? Strings.t("status.tooltip")
         }
-        statusItem.button?.attributedTitle = NSAttributedString(
+        button.attributedTitle = NSAttributedString(
             string: title,
             attributes: [
                 .foregroundColor: color,
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
             ]
         )
-        statusItem.button?.toolTip = toolTip
+        button.setAccessibilityLabel(title)
+        button.toolTip = toolTip
     }
 
     private func resume(_ task: ResumeTask) {
