@@ -109,9 +109,9 @@ describe("menu bar headline", () => {
     expect(headline.displayText).toBe("Codex weekly 10% left");
   });
 
-  test("selects the lowest measured remaining quota instead of the strongest forecast", () => {
+  test("uses remaining percentage only to break ties between equal durations", () => {
     const healthy = account({
-      windows: [window({ bucket: "codex:primary:300", usedPercent: 95, remainingPercent: 5, riskLevel: "none" })],
+      windows: [window({ usedPercent: 95, remainingPercent: 5, riskLevel: "none" })],
     });
     const risky = account({
       provider: "claude",
@@ -140,6 +140,53 @@ describe("menu bar headline", () => {
     const headline = buildHeadline([healthy, risky], NOW);
     expect(headline.kind).toBe("normal");
     expect(headline.provider).toBe("codex");
+  });
+
+  test.each([65, 0])("short period leads even when weekly has only %d percent left", (weeklyRemaining) => {
+    const weekly = window({ remainingPercent: weeklyRemaining, resetsAtMs: NOW + 60_000 });
+    const short = window({ bucket: "codex:primary:300", label: "Codex 5h", windowSeconds: 18_000,
+      remainingPercent: 70, resetsAtMs: NOW + 18_000_000 });
+    const headline = buildHeadline([account({ windows: [weekly, short] })], NOW, "ko");
+    expect(headline.bucket).toBe(short.bucket);
+    expect(headline.remainingPercent).toBe(70);
+    expect(headline.displayText).toBe("Codex 5시간 70% 남음");
+  });
+
+  test("compares actual durations from seconds through years without a five-hour special case", () => {
+    const durations = [1, 60, 3_600, 18_000, 86_400, 604_800, 31_536_000];
+    const windows = durations.map((seconds, index) => window({
+      bucket: `codex:primary:${seconds / 60}`, windowSeconds: seconds,
+      label: `period ${seconds}s`, remainingPercent: 100 - index * 10,
+    }));
+    for (let index = 0; index < windows.length; index++) {
+      const headline = buildHeadline([account({ windows: windows.slice(index).reverse() })], NOW);
+      expect(headline.bucket).toBe(windows[index]!.bucket);
+    }
+  });
+
+  test("Spark cannot replace general Codex even with a shorter period or lower remaining quota", () => {
+    for (const remainingPercent of [0, 100]) {
+      const state = account({ windows: [
+        window({ bucket: "codex_bengalfox:primary:300", label: "Spark 5h", windowSeconds: 18_000, remainingPercent }),
+        window({ remainingPercent: 18 }),
+      ] });
+      expect(buildHeadline([state], NOW).bucket).toBe("codex:primary:10080");
+      expect(state.windows).toHaveLength(2);
+    }
+  });
+
+  test("Spark alone does not become the default Codex headline", () => {
+    const state = account({ windows: [window({ bucket: "codex_bengalfox:primary:300", windowSeconds: 18_000 })] });
+    expect(buildHeadline([state], NOW).bucket).toBeNull();
+  });
+
+  test("ignores stale short windows and puts unknown durations after known ones", () => {
+    const state = account({ windows: [
+      window({ bucket: "codex:primary:300", windowSeconds: 18_000, freshness: "stale", remainingPercent: 0 }),
+      window({ bucket: "codex:primary:unknown", windowSeconds: null, remainingPercent: 1 }),
+      window({ remainingPercent: 65 }),
+    ] });
+    expect(buildHeadline([state], NOW).bucket).toBe("codex:primary:10080");
   });
 
   test("a login-less account reports setup instead of claiming everything is fine", () => {
@@ -221,5 +268,7 @@ describe("window short labels", () => {
   test("an unknown window length keeps the provider's own label", () => {
     expect(windowShortLabel(window({ windowSeconds: 2 * 86_400, label: "Codex 2일" }))).toBe("Codex 2일");
     expect(windowShortLabel(window({ windowSeconds: null, label: "Codex 43200m" }))).toBe("Codex 43200m");
+    expect(windowShortLabel(window({ windowSeconds: 60, label: "Codex 1 minute" }))).toBe("Codex 1 minute");
+    expect(windowShortLabel(window({ windowSeconds: 365 * 86_400, label: "Codex annual" }))).toBe("Codex annual");
   });
 });

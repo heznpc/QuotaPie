@@ -361,9 +361,13 @@ export function buildHeadline(
   locale: Locale = DEFAULT_LOCALE,
 ): Headline {
   const enabled = states.filter((state) => state.enabled);
+  // The menu bar represents general Codex work. Separate model allowances
+  // (for example Spark) remain in the account details and cannot take it over.
   const freshWindows = enabled.flatMap((state) =>
     state.collection.health === "recent-success"
-      ? state.windows.filter((window) => window.freshness === "fresh" && window.remainingPercent != null)
+      ? state.windows.filter((window) =>
+        window.freshness === "fresh" && window.remainingPercent != null &&
+        (window.provider !== "codex" || window.bucket.startsWith("codex:")))
       : []
   );
   const owner = (window: WindowAnalysis) =>
@@ -384,7 +388,15 @@ export function buildHeadline(
     displayDetail: null,
   });
 
-  const leader = [...freshWindows].sort((a, b) => a.remainingPercent! - b.remainingPercent!)[0];
+  // Compare the provider's actual window duration, not a plan name, a fixed
+  // five-hour preference, or the time left until the next reset. Unknown or
+  // invalid durations follow known windows. Remaining quota only breaks ties.
+  const duration = (window: WindowAnalysis) =>
+    window.windowSeconds != null && Number.isFinite(window.windowSeconds) && window.windowSeconds > 0
+      ? window.windowSeconds : Infinity;
+  const leader = [...freshWindows].sort((a, b) =>
+    (duration(a) - duration(b)) || (a.remainingPercent! - b.remainingPercent!)
+  )[0];
   if (leader) {
     const account = owner(leader);
     const windowKind = windowKindOf(leader.windowSeconds);
