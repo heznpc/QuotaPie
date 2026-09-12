@@ -35,6 +35,28 @@ describe("Codex compaction request routing", () => {
     expect(routeCompaction("/other/responses/compact", compact, route).routed).toBe(false);
   });
 
+  test("reports only recognized reasoning settings and preserves them when routing", async () => {
+    const events: CompactionRequestEvent[] = [];
+    const seen: unknown[] = [];
+    const proxy = startCompactionProxy({
+      onRequest: event => events.push(event),
+      fetchUpstream: async (_url, init) => {
+        seen.push(JSON.parse(await new Response(init.body).text()).reasoning);
+        return new Response("ok");
+      },
+    });
+    try {
+      for (const effort of ["low", "xhigh", "synthetic-private-text"]) {
+        await (await fetch(`${proxy.baseUrl}/responses`, {
+          method: "POST", body: JSON.stringify({ ...compact, reasoning: { effort } }),
+        })).text();
+      }
+      expect(events.map(event => event.reasoningEffort)).toEqual(["low", "xhigh", null]);
+      expect(seen).toEqual([{ effort: "low" }, { effort: "xhigh" }, { effort: "synthetic-private-text" }]);
+      expect(JSON.stringify(events)).not.toContain("synthetic-private-text");
+    } finally { proxy.stop(); }
+  });
+
   test("keeps model routing independent across simultaneous requests", async () => {
     const seen: { url: string; body: string; headers: Headers }[] = [];
     const events: CompactionRequestEvent[] = [];

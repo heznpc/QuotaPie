@@ -283,7 +283,8 @@ The relay forwards to the fixed ChatGPT Codex backend over HTTPS, with streaming
 HTTP rather than WebSocket transport. It binds only to `127.0.0.1`, uses an
 unguessable per-process path, and stops with the child process. Credentials and
 conversation bodies pass through memory; QuotaPie does not save them. Its own
-stderr messages contain only the compaction model pair and HTTP status. Codex
+stderr messages contain only the compaction model pair, HTTP status, and a
+recognized reasoning-effort value (or `unspecified`). Codex
 continues to manage its own session storage and authentication. Cancellation
 reaches the upstream request, and provider errors retain Codex's normal retry
 handling. QuotaPie adds no retry or fallback to a different account.
@@ -349,6 +350,9 @@ python3 scripts/probe-codex-compaction.py --codex-bin /path/to/codex
 python3 scripts/probe-codex-compaction.py --codex-bin /path/to/codex \
   --relay-settings ~/.local/lib/quotapie-compaction/settings.json
 ```
+
+The probe also accepts `--compact-model`, `--normal-model`, `--effort`, and
+`--fixture constraints` for an exact 12-field recall check with final corrections.
 
 ## Personalisation
 

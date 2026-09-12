@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import tempfile
@@ -34,8 +35,8 @@ class Probe:
         (self.profile / "auth.json").symlink_to(auth)
         (self.profile / "config.toml").write_text(
             'cli_auth_credentials_store = "file"\n'
-            'model = "gpt-6-astra"\n'
-            'model_reasoning_effort = "low"\n'
+            f'model = "{args.normal_model}"\n'
+            f'model_reasoning_effort = "{args.effort}"\n'
             'approval_policy = "never"\n'
             'sandbox_mode = "read-only"\n'
             'model_auto_compact_token_limit = 12000\n'
@@ -44,19 +45,32 @@ class Probe:
         self.relay_settings = json.loads(Path(args.relay_settings).read_text()) if args.relay_settings else None
         if self.relay_settings:
             settings = self.relay_settings
+            if settings["route"] != {"from": args.normal_model, "to": args.compact_model}:
+                raise ValueError("Installed relay route does not match the requested probe models")
             self.relay_url = f"http://127.0.0.1:{settings['port']}/{settings['token']}/backend-api/codex"
             config_path = self.profile / "config.toml"
             config_path.write_text("openai_base_url = " + json.dumps(self.relay_url) + "\n" + config_path.read_text())
         self.facts = {
-            "project_code": secrets.token_hex(8),
+            "project_code": args.record_id or secrets.token_hex(8),
             "release_color": "copper",
             "max_batch": 37,
         }
+        if args.fixture == "constraints":
+            self.facts.update({
+                "branch": "fix/queue-order", "entrypoint": "src/queue.ts",
+                "completed": ["schema migration", "duplicate guard"],
+                "pending": ["retry test", "local preview"],
+                "constraints": ["do not deploy", "keep old exports", "preserve user edits"],
+                "decision": "use FIFO, not priority order",
+                "rejected": "automatic retry of non-idempotent jobs",
+                "rollback": "disable queue_v2 flag", "next_action": "run the retry test",
+            })
         self.pending = {}
         self.events = asyncio.Queue()
         self.seq = 0
         self.tool_calls = 0
-        self.report = {"normal_model": "gpt-6-astra", "compact_model": "gpt-5.6-sol", "threshold": 12000}
+        self.report = {"normal_model": args.normal_model, "compact_model": args.compact_model,
+                       "requested_effort": args.effort, "fixture": args.fixture, "threshold": 12000}
 
     def relay_health(self):
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -89,11 +103,16 @@ class Probe:
                     params = message.get("params", {})
                     if message.get("method") == "item/tool/call" and params.get("tool") == "read_probe_record" and self.tool_calls == 0:
                         self.tool_calls += 1
-                        payload = "AUTHORITATIVE FACTS: " + json.dumps(self.facts) + "\n"
+                        initial = dict(self.facts)
+                        if self.args.fixture == "constraints":
+                            initial.update(release_color="silver", max_batch=120)
+                        payload = "AUTHORITATIVE FACTS: " + json.dumps(initial) + "\n"
                         payload += "\n".join(
                             f"Historical observation {i}: synthetic task is resolved, no action or constraints remain."
                             for i in range(700)
                         )
+                        if self.args.fixture == "constraints":
+                            payload += '\nFINAL CORRECTION: release_color is copper; max_batch is 37. These override the earlier values. All other facts remain in effect.\n'
                         self.write({"id": identifier, "result": {"contentItems": [{"type": "inputText", "text": payload}], "success": True}})
                     else:
                         self.write({"id": identifier, "error": {"code": -32601, "message": "No other probe tools are available"}})
@@ -109,7 +128,9 @@ class Probe:
         environment = dict(os.environ, CODEX_HOME=str(self.profile))
         for key in ["CODEX_THREAD_ID", "CODEX_SESSION_ID"]:
             environment.pop(key, None)
-        command = [self.args.bun, str(ROOT / "src/cli.ts"), "codex", "--codex-bin", self.args.codex_bin, "--", "app-server", "--stdio"]
+        command = [self.args.bun, str(ROOT / "src/cli.ts"), "codex", "--codex-bin", self.args.codex_bin,
+                   "--compact-from", self.args.normal_model, "--compact-model", self.args.compact_model,
+                   "--", "app-server", "--stdio"]
         if self.relay_settings:
             command = [self.args.codex_bin, "app-server", "--stdio"]
             self.before_relay = self.relay_health()
@@ -127,16 +148,16 @@ class Probe:
                 })
                 self.write({"method": "initialized"})
                 result = await self.request("thread/start", {
-                    "model": "gpt-6-astra", "cwd": str(self.workspace), "approvalPolicy": "never", "sandbox": "read-only",
+                    "model": self.args.normal_model, "cwd": str(self.workspace), "approvalPolicy": "never", "sandbox": "read-only",
                     "baseInstructions": "This is a synthetic compaction test. Use only read_probe_record exactly once. Preserve its authoritative facts through compaction.",
-                    "developerInstructions": "Do not access files or network. Call read_probe_record once, then return its project_code, release_color, and max_batch as JSON.",
+                    "developerInstructions": "Do not access files or network. Call read_probe_record once, apply any final corrections, then return every authoritative fact as one JSON object. Preserve lists and exact values; do not add prose or keys.",
                     "dynamicTools": [{"name": "read_probe_record", "description": "Read synthetic project facts and expendable observations.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}],
                 })
                 self.report["thread_id"] = result["thread"]["id"]
                 self.report["provider"] = result.get("modelProvider")
                 await self.request("turn/start", {
-                    "threadId": result["thread"]["id"], "model": "gpt-6-astra", "effort": "low",
-                    "input": [{"type": "text", "text": "Read the probe record once, then return its three authoritative facts as JSON."}],
+                    "threadId": result["thread"]["id"], "model": self.args.normal_model, "effort": self.args.effort,
+                    "input": [{"type": "text", "text": "Read the probe record once, then return all its authoritative facts as JSON, applying the final corrections."}],
                 })
                 started = time.monotonic()
                 compactions = {}
@@ -145,6 +166,10 @@ class Probe:
                     message = await self.events.get()
                     method, params = message["method"], message.get("params", {})
                     item = params.get("item", {})
+                    if method == "error":
+                        error = params.get("error") or {}
+                        if isinstance(error, dict) and isinstance(error.get("message"), str):
+                            self.report["provider_error"] = re.sub(r"https?://\S+", "[url]", error["message"])[:2000]
                     if method == "item/started" and item.get("type") == "contextCompaction":
                         compactions[item["id"]] = time.monotonic()
                         print("Native mid-turn compaction started", flush=True)
@@ -157,10 +182,16 @@ class Probe:
                         raise RuntimeError("Codex closed before the turn completed")
                     if method == "turn/completed":
                         self.report["turn_status"] = params["turn"]["status"]
+                        error = params["turn"].get("error") or {}
+                        if isinstance(error, dict) and isinstance(error.get("message"), str):
+                            self.report["provider_error"] = re.sub(r"https?://\S+", "[url]", error["message"])[:2000]
                         self.report["turn_seconds"] = round(time.monotonic() - started, 3)
                         break
                 try:
-                    self.report["facts_preserved"] = json.loads(answer) == self.facts
+                    actual = json.loads(answer)
+                    self.report["facts_preserved"] = actual == self.facts
+                    self.report["fields_preserved"] = sum(actual.get(key) == value for key, value in self.facts.items()) if isinstance(actual, dict) else 0
+                    self.report["fields_total"] = len(self.facts)
                 except ValueError:
                     self.report["facts_preserved"] = False
             finally:
@@ -174,7 +205,9 @@ class Probe:
                 reader.cancel()
                 await asyncio.gather(reader, return_exceptions=True)
         transport = (self.run / "transport.log").read_text()
-        self.report["routed_requests"] = transport.count("[QuotaPie] compaction gpt-6-astra → gpt-5.6-sol (HTTP 200)")
+        self.report["routed_requests"] = transport.count(f"[QuotaPie] compaction {self.args.normal_model} → {self.args.compact_model} (HTTP 200)")
+        self.report["routing_statuses"] = [int(status) for status in re.findall(r"\[QuotaPie\] compaction .*? \(HTTP (\d+)\)", transport)]
+        self.report["observed_compaction_efforts"] = re.findall(r"\[QuotaPie\] compaction .*? effort=([a-z]+)", transport)
         if self.relay_settings:
             self.report["routed_requests"] = self.relay_health()["compactions"] - self.before_relay["compactions"]
         plaintext = []
@@ -193,7 +226,7 @@ class Probe:
             self.report.get("turn_status") == "completed", self.report.get("facts_preserved"),
             self.report["routed_requests"] > 0, bool(self.report.get("compaction_seconds")),
             self.report["original_fact_absent_from_plaintext_history"],
-            bool(turn_models) and set(turn_models) == {"gpt-6-astra"}, self.tool_calls == 1,
+            bool(turn_models) and set(turn_models) == {self.args.normal_model}, self.tool_calls == 1,
         ])
 
 
@@ -203,9 +236,16 @@ async def main():
     parser.add_argument("--bun", default=shutil.which("bun"))
     parser.add_argument("--codex-home", default=os.environ.get("CODEX_HOME", "~/.codex"))
     parser.add_argument("--relay-settings", help="Use an installed persistent relay via the built-in OpenAI provider")
+    parser.add_argument("--normal-model", default="gpt-6-astra")
+    parser.add_argument("--compact-model", default="gpt-5.6-sol")
+    parser.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default="low")
+    parser.add_argument("--fixture", choices=["basic", "constraints"], default="basic")
+    parser.add_argument("--record-id", help="Use the same synthetic identifier for paired comparisons")
     args = parser.parse_args()
     if not args.codex_bin or not args.bun:
         parser.error("Codex and Bun must be installed or passed explicitly")
+    if not all(re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}", model) for model in [args.normal_model, args.compact_model]):
+        parser.error("Invalid model name")
     probe = Probe(args)
     print(f"Private evidence: {probe.run}", flush=True)
     try:
