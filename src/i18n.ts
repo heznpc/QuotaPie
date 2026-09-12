@@ -271,11 +271,11 @@ const CATALOG = {
     ko: (p) => `${p.provider}/${p.account} 결제성 사용 변화`,
   },
   "alert.event.title.window": {
-    en: () => "Codex limit display changed",
-    ko: () => "Codex 한도 표시 변경",
+    en: p => `Codex ${p.account} · limit display changed`,
+    ko: p => `Codex ${p.account} · 한도 표시 변경`,
   },
-  "alert.event.title.account": { en: () => "Codex login changed", ko: () => "Codex 로그인 계정 변경" },
-  "alert.event.title.plan": { en: () => "Codex plan changed", ko: () => "Codex 플랜 변경" },
+  "alert.event.title.account": { en: p => `Codex ${p.account} · login changed`, ko: p => `Codex ${p.account} · 로그인 계정 변경` },
+  "alert.event.title.plan": { en: p => `Codex ${p.account} · plan changed`, ko: p => `Codex ${p.account} · 플랜 변경` },
   "alert.event.title.resync": {
     en: (p) => `${p.provider}/${p.account} timer resynchronised`,
     ko: (p) => `${p.provider}/${p.account} 타이머 재동기화`,

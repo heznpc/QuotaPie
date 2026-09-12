@@ -3,6 +3,18 @@ import XCTest
 @testable import QuotaPie
 
 final class SemanticLocalizationTests: XCTestCase {
+    func testTransitionNotificationsRetainTheConfiguredAccountLabel() {
+        for key in ["alert.event.title.account", "alert.event.title.plan", "alert.event.title.window"] {
+            let personal = LocalizedMessagePayload(key: key, params: ["account": .string("개인 검증용")])
+                .rendered(fallback: "UNSUPPORTED")
+            let work = LocalizedMessagePayload(key: key, params: ["account": .string("업무 검증용")])
+                .rendered(fallback: "UNSUPPORTED")
+            XCTAssertTrue(personal.contains("개인 검증용"))
+            XCTAssertTrue(work.contains("업무 검증용"))
+            XCTAssertNotEqual(personal, work)
+        }
+    }
+
     func testEverySemanticCatalogKeyHasRendererArguments() throws {
         let bundle = Strings.packagedResourceBundle
         guard let url = bundle.url(

@@ -152,7 +152,7 @@
 "alert.stale.title" = "%@/%@ 수집 중단";
 "alert.stale.message" = "%@ 값이 한동안 갱신되지 않았습니다.";
 "alert.event.title.payment" = "%@/%@ 결제성 사용 변화";
-"alert.event.title.window" = "Codex 한도 표시 변경";
+"alert.event.title.window" = "Codex %@ · 한도 표시 변경";
 "alert.event.title.resync" = "%@/%@ 타이머 재동기화";
 "alert.test.title" = "QuotaPie 테스트";
 "alert.test.message" = "알림 채널이 정상적으로 연결됐습니다.";
@@ -327,6 +327,6 @@
 
 "event.plan_changed" = "같은 Codex 계정의 플랜 변경: %@ → %@ · 잔량을 새로 측정합니다.";
 
-"alert.event.title.account" = "Codex 로그인 계정 변경";
+"alert.event.title.account" = "Codex %@ · 로그인 계정 변경";
 
-"alert.event.title.plan" = "Codex 플랜 변경";
+"alert.event.title.plan" = "Codex %@ · 플랜 변경";

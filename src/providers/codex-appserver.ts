@@ -18,6 +18,13 @@ interface PendingRequest {
   timeout: ReturnType<typeof setTimeout>;
 }
 
+class RpcRequestError extends Error {
+  constructor(message: string, readonly code?: number) { super(message); }
+}
+
+// Keep the resident client's last trusted context while this reading is retried.
+export class CodexSnapshotUnavailableError extends Error {}
+
 export interface CodexThreadListParams {
   cursor?: string | null;
   limit?: number | null;
@@ -268,21 +275,22 @@ export class CodexAppServerClient {
     await this.connect();
     const stamp = this.currentCredentialStamp();
     const before = await this.readAccountIdentity();
+    if (before === undefined && this.remoteAccount !== undefined) {
+      throw new CodexSnapshotUnavailableError("Codex identity unavailable; quota snapshot not accepted");
+    }
     const result = await this.request("account/rateLimits/read");
     const after = await this.readAccountIdentity();
-    if (stamp !== this.currentCredentialStamp() || before !== after) throw new Error("Codex login changed during quota lookup; retrying on next poll");
+    if (stamp !== this.currentCredentialStamp() || before !== after) throw new CodexSnapshotUnavailableError("Codex login changed during quota lookup; retrying on next poll");
     const observations = parseCodexRateLimits(result, Date.now(), this.account);
     const plan = planType(observations.find(item => item.metadata?.limitId === "codex")?.metadata?.planType);
-    if (after !== undefined) {
-      if (this.remoteAccount !== undefined && after !== this.remoteAccount) {
-        this.accountContext = randomUUID();
-        this.collectorEpoch = randomUUID();
-      } else if (this.remoteAccount !== undefined && plan !== this.remotePlan) {
-        this.collectorEpoch = randomUUID();
-      }
-      this.remoteAccount = after;
-      this.remotePlan = plan;
+    // A known plan change also separates anonymous legacy-provider readings.
+    // The first identified reading must not inherit an anonymous baseline.
+    if (after !== this.remoteAccount || plan !== this.remotePlan) {
+      this.collectorEpoch = randomUUID();
     }
+    if (this.remoteAccount !== undefined && after !== this.remoteAccount) this.accountContext = randomUUID();
+    this.remoteAccount = after;
+    this.remotePlan = plan;
     return observations.map((item) => ({
       ...item, metadata: { ...item.metadata, collectorEpoch: this.collectorEpoch,
         // Random, session-scoped continuity markers carry no email or account ID.
@@ -296,7 +304,12 @@ export class CodexAppServerClient {
       const account = result?.account;
       return account?.type === "chatgpt" && typeof account.email === "string" && account.email.length <= 320 && account.email.includes("@")
         ? account.email.trim().toLowerCase() : undefined;
-    } catch { return undefined; } // Older providers can still supply quota without identity evidence.
+    } catch (error) {
+      // Only an explicitly unsupported method permits legacy quota-only reads.
+      // Transient lookup errors must leave the last trusted snapshot intact.
+      if (error instanceof RpcRequestError && error.code === -32601) return undefined;
+      throw new CodexSnapshotUnavailableError("Codex account lookup failed; quota snapshot not accepted");
+    }
   }
 
   async listThreads(params: CodexThreadListParams = {}): Promise<CodexThreadListPage> {
@@ -399,7 +412,7 @@ export class CodexAppServerClient {
       clearTimeout(pending.timeout);
       this.pending.delete(message.id);
       if (message.error) {
-        pending.reject(new Error(message.error.message ?? "Codex App Server request failed"));
+        pending.reject(new RpcRequestError(message.error.message ?? "Codex App Server request failed", message.error.code));
       } else {
         pending.resolve(message.result);
       }
