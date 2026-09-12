@@ -53,6 +53,17 @@ export class CompactionStatusReader {
     if (!this.pending) this.pending = this.collect(nowMs).then(result => this.cached = result).finally(() => this.pending = null);
     return this.pending;
   }
+  snapshot(nowMs = Date.now()) {
+    const cached = this.cached;
+    if (!cached) return { checkedAtMs: 0, generations: 0, reachable: 0, policy: null, active: [], recent: [] };
+    if (nowMs - cached.checkedAtMs <= 10_000) return cached;
+    // A stale observer cannot assert that an old request is still running or
+    // that a previously acknowledged policy is still live.
+    return { ...cached, reachable: 0,
+      policy: cached.policy ? { ...cached.policy, configurable: false, applied: 0 } : null,
+      active: [], recent: [...cached.active.map(r => ({ ...r, active: false, phase: "unverified",
+        errorCode: "observer_state_stale" })), ...cached.recent].slice(0, 50) };
+  }
   private async collect(nowMs: number) {
     if (!this.evidenceLoaded) {
       this.evidenceLoaded = true;

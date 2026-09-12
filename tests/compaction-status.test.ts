@@ -26,6 +26,10 @@ test("reads retired generations, distinguishes HTTP headers, completion and lost
     expect(running.active[0]?.to).toBe("gpt-5.6-sol");
     expect(running.active[0]?.reasoningEffort).toBe("low");
     expect(running.recent).toHaveLength(0);
+    const stale = reader.snapshot(running.checkedAtMs + 20_000);
+    expect(stale.active).toHaveLength(0);
+    expect(stale.recent[0]?.phase).toBe("unverified");
+    expect(stale.reachable).toBe(0);
     controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed"}\n\n')); controller.close();
     await body;
     await writeFile(join(generation,"relay.log"), events.map(e=>JSON.stringify(e)).join("\n")+"\n");

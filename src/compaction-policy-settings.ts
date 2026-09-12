@@ -8,11 +8,20 @@ export const COMPACTION_MODELS = ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra"
 export async function relayHealth(settings: any, fetcher: typeof fetch) {
   if (!Number.isInteger(settings.port) || settings.port < 1024 || settings.port > 65535 ||
       !/^[a-f0-9]{48}$/.test(settings.token)) throw new Error("relay_unavailable");
-  const response = await fetcher(`http://127.0.0.1:${settings.port}/${settings.token}/backend-api/codex/quotapie-health`,
-    { redirect: "error", signal: AbortSignal.timeout(1500) });
-  const health = await response.json() as any;
-  if (!response.ok || health.service !== "quotapie-compaction") throw new Error("relay_unavailable");
-  return health;
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => { controller.abort(); reject(new Error("relay_unavailable")); }, 1500);
+  });
+  try {
+    return await Promise.race([deadline, (async () => {
+      const response = await fetcher(`http://127.0.0.1:${settings.port}/${settings.token}/backend-api/codex/quotapie-health`,
+        { redirect: "error", signal: controller.signal });
+      const health = await response.json() as any;
+      if (!response.ok || health.service !== "quotapie-compaction") throw new Error("relay_unavailable");
+      return health;
+    })()]);
+  } finally { clearTimeout(timer!); controller.abort(); }
 }
 
 export class CompactionPolicySettings {
