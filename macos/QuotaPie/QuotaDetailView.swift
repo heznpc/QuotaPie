@@ -88,7 +88,7 @@ private struct WindowRow: View {
                     .font(.system(size: 15, weight: .semibold).monospacedDigit())
                     .foregroundStyle(current ? (window.isLowRemaining ? Color.red : Color.primary) : Color.secondary)
             }
-            UsageBar(window: window, current: current)
+            RemainingBar(window: window, current: current)
             VStack(alignment: .leading, spacing: 1) {
                 Text(DisplayFormat.resetStamp(window.resetsAtMs))
                     .font(.caption2)
@@ -130,27 +130,27 @@ private struct WindowRow: View {
     }
 
     private var accessibilityValue: String {
-        let pieces = [usedText, remainingText, DisplayFormat.resetStamp(window.resetsAtMs), window.paceText]
+        let pieces = [remainingText, usedText, DisplayFormat.resetStamp(window.resetsAtMs), window.paceText]
         return pieces.compactMap { $0 }.joined(separator: ", ")
     }
 }
 
-/// The fill is always the used percentage. The thin mark is the safety
-/// reserve you decided to leave.
-private struct UsageBar: View {
+/// The fill shrinks as quota is consumed, matching the remaining percentage
+/// above it. The thin mark uses the same remaining-quota scale for the reserve.
+private struct RemainingBar: View {
     let window: QuotaWindow
     let current: Bool
 
     var body: some View {
         GeometryReader { geometry in
             let width = geometry.size.width
-            let used = min(1, max(0, (window.usedPercent ?? 0) / 100))
-            let reserveLine = window.reservePercent.map { min(1, max(0, 1 - $0 / 100)) }
+            let remaining = min(1, max(0, (window.remainingPercent ?? 0) / 100))
+            let reserveLine = window.reservePercent.map { min(1, max(0, $0 / 100)) }
             ZStack(alignment: .leading) {
                 RoundedRectangle(cornerRadius: 2).fill(Color.secondary.opacity(0.18))
                 RoundedRectangle(cornerRadius: 2)
                     .fill(fillColor)
-                    .frame(width: width * used)
+                    .frame(width: width * remaining)
                 if let reserveLine {
                     Rectangle()
                         .fill(Color.secondary.opacity(0.55))
