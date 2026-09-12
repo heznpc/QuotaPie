@@ -40,6 +40,7 @@ export interface CompactionRequestEvent {
   to: string;
   routed: boolean;
   status: number;
+  reasoningEffort?: string | null;
 }
 
 const UPSTREAM = "https://chatgpt.com/backend-api/codex";
@@ -131,6 +132,10 @@ export function startCompactionProxy(options: {
                 from: input.model,
                 to: routed.routed ? route.to : input.model,
                 routed: routed.routed,
+                reasoningEffort: object(input.reasoning) &&
+                  typeof input.reasoning.effort === "string" &&
+                  ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(input.reasoning.effort)
+                    ? input.reasoning.effort : null,
               };
             }
             // Unchanged requests retain their exact original bytes and encoding.
@@ -209,7 +214,7 @@ export async function runCompactionCodex(args: string[], defaultCommand: string)
   const proxy = startCompactionProxy({
     route,
     onRequest: (event) => {
-      if (event.routed) console.error(`[QuotaPie] compaction ${event.from} → ${event.to} (HTTP ${event.status})`);
+      if (event.routed) console.error(`[QuotaPie] compaction ${event.from} → ${event.to} (HTTP ${event.status}) effort=${event.reasoningEffort ?? "unspecified"}`);
     },
   });
   let child: ReturnType<typeof Bun.spawn> | undefined;
