@@ -162,8 +162,15 @@ export class QuotaPieService {
       );
       emitted.push(...result.events);
       if (!result.accepted) continue;
+      const previousEpoch = [...previousLaneWindows].sort((a, b) => b.observedAtMs - a.observedAtMs)[0]?.metadata?.collectorEpoch;
+      const nextEpoch = accountObservations[0]?.metadata?.collectorEpoch;
+      const newCollection = nextEpoch != null && nextEpoch !== previousEpoch;
+      // Collector restarts also create an epoch. A new baseline alone must
+      // not re-send an already displayed low-quota warning; observed recovery
+      // below re-arms those thresholds.
       const currentBuckets = new Set(accountObservations.map((item) => item.bucket));
       for (const next of accountObservations) {
+        if (newCollection) break;
         const limitId = next.metadata?.limitId;
         const lane = next.metadata?.lane;
         if (typeof limitId !== "string" || typeof lane !== "string") continue;
@@ -434,9 +441,17 @@ export class QuotaPieService {
 
   analyses(nowMs = Date.now(), provider?: Provider): WindowAnalysis[] {
     const sinceMs = analysisHistoryStart(this.config, nowMs);
-    const recentRawSinceMs = nowMs - this.config.profile.recentLookbackMinutes * 60_000;
-    return this.db.latestAll().filter((latest) => (
+    const recentRawSinceMs = nowMs - Math.max(this.config.profile.recentLookbackMinutes, this.config.alerts.rapidWindowMinutes) * 60_000;
+    const latestWindows = this.db.latestAll();
+    const codexEpochs = new Map<string, unknown>();
+    for (const item of [...latestWindows].sort((a, b) => b.observedAtMs - a.observedAtMs)) {
+      if (item.provider === "codex" && !codexEpochs.has(item.account)) {
+        codexEpochs.set(item.account, item.metadata?.collectorEpoch);
+      }
+    }
+    return latestWindows.filter((latest) => (
       (provider == null || latest.provider === provider) &&
+      (latest.provider !== "codex" || latest.metadata?.collectorEpoch === codexEpochs.get(latest.account)) &&
       this.isEnabledAccount(latest.provider, latest.account)
     )).map((latest) => {
       const history = this.db.analysisHistory(
@@ -840,6 +855,25 @@ export class QuotaPieService {
     return this.alerts.claimNextAppNotification(nowMs);
   }
 
+  async retrySuppressedNotifications(nowMs = Date.now()): Promise<void> {
+    if (!this.config.alerts.enabled || !this.config.alerts.macOSNotifications) return;
+    const suppressed = new Set(this.alerts.suppressedThresholdKeys());
+    if (!suppressed.size) return;
+    const windows = this.analyses(nowMs);
+    const active = planTriggers(windows, [], this.config, nowMs, nowMs);
+    let retry = false;
+    for (const decision of active) {
+      const state = this.alerts.state(decision.key);
+      if (suppressed.has(decision.key) && state && !state.armed) {
+        // Suppression never reached the user, so its old cooldown must not
+        // postpone the first visible warning after permission is restored.
+        this.rearmAlertNotification(decision.key, 0, nowMs);
+        retry = true;
+      }
+    }
+    if (retry) await this.evaluateTriggers(nowMs, windows);
+  }
+
   completeAppNotification(
     id: string,
     claimToken: string,
@@ -953,19 +987,25 @@ export class QuotaPieService {
           this.rearmAlertNotification(staleKey, staleState.lastFiredAtMs, nowMs);
         }
       }
-      if (window.remainingPercent != null) {
+      if (window.freshness === "fresh" && window.remainingPercent != null) {
         for (const threshold of this.config.alerts.remainingThresholds) {
           const key = `${alertScope(window.provider, window.account, window.bucket)}:remaining:${threshold}`;
           const state = this.alerts.state(key);
-          if (state && window.remainingPercent > threshold + 5) {
-            this.rearmAlertNotification(key, state.lastFiredAtMs, nowMs);
+          if (state && !state.armed && window.remainingPercent > threshold + 5) {
+            this.rearmAlertNotification(key, 0, nowMs);
           }
         }
       }
       const paceKey = `${alertScope(window.provider, window.account, window.bucket)}:pace`;
       const paceState = this.alerts.state(paceKey);
-      if (paceState && (window.paceRatio == null || window.paceRatio < 0.9)) {
+      if (paceState && (!this.config.alerts.paceForecasts || window.paceRatio == null || window.paceRatio < 0.9 || !window.recentBurnPerHour)) {
         this.rearmAlertNotification(paceKey, paceState.lastFiredAtMs, nowMs);
+      }
+      const rapidKey = `${alertScope(window.provider, window.account, window.bucket)}:rapid`;
+      const rapidState = this.alerts.state(rapidKey);
+      if (rapidState && !rapidState.armed && window.freshness === "fresh" &&
+          (window.rapidDropPercent ?? 0) < this.config.alerts.rapidDropPercent / 2) {
+        this.rearmAlertNotification(rapidKey, 0, nowMs);
       }
     }
   }

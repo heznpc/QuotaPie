@@ -139,12 +139,15 @@ struct LocalizedMessagePayload: Decodable {
         case "signal.message.relay", "signal.message.direct":
             return required("source", "detail", "url")
         case "alert.remaining.title", "alert.stale.title",
+             "alert.rapid.title",
              "alert.event.title.payment", "alert.event.title.window",
              "alert.event.title.resync", "alert.pace.title.measured",
              "alert.pace.title.projected", "alert.resume.ready.title":
             return required("provider", "account")
         case "alert.remaining.message":
             return required("label", "percent", "threshold")
+        case "alert.rapid.message":
+            return required("label", "minutes", "drop", "percent")
         case "alert.stale.message", "alert.resume.ready.message":
             return required("label")
         case "alert.pace.message.measured", "alert.pace.message.projected":
@@ -262,14 +265,13 @@ struct Headline: Decodable {
     /// The conclusion, said in the viewer's language.
     var localizedTitle: String {
         switch kind {
-        case "pace-risk":
-            guard let windowKind, let name = Self.windowName(windowKind) else { return displayText }
-            return Strings.t("headline.atRisk", name)
+        case "pace-risk", "normal":
+            guard let remainingPercent else { return displayText }
+            let providerName = provider == "codex" ? "Codex" : provider == "claude" ? "Claude" : provider ?? ""
+            let name = windowKind.flatMap(Self.windowName) ?? windowLabel ?? ""
+            return Strings.t("headline.remaining", providerName, name, String(Int(remainingPercent.rounded())))
         case "degraded": return Strings.t("headline.degraded")
         case "setup": return Strings.t("headline.setup")
-        case "normal":
-            guard let remainingPercent else { return displayText }
-            return Strings.t("window.remaining", String(Int(remainingPercent.rounded())))
         default: return displayText
         }
     }
@@ -284,10 +286,8 @@ struct Headline: Decodable {
         if let accountLabel { parts.append(accountLabel) }
         switch kind {
         case "pace-risk", "normal":
-            if let windowLabel { parts.append(windowLabel) }
-            if kind == "pace-risk", let exhaustsAtMs {
-                parts.append(Strings.t("headline.runsDryOn", DisplayFormat.day(exhaustsAtMs)))
-            }
+            if let windowKind, let name = Self.windowName(windowKind) { parts.append(name) }
+            else if let windowLabel { parts.append(windowLabel) }
         case "degraded", "setup":
             parts.append(Strings.t("collection.\(errorCategory ?? "never-attempted")"))
         default:
@@ -364,6 +364,9 @@ struct QuotaWindow: Decodable, Identifiable {
     let minutesBeforeReset: Double?
     let confidence: String?
     let riskLevel: String?
+    let recentBurnPerHour: Double?
+    let rapidDropPercent: Double?
+    let rapidIntervalMinutes: Double?
 
     var id: String { "\(provider)/\(account)/\(bucket)" }
     var isAtRisk: Bool { riskLevel == "at-risk" }
@@ -372,8 +375,11 @@ struct QuotaWindow: Decodable, Identifiable {
 
     var shortLabel: String {
         guard let windowSeconds else { return label }
-        if windowSeconds >= 28 * 86_400 { return Strings.t("window.monthly") }
-        if windowSeconds >= 7 * 86_400 {
+        if bucket.hasPrefix("codex_bengalfox:") {
+            return "Spark · " + Strings.t(windowSeconds <= 6 * 3_600 ? "window.five-hour" : "window.weekly")
+        }
+        if windowSeconds >= 28 * 86_400 && windowSeconds <= 31 * 86_400 { return Strings.t("window.monthly") }
+        if windowSeconds == 7 * 86_400 {
             if bucket.hasPrefix("seven_day_") {
                 let suffix = bucket.dropFirst("seven_day_".count)
                 let qualifier = suffix
@@ -384,19 +390,20 @@ struct QuotaWindow: Decodable, Identifiable {
             }
             return Strings.t("window.weekly")
         }
-        if windowSeconds <= 6 * 3_600 { return Strings.t("window.five-hour") }
+        if windowSeconds == 5 * 3_600 { return Strings.t("window.five-hour") }
         return label
     }
 
-    /// One line of judgement about pace. With no measured burn, no risk is claimed.
+    /// Show measured consumption and mark extrapolation explicitly.
     var paceText: String? {
         guard freshness == "fresh" else { return nil }
         if isExhausted { return Strings.t("window.exhausted") }
-        if isAtRisk, let exhaustsAtMs {
-            return Strings.t("window.runsDry", DisplayFormat.day(exhaustsAtMs))
+        if let drop = rapidDropPercent, let minutes = rapidIntervalMinutes, minutes > 0, drop > 0 {
+            return Strings.t("window.recentUsage", String(Int(max(1, ceil(minutes)))), String(format: "%.1f", drop))
         }
-        if let paceRatio, paceRatio > 1 { return Strings.t("window.paceTight") }
-        if paceRatio != nil { return Strings.t("window.paceComfortable") }
+        if let rate = recentBurnPerHour, rate > 0 {
+            return Strings.t("window.measuredRate", String(format: "%.1f", rate))
+        }
         return nil
     }
 }

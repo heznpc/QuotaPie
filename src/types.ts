@@ -93,6 +93,8 @@ export interface WindowAnalysis {
   timeToResetMs: number | null;
   reservePercent: number;
   recentBurnPerHour: number | null;
+  rapidDropPercent?: number;
+  rapidIntervalMinutes?: number;
   personalBurnPerHour: number | null;
   blendedBurnPerHour: number | null;
   safePacePerActiveHour: number | null;

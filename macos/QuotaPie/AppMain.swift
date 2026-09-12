@@ -109,6 +109,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             onCopy: { [weak self] in self?.copyStatus() },
             onOpenDashboard: { [weak self] in self?.openDashboard() },
             onOpenConfig: { [weak self] in self?.openConfig() },
+            onOpenNotificationSettings: {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=local.quotapie.menubar") {
+                    NSWorkspace.shared.open(url)
+                }
+            },
             onCopyCommand: { [weak self] command in self?.copyToPasteboard(command) },
             onResumeTask: { [weak self] task in self?.resume(task) },
             onRetryTask: { [weak self] task in self?.retry(task) },
@@ -188,9 +193,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     self.popoverModel.lastError = nil
                     self.failureIndex = 0
                     if let actionToken = payload.actionToken, !actionToken.isEmpty {
-                        self.notificationPresenter?.statusDidRefresh(actionToken: actionToken)
+                        self.userNotificationCenter.getNotificationSettings { [weak self] settings in
+                            DispatchQueue.main.async {
+                                guard let self else { return }
+                                let allowed = settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
+                                self.popoverModel.notificationsAllowed = allowed
+                                self.client?.notificationsAuthorized = allowed
+                                self.notificationPresenter?.statusDidRefresh(actionToken: actionToken)
+                            }
+                        }
                     }
-                    self.scheduleRefresh(after: 30)
+                    self.scheduleRefresh(after: 10)
                 case .failure(let error):
                     self.popoverModel.lastError = error.localizedDescription
                     let delay = self.retrySeconds[min(self.failureIndex, self.retrySeconds.count - 1)]
@@ -202,18 +215,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
-    /// The title is one conclusion. The service decides which one; this only
-    /// gives it a colour.
-    ///
-    /// While the transport is down, the last value received is not used as the
-    /// title. Cached numbers are fine in the popover, labelled as the last good
-    /// reading, but the menu bar states what is true now — showing an old
-    /// number in the normal colour there is simply a lie.
+    /// Show measured quota as a horizontal bar. Recovery actions and collection errors
+    /// keep their text labels; cached quota must not look like a fresh reading.
     private func render() {
+        guard let button = statusItem.button else { return }
         let headline = popoverModel.payload?.headline
         let readyTasks = popoverModel.lastError == nil
             ? (popoverModel.payload?.resumeTasks.filter(\.isReady) ?? [])
             : []
+        if readyTasks.isEmpty, popoverModel.lastError == nil,
+           let headline, ["normal", "pace-risk"].contains(headline.kind),
+           let provider = headline.provider,
+           let remaining = headline.remainingPercent, remaining.isFinite {
+            let providerName = provider == "codex" ? "Codex" : provider == "claude" ? "Claude" : provider
+            let windowName = headline.windowKind.flatMap(Headline.windowName) ?? headline.windowLabel ?? ""
+            let label = [providerName, windowName].filter { !$0.isEmpty }.joined(separator: " ")
+            button.attributedTitle = NSAttributedString(string: "")
+            button.image = MenuBarQuotaIndicator.image(label: label, remainingPercent: remaining)
+            button.imagePosition = .imageOnly
+            button.imageScaling = .scaleNone
+            button.setAccessibilityLabel(headline.localizedTitle)
+            button.toolTip = [headline.localizedTitle, headline.localizedDetail].compactMap { $0 }.joined(separator: "\n")
+            return
+        }
+        button.image = nil
+        button.imagePosition = .noImage
         let title: String
         let color: NSColor
         let toolTip: String
@@ -232,21 +258,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             toolTip = popoverModel.lastError ?? Strings.t("status.tooltip")
         } else {
             title = headline?.localizedTitle ?? Strings.t("headline.checking")
-            switch headline?.kind {
-            case "pace-risk": color = .systemOrange
-            case "degraded", "setup": color = .secondaryLabelColor
-            default: color = .labelColor
-            }
+            if headline?.kind == "degraded" || headline?.kind == "setup" { color = .secondaryLabelColor }
+            else if let remaining = headline?.remainingPercent, remaining <= 5 { color = .systemRed }
+            else if let remaining = headline?.remainingPercent, remaining <= 20 { color = .systemOrange }
+            else { color = .labelColor }
             toolTip = headline?.localizedDetail ?? Strings.t("status.tooltip")
         }
-        statusItem.button?.attributedTitle = NSAttributedString(
+        button.attributedTitle = NSAttributedString(
             string: title,
             attributes: [
                 .foregroundColor: color,
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
             ]
         )
-        statusItem.button?.toolTip = toolTip
+        button.setAccessibilityLabel(title)
+        button.toolTip = toolTip
     }
 
     private func resume(_ task: ResumeTask) {

@@ -53,7 +53,7 @@ describe("personal burn analysis", () => {
     expect(analyzeWindow(history[0]!, history, config, 2 * MINUTE).freshness).toBe("stale");
   });
 
-  test("moves exhaustion across inactive overnight hours", () => {
+  test("projects observed consumption across overnight hours without a schedule gate", () => {
     const config = structuredClone(DEFAULT_CONFIG);
     config.profile.timeZone = "UTC";
     config.profile.workSchedule.weekday = [{ start: "09:00", end: "17:00" }];
@@ -63,9 +63,9 @@ describe("personal burn analysis", () => {
     const tuesday12 = Date.UTC(2026, 6, 7, 12, 0);
     const first = { ...point(0, 60, tuesday12), observedAtMs: monday15 };
     const latest = { ...point(0, 70, tuesday12), observedAtMs: monday16 };
-    const analysis = analyzeWindow(latest, [first, latest], config, monday16);
+    const analysis = analyzeWindow(latest, [first, { ...first, usedPercent: 65, observedAtMs: monday15 + 30 * MINUTE }, latest], config, monday16);
     expect(analysis.blendedBurnPerHour).toBeCloseTo(10, 3);
-    expect(analysis.exhaustsAtMs).toBe(Date.UTC(2026, 6, 7, 10, 0));
+    expect(analysis.exhaustsAtMs).toBe(Date.UTC(2026, 6, 6, 19, 0));
   });
 
   test("selects the higher-risk provider window as bottleneck", () => {

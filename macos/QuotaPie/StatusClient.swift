@@ -45,6 +45,7 @@ private final class LocalOnlySessionDelegate: NSObject, URLSessionTaskDelegate {
 
 final class StatusClient {
     let baseURL: URL
+    var notificationsAuthorized = false
     private let session: URLSession
     private let sessionDelegate: LocalOnlySessionDelegate
 
@@ -124,10 +125,11 @@ final class StatusClient {
         completion: @escaping (Result<NotificationClaimResponse, Error>) -> Void
     ) {
         do {
-            let request = try authenticatedPOST(
+            var request = try authenticatedPOST(
                 pathComponents: ["api", "notifications", "claim"],
                 actionToken: actionToken
             )
+            request.setValue(String(notificationsAuthorized), forHTTPHeaderField: "x-quotapie-notifications-authorized")
             perform(request) { result in
                 do {
                     completion(.success(try JSONDecoder().decode(NotificationClaimResponse.self, from: result.get())))

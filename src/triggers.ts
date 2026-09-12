@@ -60,6 +60,18 @@ export function planTriggers(
     }
     if (window.freshness !== "fresh") continue;
 
+    if ((window.rapidDropPercent ?? 0) >= config.alerts.rapidDropPercent && window.remainingPercent != null) {
+      decisions.push({
+        key: `${windowKey}:rapid`,
+        ...present("alert.rapid.title", who, "alert.rapid.message", {
+          ...who, percent: Number(window.remainingPercent.toFixed(1)),
+          drop: Number(window.rapidDropPercent!.toFixed(1)),
+          minutes: Math.max(1, Math.ceil(window.rapidIntervalMinutes ?? 0)),
+        }),
+        severity: window.remainingPercent <= 5 ? "critical" : "warning",
+      });
+    }
+
     if (window.remainingPercent != null) {
       const crossed = [...config.alerts.remainingThresholds]
         .sort((a, b) => a - b)
@@ -86,6 +98,8 @@ export function planTriggers(
     }
 
     if (
+      config.alerts.paceForecasts &&
+      (window.rapidDropPercent ?? 0) < config.alerts.rapidDropPercent &&
       window.minutesBeforeReset != null &&
       window.minutesBeforeReset >= config.alerts.predictedEarlyMinutes &&
       window.paceRatio != null &&

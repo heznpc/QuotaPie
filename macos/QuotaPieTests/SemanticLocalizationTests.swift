@@ -23,6 +23,7 @@ final class SemanticLocalizationTests: XCTestCase {
             "percent": .number(5),
             "threshold": .number(10),
             "minutes": .number(60),
+            "drop": .number(12),
             "limitId": .string("primary"),
             "lane": .string("main"),
             "fromLabel": .string("5-hour"),
