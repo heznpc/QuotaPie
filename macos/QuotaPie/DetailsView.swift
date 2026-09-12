@@ -68,6 +68,10 @@ struct DetailsView: View {
                 RecentRecoveriesView(recoveries: model.recentRecoveries)
                 Divider()
             }
+            if let compaction = model.payload?.compaction, compaction.generations > 0 {
+                CompactionHistory(payload: compaction)
+                Divider()
+            }
             if !model.activeTasks.isEmpty {
                 PausedWorkSection(tasks: model.activeTasks, hasActionToken: model.canActOnTasks,
                                   activities: model.resumeActivities, onResume: actions.resumeTask,

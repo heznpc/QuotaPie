@@ -79,8 +79,8 @@ describe("public feed", () => {
     const mock = (async () => { calls++; return calls===1 ? Response.json(feed([item()])) : new Response("secret raw error",{status:503}); }) as unknown as typeof fetch;
     const collector = new ResetSignalCollector(store,{...DEFAULT_CONFIG.resetSignals,enabled:true},mock);
     try {
-      await collector.poll(true,now); expect(collector.status(now).state).toBe("ready");
-      await collector.poll(false,now+1000); expect(calls).toBe(1);
+      await collector.poll(true,now); expect(collector.status(now).state).toBe("partial");
+      await collector.poll(false,now+1000); expect(calls).toBe(2);
       await collector.poll(true,now+300000);
       expect(store.health().cursorMs).toBe(now);
       expect(collector.status(now+300000).state).toBe("error");

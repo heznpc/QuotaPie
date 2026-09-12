@@ -1,7 +1,7 @@
 /* Menu bar headline */
 "headline.checking" = "Checking";
 "headline.disconnected" = "Disconnected";
-"headline.degraded" = "Limits unconfirmed";
+"headline.degraded" = "Quota unavailable";
 "headline.setup" = "Setup needed";
 "headline.lastGood" = "Last good reading";
 "headline.atRisk" = "⚠ %@ at risk";
@@ -34,14 +34,14 @@
 /* Collection health */
 "collection.auth-required" = "Sign-in required";
 "collection.auth-expired" = "Sign-in expired";
-"collection.rate-limited" = "Provider rate limit reached";
+"collection.rate-limited" = "Quota lookup requests are rate limited";
 "collection.network" = "Cannot reach the network";
 "collection.not-configured" = "Collection is not configured";
 "collection.isolation-unsafe" = "Account credentials need isolating";
 "collection.provider-error" = "Could not read the provider's response";
 "collection.no-windows" = "The response carried no limit windows";
 "collection.never-attempted" = "Not collected yet";
-"collection.stale-success" = "Collection is running late";
+"collection.stale-success" = "Quota could not be refreshed";
 "collection.attempted-then-failed" = "Collection failed";
 "collection.recent-success" = "Collection is current";
 
@@ -287,3 +287,38 @@
 "signal.summary.direct" = "Collected from X";
 "signal.summary.unverified" = "Source unverified";
 "signal.summary.delayed" = "News check delayed";
+
+"compaction.title" = "Compaction history";
+"compaction.explanation" = "Model and reasoning effort from actual compaction requests. Task settings in the composer stay unchanged. Completion requires evidence in the response body.";
+"compaction.running" = "Compacting";
+"compaction.completed" = "Compaction completed";
+"compaction.failed" = "Compaction failed";
+"compaction.cancelled" = "Compaction cancelled";
+"compaction.unverified" = "Compaction unverified";
+"compaction.seconds" = "s";
+"compaction.task" = "Task %@";
+"compaction.evidence" = "Status evidence: %@";
+"compaction.partial" = "Live state is unavailable for some relays. Showing the available request records.";
+"compaction.empty" = "No compaction records with verifiable outcomes yet.";
+"signal.health.partial" = "Some sources failed · checking other paths";
+"signal.coverage.relays" = "Multiple public relays · limited to each site's selection, X originals unverified";
+"signal.coverage.reset-beacon-selection" = "Reset news selected by Reset Beacon";
+"signal.coverage.codexreset-quoted-posts" = "Watched account posts quoted by Codex Reset Monitor · limited reply context";
+"signal.coverage.five-accounts" = "Direct X collection · Tibo, VB, Dominik, OpenAIDevs, OpenAI";
+"signal.coverage.caution" = "Successful requests do not establish complete coverage. Older evidence alone does not establish an outage.";
+"signal.sourceState.ready" = "Request succeeded";
+"signal.sourceState.error" = "Collection failed";
+"signal.sourceState.stale" = "Check delayed";
+"signal.sourceState.waiting" = "Awaiting first check";
+"signal.sourceState.off" = "Off";
+"signal.attempt" = "Last request %@";
+"signal.latestEvidence" = "Latest evidence published %@";
+"signal.newEvidence" = "New evidence obtained %@";
+"signal.noNewEvidence" = "No additional evidence in this check";
+"signal.via.x-api" = "Collected from X API";
+"signal.via.codexreset" = "Via Codex Reset Monitor · original unverified";
+"signal.via.public-feed" = "Via Reset Beacon · original unverified";
+"signal.timeUnresolved" = "Original time wording. No local deadline is inferred until its timezone and reference date are established.";
+"signal.summary.timeHint" = "Reset time mentioned · exact deadline unverified";
+
+"headline.cached" = "%@ %@ %@%% · last checked";

@@ -53,6 +53,21 @@ final class OverviewTests: XCTestCase {
         XCTAssertEqual(feed.latestSignal?.sourceStatusKey, "signal.summary.unverified")
     }
 
+    func testDegradedHeadlineKeepsZeroSeparateFromUnknownAndTransportFailure() throws {
+        for remaining in [0, 43] {
+            let data = Data("{\"kind\":\"degraded\",\"provider\":\"codex\",\"windowKind\":\"five-hour\",\"remainingPercent\":\(remaining)}".utf8)
+            let headline = try JSONDecoder().decode(Headline.self, from: data)
+            XCTAssertTrue(headline.localizedTitle.contains("\(remaining)%"))
+            XCTAssertEqual(headline.localizedTitle, headline.cachedTitle)
+            XCTAssertFalse(headline.localizedDetail?.contains(Strings.t("collection.never-attempted")) ?? true)
+        }
+        let unknown = try JSONDecoder().decode(Headline.self, from: Data("{\"kind\":\"degraded\"}".utf8))
+        XCTAssertFalse(unknown.localizedTitle.contains("0%"))
+        let fresh = try JSONDecoder().decode(Headline.self, from: Data("{\"kind\":\"normal\",\"provider\":\"codex\",\"remainingPercent\":0}".utf8))
+        XCTAssertTrue(fresh.cachedTitle.contains("0%"))
+        XCTAssertNotEqual(fresh.localizedTitle, fresh.cachedTitle)
+    }
+
     private func window(_ bucket: String, seconds: Double?, remaining: Double, freshness: String = "fresh") throws -> QuotaWindow {
         var value: [String: Any] = ["provider": "codex", "account": "default", "bucket": bucket,
                                     "label": bucket, "freshness": freshness, "observedAtMs": 1000,

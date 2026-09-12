@@ -195,6 +195,8 @@ export const FIXTURES: Record<string, AccountState[]> = {
       })],
     }),
   ],
+  "stale-zero": [account({ windows: [window({remainingPercent:0, usedPercent:100, freshness:"stale", windowSeconds:18000,
+    bucket:"codex:primary:300", label:"Codex 5h"})], sources:[source({health:"stale-success", lastSuccessAtMs:NOW-900_000})] })],
   // No data: the account is enabled but has never been collected from.
   "no-data": [
     account({

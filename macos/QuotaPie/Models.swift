@@ -11,6 +11,7 @@ struct StatusPayload: Decodable {
     let resumeTasks: [ResumeTask]
     let resetSignals: ResetSignalPayload?
     let resetTracking: ResetTracking?
+    let compaction: CompactionPayload?
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -22,10 +23,11 @@ struct StatusPayload: Decodable {
         resumeTasks = try values.decodeIfPresent([ResumeTask].self, forKey: .resumeTasks) ?? []
         resetSignals = try values.decodeIfPresent(ResetSignalPayload.self, forKey: .resetSignals)
         resetTracking = try values.decodeIfPresent(ResetTracking.self, forKey: .resetTracking)
+        compaction = try values.decodeIfPresent(CompactionPayload.self, forKey: .compaction)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case nowMs, headline, accounts, events, actionToken, resumeTasks, resetSignals, resetTracking
+        case nowMs, headline, accounts, events, actionToken, resumeTasks, resetSignals, resetTracking, compaction
     }
 }
 
@@ -270,10 +272,17 @@ struct Headline: Decodable {
             let providerName = provider == "codex" ? "Codex" : provider == "claude" ? "Claude" : provider ?? ""
             let name = windowKind.flatMap(Self.windowName) ?? windowLabel ?? ""
             return Strings.t("headline.remaining", providerName, name, String(Int(remainingPercent.rounded())))
-        case "degraded": return Strings.t("headline.degraded")
+        case "degraded": return cachedTitle
         case "setup": return Strings.t("headline.setup")
         default: return displayText
         }
+    }
+
+    var cachedTitle: String {
+        guard let remainingPercent, remainingPercent.isFinite else { return Strings.t("headline.degraded") }
+        let providerName = provider == "codex" ? "Codex" : provider == "claude" ? "Claude" : provider ?? ""
+        let name = windowKind.flatMap(Self.windowName) ?? windowLabel ?? ""
+        return Strings.t("headline.cached", providerName, name, String(Int(remainingPercent.rounded())))
     }
 
     /// The supporting line, also said in the viewer's language. Falling back to
@@ -289,7 +298,7 @@ struct Headline: Decodable {
             if let windowKind, let name = Self.windowName(windowKind) { parts.append(name) }
             else if let windowLabel { parts.append(windowLabel) }
         case "degraded", "setup":
-            parts.append(Strings.t("collection.\(errorCategory ?? "never-attempted")"))
+            parts.append(Strings.t("collection.\(errorCategory ?? (kind == "degraded" ? "stale-success" : "never-attempted"))"))
         default:
             return displayDetail
         }
@@ -509,6 +518,66 @@ struct ResetSignalPayload: Decodable {
     let lastSuccessMs: Double?
     let error: String?
     let signals: [ResetSignal]
+    var sources: [ResetSourceHealth]? = nil
+}
+
+struct ResetSourceHealth: Decodable, Identifiable {
+    let id: String
+    let state: String
+    let coverage: String
+    let lastAttemptMs: Double?
+    let lastSuccessMs: Double?
+    let latestPublishedAtMs: Double?
+    let lastEvidenceMs: Double?
+    let newEvidenceCount: Int?
+    let error: String?
+    var title: String { id == "public-feed" ? "Reset Beacon" : id == "codexreset" ? "Codex Reset Monitor" : "X API" }
+}
+
+struct CompactionPayload: Decodable {
+    let checkedAtMs: Double
+    let generations: Int
+    let reachable: Int
+    let active: [CompactionRecord]
+    let recent: [CompactionRecord]
+    var latest: CompactionRecord? { active.first ?? recent.first }
+}
+
+struct CompactionRecord: Decodable, Identifiable {
+    let requestId: String
+    let threadId: String?
+    let from: String
+    let to: String
+    let requestedEffort: String?
+    let reasoningEffort: String?
+    let routed: Bool
+    let phase: String
+    let status: Int
+    let at: String
+    let startedAtMs: Double
+    let elapsedMs: Double
+    let active: Bool
+    let errorCode: String?
+    var id: String { requestId }
+    var phaseKey: String { "compaction." + (active ? "running" : phase) }
+    var modelText: String { [shortModel(to), reasoningEffort?.capitalized].compactMap { $0 }.joined(separator: " ") }
+    var routeText: String {
+        let original = [shortModel(from), requestedEffort?.capitalized].compactMap { $0 }.joined(separator: " ")
+        return routed ? "\(original) → \(modelText)" : modelText
+    }
+    func elapsed(at date: Date) -> String {
+        let ms = active ? max(elapsedMs, date.timeIntervalSince1970 * 1000 - startedAtMs) : elapsedMs
+        return String(format: "%.1f", ms / 1000) + Strings.t("compaction.seconds")
+    }
+    private func shortModel(_ value: String) -> String {
+        switch value {
+        case "gpt-6-astra": return "Astra"
+        case "gpt-5.6-sol": return "Sol"
+        case "gpt-5.6-luna": return "Luna"
+        case "gpt-5.6-terra": return "Terra"
+        default: return value
+        }
+    }
 }
 
 struct ResetSignal: Decodable, Identifiable {

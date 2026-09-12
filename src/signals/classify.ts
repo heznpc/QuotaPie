@@ -7,14 +7,15 @@ export interface ResetSignal {
   text: string; contextText: string | null; publishedAtMs: number;
   state: SignalState; resetKind: "banked" | "direct" | "unknown";
   timeHint: string | null; scopeHint: string | null;
-  observedVia: "x-api" | "public-feed"; targetAtMs: number | null;
+  observedVia: "x-api" | "public-feed" | "codexreset"; targetAtMs: number | null;
+  detectedAtMs?: number;
 }
 const reset = /\breset(?:s|ting|ted)?\b|\breseting\b/i;
 const subject = /\bcodex\b|chatgpt\s+work|\b(?:usage|rate|weekly)\s+limits?\b|banked\s+reset/i;
 const correction = /\b(?:delay(?:ed)?|postpon(?:ed|e)|moved|instead|correction|meant|pushed back)\b/i;
 const withdrawal = /\b(?:no|not|won't|will not)\s+(?:be\s+)?(?:a\s+)?reset\b|\b(?:cancelled|canceled)\b/i;
-const done = /\b(?:have|has|just|now|already)\s+(?:been\s+)?reset\b|(?:^|[.!]\s+)all\s+reset\s+for\s+everyone(?:\.|$)|\breset\s+(?:is\s+)?(?:done|complete|completed|live|propagated)\b|\bit(?:'s| is) done\b|\bbutton\s+(?:was\s+)?pressed\b/i;
-const promised = /\b(?:will|we'll|i'll|going to|scheduled|lands?|arriv(?:e|es)|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
+const done = /\b(?:have|has|just|now|already)\s+(?:been\s+)?reset\b|(?:^|[.!]\s+)all\s+reset\s+for\s+everyone(?:\.|$)|\breset\s+(?:(?:is|all)\s+)?(?:done|complete|completed|live|propagated)\b|\bit(?:'s| is) done\b|\bbutton\s+(?:was\s+)?pressed\b/i;
+const promised = /\b(?:will|we'll|i'll|going to|scheduled|landing|lands?|arriv(?:e|es)|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
 const hint = /\b(?:button|celebrat\w*|rejoice|you know what comes next|good news|stay tuned)\b/i;
 
 export function classifyPost(post: PublicPost, context: Map<string, PublicPost>): ResetSignal | null {
@@ -37,14 +38,14 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>)
   const implicit = post.author.toLowerCase() === "thsottiaux" && hint.test(text) && (subject.test(text) || contextRelevant);
   if (!explicit && !followup && !implicit) return null;
   // Quoting a reset request alone is insufficient to declare a reset promised.
-  const state: SignalState = withdrawal.test(text) ? "withdrawn" : correction.test(text) ? "updated"
+  const state: SignalState = withdrawal.test(text) && !/\?|\bwho\s+(?:says|said)\b/i.test(text) ? "withdrawn" : correction.test(text) ? "updated"
     : done.test(text) ? "reported" : explicit && promised.test(text) && !/\?/.test(text) ? "announced" : "possible";
   const combined = `${text}\n${parentText}`;
   const resetKind = /\bbanked\b|reset\s+(?:card|credit|token)/i.test(text) ? "banked"
     : /\b(?:direct|instant|automatic|system.wide|global)\b|\ball\s+reset\s+for\s+everyone\b/i.test(text) ? "direct"
     : /\bbanked\b|reset\s+(?:card|credit|token)/i.test(parentText) ? "banked" : "unknown";
-  const timeHint = text.match(/[^.!?\n]*(?:\btomorrow\b|\btoday\b|\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b|\b\d{1,2}(?::\d{2})?\s*(?:am|pm|PST|PDT|PT|UTC)\b|\bin\s+(?:~\s*)?(?:\d+|one|an?)\s+hours?\b)[^.!?\n]*/i)?.[0]?.trim().slice(0, 300) ?? null;
-  const scopeHint = combined.match(/\ball\s+(?:paid\s+)?(?:users|accounts|plans|subscriptions)\b|\b(?:Plus|Pro|Business|Enterprise)(?:\s*[,/&]\s*(?:Plus|Pro|Business|Enterprise))*/i)?.[0] ?? null;
+  const timeHint = text.match(/[^.!?\n]*(?:\btomorrow\b|\btoday\b|\bmidnight\b|\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b|\b\d{1,2}(?::\d{2})?\s*(?:am|pm|PST|PDT|PT|UTC)\b|\bin\s+(?:~\s*)?(?:\d+|one|an?)\s+hours?\b)[^.!?\n]*/i)?.[0]?.trim().slice(0, 300) ?? null;
+  const scopeHint = combined.match(/\ball\s+(?:paid\s+)?(?:users|accounts|plans|subscriptions)\b|\b(?:Plus|Pro|Business|Enterprise)\b(?:\s*[,/&]\s*(?:Plus|Pro|Business|Enterprise)\b)*/i)?.[0] ?? null;
   const primaryParent = parents.find(p => isWatched(p.author) && reset.test(p.text));
   const groupId = primaryParent?.conversationId ?? (contextRelevant ? post.conversationId : post.id);
   // Linked reposts without new conditions share the same notification identity.

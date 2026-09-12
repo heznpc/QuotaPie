@@ -220,7 +220,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                             }
                         }
                     }
-                    self.scheduleRefresh(after: 10)
+                    self.scheduleRefresh(after: payload.compaction?.active.isEmpty == false || self.popover.isShown ? 2 : 10)
                 case .failure(let error):
                     self.popoverModel.lastError = error.localizedDescription
                     let delay = self.retrySeconds[min(self.failureIndex, self.retrySeconds.count - 1)]
@@ -270,7 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 "\(task.projectLabel) \(task.shortReference)"
             )
         } else if popoverModel.lastError != nil {
-            title = popoverModel.payload == nil ? Strings.t("headline.disconnected") : Strings.t("headline.degraded")
+            title = popoverModel.payload == nil ? Strings.t("headline.disconnected") : headline?.cachedTitle ?? Strings.t("headline.degraded")
             color = .systemOrange
             toolTip = popoverModel.lastError ?? Strings.t("status.tooltip")
         } else {
