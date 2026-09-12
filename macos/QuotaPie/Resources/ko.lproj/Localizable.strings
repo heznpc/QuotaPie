@@ -217,6 +217,8 @@
 
 // Account recovery evidence
 "recovery.section" = "한도 회복 · 최근 24시간";
+"recovery.overview" = "한도 회복 확인됨";
+"recovery.recent" = "최근 한도 회복 · 24시간";
 "recovery.state.recovery-observed" = "회복 관측";
 "recovery.state.no-recovery-observed" = "회복 변화 미관측";
 "recovery.state.unavailable" = "현재 관측 확인 불가";

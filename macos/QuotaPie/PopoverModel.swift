@@ -38,6 +38,28 @@ final class PopoverModel: ObservableObject {
     }
 
     var canActOnTasks: Bool { lastError == nil && !(payload?.actionToken?.isEmpty ?? true) }
+
+    /// Use the database-backed recovery lookback, independent of the short
+    /// recent-events feed that routine events can push a refill out of.
+    var recentRecoveries: [ObservedRecovery] {
+        guard let payload, let tracking = payload.resetTracking else { return [] }
+        return tracking.accounts.flatMap { tracked -> [ObservedRecovery] in
+            guard let account = payload.accounts.first(where: {
+                $0.enabled && $0.provider == tracked.provider && $0.account == tracked.account
+            }) else { return [] }
+            return tracked.windows.compactMap { window in
+                guard let evidence = window.recovery, evidence.isObservedIncrease else { return nil }
+                let label = account.windows.first { $0.bucket == window.bucket }?.shortLabel ?? window.label
+                return ObservedRecovery(accountID: account.id,
+                                        accountTitle: "\(account.providerTitle) · \(account.accountLabel)",
+                                        bucket: window.bucket, label: label, evidence: evidence)
+            }
+        }.sorted { $0.evidence.observedByMs > $1.evidence.observedByMs }
+    }
+
+    var selectedRecovery: ObservedRecovery? {
+        recentRecoveries.first { $0.accountID == selectedAccount?.id }
+    }
 }
 
 enum DetailSection: String, CaseIterable, Identifiable {

@@ -64,6 +64,10 @@ struct DetailsView: View {
                 Button(Strings.t("action.openSettings"), action: actions.openConfig)
             }
         case .activity:
+            if !model.recentRecoveries.isEmpty {
+                RecentRecoveriesView(recoveries: model.recentRecoveries)
+                Divider()
+            }
             if !model.activeTasks.isEmpty {
                 PausedWorkSection(tasks: model.activeTasks, hasActionToken: model.canActOnTasks,
                                   activities: model.resumeActivities, onResume: actions.resumeTask,

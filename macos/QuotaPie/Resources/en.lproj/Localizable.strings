@@ -217,6 +217,8 @@
 
 // Account recovery evidence
 "recovery.section" = "Recovery · last 24 hours";
+"recovery.overview" = "Quota recovery observed";
+"recovery.recent" = "Recent quota recovery · 24 hours";
 "recovery.state.recovery-observed" = "Recovery observed";
 "recovery.state.no-recovery-observed" = "No recovery observed";
 "recovery.state.unavailable" = "Current observation unavailable";
