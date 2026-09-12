@@ -119,7 +119,7 @@ describe("native recovery contract", () => {
     const dir = mkdtempSync(join(tmpdir(), "quotapie-notification-"));
     const path = join(dir, "test.sqlite3");
     let s = new QuotaPieService(config(), new QuotaDatabase(path));
-    let server = startDashboard(s, s.config);
+    let server = startDashboard(s, s.config, { compactionRoot: new URL("fixtures/no-relays", import.meta.url).pathname });
     let poll = spyOn(s.signalCollector, "poll").mockResolvedValue();
     try {
       s.claimNextAppNotification(); // Native consumer registration; real durable outbox.
@@ -135,7 +135,7 @@ describe("native recovery contract", () => {
       const payload = await (await fetch(`http://127.0.0.1:${server.port}/api/status`)).json() as any;
       expect(payload.resetTracking.accounts[0].windows[0].recovery.candidates).toHaveLength(1);
       poll.mockRestore(); server.stop(true); await s.close();
-      s = new QuotaPieService(config(), new QuotaDatabase(path)); server = startDashboard(s, s.config);
+      s = new QuotaPieService(config(), new QuotaDatabase(path)); server = startDashboard(s, s.config, { compactionRoot: new URL("fixtures/no-relays", import.meta.url).pathname });
       poll = spyOn(s.signalCollector, "poll").mockResolvedValue();
       s.resetSignals.save([report], now);
       await s.collectResetSignals(); await s.evaluateTriggers(now);

@@ -289,7 +289,7 @@
 "signal.summary.delayed" = "소식 확인 지연";
 
 "compaction.title" = "압축 실행 기록";
-"compaction.explanation" = "실제 압축 요청의 모델과 추론 단계입니다. 입력창의 작업 설정은 그대로 유지됩니다. 완료는 응답 본문의 완료 근거로 판별합니다.";
+"compaction.explanation" = "압축 요청과 같은 작업에서 이후 관측된 요청의 모델을 함께 표시합니다. 입력창 설정은 유지됩니다. 후속 요청이 없으면 모델 전환을 확인했다고 표시하지 않습니다.";
 "compaction.running" = "압축 중";
 "compaction.completed" = "압축 완료";
 "compaction.failed" = "압축 실패";
@@ -337,3 +337,33 @@
 "alert.event.title.account" = "Codex %@ · 로그인 계정 변경";
 
 "alert.event.title.plan" = "Codex %@ · 플랜 변경";
+
+"compaction.startedAt" = "압축 시작 · %@";
+
+"compaction.finishedAt" = "압축 종료 · %@";
+
+"compaction.followup" = "이후 작업 요청 관측 · %@ · %@";
+
+"compaction.followupUnknown" = "압축 이후 작업 모델 미확인";
+
+"compaction.settings.title" = "자동 압축";
+
+"compaction.settings.scope" = "Astra의 압축 요청에 사용할 모델을 선택합니다. 작업 모델은 Codex에서 설정하며, 입력창 설정은 그대로 유지됩니다.";
+
+"compaction.settings.model" = "압축 모델";
+
+"compaction.settings.effort" = "추론: Low · Sol·Luna·Terra의 네이티브 압축 성공을 확인했습니다. 속도·품질의 우열은 미검증입니다.";
+
+"compaction.settings.applied" = "저장된 모델: %@ · %@ / %@개 경로 적용 확인";
+
+"compaction.settings.partial" = "이전 버전이거나 연결되지 않은 경로는 기존 모델을 유지할 수 있습니다. 해당 경로의 실행 중 작업은 연결을 유지합니다.";
+
+"compaction.settings.save" = "다음 압축부터 적용";
+
+"compaction.settings.saving" = "저장 중…";
+
+"compaction.settings.saved" = "저장했습니다. 다음 압축부터 적용하며, 이미 실행 중인 요청은 기존 모델을 유지합니다.";
+
+"compaction.settings.error" = "변경을 확인하지 못했습니다. 선택 모델과 경로 적용 상태를 확인한 뒤 다시 시도해 주세요.";
+
+"compaction.settings.unavailable" = "압축 설정을 불러올 수 없습니다. 로컬 릴레이 설치 상태를 확인해 주세요.";

@@ -18,6 +18,8 @@ final class PopoverModel: ObservableObject {
     @Published var payload: StatusPayload?
     @Published var lastError: String?
     @Published var statusFailure: StatusFailure?
+    @Published var compactionSaving = false
+    @Published var compactionSaveMessage: String?
 
     var statusFailureText: String {
         statusFailure?.detailText ?? Strings.t("popover.disconnected")
@@ -84,6 +86,7 @@ struct PopoverActions {
     let retryTask: (ResumeTask) -> Void
     let dismissTask: (ResumeTask) -> Void
     let quit: () -> Void
+    var configureCompaction: (String) -> Void = { _ in }
 }
 
 extension AccountState {

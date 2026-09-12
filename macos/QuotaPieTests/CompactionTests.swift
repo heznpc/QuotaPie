@@ -30,6 +30,19 @@ final class CompactionTests: XCTestCase {
         XCTAssertEqual(source.lastEvidenceMs, 2000)
         XCTAssertEqual(source.newEvidenceCount, 0)
     }
+    func testFollowupShowsObservedWorkModelInsteadOfAssumingOriginalModelWasRestored() throws {
+        let raw = #"""
+        {"requestId":"11111111-1111-4111-8111-111111111111","from":"gpt-6-astra","to":"gpt-5.6-sol",
+        "requestedEffort":"xhigh","reasoningEffort":"low","routed":true,"phase":"completed","status":200,
+        "at":"2026-09-13T00:00:00Z","startedAtMs":1000,"finishedAtMs":5000,"elapsedMs":4000,"active":false,
+        "followup":{"requestId":"22222222-2222-4222-8222-222222222222","model":"gpt-5.6-luna","effort":"high","startedAtMs":6000}}
+        """#
+        let record = try JSONDecoder().decode(CompactionRecord.self, from: Data(raw.utf8))
+        XCTAssertEqual(record.routeText, "Astra Xhigh → Sol Low → Luna High")
+        XCTAssertEqual(record.finishedAtMs, 5000)
+        XCTAssertEqual(record.followup?.startedAtMs, 6000)
+        XCTAssertNil(try decode(active: false, phase: "completed").compaction?.latest?.followup)
+    }
     private func decode(active: Bool, phase: String) throws -> StatusPayload {
         let row: [String: Any] = ["requestId":"11111111-1111-4111-8111-111111111111", "from":"gpt-6-astra",
             "to":"gpt-5.6-sol", "requestedEffort":"xhigh", "reasoningEffort":"low", "routed":true,

@@ -35,7 +35,7 @@ async function withNotificationServer(
 ): Promise<void> {
   const config = notificationConfig();
   const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
-  const server = startDashboard(service, config);
+  const server = startDashboard(service, config, { compactionRoot: new URL("fixtures/no-relays", import.meta.url).pathname });
   const origin = `http://127.0.0.1:${server.port}`;
   try {
     const status = await (await fetch(`${origin}/api/status`)).json() as { actionToken: string };

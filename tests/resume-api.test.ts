@@ -60,7 +60,7 @@ describe("resume task API", () => {
     }]);
     await service.updateResumeReadiness(service.analyses(nowMs - 700), nowMs - 700);
 
-    const server = startDashboard(service, config);
+    const server = startDashboard(service, config, { compactionRoot: new URL("fixtures/no-relays", import.meta.url).pathname });
     const origin = `http://127.0.0.1:${server.port}`;
     try {
       const statusResponse = await fetch(`${origin}/api/status`);

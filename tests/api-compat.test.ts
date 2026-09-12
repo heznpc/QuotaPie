@@ -25,7 +25,7 @@ describe("api compatibility during the displayText rename", () => {
       details: {},
     });
     const service = new QuotaPieService(config, db);
-    const server = startDashboard(service, config);
+    const server = startDashboard(service, config, { compactionRoot: new URL("fixtures/no-relays", import.meta.url).pathname });
     try {
       await run(`http://127.0.0.1:${server.port}`);
     } finally {
