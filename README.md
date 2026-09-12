@@ -275,16 +275,21 @@ pairs require their own compatibility check.
 
 The relay recognizes the final `compaction_trigger` input control on
 `/responses`, or the legacy `/responses/compact` endpoint. Existing summaries
-and text mentioning compaction do not trigger routing. Only the request's
-`model` changes; reasoning settings and the rest of the request are retained.
+and text mentioning compaction do not trigger routing. The compaction request
+gets an independent model and **Low** reasoning effort. Other reasoning fields
+and the rest of the request are retained; ordinary requests keep their exact
+model, effort, and body. This does not write Codex thread or turn settings.
+The validated target set is Sol, Luna, and Terra at Low from Astra; Spark and
+other unvalidated pairs are rejected before routing is enabled.
 This follows Codex's [native compaction request construction](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact_remote_v2_attempt.rs).
 
 The relay forwards to the fixed ChatGPT Codex backend over HTTPS, with streaming
 HTTP rather than WebSocket transport. It binds only to `127.0.0.1`, uses an
 unguessable per-process path, and stops with the child process. Credentials and
 conversation bodies pass through memory; QuotaPie does not save them. Its own
-stderr messages contain only the compaction model pair, HTTP status, and a
-recognized reasoning-effort value (or `unspecified`). Codex
+stderr messages contain structured request IDs, validated thread/turn IDs when
+present, model pairs, requested/effective effort, lifecycle phase, HTTP status,
+and timing. Conversation text and opaque control values are never logged. Codex
 continues to manage its own session storage and authentication. Cancellation
 reaches the upstream request, and provider errors retain Codex's normal retry
 handling. QuotaPie adds no retry or fallback to a different account.
@@ -304,22 +309,48 @@ python3 scripts/codex-compaction-local.py install
 quotapie-compaction status
 ```
 
-The installer builds a standalone relay in `~/.local/lib/quotapie-compaction`,
-registers `local.quotapie.compaction` with launchd, and verifies its loopback
-health before updating `~/.codex/config.toml`. It adds a marked `openai_base_url`
+The installer builds a separate generation under
+`~/.local/lib/quotapie-compaction/releases/`, starts a new launchd listener,
+and verifies its loopback health before updating `~/.codex/config.toml`.
+`current.json` points to the active generation. Existing generations, their
+binaries, settings, and listeners stay alive for already-loaded tasks.
+Candidate startup, health, or activation failure retains the previous service;
+configuration rollback preserves unrelated concurrent edits. It adds a marked `openai_base_url`
 override and backs up the original configuration. This keeps the built-in
 `openai` provider identity, existing tasks, and selected model. An existing
 custom endpoint or different provider is rejected rather than overwritten.
 The relay responds to WebSocket upgrades with HTTP 426, which Codex uses to
 switch that session to streaming HTTP.
 
-**Quit and reopen Codex once after installing.** Already-loaded tasks keep their
-old connection settings; a live turn cannot be redirected by changing the file.
-Newly loaded tasks use the configured endpoint. `status` distinguishes installed,
-configured, and running, and reports counts of received response headers and
-routed compactions without saving conversation bodies or credentials. These
-counts include probes and do not establish that any particular desktop task has
-switched. No automatic compaction threshold is changed in the real profile.
+**Quit and reopen Codex after current work finishes to apply the new generation
+to already-loaded tasks.** Their old connection remains usable in the meantime.
+Newly loaded tasks use the new endpoint. `status` distinguishes installed,
+configured, and running, and lists generations retained for loaded tasks.
+No automatic compaction threshold is changed in the real profile.
+
+Version 2 health reports attempted, completed, failed, cancelled, and unverified
+compactions separately. A response header is not completion: native SSE needs a
+successful `response.completed` event; a disconnect before that is cancellation.
+Codex closes its reader after the terminal event, which is a successful completion.
+The request's stream flag covers native Responses Lite responses without a
+Content-Type header. Legacy JSON requires a recognizable compacted result.
+The last 32 terminal requests and currently active requests are retained in
+memory with validated thread/turn IDs; aggregate counters alone are never proof
+that a particular task switched.
+
+Change compaction policy independently of the Codex work-model picker:
+
+```bash
+quotapie-compaction configure --compact-model gpt-5.6-sol --compact-effort low
+```
+
+A policy change affects future compaction requests. In-flight requests retain
+their captured policy. The Codex model picker still sets persistent work intent;
+manually changing it is **not** a temporary compaction setting. There is no
+hidden `thread/settings/update` or stale-snapshot restoration that overwrites a
+user's later selection. The request-level guarantee is Astra/xhigh work →
+Sol/Low compaction → Astra/xhigh work, while Codex's saved work settings remain
+Astra/xhigh throughout.
 
 To roll back:
 
@@ -330,9 +361,12 @@ quotapie-compaction stop
 ```
 
 Disable removes only QuotaPie's marked config block, preserving subsequent
-unrelated edits. It changes the live relay into a pass-through so loaded tasks
-can continue while you restart Codex. Stop unloads the launch agent after the
-configuration has been disconnected. Configuration backups remain available.
+unrelated edits. It changes all retained generations into pass-through relays so
+loaded tasks can continue while you restart Codex. Stop drains version 2
+listeners and unloads only those without active requests; rerun it after pending
+requests finish. Legacy version 1 listeners cannot prove they are idle and are
+reported as retained rather than automatically terminated. Configuration
+backups and generation directories remain available.
 The relay starts again at login while enabled; if it stops unexpectedly, launchd
 restarts it. Codex requests depend on this local service until the configuration
 is disabled and the task is reloaded.
@@ -342,13 +376,16 @@ is disabled and the task is reloaded.
 This explicitly uses the existing account's quota. The probe creates a private
 temporary profile and empty workspace, then provides synthetic facts only in a
 single synthetic tool result. A lower compaction threshold forces native
-mid-turn compaction. No manual compaction or model-switch RPC is sent.
+mid-turn compaction. The probe checks saved settings after compaction, then
+starts a second turn **without model or effort overrides** and checks settings
+and factual recall again. No manual compaction or model-switch RPC is sent.
 
 ```bash
 python3 scripts/probe-codex-compaction.py --codex-bin /path/to/codex
 # Exercise the installed daemon through the built-in OpenAI provider:
 python3 scripts/probe-codex-compaction.py --codex-bin /path/to/codex \
-  --relay-settings ~/.local/lib/quotapie-compaction/settings.json
+  --effort xhigh --fixture constraints \
+  --relay-settings ~/.local/lib/quotapie-compaction/current.json
 ```
 
 Verified with Codex CLI **0.153.4** on **2026-09-12**: native automatic compaction
@@ -363,7 +400,13 @@ one native mid-turn compaction was routed to Sol, then Astra completed with all
 three facts preserved. This verifies the persistent service and configuration
 path, while existing desktop tasks still require reloading.
 
-The probe also accepts `--compact-model`, `--normal-model`, `--effort`, and
+A subsequent installed version 2 run verified **Astra xhigh → Sol Low →
+Astra xhigh**, with unchanged saved thread settings and exact 12/12-field
+recall in a second turn started without model or effort overrides. Native
+compaction took 10.859 seconds in that one run. This does not establish
+long-session quality or speed savings.
+
+The probe also accepts `--compact-model`, `--normal-model`, `--effort` (work effort), and
 `--fixture constraints` for an exact 12-field recall check with final corrections.
 The 2026-09-12 model comparison
 found Sol, Luna, and Terra compatible on that small fixture; Spark rejected

@@ -1,5 +1,11 @@
 import { readFileSync, unwatchFile, watchFile } from "node:fs";
-import { startCompactionProxy, type CompactionRoute } from "./codex-compaction";
+import { startCompactionProxy, validateCompactionRoute, type CompactionRoute } from "./codex-compaction";
+
+if (process.argv[2] === "--check-policy") {
+  const candidate = JSON.parse(readFileSync(process.argv[3]!, "utf8"));
+  console.log(JSON.stringify(validateCompactionRoute(candidate.route)));
+  process.exit(0);
+}
 
 const settingsPath = process.argv[2];
 if (!settingsPath) throw new Error("Relay settings path required");
@@ -15,7 +21,7 @@ const proxy = startCompactionProxy({
   ...settings,
   onRequest: (event) => {
     if (event.routed || event.status >= 400) {
-      console.log(JSON.stringify({ at: new Date().toISOString(), phase: "response_headers", ...event }));
+      console.log(JSON.stringify(event));
     }
   },
 });
@@ -25,8 +31,8 @@ watchFile(settingsPath, { interval: 500 }, () => {
   try {
     const next = JSON.parse(readFileSync(settingsPath, "utf8")) as typeof settings;
     if (next.port !== settings.port || next.token !== settings.token) return;
-    if (![next.route.from, next.route.to].every(model => /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(model))) return;
-    Object.assign(settings.route, next.route);
+    const policy = validateCompactionRoute(next.route);
+    Object.assign(settings.route, policy);
   } catch { console.error("Relay settings reload failed; retaining current route"); }
 });
 const stop = () => { unwatchFile(settingsPath); proxy.stop(); process.exit(0); };

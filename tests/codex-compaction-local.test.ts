@@ -1,6 +1,14 @@
 import { expect, test } from "bun:test";
 import { resolve } from "node:path";
 
+test("candidate installation failures retain the old endpoint and unrelated concurrent edits", async () => {
+  const process = Bun.spawn(["python3", "-B", "tests/compaction_install_transaction.py"], {
+    cwd: resolve(import.meta.dir, ".."), stdout: "pipe", stderr: "pipe",
+  });
+  expect(await new Response(process.stderr).text()).toBe("");
+  expect(await process.exited).toBe(0);
+});
+
 test("desktop configuration install and rollback preserve unrelated settings and edits", async () => {
   const code = `
 import importlib.util, pathlib, tomllib

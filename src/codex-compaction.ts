@@ -1,46 +1,42 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { gunzipSync, inflateSync } from "node:zlib";
 
-export interface CompactionRoute {
-  from: string;
-  to: string;
-}
-
-export const DEFAULT_COMPACTION_ROUTE: CompactionRoute = {
-  from: "gpt-6-astra",
-  to: "gpt-5.6-sol",
-};
-
-type JsonObject = Record<string, unknown>;
-function object(value: unknown): value is JsonObject {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-/** Inspect protocol controls, never text inside a conversation or a retained summary. */
-export function routeCompaction(
-  path: string,
-  body: unknown,
-  route: CompactionRoute,
-): { body: unknown; routed: boolean } {
-  if (!object(body) || body.model !== route.from || route.from === route.to) {
-    return { body, routed: false };
-  }
-  const last = Array.isArray(body.input) ? body.input.at(-1) : null;
-  const compact = path === "/responses/compact" || (
-    path === "/responses" && object(last) && last.type === "compaction_trigger"
-  );
-  return compact
-    ? { body: { ...body, model: route.to }, routed: true }
-    : { body, routed: false };
-}
+import { DEFAULT_COMPACTION_ROUTE, isCompaction, object, routeCompaction, safeEffort, validateCompactionRoute, type CompactionRoute } from "./codex-compaction-policy";
+import { ResponseCompletionObserver } from "./codex-compaction-stream";
+export { DEFAULT_COMPACTION_ROUTE, routeCompaction, validateCompactionRoute, type CompactionRoute } from "./codex-compaction-policy";
 
 export interface CompactionRequestEvent {
+  requestId: string;
+  threadId: string | null;
+  turnId: string | null;
   kind: "compaction" | "response";
   from: string;
   to: string;
   routed: boolean;
+  phase: "started" | "response_headers" | "completed" | "failed" | "cancelled" | "unverified";
   status: number;
-  reasoningEffort?: string | null;
+  requestedEffort: string | null;
+  reasoningEffort: string | null;
+  at: string;
+  durationMs: number;
+  errorCode?: string;
+}
+
+function protocolId(value: unknown): string | null {
+  return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value) ? value : null;
+}
+
+function requestIdentity(headers: Headers) {
+  let metadata: Record<string, unknown> = {};
+  try {
+    const raw = headers.get("x-codex-turn-metadata");
+    const parsed: unknown = raw && raw.length <= 4096 ? JSON.parse(raw) : null;
+    if (object(parsed)) metadata = parsed;
+  } catch { /* Unrecognized metadata remains private and unassociated. */ }
+  return {
+    threadId: protocolId(headers.get("session_id")) ?? protocolId(metadata.thread_id),
+    turnId: protocolId(headers.get("x-codex-turn-id")) ?? protocolId(metadata.turn_id),
+  };
 }
 
 const UPSTREAM = "https://chatgpt.com/backend-api/codex";
@@ -78,16 +74,19 @@ export function startCompactionProxy(options: {
   onRequest?: (event: CompactionRequestEvent) => void;
   fetchUpstream?: (url: string, init: RequestInit) => Promise<Response>;
 } = {}) {
-  const route = options.route ?? DEFAULT_COMPACTION_ROUTE;
-  for (const model of [route.from, route.to]) {
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(model)) throw new Error("Invalid model name");
-  }
+  const route = options.route ?? { ...DEFAULT_COMPACTION_ROUTE };
+  validateCompactionRoute(route);
   const token = options.token ?? randomBytes(24).toString("hex");
   if (!/^[a-f0-9]{48}$/.test(token)) throw new Error("Invalid relay token");
   const prefix = `/${token}/backend-api/codex`;
   let requests = 0;
   let compactions = 0;
-  let lastRequest: (CompactionRequestEvent & { receivedAt: string }) | null = null;
+  let lastRequest: CompactionRequestEvent | null = null;
+  let attemptedCompactions = 0, failedCompactions = 0, cancelledCompactions = 0, unverifiedCompactions = 0;
+  let activeRequests = 0;
+  let draining = false;
+  const active = new Map<string, CompactionRequestEvent>();
+  const recent: CompactionRequestEvent[] = [];
   const upstreamFetch = options.fetchUpstream ?? fetch;
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -101,8 +100,16 @@ export function startCompactionProxy(options: {
       }
       const path = url.pathname.slice(prefix.length);
       if (path === "/quotapie-health" && request.method === "GET") {
-        return Response.json({ service: "quotapie-compaction", pid: process.pid, route, requests, compactions, lastRequest });
+        return Response.json({ service: "quotapie-compaction", schemaVersion: 2, pid: process.pid,
+          route: validateCompactionRoute(route), requests, compactions, attemptedCompactions,
+          failedCompactions, cancelledCompactions, unverifiedCompactions, activeRequests, draining,
+          active: [...active.values()], recent, lastRequest });
       }
+      if (path === "/quotapie-drain" && request.method === "POST") {
+        draining = true;
+        return Response.json({ draining, activeRequests });
+      }
+      if (draining) return new Response("Relay is draining", { status: 503, headers: { "retry-after": "1" } });
       // Codex explicitly recognizes 426 and falls back to HTTP for this session.
       // This keeps the built-in OpenAI provider identity in the desktop app.
       if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
@@ -115,27 +122,34 @@ export function startCompactionProxy(options: {
       // Bun fetch decompresses upstream responses; request identity to keep streaming simple.
       headers.set("accept-encoding", "identity");
       let body: Uint8Array<ArrayBuffer> | string | undefined;
-      let event: Omit<CompactionRequestEvent, "status"> | undefined;
+      let expectsSse = false;
+      let event: Omit<CompactionRequestEvent, "phase" | "status" | "at" | "durationMs"> | undefined;
+      // Freeze the policy for this request. A live policy update cannot change
+      // its target, effort, or attribution after the request has been sent.
+      const policy = validateCompactionRoute(route);
+      // Include uploads in drain accounting, before the first body-read await.
+      activeRequests++;
       try {
         if (request.method === "POST") {
           body = new Uint8Array(await request.arrayBuffer());
           if (path === "/responses" || path === "/responses/compact") {
             const decoded = decodeBody(body, headers.get("content-encoding"));
-            if (decoded.byteLength > MAX_BODY_BYTES) return new Response("Request too large", { status: 413 });
+            if (decoded.byteLength > MAX_BODY_BYTES) {
+              activeRequests--;
+              return new Response("Request too large", { status: 413 });
+            }
             const input: unknown = JSON.parse(new TextDecoder().decode(decoded));
-            const routed = routeCompaction(path, input, route);
+            expectsSse = object(input) && (input.stream === true || (path === "/responses" && isCompaction(path, input)));
+            const routed = routeCompaction(path, input, policy);
             if (object(input) && typeof input.model === "string") {
-              const last = Array.isArray(input.input) ? input.input.at(-1) : null;
+              const outgoing = object(routed.body) ? routed.body : input;
               event = {
-                kind: path === "/responses/compact" || (object(last) && last.type === "compaction_trigger")
-                  ? "compaction" : "response",
-                from: input.model,
-                to: routed.routed ? route.to : input.model,
+                requestId: randomUUID(), ...requestIdentity(headers),
+                kind: isCompaction(path, input) ? "compaction" : "response",
+                from: input.model, to: routed.routed ? policy.to : input.model,
                 routed: routed.routed,
-                reasoningEffort: object(input.reasoning) &&
-                  typeof input.reasoning.effort === "string" &&
-                  ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(input.reasoning.effort)
-                    ? input.reasoning.effort : null,
+                requestedEffort: safeEffort(object(input.reasoning) ? input.reasoning.effort : null),
+                reasoningEffort: safeEffort(object(outgoing.reasoning) ? outgoing.reasoning.effort : null),
               };
             }
             // Unchanged requests retain their exact original bytes and encoding.
@@ -146,32 +160,101 @@ export function startCompactionProxy(options: {
           }
         }
       } catch {
+        activeRequests--;
         return new Response("Invalid or unsupported request body", { status: 400 });
       }
+      const started = performance.now();
+      let status = 0, finished = false;
+      let observer: ResponseCompletionObserver | undefined;
+      const cancellation = new AbortController();
+      if (event?.routed) attemptedCompactions++;
+      const emit = (phase: CompactionRequestEvent["phase"], errorCode?: string) => {
+        if (!event) return;
+        const update: CompactionRequestEvent = { ...event, phase, status, at: new Date().toISOString(),
+          durationMs: Math.round(performance.now() - started), ...(errorCode ? { errorCode } : {}) };
+        lastRequest = update;
+        if (phase === "started" || phase === "response_headers") active.set(event.requestId, update);
+        else {
+          active.delete(event.requestId);
+          recent.push(update);
+          if (recent.length > 32) recent.shift();
+        }
+        // Observability callbacks must not break or repeat an inference request.
+        try { options.onRequest?.(update); } catch { /* Never log callback errors. */ }
+      };
+      const finish = (phase: "completed" | "failed" | "cancelled" | "unverified", errorCode?: string) => {
+        if (finished) return;
+        finished = true;
+        activeRequests--;
+        request.signal.removeEventListener("abort", onAbort);
+        if (event?.routed) {
+          if (phase === "completed") compactions++;
+          if (phase === "failed") failedCompactions++;
+          if (phase === "cancelled") cancelledCompactions++;
+          if (phase === "unverified") unverifiedCompactions++;
+        }
+        emit(phase, errorCode);
+      };
+      const clientClosed = () => {
+        // Codex closes its SSE reader immediately after response.completed;
+        // waiting for TCP EOF would misreport every successful native response.
+        if (status >= 400) { finish("failed", "upstream_http_error"); return; }
+        const terminal = status >= 200 && status < 300 ? observer?.terminal() : null;
+        finish(terminal?.phase ?? "cancelled", terminal?.errorCode ?? (terminal ? undefined : "client_disconnected"));
+      };
+      const onAbort = () => { cancellation.abort(); clientClosed(); };
+      emit("started");
+      request.signal.addEventListener("abort", onAbort, { once: true });
+      if (request.signal.aborted) onAbort();
       try {
         const response = await upstreamFetch(`${UPSTREAM}${path}${url.search}`, {
-          method: request.method,
-          headers,
-          body,
-          redirect: "manual",
-          signal: request.signal,
+          method: request.method, headers, body, redirect: "manual", signal: cancellation.signal,
         });
-        if ([301, 302, 303, 307, 308].includes(response.status)) {
-          await response.body?.cancel();
+        status = response.status;
+        if (finished) { await response.body?.cancel(); return new Response(null, { status: 499 }); }
+        if ([301, 302, 303, 307, 308].includes(status)) {
+          await response.body?.cancel(); finish("failed", "upstream_redirect");
           return new Response("Unexpected Codex upstream redirect", { status: 502 });
         }
-        if (event) {
-          requests++;
-          if (event.routed) compactions++;
-          lastRequest = { ...event, status: response.status, receivedAt: new Date().toISOString() };
-          options.onRequest?.({ ...event, status: response.status });
-        }
+        if (event) requests++;
+        emit("response_headers");
         const responseHeaders = transportHeaders(response.headers);
         responseHeaders.delete("content-encoding");
-        return new Response(response.body, { status: response.status, headers: responseHeaders });
+        // The native Responses Lite transport omits Content-Type even for SSE.
+        // Use the request's stream control as a fallback, never conversation text.
+        observer = new ResponseCompletionObserver(response.headers.get("content-type") || (expectsSse ? "text/event-stream" : ""), event?.kind === "compaction");
+        const reader = response.body?.getReader();
+        if (!reader) {
+          const result = observer.finish();
+          finish(response.ok ? result.phase : "failed", response.ok ? result.errorCode : "upstream_http_error");
+          return new Response(null, { status, headers: responseHeaders });
+        }
+        const stream = new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            try {
+              const next = await reader.read();
+              if (next.done) {
+                const result = observer!.finish();
+                finish(response.ok ? result.phase : "failed", response.ok ? result.errorCode : "upstream_http_error");
+                controller.close();
+              } else {
+                observer!.push(next.value);
+                controller.enqueue(next.value);
+              }
+            } catch {
+              if (cancellation.signal.aborted) clientClosed();
+              else finish("failed", "upstream_stream_interrupted");
+              controller.error(new Error("Codex upstream stream interrupted"));
+            }
+          },
+          async cancel() {
+            cancellation.abort(); clientClosed();
+            await reader.cancel().catch(() => {});
+          },
+        });
+        return new Response(stream, { status, headers: responseHeaders });
       } catch {
-        // Never print transport errors: they can contain URLs, credentials, or body excerpts.
-        if (event) options.onRequest?.({ ...event, status: 502 });
+        finish(cancellation.signal.aborted ? "cancelled" : "failed", "upstream_unavailable");
         return new Response("Codex upstream unavailable", { status: 502 });
       }
     },
@@ -191,7 +274,7 @@ export function compactionCodexArgs(baseUrl: string, args: string[]): string[] {
 
 export async function runCompactionCodex(args: string[], defaultCommand: string): Promise<number> {
   if (args[0] === "--help" || args[0] === "-h") {
-    console.log("Usage: quotapie codex [--codex-bin PATH] [--compact-from MODEL] [--compact-model MODEL] -- [Codex arguments]");
+    console.log("Usage: quotapie codex [--codex-bin PATH] [--compact-from MODEL] [--compact-model MODEL] [--compact-effort low] -- [Codex arguments]");
     console.log("Default: gpt-6-astra compaction requests use gpt-5.6-sol. Requires an existing ChatGPT login. Experimental; applies only to this launched process.");
     return 0;
   }
@@ -207,14 +290,15 @@ export async function runCompactionCodex(args: string[], defaultCommand: string)
     switch (option) {
       case "--compact-from": route.from = value; break;
       case "--compact-model": route.to = value; break;
+      case "--compact-effort": if (value !== "low") throw new Error("Only Low compaction effort has been validated"); route.effort = value; break;
       case "--codex-bin": command = value; break;
-      default: throw new Error("Usage: quotapie codex [--codex-bin PATH] [--compact-from MODEL] [--compact-model MODEL] -- [Codex arguments]");
+      default: throw new Error("Usage: quotapie codex [--codex-bin PATH] [--compact-from MODEL] [--compact-model MODEL] [--compact-effort low] -- [Codex arguments]");
     }
   }
   const proxy = startCompactionProxy({
     route,
     onRequest: (event) => {
-      if (event.routed) console.error(`[QuotaPie] compaction ${event.from} → ${event.to} (HTTP ${event.status}) effort=${event.reasoningEffort ?? "unspecified"}`);
+      console.error(JSON.stringify({ service: "quotapie-compaction", ...event }));
     },
   });
   let child: ReturnType<typeof Bun.spawn> | undefined;

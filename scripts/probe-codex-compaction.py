@@ -43,9 +43,11 @@ class Probe:
             '[features]\nremote_plugin = false\napps = false\n'
         )
         self.relay_settings = json.loads(Path(args.relay_settings).read_text()) if args.relay_settings else None
+        if self.relay_settings and "settings_path" in self.relay_settings:
+            self.relay_settings = json.loads(Path(self.relay_settings["settings_path"]).read_text())
         if self.relay_settings:
             settings = self.relay_settings
-            if settings["route"] != {"from": args.normal_model, "to": args.compact_model}:
+            if {k: settings["route"][k] for k in ["from", "to"]} != {"from": args.normal_model, "to": args.compact_model}:
                 raise ValueError("Installed relay route does not match the requested probe models")
             self.relay_url = f"http://127.0.0.1:{settings['port']}/{settings['token']}/backend-api/codex"
             config_path = self.profile / "config.toml"
@@ -70,7 +72,7 @@ class Probe:
         self.seq = 0
         self.tool_calls = 0
         self.report = {"normal_model": args.normal_model, "compact_model": args.compact_model,
-                       "requested_effort": args.effort, "fixture": args.fixture, "threshold": 12000}
+                       "requested_effort": args.effort, "compaction_effort": "low", "fixture": args.fixture, "threshold": 12000}
 
     def relay_health(self):
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -155,6 +157,7 @@ class Probe:
                 })
                 self.report["thread_id"] = result["thread"]["id"]
                 self.report["provider"] = result.get("modelProvider")
+                self.report["settings_before"] = {"model": result.get("model"), "effort": result.get("reasoningEffort")}
                 await self.request("turn/start", {
                     "threadId": result["thread"]["id"], "model": self.args.normal_model, "effort": self.args.effort,
                     "input": [{"type": "text", "text": "Read the probe record once, then return all its authoritative facts as JSON, applying the final corrections."}],
@@ -194,6 +197,29 @@ class Probe:
                     self.report["fields_total"] = len(self.facts)
                 except ValueError:
                     self.report["facts_preserved"] = False
+                after = (await self.request("thread/read", {"threadId": self.report["thread_id"]}))["thread"]
+                self.report["settings_after_compaction"] = {"model": after.get("model"), "effort": after.get("reasoningEffort")}
+                # Deliberately omit model and effort: explicit overrides would hide
+                # a compaction that accidentally changed subsequent work settings.
+                await self.request("turn/start", {"threadId": self.report["thread_id"],
+                    "input": [{"type": "text", "text": "Do not call a tool. Repeat the authoritative facts as the same JSON object."}]})
+                next_answer = ""
+                while True:
+                    followup = await self.events.get()
+                    item = followup.get("params", {}).get("item", {})
+                    if followup["method"] == "item/completed" and item.get("type") == "agentMessage":
+                        next_answer += item.get("text", "")
+                    if followup["method"] == "turn/completed":
+                        self.report["next_turn_status"] = followup["params"]["turn"]["status"]
+                        break
+                    if followup["method"] == "probe/closed":
+                        raise RuntimeError("Codex closed before the next turn completed")
+                try:
+                    self.report["next_turn_facts_preserved"] = json.loads(next_answer) == self.facts
+                except ValueError:
+                    self.report["next_turn_facts_preserved"] = False
+                after = (await self.request("thread/read", {"threadId": self.report["thread_id"]}))["thread"]
+                self.report["settings_after_next_turn"] = {"model": after.get("model"), "effort": after.get("reasoningEffort")}
             finally:
                 if self.process.returncode is None:
                     self.process.terminate()
@@ -205,13 +231,28 @@ class Probe:
                 reader.cancel()
                 await asyncio.gather(reader, return_exceptions=True)
         transport = (self.run / "transport.log").read_text()
-        self.report["routed_requests"] = transport.count(f"[QuotaPie] compaction {self.args.normal_model} → {self.args.compact_model} (HTTP 200)")
-        self.report["routing_statuses"] = [int(status) for status in re.findall(r"\[QuotaPie\] compaction .*? \(HTTP (\d+)\)", transport)]
-        self.report["observed_compaction_efforts"] = re.findall(r"\[QuotaPie\] compaction .*? effort=([a-z]+)", transport)
+        relay_events = []
+        for line in transport.splitlines():
+            try:
+                event = json.loads(line)
+                if event.get("service") == "quotapie-compaction" and "requestId" in event:
+                    relay_events.append(event)
+            except (ValueError, AttributeError):
+                pass
         if self.relay_settings:
-            self.report["routed_requests"] = self.relay_health()["compactions"] - self.before_relay["compactions"]
+            # Associate only this probe, never another desktop task's global count.
+            relay_events = [event for event in self.relay_health().get("recent", [])
+                            if event.get("threadId") == self.report.get("thread_id")]
+        compact_events = [event for event in relay_events if event.get("routed") and event.get("phase") == "completed"]
+        self.report["routed_requests"] = len(compact_events)
+        self.report["routing_statuses"] = [event["status"] for event in compact_events]
+        self.report["observed_compaction_efforts"] = [event.get("reasoningEffort") for event in compact_events]
+        self.report["relay_completion_ids"] = [event["requestId"] for event in compact_events]
+        ordinary_events = [event for event in relay_events if event.get("kind") == "response" and event.get("phase") == "completed"]
+        self.report["observed_work_settings"] = [{"model": event.get("to"), "effort": event.get("reasoningEffort")} for event in ordinary_events]
         plaintext = []
         turn_models = []
+        turn_efforts = []
         for rollout in self.profile.glob("sessions/**/*.jsonl"):
             for line in rollout.open():
                 item = json.loads(line)
@@ -220,13 +261,23 @@ class Probe:
                     plaintext.append(self.facts["project_code"] in history)
                 if item["type"] == "turn_context":
                     turn_models.append(item["payload"].get("model"))
+                    turn_efforts.append(item["payload"].get("effort"))
         self.report["original_fact_absent_from_plaintext_history"] = bool(plaintext) and not any(plaintext)
         self.report["turn_models"] = turn_models
+        self.report["turn_efforts"] = turn_efforts
+        expected = {"model": self.args.normal_model, "effort": self.args.effort}
+        self.report["settings_preserved"] = all(self.report.get(key) == expected for key in
+            ["settings_before", "settings_after_compaction", "settings_after_next_turn"])
         self.report["passed"] = all([
             self.report.get("turn_status") == "completed", self.report.get("facts_preserved"),
             self.report["routed_requests"] > 0, bool(self.report.get("compaction_seconds")),
             self.report["original_fact_absent_from_plaintext_history"],
-            bool(turn_models) and set(turn_models) == {self.args.normal_model}, self.tool_calls == 1,
+            bool(turn_models) and set(turn_models) == {self.args.normal_model},
+            bool(turn_efforts) and set(turn_efforts) == {self.args.effort}, self.tool_calls == 1,
+            self.report["settings_preserved"], self.report.get("next_turn_status") == "completed",
+            self.report.get("next_turn_facts_preserved"),
+            bool(compact_events) and all(event.get("reasoningEffort") == "low" for event in compact_events),
+            bool(ordinary_events) and all(item == expected for item in self.report["observed_work_settings"]),
         ])
 
 
