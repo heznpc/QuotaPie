@@ -13,6 +13,7 @@ export function comparisonReason(previous: QuotaObservation | undefined, next: Q
     || previous.observedAtMs >= next.observedAtMs) return "insufficient-evidence";
   if (previous.quality !== "authoritative" || next.quality !== "authoritative") return "insufficient-evidence";
   if (previous.source !== next.source) return "source-changed";
+  if (previous.metadata?.collectorEpoch !== next.metadata?.collectorEpoch) return "insufficient-evidence";
   if (previous.windowSeconds !== next.windowSeconds) return "window-changed";
   if (next.observedAtMs - previous.observedAtMs > MAX_RECOVERY_OBSERVATION_GAP_MS) return "observation-gap";
   return null;
@@ -32,7 +33,7 @@ export function recoveryEvidence(event: QuotaEvent, signals: ResetSignal[], nowM
   else if (d.resetCreditDecreased === true) reason = "reset-credit-decreased";
   else if (event.kind === "scheduled_reset") reason = "scheduled";
   const candidates = reason === "no-public-match" && event.provider === "codex" ? signals.filter(signal => {
-    // Account plan eligibility is not collected. Only an explicit universal
+    // A plan label does not establish announcement eligibility. Only an explicit universal
     // completion can be suggested; plan-specific and unknown scope stay news.
     const text = `${signal.text}\n${signal.contextText ?? ""}`;
     if (signal.state !== "reported" || signal.resetKind !== "direct"

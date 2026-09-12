@@ -451,14 +451,21 @@ export class QuotaDatabase {
   }
 
   latestRecovery(provider: Provider, account: string, bucket: string, sinceMs: number, nowMs: number): QuotaEvent | null {
-    const row = this.db.query<EventRow, [Provider, string, string, number, number]>(`
+    const row = this.db.query<EventRow, [Provider, string, string, number, number, number]>(`
       SELECT id, provider, account, bucket, kind, severity, occurred_at_ms,
              confidence, summary, details_json
       FROM events WHERE provider = ? AND account = ? AND bucket = ?
         AND kind IN ('scheduled_reset', 'external_relief', 'allowance_relief')
         AND occurred_at_ms >= ? AND occurred_at_ms <= ?
+        AND NOT EXISTS (
+          SELECT 1 FROM events AS context_change
+          WHERE context_change.provider = events.provider AND context_change.account = events.account
+            AND context_change.kind IN ('account_changed', 'plan_changed')
+            AND context_change.occurred_at_ms >= events.occurred_at_ms
+            AND context_change.occurred_at_ms <= ?
+        )
       ORDER BY occurred_at_ms DESC, id DESC LIMIT 1
-    `).get(provider, account, bucket, sinceMs, nowMs);
+    `).get(provider, account, bucket, sinceMs, nowMs, nowMs);
     return row ? eventFromRow(row) : null;
   }
 

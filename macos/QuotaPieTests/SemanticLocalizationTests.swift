@@ -28,6 +28,8 @@ final class SemanticLocalizationTests: XCTestCase {
             "lane": .string("main"),
             "fromLabel": .string("5-hour"),
             "toLabel": .string("weekly"),
+            "fromPlan": .string("plus"),
+            "toPlan": .string("pro"),
         ]
         let semanticKeys = catalog.keys.filter {
             $0.hasPrefix("event.") || $0.hasPrefix("alert.")
@@ -64,7 +66,7 @@ final class SemanticLocalizationTests: XCTestCase {
 
         XCTAssertEqual(
             event.localizedText,
-            Strings.t("event.window_changed", "primary", "main", "5-hour", "weekly")
+            Strings.t("event.window_changed", "5-hour", "weekly")
         )
         XCTAssertNotEqual(event.localizedText, event.displayText)
     }

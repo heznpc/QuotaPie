@@ -34,6 +34,23 @@ function seed(s: QuotaPieService) {
 }
 
 describe("native recovery contract", () => {
+  test("a changed login or plan cannot inherit the previous context's recent recovery", async () => {
+    for (const kind of ["account_changed", "plan_changed"] as const) {
+      const s = new QuotaPieService(config(), new QuotaDatabase(":memory:"));
+      try {
+        seed(s);
+        expect(s.resetTracking(now).accounts[0]!.windows[0]!.recovery).not.toBeNull();
+        s.db.insertEvent({ provider: "codex", account: "personal", bucket: "weekly", kind,
+          severity: "info", confidence: "high", occurredAtMs: now, displayText: "context changed", details: {} });
+        expect(s.resetTracking(now).accounts[0]!.windows[0]!.recovery).toBeNull();
+        expect(s.recentEvents().some(event => event.kind === "external_relief")).toBe(true);
+        // A subsequent real recovery belongs to the current context and remains visible.
+        s.ingest([{ ...after, observedAtMs: now + 1000, usedPercent: 80 },
+          { ...after, observedAtMs: now + 2000, usedPercent: 0, resetsAtMs: now + 7 * 86400000 }]);
+        expect(s.resetTracking(now + 2000).accounts[0]!.windows[0]!.recovery).not.toBeNull();
+      } finally { await s.close(); }
+    }
+  });
   test("all accounts stay visible, late news changes neither recovery nor observation; persistence survives restart", async () => {
     const dir = mkdtempSync(join(tmpdir(), "quotapie-recovery-"));
     const path = join(dir, "test.sqlite3");

@@ -140,7 +140,7 @@
 "event.credit_topup" = "%@ credit balance increased.";
 "event.banked_reset_consumed" = "A banked reset appears to have been used.";
 "event.bucket_retired" = "%@ disappeared from the provider's full response; tracking stopped.";
-"event.window_changed" = "%@ %@ window changed: %@ → %@";
+"event.window_changed" = "Displayed limit changed: %@ → %@. Account or plan change unverified.";
 
 /* Semantic notification messages received from the local service */
 "alert.remaining.title" = "%@/%@ limit running low";
@@ -152,7 +152,7 @@
 "alert.stale.title" = "%@/%@ collection stalled";
 "alert.stale.message" = "%@ has had no fresh value for a while.";
 "alert.event.title.payment" = "%@/%@ billable usage changed";
-"alert.event.title.window" = "%@/%@ limit window changed";
+"alert.event.title.window" = "Codex limit display changed";
 "alert.event.title.resync" = "%@/%@ timer resynchronised";
 "alert.test.title" = "QuotaPie test";
 "alert.test.message" = "The notification channel is connected.";
@@ -322,3 +322,11 @@
 "signal.summary.timeHint" = "Reset time mentioned · exact deadline unverified";
 
 "headline.cached" = "%@ %@ %@%% · last checked";
+
+"event.account_changed" = "A different Codex login was observed. Tracking quota from the new account separately.";
+
+"event.plan_changed" = "The same Codex login changed plan: %@ → %@. Quota was remeasured.";
+
+"alert.event.title.account" = "Codex login changed";
+
+"alert.event.title.plan" = "Codex plan changed";

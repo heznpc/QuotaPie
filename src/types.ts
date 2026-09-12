@@ -34,6 +34,8 @@ export type EventKind =
   | "banked_reset_consumed"
   | "bucket_retired"
   | "window_changed"
+  | "account_changed"
+  | "plan_changed"
   | "out_of_order";
 
 export type Severity = "info" | "warning" | "critical";
@@ -49,6 +51,8 @@ export const ALERTABLE_EVENT_KINDS = [
   "paid_usage",
   "credit_topup",
   "window_changed",
+  "account_changed",
+  "plan_changed",
 ] as const satisfies readonly EventKind[];
 
 export type AlertableEventKind = (typeof ALERTABLE_EVENT_KINDS)[number];

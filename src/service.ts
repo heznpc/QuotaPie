@@ -1,4 +1,5 @@
 import { buildResetTracking } from "./signals/correlation";
+import { codexContextChange } from "./domain/codex-context";
 import { ResetSignalStore } from "./storage/reset-signal-store";
 import { ResetSignalCollector } from "./signals/collector";
 import { signalDecision } from "./signals/presentation";
@@ -162,27 +163,39 @@ export class QuotaPieService {
       );
       emitted.push(...result.events);
       if (!result.accepted) continue;
-      const previousEpoch = [...previousLaneWindows].sort((a, b) => b.observedAtMs - a.observedAtMs)[0]?.metadata?.collectorEpoch;
+      const orderedPrevious = [...previousLaneWindows].sort((a, b) => b.observedAtMs - a.observedAtMs);
+      const previousContext = orderedPrevious.find(item => item.metadata?.limitId === "codex") ?? orderedPrevious[0];
+      const previousEpoch = previousContext?.metadata?.collectorEpoch;
       const nextEpoch = accountObservations[0]?.metadata?.collectorEpoch;
       const newCollection = nextEpoch != null && nextEpoch !== previousEpoch;
+      const nextContext = accountObservations.find(item => item.metadata?.limitId === "codex") ?? accountObservations[0]!;
+      const contextChange = codexContextChange(previousContext, nextContext);
+      if (contextChange) {
+        const details: QuotaEvent["details"] = contextChange === "plan_changed" ? {
+          fromPlan: String(previousContext!.metadata!.planType), toPlan: String(nextContext.metadata!.planType),
+        } : {};
+        const value: QuotaEvent = { provider: "codex", account, bucket: nextContext.bucket,
+          kind: contextChange, severity: "info", occurredAtMs: observedAtMs, confidence: "high",
+          displayText: t(`event.${contextChange}`, details, this.locale), details };
+        if (this.db.insertEvent(value)) emitted.push(value);
+      }
       // Collector restarts also create an epoch. A new baseline alone must
       // not re-send an already displayed low-quota warning; observed recovery
       // below re-arms those thresholds.
-      const currentBuckets = new Set(accountObservations.map((item) => item.bucket));
       for (const next of accountObservations) {
-        if (newCollection) break;
+        if (newCollection || contextChange) break;
         const limitId = next.metadata?.limitId;
         const lane = next.metadata?.lane;
         if (typeof limitId !== "string" || typeof lane !== "string") continue;
         const previous = previousLaneWindows
           .filter((item) =>
-            item.bucket !== next.bucket &&
-            !currentBuckets.has(item.bucket) &&
             item.metadata?.limitId === limitId &&
             item.metadata?.lane === lane
           )
           .sort((left, right) => right.observedAtMs - left.observedAtMs)[0];
-        if (!previous) continue;
+        // A missing bucket is retained for two reads. Compare with the latest
+        // lane reading, or the retained old bucket re-announces the same change.
+        if (!previous || previous.bucket === next.bucket) continue;
         const value: QuotaEvent = {
           provider: next.provider,
           account: next.account,

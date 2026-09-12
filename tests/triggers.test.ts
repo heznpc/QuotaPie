@@ -87,7 +87,7 @@ describe("trigger planning and claims", () => {
       details: {},
     };
     const decision = planTriggers([], [event], DEFAULT_CONFIG, 0, 2_000)[0];
-    expect(decision?.title).toBe("codex/default limit window changed");
+    expect(decision?.title).toBe("Codex limit display changed");
     expect(decision?.message).toBe(event.displayText);
     expect(decision?.presentation).toEqual({
       title: {

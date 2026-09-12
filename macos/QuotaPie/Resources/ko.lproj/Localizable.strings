@@ -140,7 +140,7 @@
 "event.credit_topup" = "%@ 크레딧 잔액이 증가했습니다.";
 "event.banked_reset_consumed" = "저장형 리셋이 사용된 것으로 보입니다.";
 "event.bucket_retired" = "%@ 항목이 공급자 전체 응답에서 사라져 추적을 종료했습니다.";
-"event.window_changed" = "%@ %@ 한도 창 전환: %@ → %@";
+"event.window_changed" = "한도 표시 변경: %@ → %@ · 계정·플랜 변경 여부 미확인";
 
 /* 로컬 서비스가 전달하는 의미 기반 알림 메시지 */
 "alert.remaining.title" = "%@/%@ 잔여 한도 경고";
@@ -152,7 +152,7 @@
 "alert.stale.title" = "%@/%@ 수집 중단";
 "alert.stale.message" = "%@ 값이 한동안 갱신되지 않았습니다.";
 "alert.event.title.payment" = "%@/%@ 결제성 사용 변화";
-"alert.event.title.window" = "%@/%@ 한도 창 전환";
+"alert.event.title.window" = "Codex 한도 표시 변경";
 "alert.event.title.resync" = "%@/%@ 타이머 재동기화";
 "alert.test.title" = "QuotaPie 테스트";
 "alert.test.message" = "알림 채널이 정상적으로 연결됐습니다.";
@@ -322,3 +322,11 @@
 "signal.summary.timeHint" = "리셋 시간 언급 있음 · 확정 시각 미확인";
 
 "headline.cached" = "%@ %@ %@%% · 갱신 안 됨";
+
+"event.account_changed" = "다른 Codex 계정으로 로그인한 것을 확인했습니다. 새 계정의 잔량을 별도로 추적합니다.";
+
+"event.plan_changed" = "같은 Codex 계정의 플랜 변경: %@ → %@ · 잔량을 새로 측정합니다.";
+
+"alert.event.title.account" = "Codex 로그인 계정 변경";
+
+"alert.event.title.plan" = "Codex 플랜 변경";

@@ -34,9 +34,12 @@ function eventHasSemanticParams(event: QuotaEvent): boolean {
     case "paid_usage":
     case "credit_topup":
     case "banked_reset_consumed":
+    case "account_changed":
       return true;
     case "window_changed":
-      return ["limitId", "lane", "fromLabel", "toLabel"].every(hasString);
+      return ["fromLabel", "toLabel"].every(hasString);
+    case "plan_changed":
+      return ["fromPlan", "toPlan"].every(hasString);
     default:
       return hasString("label");
   }

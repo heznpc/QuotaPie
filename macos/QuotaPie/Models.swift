@@ -142,7 +142,7 @@ struct LocalizedMessagePayload: Decodable {
             return required("source", "detail", "url")
         case "alert.remaining.title", "alert.stale.title",
              "alert.rapid.title",
-             "alert.event.title.payment", "alert.event.title.window",
+             "alert.event.title.payment",
              "alert.event.title.resync", "alert.pace.title.measured",
              "alert.pace.title.projected", "alert.resume.ready.title":
             return required("provider", "account")
@@ -159,12 +159,15 @@ struct LocalizedMessagePayload: Decodable {
             } ?? text("detail")
             guard let gap else { return nil }
             return [label, gap]
-        case "alert.test.title", "alert.test.message", "event.banked_reset_consumed":
+        case "alert.test.title", "alert.test.message", "event.banked_reset_consumed",
+             "alert.event.title.window", "alert.event.title.account", "alert.event.title.plan", "event.account_changed":
             return []
         case "event.paid_usage", "event.credit_topup":
             return required("provider")
         case "event.window_changed":
-            return required("limitId", "lane", "fromLabel", "toLabel")
+            return required("fromLabel", "toLabel")
+        case "event.plan_changed":
+            return required("fromPlan", "toPlan")
         case "event.first_observation", "event.out_of_order", "event.source_changed",
              "event.source_unknown", "event.scheduled_reset", "event.external_relief",
              "event.allowance_relief", "event.meter_correction", "event.schedule_rebased",
