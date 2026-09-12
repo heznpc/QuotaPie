@@ -151,6 +151,10 @@ function overflowAccount(index: number): AccountState {
 }
 
 export const FIXTURES: Record<string, AccountState[]> = {
+  // Compact overview: general quota leads over the separate Spark allowance.
+  overview: [account({ windows: [window({ usedPercent: 86, remainingPercent: 14 }),
+    window({ bucket: "codex_bengalfox:primary:300", label: "Spark 5h", windowSeconds: 18000,
+      usedPercent: 0, remainingPercent: 100 })] }), claudeHealthy],
   // Normal: two accounts, no risk.
   normal: [account({ windows: [fiveHour, window()] }), claudeHealthy],
   // Pace risk: plenty remaining, but projected to run dry before the reset.
@@ -250,7 +254,18 @@ let resumeTasks: FixtureResumeTask[] = state === "resume-waiting"
   ? [waitingTask()]
   : state === "resume-ready"
     ? [readyTask(), waitingTask()]
-    : [];
+    : state === "overview" ? [readyTask(), waitingTask()] : [];
+const resetSignals = state === "overview" ? {
+  enabled: true, source: "reset-beacon", state: "ready", lastSuccessMs: NOW,
+  signals: [0, 1, 2].map(index => ({
+    id: String(index + 1), fingerprint: `fixture-${index}`, author: "openai",
+    sourceUrl: `https://x.com/openai/status/${index + 1}`,
+    text: "Synthetic UI fixture: a reset may become available later today. This is not a real announcement.",
+    publishedAtMs: NOW - (index + 1) * 86_400_000,
+    state: index === 1 ? "withdrawn" : "announced", resetKind: "unknown",
+    observedVia: "reset-beacon", targetAtMs: NOW - (index + 1) * 3_600_000,
+  })),
+} : null;
 let notificationClaimed = false;
 let notificationCompleted = false;
 
@@ -275,6 +290,7 @@ Bun.serve({
         events: [],
         actionToken: ACTION_TOKEN,
         resumeTasks,
+        resetSignals,
       });
     }
 
