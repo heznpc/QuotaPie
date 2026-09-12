@@ -215,7 +215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
-    /// Show measured quota as a battery. Recovery actions and collection errors
+    /// Show measured quota as a horizontal bar. Recovery actions and collection errors
     /// keep their text labels; cached quota must not look like a fresh reading.
     private func render() {
         guard let button = statusItem.button else { return }
