@@ -586,9 +586,9 @@ export function t(key: MessageKey, params: MessageParams = {}, locale: Locale = 
 
 export function windowKindOf(windowSeconds: number | null | undefined): WindowKind {
   if (windowSeconds == null) return "other";
-  if (windowSeconds >= 28 * 86_400) return "monthly";
-  if (windowSeconds >= 7 * 86_400) return "weekly";
-  if (windowSeconds <= 6 * 3_600) return "five-hour";
+  if (windowSeconds >= 28 * 86_400 && windowSeconds <= 31 * 86_400) return "monthly";
+  if (windowSeconds === 7 * 86_400) return "weekly";
+  if (windowSeconds === 5 * 3_600) return "five-hour";
   return "other";
 }
 

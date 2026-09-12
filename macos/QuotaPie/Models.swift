@@ -378,8 +378,8 @@ struct QuotaWindow: Decodable, Identifiable {
         if bucket.hasPrefix("codex_bengalfox:") {
             return "Spark · " + Strings.t(windowSeconds <= 6 * 3_600 ? "window.five-hour" : "window.weekly")
         }
-        if windowSeconds >= 28 * 86_400 { return Strings.t("window.monthly") }
-        if windowSeconds >= 7 * 86_400 {
+        if windowSeconds >= 28 * 86_400 && windowSeconds <= 31 * 86_400 { return Strings.t("window.monthly") }
+        if windowSeconds == 7 * 86_400 {
             if bucket.hasPrefix("seven_day_") {
                 let suffix = bucket.dropFirst("seven_day_".count)
                 let qualifier = suffix
@@ -390,7 +390,7 @@ struct QuotaWindow: Decodable, Identifiable {
             }
             return Strings.t("window.weekly")
         }
-        if windowSeconds <= 6 * 3_600 { return Strings.t("window.five-hour") }
+        if windowSeconds == 5 * 3_600 { return Strings.t("window.five-hour") }
         return label
     }
 
