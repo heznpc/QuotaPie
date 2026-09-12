@@ -1,17 +1,19 @@
 import AppKit
 
-/// A template image lets the menu bar choose the foreground for its wallpaper,
-/// appearance, and highlighted state. The fill always means remaining quota.
+/// Normal readings follow the menu bar appearance; under 20% uses system red.
+/// The fill always means remaining quota.
 enum MenuBarQuotaIndicator {
     static func image(label: String, remainingPercent: Double) -> NSImage {
         let remaining = min(100, max(0, remainingPercent))
+        let low = QuotaPresentation.isLow(remainingPercent)
+        let ink = low ? NSColor.systemRed : NSColor.black
         let labelAttributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .medium),
-            .foregroundColor: NSColor.black,
+            .foregroundColor: ink,
         ]
         let numberAttributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
-            .foregroundColor: NSColor.black,
+            .foregroundColor: ink,
         ]
         let labelText = NSAttributedString(string: label, attributes: labelAttributes)
         let numberText = NSAttributedString(
@@ -32,10 +34,10 @@ enum MenuBarQuotaIndicator {
             ))
 
             let track = NSRect(x: barX, y: 6, width: barWidth, height: 6)
-            NSColor.black.withAlphaComponent(0.22).setFill()
+            ink.withAlphaComponent(0.22).setFill()
             track.fill()
             if remaining > 0 {
-                NSColor.black.setFill()
+                ink.setFill()
                 NSRect(
                     x: track.minX, y: track.minY,
                     width: track.width * remaining / 100, height: track.height
@@ -43,7 +45,7 @@ enum MenuBarQuotaIndicator {
             }
             return true
         }
-        image.isTemplate = true
+        image.isTemplate = !low
         return image
     }
 }

@@ -231,7 +231,7 @@ describe("menu bar headline", () => {
     }] });
     const headline = buildHeadline([state], NOW, "ko");
     expect(headline.remainingPercent).toBe(remainingPercent);
-    expect(headline.displayText).toBe(`Codex 주간 ${remainingPercent}% · 갱신 안 됨`);
+    expect(headline.displayText).toBe(`Codex 주간 ${remainingPercent}% · 이전 값`);
     expect(headline.displayDetail).toContain("조회 요청이 제한");
     state.windows = [];
     const missing = buildHeadline([state], NOW, "ko");

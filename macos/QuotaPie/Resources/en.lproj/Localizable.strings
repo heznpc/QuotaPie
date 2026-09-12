@@ -321,7 +321,14 @@
 "signal.timeUnresolved" = "Original time wording. No local deadline is inferred until its timezone and reference date are established.";
 "signal.summary.timeHint" = "Reset time mentioned · exact deadline unverified";
 
-"headline.cached" = "%@ %@ %@%% · last checked";
+"headline.cached" = "%@ %@ %@%% · last reading";
+"headline.cachedReason" = "%@ %@ %@%% · %@";
+"status.failure.timeout" = "response delayed";
+"status.failure.timeout.detail" = "The local service is slow to respond. Retrying.";
+"status.failure.connection" = "disconnected";
+"status.failure.connection.detail" = "Reconnecting to the local service.";
+"status.failure.response" = "response error";
+"status.failure.response.detail" = "Could not read the local service response. Retrying.";
 
 "event.account_changed" = "A different Codex login was observed. Tracking quota from the new account separately.";
 

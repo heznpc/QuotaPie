@@ -2,6 +2,8 @@
 // deterministically. Development only: it exists so the UI can be verified
 // without waiting for real collection.
 // Usage: bun run script/ui_fixture_server.ts <state> [port]
+// Optional QUOTAPIE_FIXTURE_TRANSPORT_FILE: write timeout, response, or normal
+// to reproduce transport failure and recovery without restarting the app.
 import { buildHeadline } from "../src/analytics";
 import type { AccountState, CollectionSourceState, WindowAnalysis } from "../src/types";
 
@@ -157,6 +159,8 @@ export const FIXTURES: Record<string, AccountState[]> = {
       usedPercent: 0, remainingPercent: 100 })] }), claudeHealthy],
   // Normal: two accounts, no risk.
   normal: [account({ windows: [fiveHour, window()] }), claudeHealthy],
+  low: [account({ windows: [window({ usedPercent: 81, remainingPercent: 19 })] })],
+  "low-boundary": [account({ windows: [window({ usedPercent: 80, remainingPercent: 20 })] })],
   // Pace risk: plenty remaining, but projected to run dry before the reset.
   "pace-risk": [
     account({
@@ -281,9 +285,13 @@ function json(value: unknown, status = 200): Response {
 Bun.serve({
   hostname: "127.0.0.1",
   port,
-  fetch(request) {
+  async fetch(request) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/api/status") {
+      const transportFile = process.env.QUOTAPIE_FIXTURE_TRANSPORT_FILE;
+      const transport = transportFile ? (await Bun.file(transportFile).text()).trim() : "normal";
+      if (transport === "timeout") await Bun.sleep(6_500);
+      if (transport === "response") return json({ error: "synthetic response failure" }, 503);
       return json({
         nowMs: Date.now(),
         headline: buildHeadline(accounts, Date.now()),
