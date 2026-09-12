@@ -1,4 +1,5 @@
 import { buildHeadline } from "./analytics";
+import { CompactionStatusReader } from "./compaction-status";
 import type { AppNotificationDisposition, Headline, QuotaEvent } from "./types";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { ResumeTargetError } from "./service";
@@ -31,6 +32,7 @@ function json(value: unknown, status = 200): Response {
 }
 
 export function startDashboard(service: QuotaPieService, config: AppConfig) {
+  const compaction = new CompactionStatusReader();
   const dashboardFile = Bun.file(new URL("./dashboard.html", import.meta.url));
   const actionToken = randomBytes(32).toString("base64url");
   const tokenMatches = (candidate: string | null): boolean => {
@@ -177,6 +179,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig) {
           resumeTasks: service.resumeTaskSummaries(),
           resetSignals: service.signalCollector.status(nowMs),
           resetTracking: service.resetTracking(nowMs, accounts),
+          compaction: await compaction.status(nowMs),
           // Kept for existing consumers. It only contains accounts that have
           // windows, so new consumers should read accounts instead.
           statuses: service.statuses(nowMs),

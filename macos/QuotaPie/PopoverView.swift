@@ -18,6 +18,10 @@ struct PopoverView: View {
             }
 #endif
             quotaOverview.padding(20)
+            if let record = model.payload?.compaction?.latest {
+                CompactionSummary(record: record, openHistory: { openDetails(.activity) })
+                    .padding(.horizontal, 20).padding(.bottom, 12)
+            }
             if !model.activeTasks.isEmpty {
                 Divider().padding(.horizontal, 20)
                 taskOverview.padding(20)

@@ -208,7 +208,7 @@ describe("menu bar headline", () => {
     expect(headline.displayDetail).toContain("Sign-in required");
   });
 
-  test("stale collection on a tracked account reports delay rather than its last number", () => {
+  test("stale collection retains the measured value with an explicit freshness label", () => {
     const headline = buildHeadline([account({
       sources: [{
           source: "codex-appserver",
@@ -220,7 +220,23 @@ describe("menu bar headline", () => {
         }],
     })], NOW);
     expect(headline.kind).toBe("degraded");
-    expect(headline.displayText).toBe("Limits unconfirmed");
+    expect(headline.displayText).toBe("Codex weekly 90% · last checked");
+    expect(headline.remainingPercent).toBe(90);
+  });
+
+  test.each([0, 43])("a stale reading of %d percent remains visible without inventing zero", (remainingPercent) => {
+    const state = account({ windows: [window({remainingPercent, freshness: "stale"})], sources: [{
+      source: "codex-appserver", health: "stale-success", lastAttemptAtMs: NOW, lastSuccessAtMs: NOW - 900_000,
+      errorCategory: "rate-limited", errorDetail: null,
+    }] });
+    const headline = buildHeadline([state], NOW, "ko");
+    expect(headline.remainingPercent).toBe(remainingPercent);
+    expect(headline.displayText).toBe(`Codex 주간 ${remainingPercent}% · 갱신 안 됨`);
+    expect(headline.displayDetail).toContain("조회 요청이 제한");
+    state.windows = [];
+    const missing = buildHeadline([state], NOW, "ko");
+    expect(missing.remainingPercent).toBeNull();
+    expect(missing.displayText).toBe("잔량 조회 실패");
   });
 
   test("no configured accounts still yields an honest setup headline", () => {

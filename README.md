@@ -340,6 +340,13 @@ The last 32 terminal requests and currently active requests are retained in
 memory with validated thread/turn IDs; aggregate counters alone are never proof
 that a particular task switched.
 
+QuotaPie shows the actual compaction model, reasoning effort, elapsed time and
+result in the popover, with request history in Activity. It reads both live
+health and bounded log tails from every retained relay generation. A missing
+terminal record is unverified, never inferred successful from HTTP 200. The
+composer's task model stays unchanged. Legacy relays without request identities
+are reported as having unavailable live observation; they are not stopped.
+
 Change compaction policy independently of the Codex work-model picker:
 
 ```bash
@@ -678,15 +685,20 @@ withdrawals before your own quota meter changes. Enable in the local config:
 "resetSignals": { "enabled": true, "tokenFile": null, "pollSeconds": 300 }
 ```
 
-Without a token it polls the public [Reset Beacon alert feed](https://resetbeacon.com/api/docs/).
+Without a token it polls both the public [Reset Beacon alert feed](https://resetbeacon.com/api/docs/)
+and quoted posts on [Codex Reset Monitor](https://codexreset.org/).
 This is **partial, third-party coverage**: it is not a direct watch of every X
-post. The menu bar and web dashboard label the relay, show saved original-post
-links and timestamps, and distinguish stale/failed collection from no news.
+post. Reset history in the app shows each source's request status, coverage,
+latest evidence publication time, and when additional evidence was obtained.
+Successful requests do not establish complete coverage, and an older latest
+post alone is not an outage. One failed source leaves the others collecting.
+The monitor parser reads literal post fields and available reply context,
+never executes page scripts or adopts the site's probability forecasts.
 Feed classifications and time conversions are attributed to the feed; the app
 does not certify the source post or account eligibility. A future promise is
 not displayed as already executed merely because the feed calls it an action.
 
-For direct X collection, set `tokenFile` to an owner-only (0600) file containing
+For direct X collection alongside the public relays, set `tokenFile` to an owner-only (0600) file containing
 an X API Bearer Token. Tokens are read at request time, never placed in the
 SQLite records or status API. The official X API requires developer access and
 can incur usage charges. Five fixed accounts are watched: **thsottiaux,
@@ -706,8 +718,10 @@ Signals are kept for 30 days. Notifications use the existing durable delivery
 queue and channel deduplication. Linked announcements with the same classified
 conditions share an alert identity in direct-X mode; changed times and
 withdrawals get new identities. Unlinked paraphrases can still produce separate
-alerts. Old signals (>24 hours), already-passed feed schedule estimates, and
-superseded signals are not newly notified. Existing account-observation alerts
+alerts. Initial imports of old signals (>24 hours), already-passed feed schedule
+estimates, and superseded signals are not newly notified. Later edits and
+withdrawals on an already observed source use their detection time; cached
+copies cannot revive previously observed versions. Existing account-observation alerts
 continue to report actual quota changes independently; a public post never
 changes your quota timer, resumes a task, or spends a banked reset.
 

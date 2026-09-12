@@ -183,7 +183,11 @@ const CATALOG = {
     en: (p) => `${p.provider} · ${p.account} · ${p.label}${p.date ? ` · runs dry around ${p.date}` : ""}`,
     ko: (p) => `${p.provider} · ${p.account} · ${p.label}${p.date ? ` · ${p.date}경 소진 예상` : ""}`,
   },
-  "headline.degraded": { en: () => "Limits unconfirmed", ko: () => "한도 확인 지연" },
+  "headline.degraded": { en: () => "Quota unavailable", ko: () => "잔량 조회 실패" },
+  "headline.cached": {
+    en: p => `${p.provider} ${windowName(p.windowKind, "en", p.label)} ${Math.round(Number(p.percent))}% · last checked`,
+    ko: p => `${p.provider} ${windowName(p.windowKind, "ko", p.label)} ${Math.round(Number(p.percent))}% · 갱신 안 됨`,
+  },
   "headline.setup": { en: () => "Setup needed", ko: () => "설정 필요" },
   "headline.normal": {
     en: (p) => `${Math.round(p.percent ?? 0)}% left`,
@@ -202,7 +206,7 @@ const CATALOG = {
   // Collection state, phrased as something to act on.
   "collection.auth-required": { en: () => "Sign-in required", ko: () => "로그인이 필요합니다" },
   "collection.auth-expired": { en: () => "Sign-in expired", ko: () => "로그인이 만료됐습니다" },
-  "collection.rate-limited": { en: () => "Provider rate limit reached", ko: () => "공급자 요청 한도에 걸렸습니다" },
+  "collection.rate-limited": { en: () => "Quota lookup requests are rate limited", ko: () => "한도 조회 요청이 제한됐습니다" },
   "collection.network": { en: () => "Cannot reach the network", ko: () => "네트워크에 연결할 수 없습니다" },
   "collection.not-configured": { en: () => "Collection is not configured", ko: () => "수집이 설정되지 않았습니다" },
   "collection.isolation-unsafe": {
@@ -215,7 +219,7 @@ const CATALOG = {
   },
   "collection.no-windows": { en: () => "The response carried no limit windows", ko: () => "응답에 한도 창이 없습니다" },
   "collection.never-attempted": { en: () => "Not collected yet", ko: () => "아직 수집을 시도하지 않았습니다" },
-  "collection.stale-success": { en: () => "Collection is running late", ko: () => "한도 확인이 지연되고 있습니다" },
+  "collection.stale-success": { en: () => "Quota could not be refreshed", ko: () => "잔량을 새로 조회하지 못했습니다" },
   "collection.attempted-then-failed": { en: () => "Collection failed", ko: () => "수집에 실패했습니다" },
   "collection.recent-success": { en: () => "Collection is current", ko: () => "한도가 최신 상태입니다" },
 

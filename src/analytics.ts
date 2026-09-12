@@ -426,13 +426,22 @@ export function buildHeadline(
     (state.collection.health === "attempted-then-failed" && state.windows.length > 0)
   );
   if (degraded) {
+    const last = degraded.windows.filter(window => window.remainingPercent != null && Number.isFinite(window.remainingPercent) &&
+      (window.provider !== "codex" || window.bucket.startsWith("codex:")))
+      .sort((a, b) => (duration(a) - duration(b)) || (a.remainingPercent! - b.remainingPercent!))[0];
+    const windowKind = last ? windowKindOf(last.windowSeconds) : null;
     return {
       ...base("degraded"),
       provider: degraded.provider,
       account: degraded.account,
       accountLabel: degraded.accountLabel,
+      bucket: last?.bucket ?? null,
+      windowKind,
+      windowLabel: last?.label ?? null,
+      remainingPercent: last?.remainingPercent ?? null,
       errorCategory: degraded.collection.errorCategory,
-      displayText: t("headline.degraded", {}, locale),
+      displayText: last ? t("headline.cached", { provider: providerName(last.provider), windowKind: windowKind ?? undefined,
+        label: last.label, percent: last.remainingPercent! }, locale) : t("headline.degraded", {}, locale),
       displayDetail: `${providerName(degraded.provider)} · ${degraded.accountLabel} · ${
         collectionErrorText(degraded.collection, locale)
       }`,
