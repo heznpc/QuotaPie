@@ -140,6 +140,8 @@ export function planTriggers(
     plannedEventKeys.add(key);
     const titleKey = event.kind === "paid_usage" || event.kind === "credit_topup"
       ? "alert.event.title.payment"
+      : event.kind === "account_changed" ? "alert.event.title.account"
+      : event.kind === "plan_changed" ? "alert.event.title.plan"
       : event.kind === "window_changed"
         ? "alert.event.title.window"
         : "alert.event.title.resync";

@@ -39,6 +39,8 @@ export interface MessageParams {
   windowKind?: WindowKind;
   fromLabel?: string;
   toLabel?: string;
+  fromPlan?: string;
+  toPlan?: string;
   limitId?: string;
   lane?: string;
   percent?: number;
@@ -154,8 +156,16 @@ const CATALOG = {
     ko: (p) => `${p.label} 항목이 공급자 전체 응답에서 사라져 추적을 종료했습니다.`,
   },
   "event.window_changed": {
-    en: (p) => `${p.limitId} ${p.lane} window changed: ${p.fromLabel} → ${p.toLabel}`,
-    ko: (p) => `${p.limitId} ${p.lane} 한도 창 전환: ${p.fromLabel} → ${p.toLabel}`,
+    en: (p) => `Displayed limit changed: ${p.fromLabel} → ${p.toLabel}. Account or plan change unverified.`,
+    ko: (p) => `한도 표시 변경: ${p.fromLabel} → ${p.toLabel} · 계정·플랜 변경 여부 미확인`,
+  },
+  "event.account_changed": {
+    en: () => "A different Codex login was observed. Tracking quota from the new account separately.",
+    ko: () => "다른 Codex 계정으로 로그인한 것을 확인했습니다. 새 계정의 잔량을 별도로 추적합니다.",
+  },
+  "event.plan_changed": {
+    en: p => `The same Codex login changed plan: ${p.fromPlan} → ${p.toPlan}. Quota was remeasured.`,
+    ko: p => `같은 Codex 계정의 플랜 변경: ${p.fromPlan} → ${p.toPlan} · 잔량을 새로 측정합니다.`,
   },
 
   "window.five-hour": { en: () => "5-hour", ko: () => "5시간" },
@@ -261,9 +271,11 @@ const CATALOG = {
     ko: (p) => `${p.provider}/${p.account} 결제성 사용 변화`,
   },
   "alert.event.title.window": {
-    en: (p) => `${p.provider}/${p.account} limit window changed`,
-    ko: (p) => `${p.provider}/${p.account} 한도 창 전환`,
+    en: () => "Codex limit display changed",
+    ko: () => "Codex 한도 표시 변경",
   },
+  "alert.event.title.account": { en: () => "Codex login changed", ko: () => "Codex 로그인 계정 변경" },
+  "alert.event.title.plan": { en: () => "Codex plan changed", ko: () => "Codex 플랜 변경" },
   "alert.event.title.resync": {
     en: (p) => `${p.provider}/${p.account} timer resynchronised`,
     ko: (p) => `${p.provider}/${p.account} 타이머 재동기화`,

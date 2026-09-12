@@ -47,6 +47,11 @@ function numberOrNull(value: unknown): number | null {
   return null;
 }
 
+function planType(value: unknown): string | null {
+  return typeof value === "string" && ["free", "go", "plus", "pro", "prolite", "team", "self_serve_business_usage_based", "business", "enterprise_cbp_usage_based", "enterprise", "edu"].includes(value)
+    ? value : null;
+}
+
 function epochToMs(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value > 10_000_000_000 ? Math.round(value) : Math.round(value * 1_000);
@@ -124,6 +129,7 @@ export function parseCodexRateLimits(
         metadata: {
           limitId,
           lane,
+          planType: planType(value.planType),
           rateLimitReachedType:
             typeof value.rateLimitReachedType === "string" ? value.rateLimitReachedType : null,
         },
@@ -157,6 +163,7 @@ export function parseCodexRateLimits(
 export class CodexAppServerClient {
   private process: ReturnType<typeof Bun.spawn> | null = null;
   private connectTask: Promise<void> | null = null;
+  private rateLimitsTask: Promise<QuotaObservation[]> | null = null;
   private initialized = false;
   private requestId = 1;
   private pending = new Map<number, PendingRequest>();
@@ -168,6 +175,9 @@ export class CodexAppServerClient {
   private credentialStamp: string | undefined;
   private collectorEpoch = randomUUID();
   private remoteAccount: string | undefined;
+  private remotePlan: string | null = null;
+  private accountContext = randomUUID();
+  private readonly contextSession = randomUUID();
 
   private currentCredentialStamp(): string {
     try {
@@ -206,7 +216,6 @@ export class CodexAppServerClient {
     await this.disconnect();
     this.credentialStamp = this.currentCredentialStamp();
     this.collectorEpoch = randomUUID();
-    this.remoteAccount = undefined;
     this.initialized = false;
     this.process = Bun.spawn(
       [this.command, "-s", "read-only", "-a", "untrusted", "app-server", "--stdio"],
@@ -247,15 +256,47 @@ export class CodexAppServerClient {
   }
 
   async readRateLimits(): Promise<QuotaObservation[]> {
+    // Polls and provider push refreshes share one coherent account/quota read.
+    if (this.rateLimitsTask) return this.rateLimitsTask;
+    const task = this.readStableRateLimits();
+    this.rateLimitsTask = task;
+    try { return await task; }
+    finally { if (this.rateLimitsTask === task) this.rateLimitsTask = null; }
+  }
+
+  private async readStableRateLimits(): Promise<QuotaObservation[]> {
     await this.connect();
+    const stamp = this.currentCredentialStamp();
+    const before = await this.readAccountIdentity();
     const result = await this.request("account/rateLimits/read");
-    const identity = result && typeof result === "object" && "accountId" in result && typeof result.accountId === "string"
-      ? result.accountId : undefined;
-    if (identity !== this.remoteAccount) this.collectorEpoch = randomUUID();
-    this.remoteAccount = identity;
-    return parseCodexRateLimits(result, Date.now(), this.account).map((item) => ({
-      ...item, metadata: { ...item.metadata, collectorEpoch: this.collectorEpoch },
+    const after = await this.readAccountIdentity();
+    if (stamp !== this.currentCredentialStamp() || before !== after) throw new Error("Codex login changed during quota lookup; retrying on next poll");
+    const observations = parseCodexRateLimits(result, Date.now(), this.account);
+    const plan = planType(observations.find(item => item.metadata?.limitId === "codex")?.metadata?.planType);
+    if (after !== undefined) {
+      if (this.remoteAccount !== undefined && after !== this.remoteAccount) {
+        this.accountContext = randomUUID();
+        this.collectorEpoch = randomUUID();
+      } else if (this.remoteAccount !== undefined && plan !== this.remotePlan) {
+        this.collectorEpoch = randomUUID();
+      }
+      this.remoteAccount = after;
+      this.remotePlan = plan;
+    }
+    return observations.map((item) => ({
+      ...item, metadata: { ...item.metadata, collectorEpoch: this.collectorEpoch,
+        // Random, session-scoped continuity markers carry no email or account ID.
+        ...(after ? { accountContext: this.accountContext, contextSession: this.contextSession } : {}) },
     }));
+  }
+
+  private async readAccountIdentity(): Promise<string | undefined> {
+    try {
+      const result = await this.request("account/read", { refreshToken: false }) as any;
+      const account = result?.account;
+      return account?.type === "chatgpt" && typeof account.email === "string" && account.email.length <= 320 && account.email.includes("@")
+        ? account.email.trim().toLowerCase() : undefined;
+    } catch { return undefined; } // Older providers can still supply quota without identity evidence.
   }
 
   async listThreads(params: CodexThreadListParams = {}): Promise<CodexThreadListPage> {

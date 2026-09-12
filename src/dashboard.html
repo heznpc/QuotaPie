@@ -172,7 +172,7 @@
           "event.label.banked_reset_consumed": "Banked reset used",
           "event.label.bucket_retired": "Tracking stopped",
           "event.label.out_of_order": "Out-of-order response ignored",
-          "event.label.window_changed": "Limit window changed",
+          "event.label.window_changed": "Limit display changed",
           "event.first_observation": "Started tracking {label}.",
           "event.out_of_order": "Ignored an out-of-order response for {label}.",
           "event.source_changed": "{label} switched data source.",
@@ -186,7 +186,11 @@
           "event.credit_topup": "{provider} credit balance increased.",
           "event.banked_reset_consumed": "A banked reset appears to have been used.",
           "event.bucket_retired": "{label} disappeared from the provider's full response; tracking stopped.",
-          "event.window_changed": "{limitId} {lane} window changed: {fromLabel} → {toLabel}",
+          "event.window_changed": "Displayed limit changed: {fromLabel} → {toLabel}. Account or plan change unverified.",
+          "event.account_changed": "A different Codex login was observed. Tracking quota from the new account separately.",
+          "event.plan_changed": "The same Codex login changed plan: {fromPlan} → {toPlan}. Quota was remeasured.",
+          "event.label.account_changed": "Codex login changed",
+          "event.label.plan_changed": "Codex plan changed",
         },
         ko: {
           "collection.auth-required": "로그인이 필요합니다",
@@ -267,7 +271,7 @@
           "event.label.banked_reset_consumed": "저장형 리셋 사용",
           "event.label.bucket_retired": "항목 추적 종료",
           "event.label.out_of_order": "오래된 응답 무시",
-          "event.label.window_changed": "한도 창 전환",
+          "event.label.window_changed": "한도 표시 변경",
           "event.first_observation": "{label} 관측을 시작했습니다.",
           "event.out_of_order": "{label}의 오래된 응답을 무시했습니다.",
           "event.source_changed": "{label} 데이터 소스가 변경됐습니다.",
@@ -281,7 +285,11 @@
           "event.credit_topup": "{provider} 크레딧 잔액이 증가했습니다.",
           "event.banked_reset_consumed": "저장형 리셋이 사용된 것으로 보입니다.",
           "event.bucket_retired": "{label} 항목이 공급자 전체 응답에서 사라져 추적을 종료했습니다.",
-          "event.window_changed": "{limitId} {lane} 한도 창 전환: {fromLabel} → {toLabel}",
+          "event.window_changed": "한도 표시 변경: {fromLabel} → {toLabel} · 계정·플랜 변경 여부 미확인",
+          "event.account_changed": "다른 Codex 계정으로 로그인한 것을 확인했습니다. 새 계정의 잔량을 별도로 추적합니다.",
+          "event.plan_changed": "같은 Codex 계정의 플랜 변경: {fromPlan} → {toPlan} · 잔량을 새로 측정합니다.",
+          "event.label.account_changed": "Codex 로그인 계정 변경",
+          "event.label.plan_changed": "Codex 플랜 변경",
         },
       };
       const template = (key) => STRING_TABLE[LOCALE]?.[key] ?? STRING_TABLE[DEFAULT_LOCALE]?.[key];
@@ -359,7 +367,9 @@
         credit_topup: ["provider"],
         banked_reset_consumed: [],
         bucket_retired: ["label"],
-        window_changed: ["limitId", "lane", "fromLabel", "toLabel"],
+        window_changed: ["fromLabel", "toLabel"],
+        account_changed: [],
+        plan_changed: ["fromPlan", "toPlan"],
       });
       const eventMessage = (event) => {
         const required = EVENT_MESSAGE_PARAMS[event.kind];

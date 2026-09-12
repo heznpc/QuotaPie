@@ -23,6 +23,8 @@ The everyday surface is a **native macOS menu bar app**. The CLI is for diagnosi
 - Normal resets, early external resets, possible allowance increases or server corrections, reset-clock rebases, and paid credit changes are each recorded as distinct events.
 - Measured consumption uses elapsed time, including overnight work. A refill, reset-clock change, or authenticated collector change starts a new rate baseline. Forecasts require recent measured usage and estimate actual exhaustion, not entry into a hidden safety reserve.
 - Codex reloads its resident collector when the profile credential file changes. Opaque collection epochs keep old account history and disappeared windows out of the current display; raw account identifiers and credential-file contents are not stored.
+- While the collector is running, Codex account continuity and the quota response's plan type distinguish a different login from a plan change on the same login. Both start a new usage baseline and have separate notifications. A window-duration change alone reports an unverified cause; token refreshes and collector restarts do not prove an account change. Email is compared only in memory, with random session-scoped continuity markers persisted instead.
+- After a detected account or plan change, the overview stops attaching earlier recovery records to the current quota. Those events remain in activity history, and a later observed recovery appears normally.
 - With the resident menu bar app connected, macOS notifications are posted by QuotaPie itself, so Notification Center attributes them to QuotaPie rather than to a script runner. `watch` and a clean older-app installation retain the legacy script notification as an upgrade fallback. An optional external command trigger is also supported.
 - Multiple Codex and Claude accounts are separated by profile directory and local alias; history, personal pace, bottleneck, and alert cooldowns are all isolated per account.
 - Notifications default to remaining-quota thresholds (20%, 10%, 5%) and an observed drop of at least 10 percentage points within 10 minutes. `alerts.rapidDropPercent` and `alerts.rapidWindowMinutes` set that rule. Speculative pace notifications require `alerts.paceForecasts: true`. The app shows notification permission status and a settings shortcut. After permission returns, it re-evaluates suppressed thresholds against current quota instead of replaying old messages.
@@ -99,7 +101,7 @@ sentence instead of silently producing a blank notification.
 |---|---|---|
 | `never-attempted` | never tried once | setup required |
 | `attempted-then-failed` | tried, no successful sample on record | show the failure category with its recovery step |
-| `stale-success` | succeeded before, but not recently | show "collection delayed" instead of a number |
+| `stale-success` | succeeded before, but not recently | retain the last percentage and mark it as a past reading |
 | `recent-success` | a recent sample exists | show normally |
 
 Failures are classified as `auth-required`, `auth-expired`, `rate-limited`, `network`, `not-configured`, `isolation-unsafe`, `provider-error`, or `no-windows`. Credential values themselves never appear in any field.
