@@ -20,8 +20,9 @@ enum MenuBarQuotaIndicator {
         // Reserve room for 100% so updates do not shift adjacent menu items.
         let numberWidth = ceil(NSAttributedString(string: "100%", attributes: numberAttributes).size().width)
         let labelWidth = ceil(labelText.size().width)
-        let batteryX = labelWidth + 6
-        let numberX = batteryX + 30 + 5
+        let barX = labelWidth + 6
+        let barWidth: CGFloat = 36
+        let numberX = barX + barWidth + 5
         let size = NSSize(width: numberX + numberWidth, height: 18)
         let image = NSImage(size: size, flipped: false) { _ in
             labelText.draw(at: NSPoint(x: 0, y: floor((size.height - labelText.size().height) / 2)))
@@ -30,27 +31,15 @@ enum MenuBarQuotaIndicator {
                 y: floor((size.height - numberText.size().height) / 2)
             ))
 
-            let body = NSRect(x: batteryX + 0.5, y: 3.5, width: 26, height: 11)
-            let outline = NSBezierPath(roundedRect: body, xRadius: 2.5, yRadius: 2.5)
-            outline.lineWidth = 1
-            NSColor.black.withAlphaComponent(0.55).setStroke()
-            outline.stroke()
-            NSColor.black.withAlphaComponent(0.55).setFill()
-            NSBezierPath(
-                roundedRect: NSRect(x: batteryX + 28, y: 6.5, width: 2, height: 5),
-                xRadius: 1, yRadius: 1
-            ).fill()
-
-            let interior = body.insetBy(dx: 2, dy: 2)
+            let track = NSRect(x: barX, y: 6, width: barWidth, height: 6)
+            NSColor.black.withAlphaComponent(0.22).setFill()
+            track.fill()
             if remaining > 0 {
-                NSGraphicsContext.saveGraphicsState()
-                NSBezierPath(roundedRect: interior, xRadius: 1, yRadius: 1).addClip()
                 NSColor.black.setFill()
                 NSRect(
-                    x: interior.minX, y: interior.minY,
-                    width: interior.width * remaining / 100, height: interior.height
+                    x: track.minX, y: track.minY,
+                    width: track.width * remaining / 100, height: track.height
                 ).fill()
-                NSGraphicsContext.restoreGraphicsState()
             }
             return true
         }
