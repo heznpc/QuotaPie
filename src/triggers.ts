@@ -145,7 +145,9 @@ export function planTriggers(
       : event.kind === "window_changed"
         ? "alert.event.title.window"
         : "alert.event.title.resync";
-    const titleParams = { provider: event.provider, account: event.account };
+    const identifiesAccount = ["account_changed", "plan_changed", "window_changed"].includes(event.kind);
+    const accountLabel = config.accounts[event.provider].find(profile => profile.id === event.account)?.label?.trim() || event.account;
+    const titleParams = { provider: event.provider, account: identifiesAccount ? accountLabel : event.account };
     const messageKey = `event.${event.kind}` as MessageKey;
     const messageParams = {
       provider: event.provider,

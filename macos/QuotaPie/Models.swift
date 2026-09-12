@@ -159,8 +159,9 @@ struct LocalizedMessagePayload: Decodable {
             } ?? text("detail")
             guard let gap else { return nil }
             return [label, gap]
-        case "alert.test.title", "alert.test.message", "event.banked_reset_consumed",
-             "alert.event.title.window", "alert.event.title.account", "alert.event.title.plan", "event.account_changed":
+        case "alert.event.title.window", "alert.event.title.account", "alert.event.title.plan":
+            return required("account")
+        case "alert.test.title", "alert.test.message", "event.banked_reset_consumed", "event.account_changed":
             return []
         case "event.paid_usage", "event.credit_topup":
             return required("provider")

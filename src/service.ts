@@ -14,7 +14,7 @@ import { ClaudeSessionStore } from "./storage/claude-session-store";
 import { CollectionStore } from "./storage/collection-store";
 import type { QuotaStorage } from "./storage/database";
 import { ResumeTaskStore, ResumeTaskStoreError } from "./storage/resume-task-store";
-import { CodexAppServerClient } from "./providers/codex-appserver";
+import { CodexAppServerClient, CodexSnapshotUnavailableError } from "./providers/codex-appserver";
 import { ClaudeUsageError, fetchClaudeUsage, mapClaudeUsage, readClaudeCredentials } from "./providers/claude-oauth";
 import { resolveLocale, t } from "./i18n";
 import type { Locale } from "./i18n";
@@ -164,11 +164,14 @@ export class QuotaPieService {
       emitted.push(...result.events);
       if (!result.accepted) continue;
       const orderedPrevious = [...previousLaneWindows].sort((a, b) => b.observedAtMs - a.observedAtMs);
-      const previousContext = orderedPrevious.find(item => item.metadata?.limitId === "codex") ?? orderedPrevious[0];
+      // Retained buckets from an older full response belong to its old context.
+      const previousSnapshot = orderedPrevious.filter(item => item.observedAtMs === orderedPrevious[0]?.observedAtMs);
+      const previousContext = previousSnapshot.find(item => item.metadata?.limitId === "codex") ?? previousSnapshot[0];
       const previousEpoch = previousContext?.metadata?.collectorEpoch;
-      const nextEpoch = accountObservations[0]?.metadata?.collectorEpoch;
+      const currentSnapshot = accountObservations.filter(item => item.observedAtMs === observedAtMs);
+      const nextContext = currentSnapshot.find(item => item.metadata?.limitId === "codex") ?? currentSnapshot[0]!;
+      const nextEpoch = nextContext.metadata?.collectorEpoch;
       const newCollection = nextEpoch != null && nextEpoch !== previousEpoch;
-      const nextContext = accountObservations.find(item => item.metadata?.limitId === "codex") ?? accountObservations[0]!;
       const contextChange = codexContextChange(previousContext, nextContext);
       if (contextChange) {
         const details: QuotaEvent["details"] = contextChange === "plan_changed" ? {
@@ -337,8 +340,10 @@ export class QuotaPieService {
         const message = error instanceof Error ? error.message : String(error);
         this.codexPollState.set(profile.id, { count: 0, error: message });
         this.collection.recordAttempt("codex", profile.id, CODEX_SOURCE, Date.now(), message, "provider-error");
-        await client.close().catch(() => undefined);
-        this.codexClients.delete(profile.id);
+        if (!(error instanceof CodexSnapshotUnavailableError)) {
+          await client.close().catch(() => undefined);
+          this.codexClients.delete(profile.id);
+        }
         console.error(`[quotapie] Codex account ${profile.id} refresh failed: ${message}`);
         return { ok: false as const, events: [] as QuotaEvent[], message };
       }
