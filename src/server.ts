@@ -193,7 +193,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           resumeTasks: service.resumeTaskSummaries(),
           resetSignals: service.signalCollector.status(nowMs),
           resetTracking: service.resetTracking(nowMs, accounts),
-          compaction: await compaction.status(nowMs),
+          compaction: compaction.snapshot(nowMs),
           // Kept for existing consumers. It only contains accounts that have
           // windows, so new consumers should read accounts instead.
           statuses: service.statuses(nowMs),
@@ -239,6 +239,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
   service.setNativeNotificationTransportAvailable(true);
   // Older relays retain only a small live history. Collect sanitized follow-up
   // evidence even while the popover is closed, without restarting those relays.
+  void compaction.status().catch(() => {});
   const observationTimer = setInterval(() => { void compaction.status().catch(() => {}); }, 2000);
   observationTimer.unref();
   const stop = server.stop.bind(server);
