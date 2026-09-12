@@ -1,4 +1,8 @@
 import type { QuotaObservation } from "../types";
+import { statSync } from "node:fs";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 
 interface RpcMessage {
   id?: number;
@@ -161,6 +165,16 @@ export class CodexAppServerClient {
   private notificationRefreshScheduled = false;
   private notificationRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private closing = false;
+  private credentialStamp: string | undefined;
+  private collectorEpoch = randomUUID();
+  private remoteAccount: string | undefined;
+
+  private currentCredentialStamp(): string {
+    try {
+      const stat = statSync(resolve(this.codexHome ?? process.env.CODEX_HOME ?? resolve(homedir(), ".codex"), "auth.json"));
+      return `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
+    } catch { return "absent"; }
+  }
 
   constructor(
     private readonly command = "codex",
@@ -175,7 +189,7 @@ export class CodexAppServerClient {
 
   async connect(): Promise<void> {
     if (this.closing) throw new Error("Codex App Server client is closing");
-    if (this.process && this.initialized) return;
+    if (this.process && this.initialized && this.credentialStamp === this.currentCredentialStamp()) return;
     if (this.connectTask) return this.connectTask;
     const task = this.initializeConnection();
     this.connectTask = task;
@@ -187,6 +201,12 @@ export class CodexAppServerClient {
   }
 
   private async initializeConnection(): Promise<void> {
+    // A profile can be logged into another account while this collector lives.
+    // Reload the provider process on credential-file changes; never read or log its contents.
+    await this.disconnect();
+    this.credentialStamp = this.currentCredentialStamp();
+    this.collectorEpoch = randomUUID();
+    this.remoteAccount = undefined;
     this.initialized = false;
     this.process = Bun.spawn(
       [this.command, "-s", "read-only", "-a", "untrusted", "app-server", "--stdio"],
@@ -229,7 +249,13 @@ export class CodexAppServerClient {
   async readRateLimits(): Promise<QuotaObservation[]> {
     await this.connect();
     const result = await this.request("account/rateLimits/read");
-    return parseCodexRateLimits(result, Date.now(), this.account);
+    const identity = result && typeof result === "object" && "accountId" in result && typeof result.accountId === "string"
+      ? result.accountId : undefined;
+    if (identity !== this.remoteAccount) this.collectorEpoch = randomUUID();
+    this.remoteAccount = identity;
+    return parseCodexRateLimits(result, Date.now(), this.account).map((item) => ({
+      ...item, metadata: { ...item.metadata, collectorEpoch: this.collectorEpoch },
+    }));
   }
 
   async listThreads(params: CodexThreadListParams = {}): Promise<CodexThreadListPage> {
@@ -362,6 +388,10 @@ export class CodexAppServerClient {
     if (this.notificationRefreshTimer) clearTimeout(this.notificationRefreshTimer);
     this.notificationRefreshTimer = null;
     this.notificationRefreshScheduled = false;
+    await this.disconnect();
+  }
+
+  private async disconnect(): Promise<void> {
     const process = this.process;
     this.process = null;
     this.initialized = false;

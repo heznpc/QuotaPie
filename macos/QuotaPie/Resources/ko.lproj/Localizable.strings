@@ -234,3 +234,16 @@
 "recovery.reason.reset-credit-decreased" = "리셋권 수 감소 관측 · 공개 리셋과의 관계 미확정";
 "recovery.reason.scheduled" = "정기 초기화 예정 시각 부근에서 관측";
 "recovery.reason.time-proximity-only" = "시간상 관련 후보일 뿐 · 동일 사건 미확정";
+
+/* Observed quota and notification status */
+"headline.remaining" = "%@ %@ %@%% 남음";
+"alert.rapid.title" = "%@/%@ 한도 빠르게 소모 중";
+"alert.rapid.message" = "%@: 최근 %@분 동안 %@%%p 사용 · %@%% 남음.";
+"window.recentUsage" = "최근 %@분 · %@%%p 사용";
+"window.measuredRate" = "최근 소모 속도 · 시간당 %@%%p";
+"notification.disabled" = "알림이 꺼져 있어 잔여량·빠른 소모 알림을 받을 수 없습니다.";
+"notification.enabled" = "한도 알림 켜짐";
+"notification.checking" = "알림 권한 확인 중…";
+"notification.settings" = "알림 설정";
+"account.recoveryDetails" = "리셋·회복 내역";
+"account.previousReadings" = "이전 수집값";

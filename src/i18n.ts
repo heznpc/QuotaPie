@@ -42,6 +42,7 @@ export interface MessageParams {
   limitId?: string;
   lane?: string;
   percent?: number;
+  drop?: number;
   minutes?: number;
   date?: string;
   paceRatio?: number;
@@ -162,6 +163,18 @@ const CATALOG = {
   "window.monthly": { en: () => "monthly", ko: () => "월간" },
 
   // Headline: the single conclusion for the menu bar.
+  "headline.remaining": {
+    en: (p) => `${p.provider} ${windowName(p.windowKind, "en", p.label)} ${Math.round(Number(p.percent))}% left`,
+    ko: (p) => `${p.provider} ${windowName(p.windowKind, "ko", p.label)} ${Math.round(Number(p.percent))}% 남음`,
+  },
+  "alert.rapid.title": {
+    en: (p) => `${p.provider}/${p.account} quota dropping quickly`,
+    ko: (p) => `${p.provider}/${p.account} 한도 빠르게 소모 중`,
+  },
+  "alert.rapid.message": {
+    en: (p) => `${p.label}: ${p.drop} percentage points used in ${p.minutes} minutes · ${p.percent}% left.`,
+    ko: (p) => `${p.label}: 최근 ${p.minutes}분 동안 ${p.drop}%p 사용 · ${p.percent}% 남음.`,
+  },
   "headline.pace-risk": {
     en: (p) => `⚠ ${windowName(p.windowKind, "en", p.label)} at risk`,
     ko: (p) => `⚠ ${windowName(p.windowKind, "ko", p.label)} 위험`,
@@ -577,9 +590,9 @@ export function t(key: MessageKey, params: MessageParams = {}, locale: Locale = 
 
 export function windowKindOf(windowSeconds: number | null | undefined): WindowKind {
   if (windowSeconds == null) return "other";
-  if (windowSeconds >= 28 * 86_400) return "monthly";
-  if (windowSeconds >= 7 * 86_400) return "weekly";
-  if (windowSeconds <= 6 * 3_600) return "five-hour";
+  if (windowSeconds >= 28 * 86_400 && windowSeconds <= 31 * 86_400) return "monthly";
+  if (windowSeconds === 7 * 86_400) return "weekly";
+  if (windowSeconds === 5 * 3_600) return "five-hour";
   return "other";
 }
 
