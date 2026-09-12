@@ -4,6 +4,7 @@ import {
   compactionCodexArgs,
   DEFAULT_COMPACTION_ROUTE as route,
   routeCompaction,
+  validateCompactionRoute,
   startCompactionProxy,
   type CompactionRequestEvent,
 } from "../src/codex-compaction";
@@ -12,10 +13,10 @@ const ordinary = { model: route.from, input: [{ type: "message", content: "hello
 const compact = { ...ordinary, input: [...ordinary.input, { type: "compaction_trigger" }] };
 
 describe("Codex compaction request routing", () => {
-  test("routes native v2 and legacy compaction without changing other request fields", () => {
+  test("routes compaction with independent Low effort without mutating work settings", () => {
     for (const [path, body] of [["/responses", compact], ["/responses/compact", ordinary]] as const) {
       const result = routeCompaction(path, body, route);
-      expect(result).toEqual({ body: { ...body, model: route.to }, routed: true });
+      expect(result).toEqual({ body: { ...body, model: route.to, reasoning: { effort: "low" } }, routed: true });
       expect(body.model).toBe(route.from);
     }
   });
@@ -35,7 +36,7 @@ describe("Codex compaction request routing", () => {
     expect(routeCompaction("/other/responses/compact", compact, route).routed).toBe(false);
   });
 
-  test("reports only recognized reasoning settings and preserves them when routing", async () => {
+  test("reports requested and effective reasoning settings without leaking unknown values", async () => {
     const events: CompactionRequestEvent[] = [];
     const seen: unknown[] = [];
     const proxy = startCompactionProxy({
@@ -51,8 +52,9 @@ describe("Codex compaction request routing", () => {
           method: "POST", body: JSON.stringify({ ...compact, reasoning: { effort } }),
         })).text();
       }
-      expect(events.map(event => event.reasoningEffort)).toEqual(["low", "xhigh", null]);
-      expect(seen).toEqual([{ effort: "low" }, { effort: "xhigh" }, { effort: "synthetic-private-text" }]);
+      expect(events.filter(event => event.phase === "response_headers").map(event => event.requestedEffort)).toEqual(["low", "xhigh", null]);
+      expect(events.every(event => event.reasoningEffort === "low")).toBe(true);
+      expect(seen).toEqual([{ effort: "low" }, { effort: "low" }, { effort: "low" }]);
       expect(JSON.stringify(events)).not.toContain("synthetic-private-text");
     } finally { proxy.stop(); }
   });
@@ -82,7 +84,7 @@ describe("Codex compaction request routing", () => {
         expect(request.headers.get("chatgpt-account-id")).toBe("synthetic-account");
         expect(request.headers.get("host")).toBeNull();
       }
-      expect(events.filter((event) => event.routed)).toHaveLength(1);
+      expect(events.filter((event) => event.routed && event.phase === "response_headers")).toHaveLength(1);
       expect(JSON.stringify(events)).not.toContain("synthetic-secret");
       expect(JSON.stringify(events)).not.toContain("hello");
     } finally { proxy.stop(); }
@@ -217,7 +219,7 @@ describe("Codex compaction request routing", () => {
 
   test("desktop health counts routed requests and supports Codex HTTP fallback", async () => {
     const routeState = { ...route };
-    const proxy = startCompactionProxy({ route: routeState, token: "f".repeat(48), fetchUpstream: async () => new Response("ok") });
+    const proxy = startCompactionProxy({ route: routeState, token: "f".repeat(48), fetchUpstream: async () => new Response('data: {"type":"response.completed","response":{"status":"completed"}}\n\n', { headers: { "content-type": "text/event-stream" } }) });
     try {
       const upgrade = await fetch(`${proxy.baseUrl}/responses`, { headers: { upgrade: "websocket" } });
       expect(upgrade.status).toBe(426);
@@ -233,5 +235,166 @@ describe("Codex compaction request routing", () => {
       expect(disabled.compactions).toBe(1);
       expect(disabled.lastRequest.routed).toBe(false);
     } finally { proxy.stop(); }
+  });
+});
+
+
+describe("Compaction policy and lifecycle", () => {
+  const complete = 'data: {"type":"response.completed","response":{"status":"completed"}}\n\n';
+  const streamResponse = (text: string, status = 200) => new Response(text, { status, headers: { "content-type": "text/event-stream" } });
+
+  test("rejects unsupported compaction targets and effort before opening a listener", () => {
+    expect(() => validateCompactionRoute({ from: route.from, to: "gpt-5.3-codex-spark" })).toThrow("not been validated");
+    expect(() => validateCompactionRoute({ ...route, effort: "ultra" })).toThrow("Only Low");
+    expect(validateCompactionRoute({ from: route.from, to: route.to }).effort).toBe("low");
+    expect(validateCompactionRoute({ from: route.from, to: route.from }).to).toBe(route.from);
+  });
+
+  test("work settings and subsequent intentional model changes are preserved", async () => {
+    const seen: unknown[] = [];
+    const work = { ...ordinary, reasoning: { effort: "xhigh", context: "all_turns" } };
+    const compression = { ...work, input: compact.input };
+    const changedWork = { ...work, model: route.to, reasoning: { effort: "medium" } };
+    const proxy = startCompactionProxy({ fetchUpstream: async (_url, init) => {
+      seen.push(JSON.parse(await new Response(init.body).text())); return streamResponse(complete);
+    } });
+    try {
+      for (const body of [work, compression, work, changedWork]) {
+        await (await fetch(`${proxy.baseUrl}/responses`, { method: "POST", body: JSON.stringify(body) })).text();
+      }
+      expect(seen).toEqual([work, { ...compression, model: route.to, reasoning: { effort: "low", context: "all_turns" } }, work, changedWork]);
+      expect(compression.reasoning.effort).toBe("xhigh");
+    } finally { proxy.stop(); }
+  });
+
+  test("only counts completion after the terminal event and stream end, with request identity", async () => {
+    const events: CompactionRequestEvent[] = [];
+    let finish!: () => void;
+    const threadId = "11111111-1111-4111-8111-111111111111";
+    const turnId = "22222222-2222-4222-8222-222222222222";
+    const proxy = startCompactionProxy({ onRequest: event => events.push(event), fetchUpstream: async () =>
+      new Response(new ReadableStream({ start(c) {
+        c.enqueue(new TextEncoder().encode(complete)); finish = () => c.close();
+      } }), { headers: { "content-type": "text/event-stream" } }),
+    });
+    try {
+      const response = await fetch(`${proxy.baseUrl}/responses`, { method: "POST", body: JSON.stringify(compact),
+        headers: { session_id: threadId, "x-codex-turn-metadata": JSON.stringify({ turn_id: turnId, prompt: "never-log-this" }) } });
+      const reader = response.body!.getReader(); await reader.read();
+      const pending = await (await fetch(`${proxy.baseUrl}/quotapie-health`)).json();
+      expect(pending.compactions).toBe(0); expect(pending.activeRequests).toBe(1);
+      finish(); finish = () => {}; await reader.read();
+      const done = await (await fetch(`${proxy.baseUrl}/quotapie-health`)).json();
+      expect(done.compactions).toBe(1); expect(done.activeRequests).toBe(0);
+      expect(events.map(event => event.phase)).toEqual(["started", "response_headers", "completed"]);
+      expect(new Set(events.map(event => event.requestId)).size).toBe(1);
+      expect(events.every(event => event.threadId === threadId && event.turnId === turnId)).toBe(true);
+      expect(JSON.stringify(done)).not.toContain("never-log-this");
+    } finally { finish?.(); proxy.stop(); }
+  });
+
+  test("rejections, protocol failures and truncated streams never count as success", async () => {
+    const responses = [streamResponse("rejected", 400), streamResponse('data: {"type":"response.failed"}\n\n'), streamResponse('data: {"type":"response.created"}\n\n'), new Response("unrecognized", { headers: { "content-type": "application/octet-stream" } })];
+    const proxy = startCompactionProxy({ fetchUpstream: async () => responses.shift()! });
+    try {
+      for (let index = 0; index < 4; index++) await (await fetch(`${proxy.baseUrl}/responses`, { method: "POST", body: JSON.stringify(compact) })).text();
+      const health = await (await fetch(`${proxy.baseUrl}/quotapie-health`)).json();
+      expect(health.compactions).toBe(0); expect(health.attemptedCompactions).toBe(4);
+      expect(health.failedCompactions).toBe(3); expect(health.unverifiedCompactions).toBe(1);
+      expect(health.activeRequests).toBe(0);
+    } finally { proxy.stop(); }
+  });
+
+  test("cancellation has one terminal event and cannot become a completed compaction", async () => {
+    const events: CompactionRequestEvent[] = [];
+    const proxy = startCompactionProxy({ onRequest: event => events.push(event), fetchUpstream: async () =>
+      new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"type":"response.created"}\n\n')); } }), { headers: { "content-type": "text/event-stream" } }),
+    });
+    try {
+      const abort = new AbortController();
+      const response = await fetch(`${proxy.baseUrl}/responses`, { method: "POST", body: JSON.stringify(compact), signal: abort.signal });
+      await response.body!.getReader().read(); abort.abort();
+      for (let i = 0; i < 50 && !events.some(event => event.phase === "cancelled"); i++) await Bun.sleep(5);
+      const health = await (await fetch(`${proxy.baseUrl}/quotapie-health`)).json();
+      expect(health.cancelledCompactions).toBe(1); expect(health.compactions).toBe(0);
+      expect(events.filter(event => ["completed", "failed", "cancelled", "unverified"].includes(event.phase))).toHaveLength(1);
+    } finally { proxy.stop(); }
+  });
+
+  test("Codex closing its reader after a completion event is success, not cancellation", async () => {
+    const events: CompactionRequestEvent[] = [];
+    const routeState = { ...route };
+    const proxy = startCompactionProxy({ route: routeState, onRequest: event => events.push(event), fetchUpstream: async () =>
+      // Native Responses Lite omits Content-Type. Do not depend on that header.
+      new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(complete)); } })),
+    });
+    try {
+      const abort = new AbortController();
+      const response = await fetch(`${proxy.baseUrl}/responses`, { method: "POST", body: JSON.stringify(compact), signal: abort.signal });
+      await response.body!.getReader().read();
+      routeState.to = "gpt-5.6-terra";
+      abort.abort();
+      for (let i = 0; i < 50 && !events.some(event => event.phase === "completed"); i++) await Bun.sleep(5);
+      const health = await (await fetch(`${proxy.baseUrl}/quotapie-health`)).json();
+      expect(health.compactions).toBe(1); expect(health.cancelledCompactions).toBe(0);
+      expect(health.recent[0].to).toBe("gpt-5.6-sol");
+      expect(health.route.to).toBe("gpt-5.6-terra");
+    } finally { proxy.stop(); }
+  });
+
+  test("an HTTP rejection stays failed when the client closes its reader", async () => {
+    const events: CompactionRequestEvent[] = [];
+    const proxy = startCompactionProxy({ onRequest: event => events.push(event), fetchUpstream: async () =>
+      new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(complete)); } }),
+        { status: 400, headers: { "content-type": "text/event-stream" } }),
+    });
+    try {
+      const abort = new AbortController();
+      const response = await fetch(`${proxy.baseUrl}/responses`, { method: "POST", body: JSON.stringify(compact), signal: abort.signal });
+      await response.body!.getReader().read(); abort.abort();
+      for (let i = 0; i < 50 && !events.some(event => event.phase === "failed"); i++) await Bun.sleep(5);
+      const health = await (await fetch(`${proxy.baseUrl}/quotapie-health`)).json();
+      expect(health.failedCompactions).toBe(1); expect(health.compactions).toBe(0);
+      expect(health.cancelledCompactions).toBe(0);
+      expect(health.recent[0].errorCode).toBe("upstream_http_error");
+    } finally { proxy.stop(); }
+  });
+
+  test("drain includes a request whose upload has not finished", async () => {
+    const proxy = startCompactionProxy({ fetchUpstream: async () => streamResponse(complete) });
+    const body = JSON.stringify(compact);
+    let finish!: () => void;
+    const pending = fetch(`${proxy.baseUrl}/responses`, { method: "POST", body: new ReadableStream({ start(c) {
+      c.enqueue(new TextEncoder().encode(body.slice(0, 10)));
+      finish = () => { c.enqueue(new TextEncoder().encode(body.slice(10))); c.close(); };
+    } }) }).then(response => response.text());
+    try {
+      let active = 0;
+      for (let i = 0; i < 50 && !active; i++) {
+        active = (await (await fetch(`${proxy.baseUrl}/quotapie-health`)).json()).activeRequests;
+        if (!active) await Bun.sleep(5);
+      }
+      const drain = await (await fetch(`${proxy.baseUrl}/quotapie-drain`, { method: "POST" })).json();
+      expect(drain.activeRequests).toBe(1);
+      finish(); finish = () => {}; await pending;
+      const health = await (await fetch(`${proxy.baseUrl}/quotapie-health`)).json();
+      expect(health.activeRequests).toBe(0); expect(health.compactions).toBe(1);
+    } finally { finish(); await pending.catch(() => {}); proxy.stop(); }
+  });
+
+  test("drain rejects new requests while letting an existing response complete", async () => {
+    let finish!: () => void;
+    const proxy = startCompactionProxy({ fetchUpstream: async () => new Response(new ReadableStream({ start(c) {
+      c.enqueue(new TextEncoder().encode(complete)); finish = () => c.close();
+    } }), { headers: { "content-type": "text/event-stream" } }) });
+    try {
+      const response = await fetch(`${proxy.baseUrl}/responses`, { method: "POST", body: JSON.stringify(compact) });
+      const reader = response.body!.getReader(); await reader.read();
+      const drain = await (await fetch(`${proxy.baseUrl}/quotapie-drain`, { method: "POST" })).json();
+      expect(drain.activeRequests).toBe(1);
+      expect((await fetch(`${proxy.baseUrl}/responses`, { method: "POST", body: JSON.stringify(compact) })).status).toBe(503);
+      finish(); finish = () => {}; await reader.read();
+      expect((await (await fetch(`${proxy.baseUrl}/quotapie-health`)).json()).compactions).toBe(1);
+    } finally { finish?.(); proxy.stop(); }
   });
 });
