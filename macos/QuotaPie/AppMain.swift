@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private let popoverModel = PopoverModel()
+    private var detailsWindow: DetailsWindowController?
     private let resumeLauncher = ResumeLauncher()
     private let userNotificationCenter = UNUserNotificationCenter.current()
     private var client: StatusClient?
@@ -50,12 +51,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusItem.button?.toolTip = Strings.t("status.tooltip")
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover)
+#if DEBUG
+        // A fixture preview is a development window, never a second live meter.
+        statusItem.isVisible = ProcessInfo.processInfo.environment["QUOTAPIE_DEBUG_AUTO_OPEN"] != "1"
+#endif
 
         popover.behavior = .transient
         popover.animates = false
         popover.delegate = self
 
+#if DEBUG
+        if ProcessInfo.processInfo.environment["QUOTAPIE_DEBUG_AUTO_OPEN"] != "1" {
+            AwakeController.shared.start()
+        }
+#else
         AwakeController.shared.start()
+#endif
         installPopoverContent()
         installKeyboardShortcuts()
         render()
@@ -102,27 +113,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    private func installPopoverContent() {
-        let view = PopoverView(
-            model: popoverModel,
-            onRefresh: { [weak self] in self?.refresh() },
-            onCopy: { [weak self] in self?.copyStatus() },
-            onOpenDashboard: { [weak self] in self?.openDashboard() },
-            onOpenConfig: { [weak self] in self?.openConfig() },
-            onOpenNotificationSettings: {
+    private var popoverActions: PopoverActions {
+        PopoverActions(
+            refresh: { [weak self] in self?.refresh() },
+            copy: { [weak self] in self?.copyStatus() },
+            openDashboard: { [weak self] in self?.openDashboard() },
+            openConfig: { [weak self] in self?.openConfig() },
+            openNotificationSettings: {
                 if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=local.quotapie.menubar") {
                     NSWorkspace.shared.open(url)
                 }
             },
-            onCopyCommand: { [weak self] command in self?.copyToPasteboard(command) },
-            onResumeTask: { [weak self] task in self?.resume(task) },
-            onRetryTask: { [weak self] task in self?.retry(task) },
-            onDismissTask: { [weak self] task in self?.dismiss(task) },
-            onQuit: { NSApp.terminate(nil) }
+            copyCommand: { [weak self] command in self?.copyToPasteboard(command) },
+            resumeTask: { [weak self] task in self?.resume(task) },
+            retryTask: { [weak self] task in self?.retry(task) },
+            dismissTask: { [weak self] task in self?.dismiss(task) },
+            quit: { NSApp.terminate(nil) }
         )
+    }
+
+    private func installPopoverContent() {
+        let actions = popoverActions
+        detailsWindow = DetailsWindowController(model: popoverModel, actions: actions)
+        let view = PopoverView(model: popoverModel, actions: actions, openDetails: { [weak self] section in
+            self?.popover.performClose(nil)
+            self?.detailsWindow?.show(section)
+        })
         let controller = NSHostingController(rootView: view)
-        // fittingSize is computed before layout and clips the header. Let
-        // SwiftUI report its own size and have the popover follow it.
         controller.sizingOptions = [.preferredContentSize]
         popover.contentViewController = controller
     }
@@ -157,7 +174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         guard let controller = popover.contentViewController else { return }
         NSApp.setActivationPolicy(.regular)
         let window = NSWindow(contentViewController: controller)
-        window.title = "QuotaPie UI Debug"
+        window.title = "QuotaPie · UI Preview"
         window.styleMask = [.titled, .closable, .resizable]
         window.setContentSize(NSSize(width: 380, height: 560))
         window.center()
