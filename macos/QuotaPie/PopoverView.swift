@@ -65,6 +65,26 @@ struct PopoverView: View {
                     }
                     .buttonStyle(.plain)
                 }
+                if let recovery = model.selectedRecovery {
+                    Button { openDetails(.activity) } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "arrow.up.circle.fill").foregroundStyle(.green)
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(spacing: 8) {
+                                    Text(Strings.t("recovery.overview")).fontWeight(.medium)
+                                    Text(DisplayFormat.age(since: Date(timeIntervalSince1970: recovery.evidence.observedByMs / 1_000)))
+                                        .foregroundStyle(.secondary)
+                                }
+                                Text("\(recovery.label) · \(recovery.evidence.remainingText)")
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                            Text(Strings.t("overview.history")).foregroundStyle(Color.accentColor)
+                        }
+                        .font(.caption).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
             } else {
                 Text(Strings.t(model.lastError == nil ? "popover.noAccounts" : "popover.disconnected"))
                     .font(.callout).foregroundStyle(.secondary)

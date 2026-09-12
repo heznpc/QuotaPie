@@ -42,10 +42,54 @@ struct RecoveryEvidence: Decodable {
     let reason: String
     let candidates: [RecoveryCandidate]
 
+    var isObservedIncrease: Bool {
+        guard let remainingBefore, let remainingAfter, remainingAfter > remainingBefore else { return false }
+        return ["no-public-match", "reset-credit-decreased", "scheduled", "time-proximity-only"].contains(reason)
+    }
+
+    var remainingText: String {
+        func percent(_ value: Double?) -> String {
+            value.map { String(format: $0.rounded() == $0 ? "%.0f%%" : "%.1f%%", $0) } ?? "—"
+        }
+        return Strings.t("recovery.remaining", percent(remainingBefore), percent(remainingAfter))
+    }
+
     var reasonText: String {
         let known = ["no-public-match", "insufficient-evidence", "source-changed", "window-changed",
                      "observation-gap", "reset-credit-decreased", "scheduled", "time-proximity-only"]
         return Strings.t("recovery.reason." + (known.contains(reason) ? reason : "insufficient-evidence"))
+    }
+}
+
+struct ObservedRecovery: Identifiable {
+    let accountID: String
+    let accountTitle: String
+    let bucket: String
+    let label: String
+    let evidence: RecoveryEvidence
+    var id: String { "\(accountID)/\(bucket)" }
+}
+
+/// Kept above activity history even when newer routine events arrive.
+struct RecentRecoveriesView: View {
+    let recoveries: [ObservedRecovery]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(Strings.t("recovery.recent")).font(.headline)
+            ForEach(recoveries) { recovery in
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("\(recovery.accountTitle) · \(recovery.label)").fontWeight(.medium)
+                        Spacer()
+                        Text("\(DisplayFormat.day(recovery.evidence.observedByMs)) \(DisplayFormat.clock(recovery.evidence.observedByMs))")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text(recovery.evidence.remainingText).font(.title3.monospacedDigit())
+                    Text(recovery.evidence.reasonText).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 }
 
