@@ -322,17 +322,15 @@
 
       const windowHtml = (window, bottleneck) => {
         const remaining = window.remainingPercent;
-        // The fill is the used percentage, exactly as the native app draws it.
-        // The two surfaces drawing opposite bars for the same window was a
-        // plain lie about which one was nearly full.
+        // All quota bars show remaining capacity and shrink as it is consumed.
         const used = window.usedPercent ?? (remaining == null ? null : 100 - remaining);
         const heat = window.freshness !== "fresh" || remaining == null
           ? "unknown"
           : remaining <= window.reservePercent ? "hot" : window.paceRatio > 1 ? "warm" : "";
         return `<div class="window ${heat}">
           <div class="row"><span class="label ${bottleneck ? "bottleneck" : ""}">${bottleneck ? "● " : ""}${escapeHtml(window.label)}</span><span class="badge">${escapeHtml(enumText("freshness", window.freshness))}</span></div>
-          <div class="row"><span class="remaining">${used == null ? "—" : `${used.toFixed(1)}${t("window.used")}`}</span><span class="muted">${remaining == null ? "" : `${remaining.toFixed(1)}${t("window.remaining")}`}</span><span class="muted">${window.resetsAtMs == null ? t("window.resetUnknown") : `${duration(window.timeToResetMs)}${t("window.resetsIn")}`}</span></div>
-          <div class="bar"><div class="fill" style="width:${used == null ? 0 : Math.max(0, Math.min(100, used))}%"></div></div>
+          <div class="row"><span class="remaining">${remaining == null ? "—" : `${remaining.toFixed(1)}${t("window.remaining")}`}</span><span class="muted">${used == null ? "" : `${used.toFixed(1)}${t("window.used")}`}</span><span class="muted">${window.resetsAtMs == null ? t("window.resetUnknown") : `${duration(window.timeToResetMs)}${t("window.resetsIn")}`}</span></div>
+          <div class="bar"><div class="fill" style="width:${remaining == null ? 0 : Math.max(0, Math.min(100, remaining))}%"></div></div>
           <div class="facts">
             <div class="fact">${t("fact.recent")} <strong>${number(window.recentBurnPerHour, t("unit.perActiveHour"))}</strong></div>
             <div class="fact">${t("fact.personal")} <strong>${number(window.personalBurnPerHour, t("unit.perActiveHour"))}</strong></div>
