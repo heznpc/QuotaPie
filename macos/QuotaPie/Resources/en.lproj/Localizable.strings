@@ -289,7 +289,7 @@
 "signal.summary.delayed" = "News check delayed";
 
 "compaction.title" = "Compaction history";
-"compaction.explanation" = "Actual request models are shown together: compression and a later work request observed for the same task. The composer settings stay unchanged; a missing follow-up does not prove a model switch.";
+"compaction.explanation" = "The records below show the compaction model and subsequent task model observed in actual requests. If no follow-up request has been observed, the subsequent task model is shown as unverified.";
 "compaction.running" = "Compacting";
 "compaction.completed" = "Compaction completed";
 "compaction.failed" = "Compaction failed";
@@ -352,7 +352,7 @@
 
 "compaction.settings.title" = "Automatic compression";
 
-"compaction.settings.scope" = "Choose the model for Astra compression requests. Set the work model in Codex; its composer settings stay unchanged.";
+"compaction.settings.scope" = "The selected model is used only for Astra compaction requests. The Codex composer continues to show the original task model. Check Activity’s compaction history for the actual compaction model and result.";
 
 "compaction.settings.model" = "Compression model";
 
@@ -394,3 +394,7 @@
 "translation.provider" = "Translated by macOS";
 "translation.original" = "Show original";
 "translation.unavailable" = "Translation is unavailable on this Mac. Showing the original.";
+
+"compaction.composerHint" = "Compaction only · Codex composer stays unchanged";
+
+"compaction.composerNotice" = "Automatic switching applies only to compaction requests. The Codex composer continues to show the original task model, so an unchanged composer label does not mean compaction used that model.";

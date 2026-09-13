@@ -6,14 +6,19 @@ struct CompactionSummary: View {
     var body: some View {
         Button(action: openHistory) {
             TimelineView(.periodic(from: .now, by: 1)) { context in
-                HStack(spacing: 8) {
-                    Image(systemName: record.active ? "arrow.triangle.2.circlepath" : "doc.text.magnifyingglass")
-                    Text(Strings.t(record.phaseKey) + " · " + record.modelText)
-                    Spacer(minLength: 0)
-                    Text(record.elapsed(at: context.date)).monospacedDigit().foregroundStyle(.secondary)
-                }.font(.caption).contentShape(Rectangle())
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Image(systemName: record.active ? "arrow.triangle.2.circlepath" : "doc.text.magnifyingglass")
+                        Text(Strings.t(record.phaseKey) + " · " + record.modelText)
+                        Spacer(minLength: 0)
+                        Text(record.elapsed(at: context.date)).monospacedDigit().foregroundStyle(.secondary)
+                    }.font(.caption)
+                    Text(Strings.t("compaction.composerHint"))
+                        .font(.caption2).foregroundStyle(.secondary)
+                }.contentShape(Rectangle())
             }
         }.buttonStyle(.plain)
+            .help(Strings.t("compaction.composerNotice"))
     }
 }
 
@@ -22,6 +27,7 @@ struct CompactionHistory: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(Strings.t("compaction.title")).font(.headline)
+            Text(Strings.t("compaction.composerNotice")).font(.callout)
             Text(Strings.t("compaction.explanation")).font(.caption).foregroundStyle(.secondary)
             if payload.reachable < payload.generations {
                 Text(Strings.t("compaction.partial")).font(.caption).foregroundStyle(.orange)
