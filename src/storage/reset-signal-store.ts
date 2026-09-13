@@ -1,5 +1,5 @@
 import type { QuotaStorage } from "./database";
-import type { ResetSignal } from "../signals/classify";
+import { supportsSignal, type ResetSignal } from "../signals/classify";
 
 export interface SignalHealth {
   lastAttemptMs: number | null; lastSuccessMs: number | null; error: string | null;
@@ -10,6 +10,7 @@ export interface SourceHealth {
   id: string; coverage: string; lastAttemptMs: number | null; lastSuccessMs: number | null;
   error: string | null; cursorMs: number | null; latestPublishedAtMs: number | null;
   lastEvidenceMs: number | null; newEvidenceCount: number; fingerprints: string[];
+  examinedPosts?: number; latestPostAtMs?: number | null;
 }
 export class ResetSignalStore {
   constructor(private storage: QuotaStorage) {}
@@ -50,17 +51,22 @@ export class ResetSignalStore {
     });
   }
   list(limit = 20): ResetSignal[] {
-    return this.storage.db.query<{payload: string}, [number]>(`SELECT payload FROM reset_signals WHERE rowid IN
+    const records: ResetSignal[] = [];
+    for (const row of this.storage.db.query<{payload: string}, []>(`SELECT payload FROM reset_signals WHERE rowid IN
       (SELECT MAX(rowid) FROM reset_signals GROUP BY json_extract(payload, '$.id'))
-      ORDER BY published_ms DESC, rowid DESC LIMIT ?`)
-      .all(limit).map(row => JSON.parse(row.payload));
+      ORDER BY published_ms DESC, rowid DESC`).iterate()) {
+      const signal: ResetSignal = JSON.parse(row.payload);
+      if (supportsSignal(signal)) records.push(signal);
+      if (records.length >= limit) break;
+    }
+    return records;
   }
   pending(nowMs: number): ResetSignal[] {
-    const rows = this.storage.db.query<{payload: string}, [number]>("SELECT payload FROM reset_signals WHERE notified=0 AND COALESCE(json_extract(payload, '$.detectedAtMs'), published_ms) >= ? ORDER BY published_ms ASC LIMIT 20")
-      .all(nowMs - 24 * 3600_000).map(row => JSON.parse(row.payload) as ResetSignal);
+    const rows = this.storage.db.query<{payload: string}, [number]>("SELECT payload FROM reset_signals WHERE notified=0 AND COALESCE(json_extract(payload, '$.detectedAtMs'), published_ms) >= ? ORDER BY published_ms ASC")
+      .all(nowMs - 24 * 3600_000).map(row => JSON.parse(row.payload) as ResetSignal).filter(supportsSignal);
     const latest = this.list(200);
     return rows.filter(s => (s.targetAtMs == null || s.targetAtMs > nowMs || s.state === "withdrawn") &&
-      !latest.some(other => other.groupId === s.groupId && other.publishedAtMs > s.publishedAtMs));
+      !latest.some(other => other.groupId === s.groupId && other.publishedAtMs > s.publishedAtMs)).slice(0, 20);
   }
   delivered(fingerprint: string) {
     this.storage.db.run("UPDATE reset_signals SET notified=1 WHERE fingerprint=?", [fingerprint]);

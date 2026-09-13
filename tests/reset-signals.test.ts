@@ -27,7 +27,7 @@ describe("reset signal classification", () => {
     const reply = post("It is done", "101", "thsottiaux", [{id:"100",type:"replied_to"}]);
     expect(classify(reply)).toBeNull();
     expect(classify(reply,[parent])?.state).toBe("reported");
-    expect(classify(post("Maybe", "102", "dkundel",[{id:"100",type:"quoted"}]),[parent])).toBeNull();
+    expect(classify(post("Maybe", "102", "dkundel",[{id:"100",type:"quoted"}]),[parent])?.state).toBe("possible");
   });
   test("corrections and withdrawals have distinct alert identities", () => {
     const parent = post("Codex reset tomorrow");

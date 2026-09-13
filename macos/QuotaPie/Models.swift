@@ -531,6 +531,10 @@ struct ResetSignalPayload: Decodable {
     let error: String?
     let signals: [ResetSignal]
     var sources: [ResetSourceHealth]? = nil
+    var coverage: String? = nil
+    var coverageKey: String {
+        source == "x-api" || coverage == "direct-and-relays" ? "signal.coverage.direct" : "signal.coverage.relays"
+    }
 }
 
 struct ResetSourceHealth: Decodable, Identifiable {
@@ -543,6 +547,8 @@ struct ResetSourceHealth: Decodable, Identifiable {
     let lastEvidenceMs: Double?
     let newEvidenceCount: Int?
     let error: String?
+    let examinedPosts: Int?
+    let latestPostAtMs: Double?
     var title: String { id == "public-feed" ? "Reset Beacon" : id == "codexreset" ? "Codex Reset Monitor" : "X API" }
 }
 

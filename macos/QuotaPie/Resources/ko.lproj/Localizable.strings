@@ -304,6 +304,10 @@
 "signal.coverage.relays" = "복수 공개 중계 경유 · 각 사이트가 제공한 범위만 수집, X 원문 미검증";
 "signal.coverage.reset-beacon-selection" = "Reset Beacon이 선정한 리셋 소식";
 "signal.coverage.codexreset-quoted-posts" = "Codex Reset Monitor에 인용된 감시 계정 게시물 · 답글 문맥은 제한적";
+"signal.coverage.codexreset-monitored-posts" = "Codex Reset Monitor가 수집한 감시 계정 원문과 답글을 직접 분류 · 사이트에 없는 글은 미확인";
+"signal.sourceSuccess" = "마지막 요청 성공 %@";
+"signal.examinedPosts" = "마지막 성공 응답에서 확인한 원문 %@개";
+"signal.latestPost" = "확인한 최신 원문 게시 %@";
 "signal.coverage.five-accounts" = "X 직접 수집 · Tibo, VB, Dominik, OpenAIDevs, OpenAI";
 "signal.coverage.caution" = "요청 성공은 모든 예고를 수집했다는 뜻이 아닙니다. 최신 근거가 오래됐다는 이유만으로 장애로 판정하지 않습니다.";
 "signal.sourceState.ready" = "요청 성공";

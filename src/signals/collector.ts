@@ -13,7 +13,7 @@ export class ResetSignalCollector {
     const sources = this.sourceDefinitions().map(def => {
       const saved = health.sources?.find(s => s.id === def.id);
       const { fingerprints: _, ...safe } = saved ?? {};
-      return { ...safe, id: def.id, coverage: def.coverage,
+      return { ...safe, id: def.id, coverage: saved?.coverage ?? def.coverage,
         state: !this.config.enabled ? "off" : saved?.error ? "error" : !saved?.lastSuccessMs ? "waiting"
           : nowMs - saved.lastSuccessMs > this.config.pollSeconds * 2000 ? "stale" : "ready" };
     });
@@ -49,14 +49,21 @@ export class ResetSignalCollector {
         error: null, cursorMs: null, latestPublishedAtMs: null, lastEvidenceMs: null, newEvidenceCount: 0, fingerprints: [] };
       try {
         let signals: ResetSignal[];
+        let coverage = def.coverage;
+        let examinedPosts: number | undefined, latestPostAtMs: number | null | undefined;
         if (def.id === "x-api") {
           const batch = await fetchXPosts(readXToken(this.config.tokenFile!),
             Math.max(nowMs - 6 * 86400_000, saved.cursorMs ?? nowMs - 24 * 3600_000) - 60_000, this.fetcher);
           const context = new Map(batch.context.map(p => [p.id, p]));
           signals = batch.posts.flatMap(p => { const s = classifyPost(p, context); return s ? [s] : []; });
-        } else signals = def.id === "codexreset" ? await fetchCodexReset(nowMs, this.fetcher) : await fetchPublicFeed(nowMs, this.fetcher);
+          examinedPosts = batch.posts.length;
+          latestPostAtMs = batch.posts.length ? Math.max(...batch.posts.map(p => p.createdAtMs)) : null;
+        } else if (def.id === "codexreset") {
+          ({ signals, coverage, examinedPosts, latestPostAtMs } = await fetchCodexReset(nowMs, this.fetcher));
+        } else signals = await fetchPublicFeed(nowMs, this.fetcher);
         const fresh = signals.filter(s => !saved.fingerprints.includes(s.fingerprint));
-        const next: SourceHealth = { ...saved, lastAttemptMs: nowMs, lastSuccessMs: nowMs, error: null, cursorMs: nowMs,
+        const next: SourceHealth = { ...saved, coverage, examinedPosts, latestPostAtMs,
+          lastAttemptMs: nowMs, lastSuccessMs: nowMs, error: null, cursorMs: nowMs,
           latestPublishedAtMs: signals.length ? Math.max(...signals.map(s => s.publishedAtMs)) : saved.latestPublishedAtMs,
           lastEvidenceMs: fresh.length ? nowMs : saved.lastEvidenceMs, newEvidenceCount: fresh.length,
           fingerprints: [...new Set([...saved.fingerprints, ...signals.map(s => s.fingerprint)])].slice(-2000) };

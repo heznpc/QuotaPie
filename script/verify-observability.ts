@@ -10,7 +10,6 @@ import { QuotaDatabase } from "../src/db";
 import { QuotaPieService } from "../src/service";
 import { startDashboard } from "../src/server";
 import { startCompactionProxy } from "../src/codex-compaction";
-import { CompactionStatusReader } from "../src/compaction-status";
 import { ResetSignalCollector } from "../src/signals/collector";
 
 const stagePath=process.argv[2]; if(!stagePath) throw new Error("Stage path required");
@@ -22,7 +21,6 @@ const relay=startCompactionProxy({token,fetchUpstream:async()=>new Response(new 
   upstream=c;c.enqueue(new TextEncoder().encode(": smoke test\n\n"));
 }}),{headers:{"content-type":"text/event-stream"}}),onRequest:e=>{void appendFile(join(generation,"relay.log"),JSON.stringify(e)+"\n")}});
 await writeFile(join(generation,"settings.json"),JSON.stringify({port:Number(new URL(relay.baseUrl).port),token}),{mode:0o600});
-const observer=new CompactionStatusReader(root);
 const config=structuredClone(DEFAULT_CONFIG);config.dashboard.port=0;
 config.collection.codexEnabled=false;config.collection.claudeOAuthEnabled=false;
 config.resetSignals={enabled:true,tokenFile:null,pollSeconds:300};
@@ -31,18 +29,13 @@ const service=new QuotaPieService(config,new QuotaDatabase(":memory:"));
 let text="";const postedAt=new Date().toISOString();
 const collector=new ResetSignalCollector(service.resetSignals,config.resetSignals,(async(input:any)=>{
   if(String(input).includes("resetbeacon"))return Response.json({version:1,generatedAt:new Date().toISOString(),items:[]});
-  return new Response(`<script id="$tsr-stream-barrier">activeSignals:[$R[1]={id:"100",kind:"hint",score:99,text:${JSON.stringify(text || "Synthetic unrelated text")},createdAt:"${postedAt}",sourceUrl:"https://x.com/thsottiaux/status/100",author:$R[2]={username:"thsottiaux"}}]</script>`);
+  // The monitor did not promote this post. The production collector must still
+  // classify its raw wording, including later corrections and withdrawals.
+  return new Response(`<script id="$tsr-stream-barrier">activeSignals:[],monitoredPosts:[{id:"100",classification:"irrelevant",text:${JSON.stringify(text || "Synthetic unrelated text")},createdAt:"${postedAt}",sourceUrl:"https://x.com/thsottiaux/status/100",handle:"@thsottiaux"}]</script>`);
 }) as typeof fetch);
 service.signalCollector.poll=()=>collector.poll(true);
-const inner=startDashboard(service,config);
-const outer=Bun.serve({hostname:"127.0.0.1",port:0,async fetch(request){
-  const url=new URL(request.url);url.port=String(inner.port);
-  const response=await fetch(new Request(url,request));
-  if(url.pathname!=="/api/status")return response;
-  const payload=await response.json() as any;
-  return Response.json({...payload,compaction:await observer.status(),resetSignals:collector.status()});
-}});
-console.log(JSON.stringify({url:`http://127.0.0.1:${outer.port}`,root}));
+const server=startDashboard(service,config,{compactionRoot:root});
+console.log(JSON.stringify({url:`http://127.0.0.1:${server.port}`,root}));
 let previous="";
 let requestBody:Promise<string>|null=null;
 const start=async()=>{
