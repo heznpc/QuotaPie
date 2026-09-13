@@ -199,17 +199,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func configureNotifications(_ key: String, enabled: Bool) {
         guard !popoverModel.notificationSaving, let client, let token = currentActionToken else { return }
-        popoverModel.notificationSaving = true
-        popoverModel.notificationSaveMessage = nil
+        popoverModel.beginNotificationSave()
         client.configureNotifications(key: key, enabled: enabled, actionToken: token) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.popoverModel.notificationSaving = false
                 switch result {
                 case .success(let response):
-                    self.popoverModel.payload?.notificationPreferences = response.notificationPreferences
+                    self.popoverModel.finishNotificationSave(response.notificationPreferences)
                     self.popoverModel.notificationSaveMessage = Strings.t("notification.preferences.saved")
                 case .failure:
+                    self.popoverModel.finishNotificationSave(nil)
                     self.popoverModel.notificationSaveMessage = Strings.t("notification.preferences.error")
                 }
             }
@@ -239,6 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     @objc private func refresh() {
         guard !isFetching, let client else { return }
         isFetching = true
+        let notificationRevision = popoverModel.notificationPreferencesRevision
         client.fetch { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -248,7 +248,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     if self.popoverModel.statusFailure != nil {
                         self.statusLogger.notice("Status connection recovered")
                     }
-                    self.popoverModel.payload = payload
+                    self.popoverModel.applyStatus(payload, notificationRevision: notificationRevision)
                     let activeTaskIDs = Set(payload.resumeTasks.filter(\.isActive).map(\.id))
                     self.popoverModel.resumeActivities = self.popoverModel.resumeActivities.filter {
                         activeTaskIDs.contains($0.key)
