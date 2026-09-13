@@ -329,4 +329,47 @@ export function migrate(db: Database): void {
       CREATE INDEX IF NOT EXISTS resume_tasks_recent
       ON resume_tasks(registered_at_ms DESC)
     `);
+    // Opt-in execution jobs are independent of the session-opening resume model.
+    // Their prompts/results belong only to this private database.
+    db.run(`
+      CREATE TABLE IF NOT EXISTS jobs (
+        id TEXT PRIMARY KEY,
+        job_key TEXT NOT NULL UNIQUE,
+        spec_json TEXT NOT NULL,
+        provider TEXT NOT NULL CHECK(provider IN ('codex', 'claude')),
+        account TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('waiting', 'ready', 'running', 'review', 'succeeded', 'failed', 'cancelled')),
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        blocked_at_ms INTEGER,
+        not_before_ms INTEGER,
+        reason TEXT,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        approved_at_ms INTEGER,
+        imported_at_ms INTEGER,
+        claim_token TEXT UNIQUE,
+        lease_at_ms INTEGER,
+        active_step_index INTEGER,
+        CHECK((state = 'running' AND claim_token IS NOT NULL AND lease_at_ms IS NOT NULL AND active_step_index IS NOT NULL)
+          OR (state != 'running' AND claim_token IS NULL AND lease_at_ms IS NULL AND active_step_index IS NULL))
+      )
+    `);
+    db.run(`
+      CREATE UNIQUE INDEX IF NOT EXISTS jobs_one_running_account
+      ON jobs(provider, account) WHERE state = 'running'
+    `);
+    db.run(`
+      CREATE TABLE IF NOT EXISTS job_steps (
+        job_id TEXT NOT NULL REFERENCES jobs(id),
+        step_index INTEGER NOT NULL,
+        step_key TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('pending', 'running', 'succeeded', 'blocked', 'failed', 'uncertain')),
+        result TEXT,
+        native_session_id TEXT,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(job_id, step_index),
+        UNIQUE(job_id, step_key)
+      )
+    `);
+    db.run(`CREATE INDEX IF NOT EXISTS jobs_recent ON jobs(created_at_ms DESC, id)`);
   }

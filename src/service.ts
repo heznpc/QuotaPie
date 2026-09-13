@@ -1,5 +1,7 @@
 import { notificationAllowed, type NotificationPreferencesPatch } from "./notification-preferences";
 import { buildWorkBoundary, writeWorkBoundary } from "./work-boundary";
+import { JobStore } from "./storage/job-store";
+import { ManagedJobRunner } from "./jobs/runner";
 import { buildResetTracking } from "./signals/correlation";
 import { codexContextChange } from "./domain/codex-context";
 import { ResetSignalStore } from "./storage/reset-signal-store";
@@ -94,6 +96,10 @@ export class QuotaPieService {
   readonly collection: CollectionStore;
   readonly claudeSessions: ClaudeSessionStore;
   readonly resumeTasks: ResumeTaskStore;
+  readonly jobs: JobStore;
+  readonly jobRunner: ManagedJobRunner;
+  private jobsEnabled = false;
+  private jobNotifications: Promise<void> | null = null;
   readonly resetSignals: ResetSignalStore;
   readonly signalCollector: ResetSignalCollector;
   private signalTimer: ReturnType<typeof setInterval> | null = null;
@@ -122,6 +128,10 @@ export class QuotaPieService {
     this.collection = new CollectionStore(this.storage);
     this.claudeSessions = new ClaudeSessionStore(this.storage);
     this.resumeTasks = new ResumeTaskStore(this.storage);
+    this.jobs = new JobStore(this.storage);
+    this.jobRunner = new ManagedJobRunner(this.jobs, config, {
+      changed: () => { void this.deliverJobNotifications().catch(() => undefined); },
+    });
     this.locale = resolveLocale(config.profile.locale);
     this.resetSignals = new ResetSignalStore(this.storage);
     this.signalCollector = new ResetSignalCollector(this.resetSignals, config.resetSignals);
@@ -884,6 +894,7 @@ export class QuotaPieService {
 
   claimNextAppNotification(nowMs = Date.now()): AppNotificationClaim | null {
     this.cancelMutedNotifications(nowMs);
+    this.cancelObsoleteJobNotifications(nowMs);
     if (!this.config.alerts.enabled || !this.config.alerts.macOSNotifications) {
       this.alerts.cancelAllAppNotifications(nowMs);
       return null;
@@ -925,6 +936,7 @@ export class QuotaPieService {
 
   renewAppNotification(id: string, claimToken: string, nowMs = Date.now()): boolean {
     this.cancelMutedNotifications(nowMs);
+    this.cancelObsoleteJobNotifications(nowMs);
     return this.alerts.renewAppNotification(id, claimToken, nowMs);
   }
 
@@ -994,6 +1006,52 @@ export class QuotaPieService {
         console.error(`[quotapie] Resume-ready notification failed: ${task.id}`);
       }
     }
+  }
+
+  /** Uses the existing durable outbox and the user's resume notification preference. */
+  async deliverJobNotifications(): Promise<void> {
+    if (this.jobNotifications) return this.jobNotifications;
+    this.jobNotifications = (async () => {
+      this.cancelObsoleteJobNotifications();
+      const undelivered = new Set(this.alerts.suppressedThresholdKeys(true));
+      for (const job of this.jobs.notificationSummaries()) {
+        const state = job.state;
+        if (state !== "ready" && state !== "succeeded" && state !== "failed" && state !== "review") continue;
+        if (state === "ready" && (job.policy.mode === "auto" || this.jobs.get(job.id)?.approvalValid)) continue;
+        const messageKey = `alert.jobs.${state}.message` as const;
+        const decision: TriggerDecision = {
+          key: `jobs:${job.id}:${state}:${job.attemptCount}:${job.updatedAtMs}`,
+          title: t("alert.jobs.title", { label: job.label }, this.locale),
+          message: t(messageKey, {}, this.locale),
+          presentation: { title: { key: "alert.jobs.title", params: { label: job.label } }, message: { key: messageKey, params: {} } },
+          severity: state === "failed" || state === "review" ? "warning" : "info",
+        };
+        if (!notificationAllowed(decision, this.config.alerts)) continue;
+        // A denied OS permission or muted native outbox is not delivery. Only
+        // the exact current state is eligible, and topic mute is checked above.
+        if (undelivered.has(decision.key)) {
+          this.rearmAlertNotification(decision.key, 0);
+        }
+        const claim = this.alerts.claim(decision.key, Date.now(), 0);
+        if (!claim) continue;
+        try {
+          const result = await this.deliverDecision(decision, `threshold:${decision.key}:${claim.generation}`);
+          if (result.complete) this.alerts.completeClaim(decision.key, claim.token, Date.now(), result.suppressed ? "suppressed" : "delivered");
+          else this.alerts.releaseClaim(decision.key, claim.token);
+        } catch { this.alerts.releaseClaim(decision.key, claim.token); }
+      }
+    })().finally(() => { this.jobNotifications = null; });
+    return this.jobNotifications;
+  }
+
+  private cancelObsoleteJobNotifications(nowMs = Date.now()): void {
+    this.alerts.cancelAppNotificationsWhere(item => {
+      if (!item.alertKey.startsWith("jobs:")) return false;
+      const [, id, state, attempt, updatedAt] = item.alertKey.split(":");
+      const job = id ? this.jobs.get(id, nowMs) : null;
+      return !job || job.state !== state || String(job.attemptCount) !== attempt || String(job.updatedAtMs) !== updatedAt ||
+        (state === "ready" && (job.spec.policy.mode === "auto" || job.approvalValid));
+    }, nowMs);
   }
 
   private hasFreshResumeCapacity(task: ResumeTask, nowMs: number): boolean {
@@ -1123,6 +1181,12 @@ export class QuotaPieService {
     // the wake schedule, all of which used to recompute it independently.
     const windows = this.analyses(nowMs);
     await this.updateResumeReadiness(windows, nowMs);
+    // Provider observations are timestamped when their asynchronous reads finish.
+    // Never compare them with the time captured before those reads began.
+    const jobsNowMs = Date.now();
+    if (this.jobsEnabled) this.jobRunner.tick(windows, jobsNowMs);
+    else this.jobRunner.evaluate(windows, jobsNowMs);
+    await this.deliverJobNotifications();
     const triggers = await this.evaluateTriggers(nowMs, windows);
     await this.publishBoundary(nowMs, windows);
     return { events, triggers, windows, collected };
@@ -1199,6 +1263,7 @@ export class QuotaPieService {
 
   async watch(): Promise<void> {
     this.stopped = false;
+    this.jobsEnabled = true;
     if (this.config.resetSignals.enabled && !this.signalTimer) {
       const collect = () => { void this.collectResetSignals().catch(() => undefined); };
       collect();
@@ -1232,6 +1297,8 @@ export class QuotaPieService {
     this.stop();
     this.closing = true;
     this.nativeNotificationTransportAvailable = false;
+    await this.jobRunner.close();
+    await this.jobNotifications;
     await this.signalWork;
     await this.signalCollector.settle();
     await Promise.all([...this.codexClients.values()].map((client) => client.close().catch(() => undefined)));

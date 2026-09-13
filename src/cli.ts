@@ -22,6 +22,7 @@ import type { Locale } from "./i18n";
 import type { Provider } from "./types";
 import { configureAwakeHooks, releaseAwakeTask } from "./awake";
 import { runCompactionCodex } from "./codex-compaction";
+import { runJobsCommand } from "./jobs/cli";
 
 const ROOT = resolve(import.meta.dir, "..");
 const BIN = resolve(ROOT, "bin", "quotapie");
@@ -311,6 +312,7 @@ async function main(): Promise<number> {
 
   try {
     switch (command) {
+      case "jobs": return await runJobsCommand(args, service);
       case "signals": {
         if (args.includes("--refresh")) await service.signalCollector.poll(true);
         console.log(JSON.stringify(service.signalCollector.status(), null, 2));

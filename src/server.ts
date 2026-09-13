@@ -208,6 +208,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           headline: headlineJson(buildHeadline(accounts, nowMs, service.locale)),
           accounts,
           resumeTasks: service.resumeTaskSummaries(),
+          jobs: service.jobs.summaries(),
           notificationPreferences: service.notificationPreferences(),
           resetSignals: service.signalCollector.status(nowMs),
           resetTracking: service.resetTracking(nowMs, accounts),
