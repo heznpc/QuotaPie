@@ -37,7 +37,9 @@ The native settings window lets you select Sol, Luna, or Terra for future Astra 
 
 ## Integration boundary: quota.json
 
-External consumers (for example [Modore](https://github.com/heznpc/Modore)) read exactly one file: `~/Library/Application Support/QuotaPie/quota.json`. The service rewrites it atomically (temp + rename, `0600`) on every tick.
+Task-specific navigation uses a separate work continuity contract; quota.json v2 remains unchanged.
+
+External consumers (for example [Modore](https://github.com/heznpc/Modore)) read the overview file: `~/Library/Application Support/QuotaPie/quota.json`. The service rewrites it atomically (temp + rename, `0600`) on every tick.
 
 ```jsonc
 {

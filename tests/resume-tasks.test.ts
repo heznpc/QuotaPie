@@ -346,6 +346,7 @@ describe("pause CLI", () => {
       stderr: "pipe",
     });
     expect(result.exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(resolve(directory, "work-state.json"), "utf8")).tasks[0].state).toBe("waiting");
     const output = result.stdout.toString();
     expect(JSON.parse(output)).toMatchObject({
       provider: "codex",

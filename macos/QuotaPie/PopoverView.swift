@@ -19,7 +19,7 @@ struct PopoverView: View {
 #endif
             quotaOverview.padding(20)
             if let record = model.payload?.compaction?.latest {
-                CompactionSummary(record: record, openHistory: { openDetails(.activity) })
+                CompactionSummary(record: record, openHistory: { showDetails(.activity) })
                     .padding(.horizontal, 20).padding(.bottom, 12)
             }
             if !model.activeTasks.isEmpty {
@@ -28,7 +28,7 @@ struct PopoverView: View {
             }
             if let feed = model.payload?.resetSignals, feed.enabled {
                 Divider().padding(.horizontal, 20)
-                ResetSignalSummary(feed: feed, openHistory: { openDetails(.resets) })
+                ResetSignalSummary(feed: feed, openHistory: { showDetails(.resets) })
                     .padding(.horizontal, 20).padding(.vertical, 16)
             }
             if awake.enabled || model.notificationsAllowed == false {
@@ -40,6 +40,11 @@ struct PopoverView: View {
         }
         .frame(width: 380)
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func showDetails(_ section: DetailSection, taskID: String? = nil) {
+        model.focusedResumeTaskID = taskID
+        openDetails(section)
     }
 
     private var quotaOverview: some View {
@@ -61,7 +66,7 @@ struct PopoverView: View {
                     detailButton("overview.quotaDetail", section: .quota)
                 }
                 if model.lastError != nil || !account.collection.isHealthy {
-                    Button { openDetails(.quota) } label: {
+                    Button { showDetails(.quota) } label: {
                         Label(model.lastError != nil ? model.statusFailureText : account.collection.actionText,
                               systemImage: "exclamationmark.circle")
                             .font(.caption).foregroundStyle(.orange)
@@ -70,7 +75,7 @@ struct PopoverView: View {
                     .buttonStyle(.plain)
                 }
                 if let recovery = model.selectedRecovery {
-                    Button { openDetails(.activity) } label: {
+                    Button { showDetails(.activity) } label: {
                         HStack(spacing: 10) {
                             Image(systemName: "arrow.up.circle.fill").foregroundStyle(.green)
                             VStack(alignment: .leading, spacing: 3) {
@@ -173,7 +178,7 @@ struct PopoverView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             ForEach(Array(model.activeTasks.prefix(3))) { task in
-                Button { openDetails(.activity) } label: {
+                Button { showDetails(.activity, taskID: task.id) } label: {
                     HStack(spacing: 10) {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(task.projectLabel).font(.system(size: 13, weight: .medium))
@@ -202,14 +207,14 @@ struct PopoverView: View {
     private var statusLinks: some View {
         HStack {
             if awake.enabled {
-                Button { openDetails(.settings) } label: {
+                Button { showDetails(.settings) } label: {
                     Label(Strings.t(awake.state == "holding" ? "overview.awakeHolding" : "overview.awakeEnabled"),
                           systemImage: "moon.zzz")
                 }.foregroundStyle(.secondary)
             }
             Spacer()
             if model.notificationsAllowed == false {
-                Button { openDetails(.settings) } label: {
+                Button { showDetails(.settings) } label: {
                     Label(Strings.t("overview.alertsOff"), systemImage: "bell.slash")
                 }.foregroundStyle(.orange)
             }
@@ -223,14 +228,14 @@ struct PopoverView: View {
                 Label(Strings.t("action.refresh"), systemImage: "arrow.clockwise")
             }.help(Strings.t("action.refreshHelp"))
             Spacer(minLength: 0)
-            Button(Strings.t("overview.activityDetail")) { openDetails(.activity) }
-            Button(Strings.t("detail.settings")) { openDetails(.settings) }
+            Button(Strings.t("overview.activityDetail")) { showDetails(.activity) }
+            Button(Strings.t("detail.settings")) { showDetails(.settings) }
         }
         .font(.caption).buttonStyle(.borderless)
     }
 
     private func detailButton(_ key: String, section: DetailSection) -> some View {
-        Button { openDetails(section) } label: {
+        Button { showDetails(section) } label: {
             HStack(spacing: 4) {
                 Text(Strings.t(key))
                 Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))

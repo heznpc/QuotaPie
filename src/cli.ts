@@ -435,6 +435,7 @@ async function main(): Promise<number> {
           projectLabel: optionValue(args, "--label", outputLocale) ?? undefined,
           bucket: optionValue(args, "--bucket", outputLocale) ?? undefined,
         });
+        service.publishWorkBoundary();
         const profileRoot = provider === "codex"
           ? resolveUserPath(config.accounts.codex.find(p => p.id === task.account)!.codexHome ?? "~/.codex")
           : resolveUserPath(config.accounts.claude.find(p => p.id === task.account)!.configDir);
