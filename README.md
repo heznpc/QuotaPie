@@ -1,12 +1,14 @@
 # QuotaPie
 
-A local timer that tracks the 5-hour and weekly limits of Codex and Claude against the provider's own clock, and predicts when you will run dry based on how you personally work.
+Quota tracking and work recovery for AI agents on macOS.
 
 It does not simply compute `first use + 5 hours`. When a scheduled reset time passes, it does not zero out your usage locally; it records a refill only once a provider snapshot confirms one actually happened.
 
 The everyday surface is a **native macOS menu bar app**. The CLI is for diagnosis and automation, and the web view is optional, for when you want a closer look. The menu bar app reads from a quiet local collector on `127.0.0.1`, so no browser needs to stay open.
 
 ## What is different here
+
+Currently supports Codex and Claude Code.
 
 - Codex uses the official `codex app-server`: `account/rateLimits/read` plus its update events.
 - Claude collects through one of two paths. The default is the official status-line JSON. Turning on `collection.claudeOAuthEnabled` makes the official `api/oauth/usage` endpoint — read with Claude Code's local OAuth credentials — the primary source. If you only use the desktop app, the status line never runs, so samples never accumulate; that is the case where you want this switch on.
