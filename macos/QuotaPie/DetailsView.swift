@@ -30,6 +30,8 @@ struct DetailsView: View {
                 .padding(24)
             }
             .clipped()
+            .id(navigation.section)
+            .id(model.detailLocationID)
             Divider()
             HStack {
                 Button(action: actions.refresh) {
@@ -64,6 +66,21 @@ struct DetailsView: View {
                 Button(Strings.t("action.openSettings"), action: actions.openConfig)
             }
         case .activity:
+            if let id = model.focusedResumeTaskID {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(Strings.t("resume.linkedTask")).font(.headline)
+                    if let task = model.activeTasks.first(where: { $0.id == id }) {
+                        PausedWorkSection(tasks: [task], hasActionToken: model.canActOnTasks,
+                            activities: model.resumeActivities, onResume: actions.resumeTask,
+                            onRetry: actions.retryTask, onDismiss: actions.dismissTask)
+                    } else {
+                        Text(Strings.t("resume.linkedUnavailable")).foregroundStyle(.secondary)
+                    }
+                    Button(Strings.t("resume.showAll")) { model.focusedResumeTaskID = nil }
+                        .buttonStyle(.link)
+                }
+                Divider()
+            }
             if !model.recentRecoveries.isEmpty {
                 RecentRecoveriesView(recoveries: model.recentRecoveries)
                 Divider()
@@ -72,12 +89,12 @@ struct DetailsView: View {
                 CompactionHistory(payload: compaction)
                 Divider()
             }
-            if !model.activeTasks.isEmpty {
+            if !model.activeTasks.isEmpty && model.focusedResumeTaskID == nil {
                 PausedWorkSection(tasks: model.activeTasks, hasActionToken: model.canActOnTasks,
                                   activities: model.resumeActivities, onResume: actions.resumeTask,
                                   onRetry: actions.retryTask, onDismiss: actions.dismissTask)
                 Divider()
-            } else {
+            } else if model.activeTasks.isEmpty && model.focusedResumeTaskID == nil {
                 Text(Strings.t("detail.noPausedTasks")).foregroundStyle(.secondary)
             }
             Text(Strings.t("popover.recentChanges")).font(.headline)

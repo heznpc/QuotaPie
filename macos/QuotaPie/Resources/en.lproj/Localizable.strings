@@ -398,3 +398,8 @@
 "compaction.composerHint" = "Compaction only · Codex composer stays unchanged";
 
 "compaction.composerNotice" = "Automatic switching applies only to compaction requests. The Codex composer continues to show the original task model, so an unchanged composer label does not mean compaction used that model.";
+"resume.linkedTask" = "Linked resume task";
+"resume.linkedUnavailable" = "This task is no longer waiting or has already been handled. Check the latest status.";
+"resume.showAll" = "Show all tasks";
+"resume.inspectInModore" = "View in Modore";
+"resume.modoreUnavailable" = "Could not open Modore. Check that the app is installed.";

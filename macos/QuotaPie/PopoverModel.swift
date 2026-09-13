@@ -31,6 +31,10 @@ final class PopoverModel: ObservableObject {
     @Published var notificationsAllowed: Bool?
     @Published var resumeActivities: [String: ResumeTaskActivity] = [:]
     @Published var selectedAccountID: String?
+    @Published private(set) var detailLocationID = UUID()
+    @Published var focusedResumeTaskID: String? {
+        didSet { detailLocationID = UUID() }
+    }
 
     func beginNotificationSave() {
         notificationPreferencesRevision += 1

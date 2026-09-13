@@ -398,3 +398,8 @@
 "compaction.composerHint" = "압축 전용 모델 · Codex 입력창 표시는 그대로";
 
 "compaction.composerNotice" = "자동 전환은 압축 요청에만 적용됩니다. Codex 입력창에는 원래 작업 모델이 계속 표시되므로, 입력창 표시가 그대로여도 압축 모델은 전환될 수 있습니다.";
+"resume.linkedTask" = "연결된 재개 작업";
+"resume.linkedUnavailable" = "이 작업은 대기 목록에 없거나 이미 처리됐습니다. 최신 상태를 확인해 주세요.";
+"resume.showAll" = "전체 작업 보기";
+"resume.inspectInModore" = "Modore에서 작업 확인";
+"resume.modoreUnavailable" = "Modore를 열 수 없습니다. 앱 설치 상태를 확인해 주세요.";

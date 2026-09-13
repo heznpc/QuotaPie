@@ -182,6 +182,8 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           }
           console.error(`[quotapie] resume task action failed: ${String(error)}`);
           return json({ error: "resume_action_failed" }, 500);
+        } finally {
+          service.publishWorkBoundary();
         }
       }
       if (url.pathname.startsWith("/api/resume-tasks/")) {

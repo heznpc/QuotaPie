@@ -1,4 +1,5 @@
 import { notificationAllowed, type NotificationPreferencesPatch } from "./notification-preferences";
+import { buildWorkBoundary, writeWorkBoundary } from "./work-boundary";
 import { buildResetTracking } from "./signals/correlation";
 import { codexContextChange } from "./domain/codex-context";
 import { ResetSignalStore } from "./storage/reset-signal-store";
@@ -1138,7 +1139,16 @@ export class QuotaPieService {
     );
   }
 
+  publishWorkBoundary(nowMs = Date.now(), analysed?: WindowAnalysis[]): void {
+    try {
+      writeWorkBoundary(buildWorkBoundary(this.accountStates(nowMs, analysed), this.resumeTasks.active(), this.config, nowMs));
+    } catch (error) {
+      console.error(`[quotapie] work-state.json publish failed: ${String(error)}`);
+    }
+  }
+
   async publishBoundary(nowMs = Date.now(), analysed?: WindowAnalysis[]): Promise<void> {
+    this.publishWorkBoundary(nowMs, analysed);
     try {
       const accounts = this.accountStates(nowMs, analysed);
       const document = buildQuotaBoundary(

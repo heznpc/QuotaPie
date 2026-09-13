@@ -75,6 +75,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         render()
         refresh()
 
+        if popoverModel.focusedResumeTaskID != nil { detailsWindow?.show(.activity) }
+
 #if DEBUG
         if ProcessInfo.processInfo.environment["QUOTAPIE_DEBUG_AUTO_OPEN"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
@@ -87,6 +89,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         showPopover()
         return true
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let route = urls.compactMap({ QuotaPieRoute(url: $0) }).first else { return }
+        if case .resume(let id) = route {
+            popoverModel.focusedResumeTaskID = id
+            popover.performClose(nil)
+            detailsWindow?.show(.activity)
+            refresh()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

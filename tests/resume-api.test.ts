@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { buildWorkBoundary, writeWorkBoundary } from "../src/work-boundary";
 import { DEFAULT_CONFIG } from "../src/config";
 import { QuotaDatabase } from "../src/db";
 import { startDashboard } from "../src/server";
@@ -37,6 +38,10 @@ describe("resume task API", () => {
     }];
     const db = new QuotaDatabase(":memory:");
     const service = new QuotaPieService(config, db);
+    const workPath = resolve(directory, "work-state.json");
+    service.publishWorkBoundary = () => writeWorkBoundary(
+      buildWorkBoundary(service.accountStates(), service.resumeTasks.active(), config, Date.now()), workPath);
+
     const nowMs = Date.now();
     const initial: QuotaObservation = {
       provider: "claude",
@@ -102,6 +107,7 @@ describe("resume task API", () => {
         };
       };
       expect(approved.task.state).toBe("approved");
+      expect(JSON.parse(readFileSync(workPath, "utf8")).tasks[0].state).toBe("approved");
       expect(approved.plan).toEqual({
         executable: "claude",
         arguments: ["--resume", SESSION],
@@ -124,6 +130,7 @@ describe("resume task API", () => {
         resumeTasks: Array<{ id: string }>;
       };
       expect(afterResume.resumeTasks.some((item) => item.id === task.id)).toBeFalse();
+      expect(JSON.parse(readFileSync(workPath, "utf8")).tasks).toEqual([]);
       expect((await fetch(`${origin}/api/resume-tasks/${task.id}/retry`, {
         method: "POST",
         headers: { "x-quotapie-action-token": status.actionToken },

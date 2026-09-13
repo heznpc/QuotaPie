@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct PausedWorkSection: View {
@@ -28,6 +29,7 @@ struct PausedWorkSection: View {
 }
 
 private struct ResumeTaskRow: View {
+    @State private var inspectFailed = false
     let task: ResumeTask
     let hasActionToken: Bool
     let activity: ResumeTaskActivity?
@@ -59,6 +61,12 @@ private struct ResumeTaskRow: View {
 
             HStack(spacing: 7) {
                 primaryAction
+                if let url = inspectURL, NSWorkspace.shared.urlForApplication(toOpen: url) != nil {
+                    Button(Strings.t("resume.inspectInModore")) {
+                        inspectFailed = !NSWorkspace.shared.open(url)
+                    }
+                    .buttonStyle(.bordered)
+                }
                 Spacer(minLength: 4)
                 Button(action: onDismiss) {
                     Label(Strings.t("resume.dismiss"), systemImage: "xmark")
@@ -72,6 +80,9 @@ private struct ResumeTaskRow: View {
                 )
             }
             .controlSize(.small)
+            if inspectFailed {
+                Text(Strings.t("resume.modoreUnavailable")).font(.caption2).foregroundStyle(.orange)
+            }
         }
         .padding(.vertical, 10)
         .accessibilityElement(children: .contain)
@@ -106,6 +117,11 @@ private struct ResumeTaskRow: View {
                     "\(Strings.t("resume.retry")): \(task.providerTitle), \(task.accountTitle), \(task.projectLabel), \(task.shortReference)"
                 )
         }
+    }
+
+    private var inspectURL: URL? {
+        guard let id = UUID(uuidString: task.id) else { return nil }
+        return URL(string: "modore://work/quota-task/\(id.uuidString.lowercased())")
     }
 
     private var isBusy: Bool { activity?.isBusy ?? false }
