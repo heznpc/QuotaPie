@@ -19,6 +19,8 @@ function eventJson(event: QuotaEvent) {
   return { ...event, summary: event.displayText };
 }
 import type { AppConfig } from "./config";
+import { saveNotificationPreferences } from "./config";
+import { validateNotificationPatch } from "./notification-preferences";
 import type { QuotaPieService } from "./service";
 
 function json(value: unknown, status = 200): Response {
@@ -31,7 +33,7 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
-export function startDashboard(service: QuotaPieService, config: AppConfig, options: { compactionRoot?: string } = {}) {
+export function startDashboard(service: QuotaPieService, config: AppConfig, options: { compactionRoot?: string; preferencesPath?: string } = {}) {
   const compaction = new CompactionStatusReader(options.compactionRoot);
   const dashboardFile = Bun.file(new URL("./dashboard.html", import.meta.url));
   const actionToken = randomBytes(32).toString("base64url");
@@ -72,6 +74,19 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           return json({ error: "forbidden" }, 403);
         }
         try {
+          if (url.pathname === "/api/notifications/preferences") {
+            if (request.headers.has("origin")) return json({ error: "forbidden" }, 403);
+            let input: unknown;
+            try {
+              const body = await request.text();
+              if (body.length > 4096) throw new Error("too large");
+              input = JSON.parse(body);
+              validateNotificationPatch(input);
+            } catch { return json({ error: "invalid_preferences" }, 400); }
+            const patch = saveNotificationPreferences(input, options.preferencesPath);
+            service.applyNotificationPreferences(patch);
+            return json({ notificationPreferences: service.notificationPreferences() });
+          }
           if (url.pathname === "/api/notifications/claim") {
             if (request.headers.get("x-quotapie-notifications-authorized") === "true") {
               service.alerts.setNativeNotificationConsumer(true);
@@ -191,6 +206,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           headline: headlineJson(buildHeadline(accounts, nowMs, service.locale)),
           accounts,
           resumeTasks: service.resumeTaskSummaries(),
+          notificationPreferences: service.notificationPreferences(),
           resetSignals: service.signalCollector.status(nowMs),
           resetTracking: service.resetTracking(nowMs, accounts),
           compaction: compaction.snapshot(nowMs),

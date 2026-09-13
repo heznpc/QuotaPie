@@ -540,6 +540,17 @@ export class AlertStore {
     return result.changes;
   }
 
+  cancelAppNotificationsWhere(predicate: (item: AppNotification) => boolean, nowMs = Date.now()): void {
+    const rows = this.storage.db.query<AppNotificationRow, []>(`
+      SELECT * FROM app_notification_outbox WHERE completed_at_ms IS NULL
+    `).all();
+    const cancel = this.storage.db.query(`UPDATE app_notification_outbox
+      SET completed_at_ms = ?, disposition = 'cancelled' WHERE id = ? AND completed_at_ms IS NULL`);
+    this.storage.transaction(() => {
+      for (const row of rows) if (predicate(appNotificationFromRow(row))) cancel.run(nowMs, row.id);
+    });
+  }
+
   cancelAllAppNotifications(nowMs = Date.now()): number {
     const result = this.storage.db
       .query(`

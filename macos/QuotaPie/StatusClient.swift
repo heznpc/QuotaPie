@@ -80,6 +80,20 @@ final class StatusClient {
         }
     }
 
+    func configureNotifications(key: String, enabled: Bool, actionToken: String,
+                                completion: @escaping (Result<NotificationPreferencesResponse, Error>) -> Void) {
+        do {
+            var request = try authenticatedPOST(pathComponents: ["api", "notifications", "preferences"], actionToken: actionToken)
+            let body: [String: Any] = key == "enabled" ? ["enabled": enabled] : ["topics": [key: enabled]]
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            request.setValue(nil, forHTTPHeaderField: "content-length")
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            perform(request) { result in
+                completion(Result { try JSONDecoder().decode(NotificationPreferencesResponse.self, from: result.get()) })
+            }
+        } catch { completion(.failure(error)) }
+    }
+
     func configureCompaction(model: String, actionToken: String,
                              completion: @escaping (Result<CompactionPolicyResponse, Error>) -> Void) {
         do {

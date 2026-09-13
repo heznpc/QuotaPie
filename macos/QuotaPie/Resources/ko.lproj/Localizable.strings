@@ -207,7 +207,7 @@
 "signal.health.off" = "소식 수집 꺼짐";
 "signal.checked" = "마지막 수집 %@";
 "signal.empty" = "아직 수집된 리셋 소식이 없습니다";
-"signal.source" = "원문 보기";
+"signal.source" = "X에서 보기";
 "signal.kind.banked" = "저장형 리셋 지급";
 "signal.kind.direct" = "즉시 한도 리셋";
 "signal.kind.unknown" = "리셋 종류 미확인";
@@ -243,8 +243,8 @@
 "alert.rapid.message" = "%@: 최근 %@분 동안 %@%%p 사용 · %@%% 남음.";
 "window.recentUsage" = "최근 %@분 · %@%%p 사용";
 "window.measuredRate" = "최근 소모 속도 · 시간당 %@%%p";
-"notification.disabled" = "알림이 꺼져 있어 잔여량·빠른 소모 알림을 받을 수 없습니다.";
-"notification.enabled" = "한도 알림 켜짐";
+"notification.disabled" = "macOS 알림 권한이 꺼져 있어 선택한 알림을 표시할 수 없습니다.";
+"notification.enabled" = "macOS 알림 권한 허용됨";
 "notification.checking" = "알림 권한 확인 중…";
 "notification.settings" = "알림 설정";
 "account.recoveryDetails" = "리셋·회복 내역";
@@ -371,3 +371,26 @@
 "compaction.settings.error" = "변경을 확인하지 못했습니다. 선택 모델과 경로 적용 상태를 확인한 뒤 다시 시도해 주세요.";
 
 "compaction.settings.unavailable" = "압축 설정을 불러올 수 없습니다. 로컬 릴레이 설치 상태를 확인해 주세요.";
+"notification.preferences.enabled" = "알림 받기";
+"notification.preferences.history" = "알림을 꺼도 수집과 기록은 유지됩니다. 꺼둔 동안의 소식은 나중에 몰아서 알리지 않습니다.";
+"notification.preferences.group.account" = "내 계정";
+"notification.preferences.group.news" = "공개 리셋 소식 · 내 계정 적용 여부와 별도";
+"notification.preferences.group.operation" = "작업과 수집 상태";
+"notification.topic.quotaWarnings" = "잔량 부족·빠른 소진 경고";
+"notification.topic.quotaRecovery" = "예상 밖 한도 회복 감지";
+"notification.topic.accountChanges" = "계정·플랜·한도 일정 변경";
+"notification.topic.payments" = "유료 사용·크레딧 충전";
+"notification.topic.resumeReady" = "중단된 작업 재개 가능";
+"notification.topic.collectionIssues" = "한도 정보 수집 지연";
+"notification.topic.resetPossible" = "근거가 있는 리셋 가능성";
+"notification.topic.resetAnnounced" = "리셋 예고·시간 언급";
+"notification.topic.resetUpdates" = "예고 변경·철회";
+"notification.topic.resetReported" = "공개 리셋 완료 보고";
+"notification.preferences.saved" = "저장했습니다. 다음 알림부터 적용됩니다.";
+"notification.preferences.error" = "저장하지 못했습니다. 연결을 확인하고 다시 시도해 주세요.";
+"notification.preferences.desktopOff" = "설정 파일에서 macOS 알림 전달이 꺼져 있습니다.";
+"notification.preferences.collectionOff" = "공개 리셋 소식 수집이 꺼져 있습니다.";
+"notification.preferences.unavailable" = "알림 설정을 불러오지 못했습니다.";
+"translation.provider" = "macOS 자동 번역";
+"translation.original" = "원문 펼치기";
+"translation.unavailable" = "이 Mac에서 번역을 사용할 수 없어 원문을 표시합니다.";

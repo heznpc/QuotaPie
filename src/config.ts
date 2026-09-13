@@ -1,8 +1,11 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import type { Provider } from "./types";
 import { isLocale, LOCALES } from "./i18n";
+
+import { DEFAULT_NOTIFICATION_TOPICS, validateNotificationPatch, type NotificationTopics, type NotificationPreferencesPatch } from "./notification-preferences";
+import { randomUUID } from "node:crypto";
 
 export interface TimeRange {
   start: string;
@@ -58,6 +61,7 @@ export interface AppConfig {
     claudeSessionTtlSeconds: number;
   };
   alerts: {
+    topics: NotificationTopics;
     enabled: boolean;
     staleProviders: Provider[];
     remainingThresholds: number[];
@@ -112,6 +116,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     claudeSessionTtlSeconds: 900,
   },
   alerts: {
+    topics: { ...DEFAULT_NOTIFICATION_TOPICS },
     enabled: true,
     staleProviders: ["codex"],
     remainingThresholds: [20, 10, 5],
@@ -194,7 +199,7 @@ function mergeConfig(base: AppConfig, patch: Partial<AppConfig>): AppConfig {
       })),
     },
     collection: { ...base.collection, ...patch.collection },
-    alerts: { ...base.alerts, ...patch.alerts },
+    alerts: { ...base.alerts, ...patch.alerts, topics: { ...base.alerts.topics, ...patch.alerts?.topics } },
     resetSignals: { ...base.resetSignals, ...patch.resetSignals },
     dashboard: { ...base.dashboard, ...patch.dashboard },
     detection: { ...base.detection, ...patch.detection },
@@ -338,6 +343,7 @@ function validateProfile(config: AppConfig): void {
     { min: 1, max: 86_400, integer: true },
   );
 
+  validateNotificationPatch({ enabled: config.alerts.enabled, topics: config.alerts.topics });
   for (const threshold of config.alerts.remainingThresholds) {
     requireNumber(threshold, "alerts.remainingThresholds[]", { min: 0, max: 100 });
   }
@@ -370,4 +376,20 @@ export function writeDefaultConfig(path = configPath(), force = false): string {
   writeFileSync(path, `${JSON.stringify(DEFAULT_CONFIG, null, 2)}\n`, { mode: 0o600 });
   chmodSync(path, 0o600);
   return path;
+}
+
+// Patch only these preferences in the current file; preserve unrelated settings.
+// Synchronous read/rename keeps concurrent HTTP updates in one process ordered.
+export function saveNotificationPreferences(input: unknown, path = configPath()): NotificationPreferencesPatch {
+  validateNotificationPatch(input);
+  const raw = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+  const alerts = { ...raw.alerts, ...(input.enabled == null ? {} : { enabled: input.enabled }),
+    topics: { ...raw.alerts?.topics, ...input.topics } };
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, JSON.stringify({ ...raw, alerts }, null, 2) + "\n", { mode: 0o600 });
+    renameSync(temporary, path);
+  } finally { if (existsSync(temporary)) unlinkSync(temporary); }
+  return input;
 }
