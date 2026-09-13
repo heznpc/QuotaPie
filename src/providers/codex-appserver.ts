@@ -225,7 +225,9 @@ export class CodexAppServerClient {
     this.collectorEpoch = randomUUID();
     this.initialized = false;
     this.process = Bun.spawn(
-      [this.command, "-s", "read-only", "-a", "untrusted", "app-server", "--stdio"],
+      // This client only reads account/session metadata. Keep its sandbox
+      // read-only and disallow interactive escalation; newer CLIs removed untrusted.
+      [this.command, "-s", "read-only", "-a", "never", "app-server", "--stdio"],
       {
         stdin: "pipe",
         stdout: "pipe",

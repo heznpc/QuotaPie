@@ -24,7 +24,7 @@ export function notificationTopic(input: {
   if (title === "signal.updated" || title === "signal.withdrawn") return "resetUpdates";
   if (title === "signal.reported") return "resetReported";
   if (key.startsWith("signal:")) return "resetAnnounced";
-  if (title.startsWith("alert.resume.") || key.startsWith("resume:")) return "resumeReady";
+  if (title.startsWith("alert.resume.") || key.startsWith("resume:") || title.startsWith("alert.jobs.") || key.startsWith("jobs:")) return "resumeReady";
   if (title.startsWith("alert.stale.") || key.endsWith(":stale")) return "collectionIssues";
   if (title.startsWith("alert.remaining.") || title.startsWith("alert.rapid.") || title.startsWith("alert.pace.")
     || /:(remaining:\d+|rapid|pace)$/.test(key)) return "quotaWarnings";

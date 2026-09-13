@@ -9,6 +9,7 @@ struct StatusPayload: Decodable {
     /// kept in memory and is required for every resume-task mutation.
     let actionToken: String?
     let resumeTasks: [ResumeTask]
+    let jobs: [ManagedJobSummary]
     let resetSignals: ResetSignalPayload?
     let resetTracking: ResetTracking?
     let compaction: CompactionPayload?
@@ -22,6 +23,7 @@ struct StatusPayload: Decodable {
         events = try values.decodeIfPresent([QuotaEvent].self, forKey: .events) ?? []
         actionToken = try values.decodeIfPresent(String.self, forKey: .actionToken)
         resumeTasks = try values.decodeIfPresent([ResumeTask].self, forKey: .resumeTasks) ?? []
+        jobs = try values.decodeIfPresent([ManagedJobSummary].self, forKey: .jobs) ?? []
         resetSignals = try values.decodeIfPresent(ResetSignalPayload.self, forKey: .resetSignals)
         resetTracking = try values.decodeIfPresent(ResetTracking.self, forKey: .resetTracking)
         compaction = try values.decodeIfPresent(CompactionPayload.self, forKey: .compaction)
@@ -29,7 +31,77 @@ struct StatusPayload: Decodable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case nowMs, headline, accounts, events, actionToken, resumeTasks, resetSignals, resetTracking, compaction, notificationPreferences
+        case nowMs, headline, accounts, events, actionToken, resumeTasks, jobs, resetSignals, resetTracking, compaction, notificationPreferences
+    }
+}
+
+/// Public execution metadata only. Registration and approval stay in the CLI;
+/// prompts, step results and native session references are not part of this type.
+struct ManagedJobSummary: Decodable, Identifiable {
+    struct Policy: Decodable {
+        let mode: String
+    }
+
+    let id: String
+    let label: String
+    let provider: String
+    let account: String
+    let state: String
+    let completedSteps: Int
+    let totalSteps: Int
+    let reason: String?
+    let policy: Policy
+
+    var providerTitle: String {
+        switch provider {
+        case "codex": return "Codex"
+        case "claude": return "Claude"
+        default: return Strings.t("jobs.unknown")
+        }
+    }
+
+    var stateTitle: String {
+        switch state {
+        case "waiting", "ready", "running", "review", "succeeded", "failed", "cancelled":
+            return Strings.t("jobs.state.\(state)")
+        default:
+            return Strings.t("jobs.unknown")
+        }
+    }
+
+    var policyTitle: String {
+        switch policy.mode {
+        case "manual", "auto": return Strings.t("jobs.policy.\(policy.mode)")
+        default: return Strings.t("jobs.unknown")
+        }
+    }
+
+    var progressTitle: String {
+        Strings.t("jobs.progress", String(completedSteps), String(totalSteps))
+    }
+
+    var reasonTitle: String? {
+        guard let reason, !reason.isEmpty else { return nil }
+        switch reason {
+        case "quota-collection-wait": return Strings.t("jobs.reason.collection")
+        case "quota-wait", "quota-exhausted": return Strings.t("jobs.reason.quota")
+        case "quota-retry-review", "review-retry-requested": return Strings.t("jobs.reason.retry")
+        case "execution-uncertain", "lease-expired": return Strings.t("jobs.reason.uncertain")
+        case "policy-expired": return Strings.t("jobs.reason.expired")
+        case "attempts-exhausted": return Strings.t("jobs.reason.attempts")
+        case "cli-update-required": return Strings.t("jobs.reason.cliUpdate")
+        case "auth-required": return Strings.t("jobs.reason.auth")
+        case "provider-access-denied": return Strings.t("jobs.reason.access")
+        case "result-limit": return Strings.t("jobs.reason.resultLimit")
+        case "profile-changed": return Strings.t("jobs.reason.profile")
+        case "workspace-unavailable": return Strings.t("jobs.reason.workspace")
+        case "account-or-workspace-unavailable": return Strings.t("jobs.reason.accountWorkspace")
+        case "dispatch-precondition-changed": return Strings.t("jobs.reason.precondition")
+        case "quota-scope-unconfirmed", "quota-unavailable": return Strings.t("jobs.reason.scope")
+        case "execution-failed", "legacy-step-failed": return Strings.t("jobs.reason.failed")
+        case "user-cancelled": return Strings.t("jobs.reason.cancelled")
+        default: return Strings.t("jobs.reason.unknown")
+        }
     }
 }
 
@@ -154,6 +226,11 @@ struct LocalizedMessagePayload: Decodable {
             return required("label", "minutes", "drop", "percent")
         case "alert.stale.message", "alert.resume.ready.message":
             return required("label")
+        case "alert.jobs.title":
+            return required("label")
+        case "alert.jobs.ready.message", "alert.jobs.succeeded.message",
+             "alert.jobs.failed.message", "alert.jobs.review.message":
+            return []
         case "alert.pace.message.measured", "alert.pace.message.projected":
             guard let label = text("label") else { return nil }
             let gap = params["minutes"]?.number.map {

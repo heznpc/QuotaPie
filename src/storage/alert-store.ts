@@ -124,10 +124,10 @@ function appNotificationClaimFromRow(row: AppNotificationClaimRow): AppNotificat
 export class AlertStore {
   constructor(private readonly storage: QuotaStorage) {}
 
-  suppressedThresholdKeys(): string[] {
+  suppressedThresholdKeys(includeCancelled = false): string[] {
     return this.storage.db.query<{ alert_key: string }, []>(`
       SELECT n.alert_key FROM app_notification_outbox n
-      WHERE n.disposition = 'suppressed' AND n.delivery_key LIKE 'threshold:%'
+      WHERE (n.disposition = 'suppressed' ${includeCancelled ? "OR n.disposition = 'cancelled'" : ""}) AND n.delivery_key LIKE 'threshold:%'
         AND NOT EXISTS (
           SELECT 1 FROM app_notification_outbox newer
           WHERE newer.alert_key = n.alert_key AND newer.rowid > n.rowid

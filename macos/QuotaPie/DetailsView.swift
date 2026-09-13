@@ -85,6 +85,10 @@ struct DetailsView: View {
                 RecentRecoveriesView(recoveries: model.recentRecoveries)
                 Divider()
             }
+            if let jobs = model.payload?.jobs, !jobs.isEmpty {
+                ManagedJobsSection(jobs: jobs)
+                Divider()
+            }
             if let compaction = model.payload?.compaction, compaction.generations > 0 {
                 CompactionHistory(payload: compaction)
                 Divider()
@@ -159,5 +163,31 @@ struct DetailsView: View {
             }
         }
         .buttonStyle(.bordered).controlSize(.small)
+    }
+}
+
+private struct ManagedJobsSection: View {
+    let jobs: [ManagedJobSummary]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(Strings.t("jobs.title")).font(.headline)
+            ForEach(jobs) { job in
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(job.label).fontWeight(.medium)
+                        Spacer(minLength: 12)
+                        Text(job.stateTitle).font(.callout)
+                    }
+                    Text("\(job.providerTitle) · \(job.account) · \(job.progressTitle)")
+                        .font(.callout).monospacedDigit().foregroundStyle(.secondary)
+                    Text(job.policyTitle).font(.caption).foregroundStyle(.secondary)
+                    if let reason = job.reasonTitle {
+                        Text(reason).font(.callout).foregroundStyle(.secondary)
+                    }
+                }
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 }

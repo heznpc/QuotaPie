@@ -297,6 +297,11 @@ const CATALOG = {
     en: (p) => `${p.label} will be offered for resume after fresh quota is confirmed.`,
     ko: (p) => `${p.label} 한도가 다시 확인되면 재개할 수 있도록 알려드립니다.`,
   },
+  "alert.jobs.title": { en: p => `${p.label} execution task`, ko: p => `${p.label} 실행 작업` },
+  "alert.jobs.ready.message": { en: () => "Quota is available. The registered job is ready for approval.", ko: () => "한도가 확인됐습니다. 등록한 작업의 실행을 승인할 수 있습니다." },
+  "alert.jobs.succeeded.message": { en: () => "All registered steps completed.", ko: () => "등록한 모든 단계가 완료됐습니다." },
+  "alert.jobs.failed.message": { en: () => "Execution failed. Review the job record.", ko: () => "실행에 실패했습니다. 기록을 확인하세요." },
+  "alert.jobs.review.message": { en: () => "Review the interrupted attempt before retrying.", ko: () => "중단된 실행을 다시 시도하기 전에 기록을 확인하세요." },
 
   // CLI. Commands and environment-variable names stay literal; every phrase
   // around them is selected by locale here.
@@ -311,6 +316,7 @@ const CATALOG = {
     en: () => `QuotaPie — provider clocks + personal burn-rate timer
 
 Usage:
+  quotapie jobs help            Register and review checkpointed execution jobs
   quotapie init                 Create a private default config and print integrations
   quotapie poll [--json]        Fetch Codex once and update history
   quotapie status [--account ID] [--json]
@@ -341,6 +347,7 @@ Environment:
     ko: () => `QuotaPie — 공급자 한도 시계 + 개인 사용 속도 타이머
 
 사용법:
+  quotapie jobs help            체크포인트 실행 작업 등록·검토 방법
   quotapie init                 비공개 기본 설정을 만들고 연동 방법 표시
   quotapie poll [--json]        Codex 한도를 한 번 가져와 기록 갱신
   quotapie status [--account ID] [--json]
