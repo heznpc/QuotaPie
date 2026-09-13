@@ -53,6 +53,21 @@ final class OverviewTests: XCTestCase {
         XCTAssertEqual(feed.latestSignal?.sourceStatusKey, "signal.summary.unverified")
     }
 
+    func testMultipleSourcesPreserveCoverageAndSeparateRecentPostsFromResetEvidence() throws {
+        let feed = try JSONDecoder().decode(ResetSignalPayload.self, from: Data(#"""
+        {"enabled":true,"source":"multiple","state":"ready","coverage":"direct-and-relays","signals":[],
+         "sources":[{"id":"codexreset","state":"ready","coverage":"codexreset-monitored-posts",
+         "lastAttemptMs":5000,"lastSuccessMs":5000,"latestPublishedAtMs":1000,
+         "lastEvidenceMs":2000,"newEvidenceCount":0,"examinedPosts":404,"latestPostAtMs":4000}]}
+        """#.utf8))
+        XCTAssertEqual(feed.coverageKey, "signal.coverage.direct")
+        XCTAssertEqual(feed.sources?.first?.latestPublishedAtMs, 1000)
+        XCTAssertEqual(feed.sources?.first?.latestPostAtMs, 4000)
+        XCTAssertEqual(feed.sources?.first?.examinedPosts, 404)
+        XCTAssertEqual(feed.sources?.first?.newEvidenceCount, 0)
+        XCTAssertNil(feed.latestSignal)
+    }
+
     func testDegradedHeadlineKeepsZeroSeparateFromUnknownAndTransportFailure() throws {
         for remaining in [0, 43] {
             let data = Data("{\"kind\":\"degraded\",\"provider\":\"codex\",\"windowKind\":\"five-hour\",\"remainingPercent\":\(remaining)}".utf8)

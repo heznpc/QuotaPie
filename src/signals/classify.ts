@@ -17,6 +17,8 @@ const withdrawal = /\b(?:no|not|won't|will not)\s+(?:be\s+)?(?:a\s+)?reset\b|\b(
 const done = /\b(?:have|has|just|now|already)\s+(?:been\s+)?reset\b|(?:^|[.!]\s+)all\s+reset\s+for\s+everyone(?:\.|$)|\breset\s+(?:(?:is|all)\s+)?(?:done|complete|completed|live|propagated)\b|\bit(?:'s| is) done\b|\bbutton\s+(?:was\s+)?pressed\b/i;
 const promised = /\b(?:will|we'll|i'll|going to|scheduled|landing|lands?|arriv(?:e|es)|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
 const hint = /\b(?:button|celebrat\w*|rejoice|you know what comes next|good news|stay tuned)\b/i;
+const tentative = /\b(?:maybe|might|could|possibly|perhaps|soon|in a while|stay tuned)\b/i;
+const issuance = /\b(?:getting|giving|reissuing)\b.*\b(?:reset|another|one)\b/i;
 
 export function classifyPost(post: PublicPost, context: Map<string, PublicPost>): ResetSignal | null {
   if (!isWatched(post.author)) return null;
@@ -34,9 +36,19 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>)
   const parentText = parents.map(p => p.text).join("\n");
   const contextRelevant = reset.test(parentText) && subject.test(parentText);
   const explicit = reset.test(text) && (subject.test(text) || contextRelevant || post.author.toLowerCase() === "thsottiaux");
-  const followup = contextRelevant && (done.test(text) || promised.test(text) || correction.test(text) || withdrawal.test(text) || /\byes\b|forgot to say/i.test(text));
+  const reply = text.replace(/@\w+/g, "").trim();
+  // A weekday or "will" somewhere in a reply can refer to unrelated work.
+  // Keep short, contextual answers without borrowing the parent's certainty.
+  const shortAnswer = /^(?:yes|maybe|perhaps|possibly|soon|forgot to say)(?:[.!?,]|$)/i.test(reply);
+  const timeAnswer = /^(?:(?:on|by|at|around|in|landing|lands?)\s+)?(?:today|tomorrow|midnight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}(?::\d{2})?\s*(?:am|pm|hours?))\b/i.test(reply);
+  const followup = contextRelevant && (done.test(text) || correction.test(text) || withdrawal.test(text) ||
+    reply.length <= 200 && (shortAnswer || timeAnswer));
   const implicit = post.author.toLowerCase() === "thsottiaux" && hint.test(text) && (subject.test(text) || contextRelevant);
-  if (!explicit && !followup && !implicit) return null;
+  // General explanations of how resets work, and mentions of prior resets,
+  // are not evidence of another reset. Raw monitored posts include both.
+  const eventEvidence = done.test(text) || correction.test(text) || withdrawal.test(text) ||
+    promised.test(text) || tentative.test(text) || hint.test(text) || issuance.test(text);
+  if (!(explicit && eventEvidence) && !followup && !implicit) return null;
   // Quoting a reset request alone is insufficient to declare a reset promised.
   const state: SignalState = withdrawal.test(text) && !/\?|\bwho\s+(?:says|said)\b/i.test(text) ? "withdrawn" : correction.test(text) ? "updated"
     : done.test(text) ? "reported" : explicit && promised.test(text) && !/\?/.test(text) ? "announced" : "possible";
@@ -55,4 +67,17 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>)
   return { id: post.id, groupId, fingerprint, author: post.author,
     sourceUrl: `https://x.com/${post.author}/status/${post.id}`, text, contextText: parentText.slice(0, 3000) || null,
     publishedAtMs: post.createdAtMs, state, resetKind, timeHint, scopeHint, observedVia: "x-api", targetAtMs: null };
+}
+
+// Recheck saved local classifications as well. Keep the source record in the
+// database; improving a classifier must not fabricate a withdrawal or alert.
+export function supportsSignal(signal: ResetSignal): boolean {
+  if (signal.observedVia === "public-feed") return true;
+  const parentId = `context:${signal.id}`;
+  const context = new Map<string, PublicPost>();
+  if (signal.contextText) context.set(parentId, { id: parentId, author: "", text: signal.contextText,
+    createdAtMs: signal.publishedAtMs, conversationId: parentId, references: [] });
+  return classifyPost({ id: signal.id, author: signal.author, text: signal.text,
+    createdAtMs: signal.publishedAtMs, conversationId: signal.id,
+    references: signal.contextText ? [{ id: parentId, type: "replied_to" }] : [] }, context) !== null;
 }

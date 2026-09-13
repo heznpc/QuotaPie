@@ -66,7 +66,7 @@ struct ResetSignalHistory: View {
             if let feed, feed.enabled {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(Strings.t("signal.accountNotice")).font(.callout)
-                    Text(Strings.t(feed.source == "x-api" ? "signal.coverage.direct" : "signal.coverage.relays"))
+                    Text(Strings.t(feed.coverageKey))
                         .font(.caption).foregroundStyle(.secondary)
                     if let last = feed.lastSuccessMs {
                         Text(Strings.t("signal.checked", DisplayFormat.clock(last))).font(.caption).foregroundStyle(.secondary)
@@ -82,6 +82,15 @@ struct ResetSignalHistory: View {
                             Text(Strings.t("signal.coverage." + source.coverage)).font(.caption).foregroundStyle(.secondary)
                             if let attempt = source.lastAttemptMs {
                                 Text(Strings.t("signal.attempt", stamp(attempt))).font(.caption).foregroundStyle(.secondary)
+                            }
+                            if let success = source.lastSuccessMs {
+                                Text(Strings.t("signal.sourceSuccess", stamp(success))).font(.caption).foregroundStyle(.secondary)
+                            }
+                            if let count = source.examinedPosts {
+                                Text(Strings.t("signal.examinedPosts", String(count))).font(.caption).foregroundStyle(.secondary)
+                            }
+                            if let latest = source.latestPostAtMs {
+                                Text(Strings.t("signal.latestPost", stamp(latest))).font(.caption).foregroundStyle(.secondary)
                             }
                             if let latest = source.latestPublishedAtMs {
                                 Text(Strings.t("signal.latestEvidence", stamp(latest))).font(.caption).foregroundStyle(.secondary)

@@ -304,6 +304,10 @@
 "signal.coverage.relays" = "Multiple public relays · limited to each site's selection, X originals unverified";
 "signal.coverage.reset-beacon-selection" = "Reset news selected by Reset Beacon";
 "signal.coverage.codexreset-quoted-posts" = "Watched account posts quoted by Codex Reset Monitor · limited reply context";
+"signal.coverage.codexreset-monitored-posts" = "Locally classified watched account posts and replies collected by Codex Reset Monitor · posts absent from the site remain unverified";
+"signal.sourceSuccess" = "Last successful request %@";
+"signal.examinedPosts" = "%@ posts examined in the last successful response";
+"signal.latestPost" = "Latest examined post published %@";
 "signal.coverage.five-accounts" = "Direct X collection · Tibo, VB, Dominik, OpenAIDevs, OpenAI";
 "signal.coverage.caution" = "Successful requests do not establish complete coverage. Older evidence alone does not establish an outage.";
 "signal.sourceState.ready" = "Request succeeded";
