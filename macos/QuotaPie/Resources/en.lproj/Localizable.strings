@@ -207,7 +207,7 @@
 "signal.health.off" = "Signal collection off";
 "signal.checked" = "Last collected %@";
 "signal.empty" = "No reset signals collected yet";
-"signal.source" = "Original post";
+"signal.source" = "View on X";
 "signal.kind.banked" = "Banked reset credit";
 "signal.kind.direct" = "Direct reset";
 "signal.kind.unknown" = "Reset type unspecified";
@@ -243,8 +243,8 @@
 "alert.rapid.message" = "%@: %@ min · %@ percentage points used · %@%% left.";
 "window.recentUsage" = "Last %@ min · %@ percentage points used";
 "window.measuredRate" = "Recent rate · %@ percentage points/hour";
-"notification.disabled" = "Notifications are off. Low quota and rapid usage alerts cannot appear.";
-"notification.enabled" = "Quota notifications enabled";
+"notification.disabled" = "macOS notification permission is off. Selected notifications cannot appear.";
+"notification.enabled" = "macOS notification permission granted";
 "notification.checking" = "Checking notification permission…";
 "notification.settings" = "Notification settings";
 "account.recoveryDetails" = "Reset and recovery details";
@@ -371,3 +371,26 @@
 "compaction.settings.error" = "Could not confirm the change. Check the selected model and route status, then retry.";
 
 "compaction.settings.unavailable" = "Compression settings are unavailable. Check the local relay installation.";
+"notification.preferences.enabled" = "Receive notifications";
+"notification.preferences.history" = "Collection and history continue when muted. Muted news will not be sent later.";
+"notification.preferences.group.account" = "My account";
+"notification.preferences.group.news" = "Public reset news · separate from my account";
+"notification.preferences.group.operation" = "Work and collection";
+"notification.topic.quotaWarnings" = "Low quota and fast consumption";
+"notification.topic.quotaRecovery" = "Unexpected quota recovery detected";
+"notification.topic.accountChanges" = "Account, plan, and quota schedule changes";
+"notification.topic.payments" = "Paid usage and credit top-ups";
+"notification.topic.resumeReady" = "Paused work ready to resume";
+"notification.topic.collectionIssues" = "Quota collection delays";
+"notification.topic.resetPossible" = "Evidence of a possible reset";
+"notification.topic.resetAnnounced" = "Reset announcements and time hints";
+"notification.topic.resetUpdates" = "Announcement changes and withdrawals";
+"notification.topic.resetReported" = "Public reports of completed resets";
+"notification.preferences.saved" = "Saved. Applies to upcoming notifications.";
+"notification.preferences.error" = "Could not save. Check the connection and try again.";
+"notification.preferences.desktopOff" = "macOS delivery is disabled in the configuration file.";
+"notification.preferences.collectionOff" = "Public reset news collection is disabled.";
+"notification.preferences.unavailable" = "Notification preferences are unavailable.";
+"translation.provider" = "Translated by macOS";
+"translation.original" = "Show original";
+"translation.unavailable" = "Translation is unavailable on this Mac. Showing the original.";

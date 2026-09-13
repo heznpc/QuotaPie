@@ -1,3 +1,4 @@
+import { notificationAllowed, type NotificationPreferencesPatch } from "./notification-preferences";
 import { buildResetTracking } from "./signals/correlation";
 import { codexContextChange } from "./domain/codex-context";
 import { ResetSignalStore } from "./storage/reset-signal-store";
@@ -865,7 +866,23 @@ export class QuotaPieService {
     });
   }
 
+  notificationPreferences() {
+    return { enabled: this.config.alerts.enabled, topics: { ...this.config.alerts.topics },
+      desktopEnabled: this.config.alerts.macOSNotifications, resetCollectionEnabled: this.config.resetSignals.enabled };
+  }
+
+  applyNotificationPreferences(patch: NotificationPreferencesPatch): void {
+    if (patch.enabled != null) this.config.alerts.enabled = patch.enabled;
+    Object.assign(this.config.alerts.topics, patch.topics);
+    this.cancelMutedNotifications();
+  }
+
+  private cancelMutedNotifications(nowMs = Date.now()): void {
+    this.alerts.cancelAppNotificationsWhere(item => !notificationAllowed(item, this.config.alerts), nowMs);
+  }
+
   claimNextAppNotification(nowMs = Date.now()): AppNotificationClaim | null {
+    this.cancelMutedNotifications(nowMs);
     if (!this.config.alerts.enabled || !this.config.alerts.macOSNotifications) {
       this.alerts.cancelAllAppNotifications(nowMs);
       return null;
@@ -906,6 +923,7 @@ export class QuotaPieService {
   }
 
   renewAppNotification(id: string, claimToken: string, nowMs = Date.now()): boolean {
+    this.cancelMutedNotifications(nowMs);
     return this.alerts.renewAppNotification(id, claimToken, nowMs);
   }
 
@@ -937,7 +955,6 @@ export class QuotaPieService {
   }
 
   private async deliverResumeReadyNotifications(): Promise<void> {
-    if (!this.config.alerts.enabled) return;
     const hasChannel = (
       this.config.alerts.macOSNotifications && process.platform === "darwin"
     ) || Boolean(this.config.alerts.command?.length);
@@ -1029,7 +1046,7 @@ export class QuotaPieService {
   }
 
   async evaluateTriggers(nowMs = Date.now(), analysed?: WindowAnalysis[]): Promise<TriggerDecision[]> {
-    if (!this.config.alerts.enabled) return [];
+
     const windows = analysed ?? this.analyses(nowMs);
     this.rearmRecovered(windows, nowMs);
     const decisions = planTriggers(
@@ -1055,9 +1072,11 @@ export class QuotaPieService {
         ? `event:${decision.eventId}`
         : `threshold:${decision.key}:${thresholdClaim!.generation}`;
       let deliveryComplete = false;
+      let suppressed = false;
       try {
         const result = await this.deliverDecision(decision, deliveryKey);
         deliveryComplete = result.complete;
+        suppressed = result.suppressed ?? false;
       } catch (error) {
         console.error(`[quotapie] Trigger delivery error: ${String(error)}`);
       }
@@ -1066,8 +1085,8 @@ export class QuotaPieService {
         const completed = decision.eventId != null
           ? this.alerts.completeEvent(decision.eventId, decision.key, claimToken, completedAtMs)
           : this.alerts.completeClaim(decision.key, claimToken, completedAtMs);
-        if (completed) delivered.push(decision);
-        else console.error(`[quotapie] Trigger claim expired before completion: ${decision.key}`);
+        if (completed && !suppressed) delivered.push(decision);
+        else if (!completed) console.error(`[quotapie] Trigger claim expired before completion: ${decision.key}`);
       } else {
         if (decision.eventId != null) {
           this.alerts.releaseEvent(decision.eventId, decision.key, claimToken);
@@ -1148,7 +1167,7 @@ export class QuotaPieService {
     if (this.signalWork) return this.signalWork;
     this.signalWork = (async () => {
       await this.signalCollector.poll();
-      if (this.closing || !this.config.resetSignals.enabled || !this.config.alerts.enabled) return;
+      if (this.closing || !this.config.resetSignals.enabled) return;
       for (const signal of this.resetSignals.pending(Date.now())) {
         if (this.closing) break;
         const decision = signalDecision(signal, this.locale);

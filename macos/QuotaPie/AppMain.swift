@@ -132,7 +132,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             retryTask: { [weak self] task in self?.retry(task) },
             dismissTask: { [weak self] task in self?.dismiss(task) },
             quit: { NSApp.terminate(nil) },
-            configureCompaction: { [weak self] model in self?.configureCompaction(model) }
+            configureCompaction: { [weak self] model in self?.configureCompaction(model) },
+            configureNotifications: { [weak self] key, enabled in self?.configureNotifications(key, enabled: enabled) }
         )
     }
 
@@ -194,6 +195,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.refresh()
         }
         if let refreshTimer { RunLoop.main.add(refreshTimer, forMode: .common) }
+    }
+
+    private func configureNotifications(_ key: String, enabled: Bool) {
+        guard !popoverModel.notificationSaving, let client, let token = currentActionToken else { return }
+        popoverModel.notificationSaving = true
+        popoverModel.notificationSaveMessage = nil
+        client.configureNotifications(key: key, enabled: enabled, actionToken: token) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.popoverModel.notificationSaving = false
+                switch result {
+                case .success(let response):
+                    self.popoverModel.payload?.notificationPreferences = response.notificationPreferences
+                    self.popoverModel.notificationSaveMessage = Strings.t("notification.preferences.saved")
+                case .failure:
+                    self.popoverModel.notificationSaveMessage = Strings.t("notification.preferences.error")
+                }
+            }
+        }
     }
 
     private func configureCompaction(_ model: String) {

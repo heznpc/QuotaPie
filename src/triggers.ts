@@ -1,3 +1,4 @@
+import { notificationAllowed } from "./notification-preferences";
 import type { AppConfig } from "./config";
 import { humanGap, resolveLocale, t } from "./i18n";
 import type { MessageKey, MessageParams } from "./i18n";
@@ -177,6 +178,7 @@ const APPLE_SCRIPT = `on run argv
 end run`;
 
 export interface TriggerDeliveryResult {
+  suppressed?: boolean;
   complete: boolean;
   configuredChannels: string[];
   succeededChannels: string[];
@@ -257,6 +259,9 @@ export async function deliverTrigger(
   config: AppConfig,
   options: TriggerDeliveryOptions = {},
 ): Promise<TriggerDeliveryResult> {
+  if (!notificationAllowed(decision, config.alerts)) {
+    return { complete: true, suppressed: true, configuredChannels: [], succeededChannels: [], failedChannels: [] };
+  }
   const configuredChannels: string[] = [];
   const completed = new Set(options.alreadyDelivered ?? []);
   const jobs: Promise<ChannelResult>[] = [];

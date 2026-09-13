@@ -103,15 +103,15 @@ struct DetailsView: View {
 
     private var settingsContent: some View {
         VStack(alignment: .leading, spacing: 20) {
-            CompactionSettingsView(model: model, save: actions.configureCompaction)
-            Divider()
             VStack(alignment: .leading, spacing: 8) {
-                Text(Strings.t("detail.notifications")).font(.headline)
+                NotificationPreferencesView(model: model, save: actions.configureNotifications)
                 Text(Strings.t(model.notificationsAllowed == false ? "notification.disabled" :
                                 model.notificationsAllowed == true ? "notification.enabled" : "notification.checking"))
                     .font(.callout).foregroundStyle(.secondary)
                 Button(Strings.t("notification.settings"), action: actions.openNotificationSettings)
             }
+            Divider()
+            CompactionSettingsView(model: model, save: actions.configureCompaction)
             Divider()
             VStack(alignment: .leading, spacing: 10) {
                 Toggle(Strings.t("awake.title"), isOn: $awake.enabled).toggleStyle(.switch)

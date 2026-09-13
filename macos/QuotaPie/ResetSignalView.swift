@@ -62,7 +62,7 @@ struct ResetSignalHistory: View {
     let feed: ResetSignalPayload?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        LazyVStack(alignment: .leading, spacing: 20) {
             if let feed, feed.enabled {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(Strings.t("signal.accountNotice")).font(.callout)
@@ -122,7 +122,7 @@ struct ResetSignalHistory: View {
                         }
                         Text(Strings.t(signal.sourceStatusKey) + " · " + Strings.t("signal.summary.accountUnknown"))
                             .font(.caption).foregroundStyle(.secondary)
-                        Text(signal.text).font(.body).textSelection(.enabled)
+                        TranslatedPostText(text: signal.text)
                         Text(Strings.t("signal.via." + (signal.observedVia == "x-api" ? "x-api" : signal.observedVia == "codexreset" ? "codexreset" : "public-feed")))
                             .font(.caption).foregroundStyle(.secondary)
                         Text("@\(signal.author) · \(stamp(signal.publishedAtMs))")

@@ -12,6 +12,7 @@ struct StatusPayload: Decodable {
     let resetSignals: ResetSignalPayload?
     let resetTracking: ResetTracking?
     let compaction: CompactionPayload?
+    var notificationPreferences: NotificationPreferences?
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -24,10 +25,11 @@ struct StatusPayload: Decodable {
         resetSignals = try values.decodeIfPresent(ResetSignalPayload.self, forKey: .resetSignals)
         resetTracking = try values.decodeIfPresent(ResetTracking.self, forKey: .resetTracking)
         compaction = try values.decodeIfPresent(CompactionPayload.self, forKey: .compaction)
+        notificationPreferences = try values.decodeIfPresent(NotificationPreferences.self, forKey: .notificationPreferences)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case nowMs, headline, accounts, events, actionToken, resumeTasks, resetSignals, resetTracking, compaction
+        case nowMs, headline, accounts, events, actionToken, resumeTasks, resetSignals, resetTracking, compaction, notificationPreferences
     }
 }
 
