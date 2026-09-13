@@ -217,14 +217,15 @@ export class AlertStore {
     return row ? { token, generation: row.generation } : null;
   }
 
-  completeClaim(key: string, token: string, nowMs: number): boolean {
+  completeClaim(key: string, token: string, nowMs: number, disposition: "delivered" | "suppressed" = "delivered"): boolean {
     const result = this.storage.db
       .query(`
         UPDATE alert_state SET
-          last_fired_at_ms = ?, armed = 0, claimed_at_ms = NULL, claimed_token = NULL
+          last_fired_at_ms = CASE WHEN ? = 'delivered' THEN ? ELSE last_fired_at_ms END,
+          armed = 0, claimed_at_ms = NULL, claimed_token = NULL
         WHERE key = ? AND claimed_token = ?
       `)
-      .run(nowMs, key, token);
+      .run(disposition, nowMs, key, token);
     return result.changes > 0;
   }
 
@@ -316,7 +317,8 @@ export class AlertStore {
     });
   }
 
-  completeEvent(eventId: number, categoryKey: string, token: string, nowMs: number): boolean {
+  completeEvent(eventId: number, categoryKey: string, token: string, nowMs: number,
+    disposition: "delivered" | "suppressed" = "delivered"): boolean {
     return this.storage.transaction(() => {
       const ownsEvent = this.storage.db
         .query<{ event_id: number }, [number, string]>(`
@@ -333,18 +335,20 @@ export class AlertStore {
         .query(`
           UPDATE event_delivery
           SET claimed_at_ms = NULL, claimed_token = NULL,
-              delivered_at_ms = ?, disposition = 'delivered'
+              delivered_at_ms = ?, disposition = ?
           WHERE event_id = ? AND claimed_token = ?
         `)
-        .run(nowMs, eventId, token);
+        .run(nowMs, disposition, eventId, token);
+      // Muted occurrences are consumed, but only a delivery starts a cooldown.
+      // Preserve a prior real delivery rather than clearing its cooldown.
       this.storage.db
         .query(`
           UPDATE alert_state SET
-            last_fired_at_ms = ?, armed = 1,
+            last_fired_at_ms = CASE WHEN ? = 'delivered' THEN ? ELSE last_fired_at_ms END, armed = 1,
             claimed_at_ms = NULL, claimed_token = NULL
           WHERE key = ? AND claimed_token = ?
         `)
-        .run(nowMs, categoryKey, token);
+        .run(disposition, nowMs, categoryKey, token);
       return true;
     });
   }

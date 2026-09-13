@@ -163,6 +163,33 @@ describe("trigger planning and claims", () => {
     db.close();
   });
 
+  test("muted completion preserves prior delivery time and lease ownership", () => {
+    const db = new QuotaDatabase(":memory:");
+    const alerts = new AlertStore(db.storage);
+    try {
+      alerts.setState("threshold", 1_000, true);
+      const old = alerts.claim("threshold", 40_000, 30_000, 10)!;
+      const current = alerts.claim("threshold", 40_011, 30_000, 10)!;
+      expect(alerts.completeClaim("threshold", old.token, 40_012, "suppressed")).toBeFalse();
+      expect(alerts.completeClaim("threshold", current.token, 40_012, "suppressed")).toBeTrue();
+      expect(alerts.state("threshold")).toEqual({ lastFiredAtMs: 1_000, armed: false });
+      expect(alerts.claim("threshold", 80_000, 30_000)).toBeNull();
+      alerts.setState("threshold", 1_000, true);
+      expect(alerts.claim("threshold", 40_013, 30_000)).not.toBeNull();
+
+      const event: QuotaEvent = { provider: "codex", account: "default", bucket: "x", kind: "paid_usage",
+        severity: "info", occurredAtMs: 40_000, confidence: "high", displayText: "Synthetic paid use", details: {} };
+      db.insertEvent(event);
+      alerts.setState("event", 1_000, true);
+      const staleToken = alerts.claimEvent(event.id!, "event", 40_000, 30_000, 10)!;
+      const token = alerts.claimEvent(event.id!, "event", 40_011, 30_000, 10)!;
+      expect(alerts.completeEvent(event.id!, "event", staleToken, 40_012, "suppressed")).toBeFalse();
+      expect(alerts.completeEvent(event.id!, "event", token, 40_012, "suppressed")).toBeTrue();
+      expect(alerts.state("event")).toEqual({ lastFiredAtMs: 1_000, armed: true });
+      expect(alerts.pendingEvents()).toHaveLength(0);
+    } finally { db.close(); }
+  });
+
   test("reclaims a threshold after a crashed delivery lease expires", () => {
     const db = new QuotaDatabase(":memory:");
     const staleToken = new AlertStore(db.storage).claim("codex:x:remaining:5", 1_000, 0, 5_000);

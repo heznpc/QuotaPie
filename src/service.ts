@@ -976,14 +976,16 @@ export class QuotaPieService {
       if (!claim) continue;
       const deliveryKey = `threshold:${decision.key}:${claim.generation}`;
       let complete = false;
+      let suppressed = false;
       try {
         const result = await this.deliverDecision(decision, deliveryKey);
         complete = result.complete;
+        suppressed = result.suppressed ?? false;
       } catch (error) {
         console.error(`[quotapie] Resume-ready notification error: ${String(error)}`);
       }
       if (complete) {
-        if (!this.alerts.completeClaim(decision.key, claim.token, Date.now())) {
+        if (!this.alerts.completeClaim(decision.key, claim.token, Date.now(), suppressed ? "suppressed" : "delivered")) {
           console.error(`[quotapie] Resume-ready notification claim expired: ${task.id}`);
         }
       } else {
@@ -1046,7 +1048,6 @@ export class QuotaPieService {
   }
 
   async evaluateTriggers(nowMs = Date.now(), analysed?: WindowAnalysis[]): Promise<TriggerDecision[]> {
-
     const windows = analysed ?? this.analyses(nowMs);
     this.rearmRecovered(windows, nowMs);
     const decisions = planTriggers(
@@ -1082,9 +1083,10 @@ export class QuotaPieService {
       }
       if (deliveryComplete) {
         const completedAtMs = Date.now();
+        const disposition = suppressed ? "suppressed" : "delivered";
         const completed = decision.eventId != null
-          ? this.alerts.completeEvent(decision.eventId, decision.key, claimToken, completedAtMs)
-          : this.alerts.completeClaim(decision.key, claimToken, completedAtMs);
+          ? this.alerts.completeEvent(decision.eventId, decision.key, claimToken, completedAtMs, disposition)
+          : this.alerts.completeClaim(decision.key, claimToken, completedAtMs, disposition);
         if (completed && !suppressed) delivered.push(decision);
         else if (!completed) console.error(`[quotapie] Trigger claim expired before completion: ${decision.key}`);
       } else {
@@ -1177,7 +1179,7 @@ export class QuotaPieService {
           const result = await this.deliverDecision(decision, decision.key);
           if (result.complete) {
             this.resetSignals.delivered(signal.fingerprint);
-            this.alerts.completeClaim(decision.key, claim.token, Date.now());
+            this.alerts.completeClaim(decision.key, claim.token, Date.now(), result.suppressed ? "suppressed" : "delivered");
           } else this.alerts.releaseClaim(decision.key, claim.token);
         } catch { this.alerts.releaseClaim(decision.key, claim.token); }
       }

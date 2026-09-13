@@ -20,6 +20,7 @@ final class PopoverModel: ObservableObject {
     @Published var statusFailure: StatusFailure?
     @Published var notificationSaving = false
     @Published var notificationSaveMessage: String?
+    private(set) var notificationPreferencesRevision = 0
     @Published var compactionSaving = false
     @Published var compactionSaveMessage: String?
 
@@ -30,6 +31,28 @@ final class PopoverModel: ObservableObject {
     @Published var notificationsAllowed: Bool?
     @Published var resumeActivities: [String: ResumeTaskActivity] = [:]
     @Published var selectedAccountID: String?
+
+    func beginNotificationSave() {
+        notificationPreferencesRevision += 1
+        notificationSaving = true
+        notificationSaveMessage = nil
+    }
+
+    func finishNotificationSave(_ preferences: NotificationPreferences?) {
+        notificationPreferencesRevision += 1
+        if let preferences { payload?.notificationPreferences = preferences }
+        notificationSaving = false
+    }
+
+    func applyStatus(_ status: StatusPayload, notificationRevision: Int) {
+        var next = status
+        // Keep other live status fields fresh while excluding preference
+        // snapshots requested before or during the most recent save.
+        if notificationSaving || notificationRevision != notificationPreferencesRevision {
+            next.notificationPreferences = payload?.notificationPreferences
+        }
+        payload = next
+    }
 
     var selectedAccount: AccountState? {
         let accounts = payload?.accounts.filter(\.enabled) ?? []

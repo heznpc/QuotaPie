@@ -7,7 +7,7 @@ import { DEFAULT_NOTIFICATION_TOPICS, notificationTopic } from "../src/notificat
 import { deliverTrigger, planTriggers } from "../src/triggers";
 import { signalDecision } from "../src/signals/presentation";
 import type { ResetSignal, SignalState } from "../src/signals/classify";
-import { ALERTABLE_EVENT_KINDS } from "../src/types";
+import { ALERTABLE_EVENT_KINDS, type QuotaEvent } from "../src/types";
 import { QuotaPieService } from "../src/service";
 import { QuotaDatabase } from "../src/db";
 import { startDashboard } from "../src/server";
@@ -19,6 +19,45 @@ function signal(state: SignalState, id = state): ResetSignal {
 }
 
 describe("notification topic preferences", () => {
+  for (const mute of ["topic", "all"] as const) {
+    test(`${mute} mute consumes old events without suppressing new events after re-enabling`, async () => {
+      const config = structuredClone(DEFAULT_CONFIG);
+      config.collection.codexEnabled = false;
+      const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
+      service.setNativeNotificationTransportAvailable(true);
+      service.alerts.setNativeNotificationConsumer(true);
+      const toggle = (enabled: boolean) => service.applyNotificationPreferences(
+        mute === "topic" ? { topics: { payments: enabled } } : { enabled });
+      const add = (offset: number) => {
+        const event: QuotaEvent = { provider: "codex", account: "default", bucket: "primary", kind: "credit_topup",
+          severity: "info", occurredAtMs: Date.now() + offset, confidence: "high", displayText: "Synthetic top-up", details: { offset } };
+        expect(service.db.insertEvent(event)).toBeTrue();
+        return event.id!;
+      };
+      try {
+        toggle(false);
+        const muted = add(0);
+        expect(await service.evaluateTriggers(Date.now(), [])).toHaveLength(0);
+        expect(service.alerts.pendingEvents()).toHaveLength(0);
+        expect(service.storage.db.query("SELECT disposition FROM event_delivery WHERE event_id = ?").get(muted))
+          .toEqual({ disposition: "suppressed" });
+        toggle(true);
+        await service.evaluateTriggers(Date.now(), []);
+        expect(service.alerts.pendingAppNotifications()).toHaveLength(0);
+        const fresh = add(1);
+        expect(await service.evaluateTriggers(Date.now(), [])).toHaveLength(1);
+        expect(service.alerts.pendingAppNotifications().map(item => item.deliveryKey)).toEqual([`event:${fresh}`]);
+        // Re-enabling does not erase the cooldown from an actual delivery.
+        toggle(false);
+        toggle(true);
+        const repeated = add(2);
+        expect(await service.evaluateTriggers(Date.now(), [])).toHaveLength(0);
+        expect(service.storage.db.query("SELECT disposition FROM event_delivery WHERE event_id = ?").get(repeated))
+          .toEqual({ disposition: "coalesced" });
+      } finally { await service.close(); }
+    });
+  }
+
   test("maps every alertable event and every public signal without confusing account recovery with reports", () => {
     const config = structuredClone(DEFAULT_CONFIG);
     const events = ALERTABLE_EVENT_KINDS.map((kind, id) => ({ id, provider: "codex" as const, account: "default", bucket: "primary",
