@@ -58,6 +58,28 @@ final class CodexProfilesTests: XCTestCase {
         let appURL = URL(fileURLWithPath: path)
         XCTAssertEqual(Bundle(url: appURL)?.bundleIdentifier, "local.quotapie.profile-fixture")
         guard Bundle(url: appURL)?.bundleIdentifier == "local.quotapie.profile-fixture" else { return }
+        // Inspect Mach-O deployment target before Launch Services can show an alert.
+        let executable = try XCTUnwrap(Bundle(url: appURL)?.executableURL)
+        let inspector = Process()
+        inspector.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        inspector.arguments = ["vtool", "-show-build", executable.path]
+        let output = Pipe()
+        inspector.standardOutput = output
+        try inspector.run()
+        let metadata = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        inspector.waitUntilExit()
+        let targets = metadata.split(separator: "\n").compactMap { line -> String? in
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            return fields.count == 2 && fields[0] == "minos" ? String(fields[1]) : nil
+        }
+        guard inspector.terminationStatus == 0, !targets.isEmpty else {
+            throw NSError(domain: "FixturePreflight", code: 1)
+        }
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        let host = "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
+        guard targets.allSatisfy({ $0.compare(host, options: .numeric) != .orderedDescending }) else {
+            throw NSError(domain: "FixtureRequiresNewerMacOS", code: 2)
+        }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("quotapie-order-" + UUID().uuidString)
         let profiles = ["one", "two"].map {
             CodexDesktopProfile(id: $0, name: $0, codexHome: root.appendingPathComponent($0 + "-home").path,
@@ -75,11 +97,13 @@ final class CodexProfilesTests: XCTestCase {
         for order in [profiles, profiles.reversed().map { $0 }] {
             for profile in order {
                 let done = expectation(description: "launch " + profile.id)
+                var launchError: Error?
                 launcher.open(profile, appURL: appURL) { result in
-                    if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+                    if case .failure(let error) = result { launchError = error }
                     done.fulfill()
                 }
                 wait(for: [done], timeout: 15)
+                if let launchError { throw launchError }
             }
             XCTAssertEqual(instances().count, 2)
             for profile in profiles {
