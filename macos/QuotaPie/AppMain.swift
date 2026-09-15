@@ -145,6 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             dismissTask: { [weak self] task in self?.dismiss(task) },
             quit: { NSApp.terminate(nil) },
             configureCompaction: { [weak self] model in self?.configureCompaction(model) },
+            configureSavings: { [weak self] enabled, thread in self?.configureSavings(enabled, thread) },
             configureNotifications: { [weak self] key, enabled in self?.configureNotifications(key, enabled: enabled) }
         )
     }
@@ -223,6 +224,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     self.popoverModel.finishNotificationSave(nil)
                     self.popoverModel.notificationSaveMessage = Strings.t("notification.preferences.error")
                 }
+            }
+        }
+    }
+
+    private func configureSavings(_ enabled: Bool?, _ thread: String?) {
+        guard !popoverModel.savingsSaving, let client, let token = currentActionToken else { return }
+        popoverModel.savingsSaving = true
+        popoverModel.savingsMessage = nil
+        client.configureSavings(enabled: enabled, bypassThread: thread, actionToken: token) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.popoverModel.savingsSaving = false
+                switch result {
+                case .success: self.popoverModel.savingsMessage = Strings.t("savings.saved")
+                case .failure: self.popoverModel.savingsMessage = Strings.t("savings.error")
+                }
+                self.refresh()
             }
         }
     }

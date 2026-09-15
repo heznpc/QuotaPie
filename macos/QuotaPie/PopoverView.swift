@@ -18,6 +18,12 @@ struct PopoverView: View {
             }
 #endif
             quotaOverview.padding(20)
+            if let savings = model.payload?.compaction?.savings, savings.policy?.enabled == true {
+                Button { showDetails(.activity) } label: {
+                    Label(savings.latest?.summary ?? Strings.t("savings.waiting"), systemImage: "leaf")
+                        .font(.caption).frame(maxWidth: .infinity, alignment: .leading)
+                }.buttonStyle(.plain).padding(.horizontal, 20).padding(.bottom, 12)
+            }
             if let record = model.payload?.compaction?.latest {
                 CompactionSummary(record: record, openHistory: { showDetails(.activity) })
                     .padding(.horizontal, 20).padding(.bottom, 12)

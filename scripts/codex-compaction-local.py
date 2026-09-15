@@ -149,6 +149,7 @@ class LocalRelay:
             policy["to"] = args.compact_model
         settings = {
             "port": port, "token": token, "route": policy,
+            "taskSavings": previous.get("taskSavings", {"enabled": False, "model": "gpt-5.6-luna", "effort": "low"}),
             "label": LABEL + "." + generation, "bun": str(Path(bun).resolve()),
             "source": str(source), "codex_home": str(config_path.parent),
         }

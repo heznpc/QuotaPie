@@ -397,7 +397,7 @@
 
 "compaction.composerHint" = "압축 전용 모델 · Codex 입력창 표시는 그대로";
 
-"compaction.composerNotice" = "자동 전환은 압축 요청에만 적용됩니다. Codex 입력창에는 원래 작업 모델이 계속 표시되므로, 입력창 표시가 그대로여도 압축 모델은 전환될 수 있습니다.";
+"compaction.composerNotice" = "압축용 자동 전환은 압축 요청에만 적용됩니다. Codex 입력창에는 원래 작업 모델이 계속 표시되므로, 입력창 표시가 그대로여도 압축 모델은 전환될 수 있습니다.";
 "resume.linkedTask" = "연결된 재개 작업";
 "resume.linkedUnavailable" = "이 작업은 대기 목록에 없거나 이미 처리됐습니다. 최신 상태를 확인해 주세요.";
 "resume.showAll" = "전체 작업 보기";
@@ -439,3 +439,40 @@
 "alert.jobs.succeeded.message" = "등록한 모든 단계가 완료됐습니다.";
 "alert.jobs.failed.message" = "실행에 실패했습니다. 기록을 확인하세요.";
 "alert.jobs.review.message" = "중단된 실행을 다시 시도하기 전에 기록을 확인하세요.";
+
+// Task savings
+"savings.title" = "작업별 자동 절약";
+"savings.scope" = "켜면 Astra High 이상으로 요청한 명확한 문구 수정에 Luna Low를 사용합니다. 불확실한 작업은 선택한 설정을 유지합니다. 호환 릴레이를 거치는 Codex 요청에 적용하며, 압축 정책은 별개입니다.";
+"savings.enable" = "작업별 자동 절약 사용";
+"savings.applied" = "릴레이 %@/%@개에서 정책 적용 확인";
+"savings.partial" = "기존 작업은 이전 릴레이를 사용할 수 있습니다. 여기서 관측된 요청만 적용을 확인할 수 있습니다. 기존 작업이 끝난 뒤 Codex를 재시작하면 새 릴레이를 사용합니다.";
+"savings.unsupported" = "로컬 모델 카탈로그에서 Luna Low 지원을 확인하지 못했습니다.";
+"savings.unavailable" = "호환 릴레이 설치 후 작업별 절약을 켤 수 있습니다.";
+"savings.saved" = "저장했습니다. 이미 전송한 요청은 기존 설정으로 끝납니다.";
+"savings.error" = "저장하지 못했습니다. 릴레이 실행 상태를 확인해 주세요.";
+"savings.waiting" = "작업별 절약 · 요청 근거 대기";
+"savings.routed" = "절약 요청 · %@ %@";
+"savings.kept" = "설정 유지 · %@ %@";
+"savings.original" = "원래 요청: %@ %@";
+"savings.response" = "응답 모델: %@";
+"savings.unverified" = "미검증";
+"savings.tokens" = "입력 %@ (캐시 %@) · 출력 %@ 토큰";
+"savings.undo" = "이 작업은 원래 설정 사용";
+"savings.evidenceNotice" = "입력창 설정은 유지됩니다. 추론 단계는 요청에 보낸 값이며, 응답 모델은 공급자가 보고한 경우에만 표시합니다. 완료가 결과 품질 검증을 뜻하지는 않습니다. 토큰 수는 구독 한도 차감량이나 절약 효과를 증명하지 않습니다. 되돌리기는 다음 요청부터 적용하며 수동 선택을 보존합니다.";
+"savings.reason.disabled" = "자동 절약이 꺼져 있습니다.";
+"savings.reason.simple_text_edit" = "요청 전 짧고 구체적인 문구 수정으로 판별했습니다.";
+"savings.reason.uncertain_task" = "작업 복잡성이 불확실해 설정을 유지했습니다.";
+"savings.reason.keep_setting" = "선택한 설정이 절약 정책 대상이 아닙니다.";
+"savings.reason.manual_change" = "모델·추론 변경을 감지해 수동 선택을 따릅니다.";
+"savings.reason.extended_work" = "요청이 8회를 넘어 원래 설정으로 돌아갔습니다.";
+"savings.reason.failure_fallback" = "공급자 또는 도구 실패를 관측해 원래 설정으로 돌아갔습니다.";
+"savings.reason.unsupported_model" = "대상 모델 지원이 미검증입니다.";
+"savings.reason.unidentified_task" = "요청을 작업과 연결하지 못했습니다.";
+"savings.reason.task_disabled" = "이 작업의 절약을 해제했습니다.";
+"savings.phase.started" = "요청 중";
+"savings.phase.response_headers" = "응답 헤더 수신";
+"savings.phase.completed" = "응답 완료";
+"savings.phase.failed" = "실패";
+"savings.phase.cancelled" = "취소";
+"savings.phase.unverified" = "미검증";
+"savings.undone" = "이 작업은 다음 요청부터 원래 설정을 사용합니다.";

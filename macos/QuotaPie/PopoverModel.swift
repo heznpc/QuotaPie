@@ -21,6 +21,8 @@ final class PopoverModel: ObservableObject {
     @Published var notificationSaving = false
     @Published var notificationSaveMessage: String?
     private(set) var notificationPreferencesRevision = 0
+    @Published var savingsSaving = false
+    @Published var savingsMessage: String?
     @Published var compactionSaving = false
     @Published var compactionSaveMessage: String?
 
@@ -116,6 +118,7 @@ struct PopoverActions {
     let dismissTask: (ResumeTask) -> Void
     let quit: () -> Void
     var configureCompaction: (String) -> Void = { _ in }
+    var configureSavings: (Bool?, String?) -> Void = { _, _ in }
     var configureNotifications: (String, Bool) -> Void = { _, _ in }
 }
 

@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { gunzipSync, inflateSync } from "node:zlib";
 
 import { DEFAULT_COMPACTION_ROUTE, isCompaction, object, routeCompaction, safeEffort, validateCompactionRoute, type CompactionRoute } from "./codex-compaction-policy";
+import { DEFAULT_TASK_SAVINGS, TaskSavingsRouter, validateTaskSavings, type TaskSavingsPolicy, type SavingsReason } from "./task-savings";
 import { ResponseCompletionObserver } from "./codex-compaction-stream";
 export { DEFAULT_COMPACTION_ROUTE, routeCompaction, validateCompactionRoute, type CompactionRoute } from "./codex-compaction-policy";
 
@@ -20,6 +21,9 @@ export interface CompactionRequestEvent {
   at: string;
   durationMs: number;
   errorCode?: string;
+  savingsReason?: SavingsReason;
+  responseModel?: string | null;
+  usage?: { input: number; cachedInput: number; output: number } | null;
 }
 
 function protocolId(value: unknown): string | null {
@@ -72,10 +76,14 @@ export function startCompactionProxy(options: {
   port?: number;
   token?: string;
   onRequest?: (event: CompactionRequestEvent) => void;
+  taskSavings?: TaskSavingsPolicy;
+  savingsModelSupported?: () => boolean;
   fetchUpstream?: (url: string, init: RequestInit) => Promise<Response>;
 } = {}) {
   const route = options.route ?? { ...DEFAULT_COMPACTION_ROUTE };
   validateCompactionRoute(route);
+  const savingsPolicy = options.taskSavings ?? { ...DEFAULT_TASK_SAVINGS };
+  const savingsRouter = new TaskSavingsRouter(options.savingsModelSupported);
   const token = options.token ?? randomBytes(24).toString("hex");
   if (!/^[a-f0-9]{48}$/.test(token)) throw new Error("Invalid relay token");
   const prefix = `/${token}/backend-api/codex`;
@@ -100,7 +108,7 @@ export function startCompactionProxy(options: {
       }
       const path = url.pathname.slice(prefix.length);
       if (path === "/quotapie-health" && request.method === "GET") {
-        return Response.json({ service: "quotapie-compaction", schemaVersion: 2, pid: process.pid,
+        return Response.json({ service: "quotapie-compaction", schemaVersion: 3, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
           route: validateCompactionRoute(route), requests, compactions, attemptedCompactions,
           failedCompactions, cancelledCompactions, unverifiedCompactions, activeRequests, draining,
           active: [...active.values()], recent, lastRequest });
@@ -127,6 +135,7 @@ export function startCompactionProxy(options: {
       // Freeze the policy for this request. A live policy update cannot change
       // its target, effort, or attribution after the request has been sent.
       const policy = validateCompactionRoute(route);
+      const taskPolicy = validateTaskSavings(savingsPolicy);
       // Include uploads in drain accounting, before the first body-read await.
       activeRequests++;
       try {
@@ -140,13 +149,16 @@ export function startCompactionProxy(options: {
             }
             const input: unknown = JSON.parse(new TextDecoder().decode(decoded));
             expectsSse = object(input) && (input.stream === true || (path === "/responses" && isCompaction(path, input)));
-            const routed = routeCompaction(path, input, policy);
+            const compact = object(input) && isCompaction(path, input);
+            const savings = !compact && path === "/responses" ? savingsRouter.route(input, taskPolicy, requestIdentity(headers).threadId) : null;
+            const routed = compact ? routeCompaction(path, input, policy) : savings ?? { body: input, routed: false };
             if (object(input) && typeof input.model === "string") {
               const outgoing = object(routed.body) ? routed.body : input;
               event = {
                 requestId: randomUUID(), ...requestIdentity(headers),
                 kind: isCompaction(path, input) ? "compaction" : "response",
-                from: input.model, to: routed.routed ? policy.to : input.model,
+                from: input.model, to: typeof outgoing.model === "string" ? outgoing.model : input.model,
+                ...(savings ? { savingsReason: savings.reason } : {}),
                 routed: routed.routed,
                 requestedEffort: safeEffort(object(input.reasoning) ? input.reasoning.effort : null),
                 reasoningEffort: safeEffort(object(outgoing.reasoning) ? outgoing.reasoning.effort : null),
@@ -167,11 +179,12 @@ export function startCompactionProxy(options: {
       let status = 0, finished = false;
       let observer: ResponseCompletionObserver | undefined;
       const cancellation = new AbortController();
-      if (event?.routed) attemptedCompactions++;
+      if (event?.routed && event.kind === "compaction") attemptedCompactions++;
       const emit = (phase: CompactionRequestEvent["phase"], errorCode?: string) => {
         if (!event) return;
         const update: CompactionRequestEvent = { ...event, phase, status, at: new Date().toISOString(),
-          durationMs: Math.round(performance.now() - started), ...(errorCode ? { errorCode } : {}) };
+          durationMs: Math.round(performance.now() - started), ...(errorCode ? { errorCode } : {}),
+          ...(event.kind === "response" ? { responseModel: observer?.responseModel ?? null, usage: observer?.usage ?? null } : {}) };
         lastRequest = update;
         if (phase === "started" || phase === "response_headers") active.set(event.requestId, update);
         else {
@@ -187,7 +200,8 @@ export function startCompactionProxy(options: {
         finished = true;
         activeRequests--;
         request.signal.removeEventListener("abort", onAbort);
-        if (event?.routed) {
+        if (event?.routed && event.kind === "response" && ["failed", "unverified"].includes(phase)) savingsRouter.failed(event.threadId);
+        if (event?.routed && event.kind === "compaction") {
           if (phase === "completed") compactions++;
           if (phase === "failed") failedCompactions++;
           if (phase === "cancelled") cancelledCompactions++;

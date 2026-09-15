@@ -94,6 +94,23 @@ final class StatusClient {
         } catch { completion(.failure(error)) }
     }
 
+    func configureSavings(enabled: Bool?, bypassThread: String?, actionToken: String,
+                          completion: @escaping (Result<TaskSavingsPolicyResponse, Error>) -> Void) {
+        do {
+            var request = try authenticatedPOST(pathComponents: ["api", "task-savings", "policy"], actionToken: actionToken)
+            var body: [String: Any] = [:]
+            if let enabled { body["enabled"] = enabled }
+            if let bypassThread { body["bypassThread"] = bypassThread }
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            request.setValue(nil, forHTTPHeaderField: "content-length")
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.timeoutInterval = 8
+            perform(request) { result in
+                completion(Result { try JSONDecoder().decode(TaskSavingsPolicyResponse.self, from: result.get()) })
+            }
+        } catch { completion(.failure(error)) }
+    }
+
     func configureCompaction(model: String, actionToken: String,
                              completion: @escaping (Result<CompactionPolicyResponse, Error>) -> Void) {
         do {
