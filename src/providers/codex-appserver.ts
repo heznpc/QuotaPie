@@ -18,6 +18,8 @@ interface PendingRequest {
   timeout: ReturnType<typeof setTimeout>;
 }
 
+class CodexTransportError extends Error {}
+
 class RpcRequestError extends Error {
   constructor(message: string, readonly code?: number) { super(message); }
 }
@@ -171,6 +173,7 @@ export class CodexAppServerClient {
   private process: ReturnType<typeof Bun.spawn> | null = null;
   private connectTask: Promise<void> | null = null;
   private rateLimitsTask: Promise<QuotaObservation[]> | null = null;
+  private operations: Promise<unknown> = Promise.resolve();
   private initialized = false;
   private requestId = 1;
   private pending = new Map<number, PendingRequest>();
@@ -206,8 +209,8 @@ export class CodexAppServerClient {
 
   async connect(): Promise<void> {
     if (this.closing) throw new Error("Codex App Server client is closing");
-    if (this.process && this.initialized && this.credentialStamp === this.currentCredentialStamp()) return;
     if (this.connectTask) return this.connectTask;
+    if (this.process && this.initialized && this.credentialStamp === this.currentCredentialStamp()) return;
     const task = this.initializeConnection();
     this.connectTask = task;
     try {
@@ -221,6 +224,7 @@ export class CodexAppServerClient {
     // A profile can be logged into another account while this collector lives.
     // Reload the provider process on credential-file changes; never read or log its contents.
     await this.disconnect();
+    if (this.closing) throw new Error("Codex App Server client is closing");
     this.credentialStamp = this.currentCredentialStamp();
     this.collectorEpoch = randomUUID();
     this.initialized = false;
@@ -257,7 +261,7 @@ export class CodexAppServerClient {
       const process = this.process;
       this.process = null;
       this.initialized = false;
-      try { process?.kill(); } catch { /* The process may already be gone. */ }
+      if (process) await this.terminateProcess(process);
       await this.pumpTask?.catch(() => undefined);
       this.pumpTask = null;
       throw error;
@@ -267,7 +271,17 @@ export class CodexAppServerClient {
   async readRateLimits(): Promise<QuotaObservation[]> {
     // Polls and provider push refreshes share one coherent account/quota read.
     if (this.rateLimitsTask) return this.rateLimitsTask;
-    const task = this.readStableRateLimits();
+    const task = this.exclusive(async () => {
+      // A read-only request may retry once after a stopped child. Keep trusted
+      // account context on this client and never replay an inference or action.
+      for (let attempt = 0; ; attempt++) {
+        try { return await this.readStableRateLimits(); }
+        catch (error) {
+          if (this.closing || attempt || !(error instanceof CodexTransportError)) throw error;
+          await this.disconnect();
+        }
+      }
+    });
     this.rateLimitsTask = task;
     try { return await task; }
     finally { if (this.rateLimitsTask === task) this.rateLimitsTask = null; }
@@ -309,12 +323,17 @@ export class CodexAppServerClient {
     } catch (error) {
       // Only an explicitly unsupported method permits legacy quota-only reads.
       // Transient lookup errors must leave the last trusted snapshot intact.
+      if (error instanceof CodexTransportError) throw error;
       if (error instanceof RpcRequestError && error.code === -32601) return undefined;
       throw new CodexSnapshotUnavailableError("Codex account lookup failed; quota snapshot not accepted");
     }
   }
 
   async listThreads(params: CodexThreadListParams = {}): Promise<CodexThreadListPage> {
+    return this.exclusive(() => this.readThreadPage(params));
+  }
+
+  private async readThreadPage(params: CodexThreadListParams): Promise<CodexThreadListPage> {
     await this.connect();
     const result = await this.request("thread/list", params);
     if (!result || typeof result !== "object") {
@@ -341,9 +360,18 @@ export class CodexAppServerClient {
     };
   }
 
+  private exclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const task = this.operations.then(() => {
+      if (this.closing) throw new Error("Codex App Server client is closing");
+      return operation();
+    });
+    this.operations = task.catch(() => {});
+    return task;
+  }
+
   private write(message: RpcMessage): void {
     const stdin = this.process?.stdin;
-    if (!stdin || typeof stdin === "number") throw new Error("Codex App Server stdin is unavailable");
+    if (!stdin || typeof stdin === "number") throw new CodexTransportError("Codex App Server stdin is unavailable");
     stdin.write(`${JSON.stringify(message)}\n`);
     stdin.flush();
   }
@@ -393,9 +421,12 @@ export class CodexAppServerClient {
         this.process = null;
         this.initialized = false;
       }
+      // EOF does not prove process exit: the provider can close stdout while
+      // background model refresh tasks are still alive. Reap the owned child.
+      if (process) await this.terminateProcess(process);
       for (const pending of this.pending.values()) {
         clearTimeout(pending.timeout);
-        pending.reject(new Error("Codex App Server stopped"));
+        pending.reject(new CodexTransportError("Codex App Server stopped"));
       }
       this.pending.clear();
     }
@@ -447,19 +478,28 @@ export class CodexAppServerClient {
     await this.disconnect();
   }
 
-  private async disconnect(): Promise<void> {
-    const process = this.process;
-    this.process = null;
-    this.initialized = false;
-    if (!process) return;
-    try {
-      const stdin = process.stdin;
-      if (stdin && typeof stdin !== "number") stdin.end();
-      process.kill();
-      await Promise.race([process.exited, Bun.sleep(1_000)]);
-    } finally {
-      await this.pumpTask?.catch(() => undefined);
-      this.pumpTask = null;
+  private async terminateProcess(child: ReturnType<typeof Bun.spawn>): Promise<void> {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    try { child.kill("SIGTERM"); } catch { /* Already exited. */ }
+    await Promise.race([child.exited, Bun.sleep(500)]);
+    if (child.exitCode === null && child.signalCode === null) {
+      try { child.kill("SIGKILL"); } catch { /* Already exited. */ }
+      await child.exited;
     }
+  }
+
+  private async disconnect(): Promise<void> {
+    const child = this.process;
+    this.initialized = false;
+    if (child) {
+      try {
+        const stdin = child.stdin;
+        if (stdin && typeof stdin !== "number") stdin.end();
+      } catch { /* Provider may have closed its pipe already. */ }
+      await this.terminateProcess(child);
+    }
+    await this.pumpTask?.catch(() => undefined);
+    this.pumpTask = null;
+    if (this.process === child) this.process = null;
   }
 }
