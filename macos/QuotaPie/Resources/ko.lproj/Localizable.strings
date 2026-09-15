@@ -489,3 +489,26 @@
 "savings.off" = "끄기";
 
 "savings.pending" = "설정은 저장됐지만 릴레이 적용은 아직 확인되지 않았습니다. 적용 상태를 확인하세요.";
+
+"profiles.title" = "Codex 계정별 앱 실행";
+"profiles.primary" = "기존 앱";
+"profiles.description" = "실행 순서와 관계없이 계정별 앱을 엽니다. 이미 실행 중인 프로필은 앞으로 가져옵니다.";
+"profiles.open" = "열기 / 앞으로";
+"profiles.remove" = "등록 해제";
+"profiles.paths" = "프로필 폴더";
+"profiles.appData" = "앱 데이터";
+"profiles.add" = "프로필 추가";
+"profiles.name" = "이름 (예: 업무용)";
+"profiles.newHint" = "새 프로필은 폴더를 지정하지 않고 등록한 뒤 앱에서 로그인하세요. 기존 실행기를 등록하려면 해당 실행기의 두 폴더를 선택하세요. 인증 정보는 복사하지 않습니다.";
+"profiles.chooseHome" = "기존 Codex 홈 선택…";
+"profiles.chooseData" = "기존 앱 데이터 선택…";
+"profiles.cancel" = "취소";
+"profiles.register" = "등록";
+"profiles.scope" = "앱 실행 등록은 한도 수집·Auto 적용과 별개입니다. 등록을 해제해도 파일과 실행 중인 앱은 유지됩니다. 실행 순서 문제를 피하려면 이 버튼으로 여세요.";
+"profiles.opened" = "%@ 앱 프로세스를 확인했습니다. 필요한 경우 해당 앱에서 로그인하세요.";
+"profiles.error.paths" = "프로필 폴더가 겹치거나 실행 중인 앱과 충돌합니다. Codex 홈과 앱 데이터 폴더를 각각 분리하세요.";
+"profiles.error.name" = "프로필 이름을 입력하세요.";
+"profiles.error.appMissing" = "설치된 Codex 앱을 찾지 못했습니다.";
+"profiles.error.identity" = "실행 중인 앱의 프로필을 확인하지 못했습니다. 중복 실행을 막기 위해 추가 실행을 중단했습니다.";
+"profiles.error.launch" = "앱을 열거나 앞으로 가져오지 못했습니다.";
+"profiles.error.storage" = "저장된 프로필 등록 정보를 읽지 못했습니다.";

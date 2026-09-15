@@ -489,3 +489,26 @@
 "savings.off" = "Off";
 
 "savings.pending" = "Settings were saved, but relay acknowledgement is still pending. Check the applied status.";
+
+"profiles.title" = "Codex accounts · Open apps";
+"profiles.primary" = "Main";
+"profiles.description" = "Open each account in its own app instance, in either order. An already running profile is brought forward.";
+"profiles.open" = "Open / Focus";
+"profiles.remove" = "Unregister";
+"profiles.paths" = "Profile folders";
+"profiles.appData" = "App data";
+"profiles.add" = "Add profile";
+"profiles.name" = "Name (e.g. Work)";
+"profiles.newHint" = "Leave folders unset for a new profile, then sign in in its app. To register an existing launcher, select both of its folders. Credentials are never copied.";
+"profiles.chooseHome" = "Choose existing Codex home…";
+"profiles.chooseData" = "Choose existing app data…";
+"profiles.cancel" = "Cancel";
+"profiles.register" = "Register";
+"profiles.scope" = "App launch registration is separate from quota collection and Auto routing. Unregistering preserves files and running apps. Use these buttons for order-independent launches.";
+"profiles.opened" = "%@ app process confirmed. Complete sign-in in that app if needed.";
+"profiles.error.paths" = "Profile folders overlap or conflict with a running app. Choose separate Codex home and app-data folders.";
+"profiles.error.name" = "Enter a profile name.";
+"profiles.error.appMissing" = "The installed Codex app was not found.";
+"profiles.error.identity" = "Could not verify the running app’s profile. No additional instance was requested after this uncertainty.";
+"profiles.error.launch" = "The app could not be opened or brought forward.";
+"profiles.error.storage" = "Saved profile registrations could not be read.";

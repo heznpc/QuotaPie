@@ -136,6 +136,8 @@ struct DetailsView: View {
                 Button(Strings.t("notification.settings"), action: actions.openNotificationSettings)
             }
             Divider()
+            CodexProfilesView()
+            Divider()
             TaskSavingsSettingsView(model: model, save: { actions.configureSavings($0, nil) })
             Divider()
             CompactionSettingsView(model: model, save: actions.configureCompaction)
