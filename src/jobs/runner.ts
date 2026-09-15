@@ -79,6 +79,7 @@ export class ManagedJobRunner {
       let capacity = jobCapacity(job, windows, nowMs, this.config.collection.staleAfterSeconds * 1000);
       try {
         const profile = jobProfile(this.config, job.spec);
+        if (job.spec.provider === "codex" && !this.store.accountBindings.matches("job", job.id, profile.root)) capacity = { ready: false, reason: "account-binding-changed" };
         if (!job.spec.profileKey || profile.key !== job.spec.profileKey) capacity = { ready: false, reason: "profile-changed" };
         if (!statSync(job.spec.cwd).isDirectory() || realpathSync(job.spec.cwd) !== job.spec.cwd) {
           capacity = { ready: false, reason: "workspace-unavailable" };
@@ -111,7 +112,8 @@ export class ManagedJobRunner {
         let executionStarted = false;
         try {
           const profile = jobProfile(this.config, claim.job.spec);
-          if (profile.key !== claim.job.spec.profileKey ||
+          if ((claim.job.spec.provider === "codex" && !this.store.accountBindings.matches("job", claim.job.id, profile.root)) ||
+              profile.key !== claim.job.spec.profileKey ||
               !statSync(claim.job.spec.cwd).isDirectory() || realpathSync(claim.job.spec.cwd) !== claim.job.spec.cwd ||
               !jobCapacity(claim.job, this.windows, this.now(), this.config.collection.staleAfterSeconds * 1000).ready) {
             this.store.defer(claim.token, "dispatch-precondition-changed", this.now());

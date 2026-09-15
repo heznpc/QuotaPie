@@ -23,6 +23,8 @@ function inTransaction(db: Database, work: () => void): void {
 }
 
 export function migrate(db: Database): void {
+    db.run(`CREATE TABLE IF NOT EXISTS account_binding_secret (id INTEGER PRIMARY KEY CHECK(id=1), secret TEXT NOT NULL)`);
+    db.run(`CREATE TABLE IF NOT EXISTS account_bindings (scope TEXT NOT NULL, id TEXT NOT NULL, binding TEXT NOT NULL, PRIMARY KEY(scope,id))`);
     db.run(`CREATE TABLE IF NOT EXISTS model_notification_state (
       scope TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at_ms INTEGER NOT NULL)`);
     db.run(`CREATE TABLE IF NOT EXISTS reset_signals (

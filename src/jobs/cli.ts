@@ -63,7 +63,7 @@ export async function runJobsCommand(args: string[], service: QuotaPieService): 
       spec.profileKey = jobProfile(service.config, spec).key;
       const checkpointPath = option(args, "--checkpoint");
       const job = service.storage.transaction(() => {
-        const job = service.jobs.submit(spec);
+        const job = service.jobs.submit(spec, Date.now(), jobProfile(service.config, spec).root);
         if (checkpointPath) {
           const input = readJobJSON(checkpointPath) as Record<string, unknown>;
           if (!input || input.run_id !== spec.key || !input.completed || typeof input.completed !== "object" ||

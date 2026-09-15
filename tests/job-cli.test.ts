@@ -1,3 +1,4 @@
+import { fakeCodexLogin } from "./helpers/account";
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,6 +26,7 @@ function setup() {
     writeFileSync(path, `#!${process.execPath}\nawait Bun.write(${JSON.stringify(providerMarker)}, "provider was invoked");\nprocess.exit(93);\n`);
     chmodSync(path, 0o700);
   }
+  fakeCodexLogin(profile);
   const config = structuredClone(DEFAULT_CONFIG);
   config.profile.locale = "en";
   config.accounts.codex = [{ id: "fixture", label: "Fixture account", codexHome: profile, enabled: true }];

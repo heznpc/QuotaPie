@@ -530,3 +530,5 @@
 "profiles.account_disabled" = "This collection account is disabled. Enable it in settings before connecting.";
 
 "profiles.profile_overlap" = "This folder overlaps an existing collection profile. Choose a separate folder.";
+
+"jobs.reason.accountChanged" = "The login account changed or could not be verified. Restore the original account. Jobs registered by older versions require registration with verified account identity.";

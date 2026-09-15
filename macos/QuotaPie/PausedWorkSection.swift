@@ -139,7 +139,8 @@ private struct ResumeTaskRow: View {
         if !hasActionToken { return Strings.t("resume.actionUnavailable") }
         if case .failed(let message) = activity { return "\(message) · \(task.pausedReference)" }
         if let errorDetail = task.errorDetail, !errorDetail.isEmpty {
-            return "\(errorDetail) · \(task.pausedReference)"
+            let detail = errorDetail == "account-binding-changed" ? Strings.t("jobs.reason.accountChanged") : errorDetail
+            return "\(detail) · \(task.pausedReference)"
         }
         let stateText: String
         if task.isWaiting {

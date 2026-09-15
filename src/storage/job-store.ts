@@ -1,3 +1,4 @@
+import { AccountBindingStore } from "./account-binding-store";
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { Job, JobClaim, JobFinish, JobSpec, JobState, JobStep, JobStepState, JobSummary } from "../jobs/types";
@@ -8,7 +9,7 @@ const MAX_TEXT_BYTES = 1_048_576;
 const KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 const REASON = /^[a-z][a-z0-9-]{0,79}$/;
 
-export type JobStoreErrorKind = "invalid-spec" | "key-conflict" | "not-found" | "state-conflict" | "claim-conflict";
+export type JobStoreErrorKind = "invalid-spec" | "key-conflict" | "not-found" | "state-conflict" | "claim-conflict" | "account-binding-changed";
 export class JobStoreError extends Error {
   constructor(readonly kind: JobStoreErrorKind, message: string) {
     super(message);
@@ -114,9 +115,10 @@ interface StepRow {
 }
 
 export class JobStore {
-  constructor(private readonly storage: QuotaStorage) {}
+  readonly accountBindings: AccountBindingStore;
+  constructor(private readonly storage: QuotaStorage) { this.accountBindings = new AccountBindingStore(storage); }
 
-  submit(input: JobSpec, now = Date.now()): Job {
+  submit(input: JobSpec, now = Date.now(), bindingRoot?: string): Job {
     timestamp(now);
     const spec = validateJobSpec(input);
     const serialized = JSON.stringify(spec);
@@ -124,6 +126,9 @@ export class JobStore {
       const existing = this.storage.db.query<JobRow, [string]>("SELECT * FROM jobs WHERE job_key = ?").get(spec.key);
       if (existing) {
         if (existing.spec_json !== serialized) throw new JobStoreError("key-conflict", "job key already belongs to a different specification");
+        if (spec.provider === "codex" && bindingRoot && !this.accountBindings.matches("job", existing.id, bindingRoot)) {
+          throw new JobStoreError("account-binding-changed", "login account cannot be verified for this existing job; register a new job after reviewing the account");
+        }
         return this.fromRow(existing, now);
       }
       const id = randomUUID();
@@ -132,6 +137,7 @@ export class JobStore {
       for (const [index, step] of spec.steps.entries()) {
         this.storage.db.query("INSERT INTO job_steps(job_id, step_index, step_key, state) VALUES (?, ?, ?, 'pending')").run(id, index, step.key);
       }
+      if (spec.provider === "codex" && bindingRoot) this.accountBindings.bind("job", id, bindingRoot);
       this.storage.secureFiles();
       return this.required(id, now);
     });

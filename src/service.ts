@@ -1,3 +1,4 @@
+import { AccountBindingStore } from "./storage/account-binding-store";
 import { notificationAllowed, type NotificationPreferencesPatch } from "./notification-preferences";
 import { buildWorkBoundary, writeWorkBoundary } from "./work-boundary";
 import { JobStore } from "./storage/job-store";
@@ -115,6 +116,7 @@ export class QuotaPieService {
   static readonly CLAUDE_OAUTH_MIN_INTERVAL_MS = 5 * 60_000;
 
   readonly locale: Locale;
+  private readonly accountBindings: AccountBindingStore;
 
   constructor(
     readonly config: AppConfig,
@@ -124,6 +126,7 @@ export class QuotaPieService {
     // One connection, several collaborators. The service depends on each of
     // them directly rather than reaching through the database for everything.
     this.storage = this.db.storage;
+    this.accountBindings = new AccountBindingStore(this.storage);
     this.alerts = new AlertStore(this.storage);
     this.collection = new CollectionStore(this.storage);
     this.claudeSessions = new ClaudeSessionStore(this.storage);
@@ -642,16 +645,23 @@ export class QuotaPieService {
       const suffix = input.bucket ? ` for bucket ${input.bucket}` : "";
       throw new Error(`no current quota window with a remaining value${suffix}`);
     }
-    const created = this.resumeTasks.create({
-      id: randomUUID(),
-      taskKey: resumeTaskKey(input.provider, account, nativeId),
-      provider: input.provider,
-      account,
-      projectLabel,
-      bucket: blocking.bucket,
-      registeredAtMs: nowMs,
-      registeredRemainingPercent: blocking.remainingPercent!,
-      expectedResetAtMs: blocking.resetsAtMs,
+    const created = this.storage.transaction(() => {
+      const created = this.resumeTasks.create({
+        id: randomUUID(),
+        taskKey: resumeTaskKey(input.provider, account, nativeId),
+        provider: input.provider,
+        account,
+        projectLabel,
+        bucket: blocking.bucket,
+        registeredAtMs: nowMs,
+        registeredRemainingPercent: blocking.remainingPercent!,
+        expectedResetAtMs: blocking.resetsAtMs,
+      });
+      if (input.provider === "codex") {
+        const profile = this.config.accounts.codex.find(p => p.id === account && p.enabled)!;
+        this.accountBindings.bind("resume", created.id, codexProfileRoot(profile));
+      }
+      return created;
     });
     return this.resumeTaskSummary(created);
   }
@@ -675,6 +685,12 @@ export class QuotaPieService {
     };
   }
 
+  private resumeAccountMatches(task: ResumeTask): boolean {
+    if (task.provider !== "codex") return true;
+    const profile = this.config.accounts.codex.find(p => p.id === task.account && p.enabled);
+    return !!profile && this.accountBindings.matches("resume", task.id, codexProfileRoot(profile));
+  }
+
   async approveResumeTask(id: string, nowMs?: number): Promise<{
     task: ResumeTaskSummary;
     plan: ResumePlan;
@@ -688,6 +704,12 @@ export class QuotaPieService {
         `resume task is ${task.state}; expected ready`,
       );
     }
+    if (!this.resumeAccountMatches(task)) {
+      this.resumeTasks.markWaiting(id, initialNowMs);
+      this.rearmResumeReadyNotification(task, initialNowMs);
+      this.resumeTasks.setError(id, "account-binding-changed", initialNowMs);
+      throw new ResumeTargetError("login account changed or could not be verified");
+    }
     if (!this.hasFreshResumeCapacity(task, initialNowMs)) {
       this.resumeTasks.markWaiting(id, initialNowMs);
       this.rearmResumeReadyNotification(task, initialNowMs);
@@ -696,6 +718,12 @@ export class QuotaPieService {
     try {
       const plan = await this.buildResumePlan(task);
       const finalNowMs = nowMs ?? Date.now();
+      if (!this.resumeAccountMatches(task)) {
+        this.resumeTasks.markWaiting(id, finalNowMs);
+        this.rearmResumeReadyNotification(task, finalNowMs);
+        this.resumeTasks.setError(id, "account-binding-changed", finalNowMs);
+        throw new ResumeTargetError("login account changed during resume discovery");
+      }
       if (!this.hasFreshResumeCapacity(task, finalNowMs)) {
         this.resumeTasks.markWaiting(id, finalNowMs);
         this.rearmResumeReadyNotification(task, finalNowMs);
@@ -795,7 +823,7 @@ export class QuotaPieService {
         window.bucket === task.bucket
       );
       if (
-        current?.freshness === "fresh" &&
+        this.resumeAccountMatches(task) && current?.freshness === "fresh" &&
         current.observedAtMs > task.registeredAtMs &&
         current.remainingPercent != null &&
         current.remainingPercent > 0
@@ -812,6 +840,11 @@ export class QuotaPieService {
     }
     const ready: ResumeTask[] = [];
     for (let task of this.resumeTasks.waiting()) {
+      if (!this.resumeAccountMatches(task)) {
+        if (task.errorDetail !== "account-binding-changed") this.resumeTasks.setError(task.id, "account-binding-changed", nowMs);
+        continue;
+      }
+      if (task.errorDetail === "account-binding-changed") task = this.resumeTasks.setError(task.id, "", nowMs);
       const current = windows.find((window) =>
         window.provider === task.provider &&
         window.account === task.account &&
@@ -827,7 +860,7 @@ export class QuotaPieService {
           throw error;
         }
       }
-      const recovered = current?.freshness === "fresh" &&
+      const recovered = this.resumeAccountMatches(task) && current?.freshness === "fresh" &&
         current.observedAtMs > task.registeredAtMs &&
         current.remainingPercent != null &&
         current.remainingPercent > task.registeredRemainingPercent + 0.01;
