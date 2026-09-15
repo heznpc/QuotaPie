@@ -42,3 +42,17 @@ test("an oversized event is bounded and a later terminal event can still be obse
   observer.push(new TextEncoder().encode('\n\ndata: {"type":"response.completed"}\n\n'));
   expect(observer.finish()).toEqual({ phase: "completed" });
 });
+
+test("ordinary responses require a complete protocol result, not merely an opaque HTTP 200", () => {
+  for (const [body, phase] of [
+    ['{"status":"completed","output":[],"model":"gpt-5.6-luna"}', "completed"],
+    ['{"status":"in_progress","output":[]}', "unverified"],
+    ['{"status":"incomplete","output":[]}', "failed"],
+    ['{"status":"completed","output":', "unverified"],
+    ['{}', "unverified"], ['"ok"', "unverified"], ['upstream error', "unverified"],
+  ] as const) {
+    const observer = new ResponseCompletionObserver("application/json", false);
+    observer.push(new TextEncoder().encode(body));
+    expect(observer.finish().phase).toBe(phase);
+  }
+});

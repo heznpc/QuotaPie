@@ -442,8 +442,8 @@
 
 // Task savings
 "savings.title" = "Task savings";
-"savings.scope" = "When enabled, clear text edits requested with Astra High or above use Luna Low. Uncertain work keeps your choice. Applies to Codex requests through a compatible relay; compaction has a separate policy.";
-"savings.enable" = "Use automatic task savings";
+"savings.scope" = "Auto is the default. Clear text edits requested with Astra High or above use Luna Low. Uncertain work keeps your choice. Applies to Codex requests through a compatible relay; compaction has a separate policy.";
+"savings.enable" = "Task savings mode";
 "savings.applied" = "Policy acknowledged by %@ of %@ relays";
 "savings.partial" = "Older tasks may use an older relay. Only requests observed here prove savings; restart Codex when existing work is finished to use the new relay.";
 "savings.unsupported" = "Luna Low support is not confirmed by the local model catalog.";
@@ -476,3 +476,16 @@
 "savings.phase.cancelled" = "Cancelled";
 "savings.phase.unverified" = "Unverified";
 "savings.undone" = "This task will use its original setting for subsequent requests.";
+
+"model.notice.compaction" = "Codex compaction model";
+"model.notice.savings" = "Codex Auto savings";
+"model.notice.original" = "Codex original setting";
+"model.notice.unknown" = "unconfirmed";
+"model.notice.request" = "%@ → %@ requested. Response model unconfirmed; composer unchanged.";
+"model.notice.confirmed" = "Request: %@. Response model: %@. Effort is the requested value.";
+"model.notice.completed" = "%@ request completed in %@s. Response model: %@. Composer unchanged.";
+"model.notice.failed" = "%@ request did not establish completion (%@s). Open QuotaPie for evidence.";
+"notification.topic.modelChanges" = "Model changes (compaction and Auto savings)";
+"savings.off" = "Off";
+
+"savings.pending" = "Settings were saved, but relay acknowledgement is still pending. Check the applied status.";

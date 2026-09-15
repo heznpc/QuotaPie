@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { object, safeEffort } from "./codex-compaction-policy";
 
 export interface TaskSavingsPolicy { enabled: boolean; model: "gpt-5.6-luna"; effort: "low"; bypassThreads?: string[] }
-export const DEFAULT_TASK_SAVINGS: TaskSavingsPolicy = { enabled: false, model: "gpt-5.6-luna", effort: "low" };
+export const DEFAULT_TASK_SAVINGS: TaskSavingsPolicy = { enabled: true, model: "gpt-5.6-luna", effort: "low" };
 export function validateTaskSavings(value: unknown): TaskSavingsPolicy {
   if (!object(value) || typeof value.enabled !== "boolean" || value.model !== "gpt-5.6-luna" || value.effort !== "low") {
     throw new Error("invalid_savings_policy");

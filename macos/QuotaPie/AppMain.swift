@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let userNotificationCenter = UNUserNotificationCenter.current()
     private var client: StatusClient?
     private var notificationPresenter: NotificationPresenter?
+    private var notificationTimer: Timer?
     private var refreshTimer: Timer?
     private var isFetching = false
     private var failureIndex = 0
@@ -74,6 +75,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         installKeyboardShortcuts()
         render()
         refresh()
+        notificationTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            guard let self, let token = self.currentActionToken else { return }
+            self.notificationPresenter?.statusDidRefresh(actionToken: token)
+        }
+        if let notificationTimer { RunLoop.main.add(notificationTimer, forMode: .common) }
 
         if popoverModel.focusedResumeTaskID != nil { detailsWindow?.show(.activity) }
 
@@ -103,6 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
+        notificationTimer?.invalidate()
         AwakeController.shared.stop()
     }
 
@@ -237,7 +244,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 guard let self else { return }
                 self.popoverModel.savingsSaving = false
                 switch result {
-                case .success: self.popoverModel.savingsMessage = Strings.t("savings.saved")
+                case .success(let response):
+                    let acknowledged = response.policy.map { policy in
+                        policy.applied > 0 && policy.applied == policy.compatible &&
+                        (enabled == nil || policy.enabled == enabled) &&
+                        (thread == nil || policy.bypassThreads?.contains(thread!) == true)
+                    } ?? false
+                    self.popoverModel.savingsMessage = Strings.t(acknowledged ? "savings.saved" : "savings.pending")
                 case .failure: self.popoverModel.savingsMessage = Strings.t("savings.error")
                 }
                 self.refresh()

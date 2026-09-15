@@ -1,3 +1,4 @@
+import { ModelNotifications } from "./model-notifications";
 import { buildHeadline } from "./analytics";
 import { CompactionStatusReader } from "./compaction-status";
 import type { AppNotificationDisposition, Headline, QuotaEvent } from "./types";
@@ -267,8 +268,11 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
   service.setNativeNotificationTransportAvailable(true);
   // Older relays retain only a small live history. Collect sanitized follow-up
   // evidence even while the popover is closed, without restarting those relays.
-  void compaction.status().catch(() => {});
-  const observationTimer = setInterval(() => { void compaction.status().catch(() => {}); }, 2000);
+  const modelNotifications = new ModelNotifications(service.storage, service.alerts);
+  const observeModels = () => compaction.status().then(() =>
+    modelNotifications.observe(compaction.notificationEvents(), config, service.locale));
+  void observeModels().catch(() => {});
+  const observationTimer = setInterval(() => { void observeModels().catch(() => {}); }, 2000);
   observationTimer.unref();
   const stop = server.stop.bind(server);
   server.stop = ((closeActiveConnections?: boolean) => {

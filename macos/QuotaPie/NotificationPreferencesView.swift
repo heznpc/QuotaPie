@@ -14,7 +14,7 @@ struct NotificationPreferencesView: View {
     private let groups: [(String, [String])] = [
         ("account", ["quotaWarnings", "quotaRecovery", "accountChanges", "payments"]),
         ("news", ["resetPossible", "resetAnnounced", "resetUpdates", "resetReported"]),
-        ("operation", ["resumeReady", "collectionIssues"])
+        ("operation", ["resumeReady", "collectionIssues", "modelChanges"])
     ]
 
     var body: some View {

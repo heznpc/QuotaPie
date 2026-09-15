@@ -8,6 +8,7 @@ dist/
 *.sqlite3-wal
 service.log
 service.error.log
+/reports/model-notifications-auto-review-2026-09-15.md
 /reports/
 /research/
 /docs/
