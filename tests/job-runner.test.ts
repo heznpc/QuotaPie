@@ -1,3 +1,4 @@
+import { fakeCodexLogin } from "./helpers/account";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +16,7 @@ const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 function fixture(mode: "auto" | "manual" = "auto") {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "quotapie-job-runner-")));
+  fakeCodexLogin(root);
   const config = structuredClone(DEFAULT_CONFIG);
   config.accounts.codex[0]!.codexHome = root;
   config.collection.codexEnabled = false;
@@ -30,6 +32,7 @@ function fixture(mode: "auto" | "manual" = "auto") {
     policy: { mode, expiresAtMs: now + 3600_000, maxAttempts: 8 },
   };
   const job = service.jobs.submit(spec, now);
+  service.jobs.accountBindings.bind("job", job.id, root);
   const window = (remainingPercent = 50, overrides: Partial<WindowAnalysis> = {}): WindowAnalysis => ({
     provider: "codex", account: "default", bucket: "codex:primary:300", quality: "authoritative",
     freshness: "fresh", observedAtMs: now - 1, remainingPercent, resetsAtMs: now + 60_000, ...overrides,
@@ -65,6 +68,31 @@ test("old observations from unrelated Codex model lanes do not defer fresh autho
   await runner.settle();
   expect(calls).toBe(1);
   expect(f.service.jobs.get(f.job.id)!.steps[0]!.state).toBe("succeeded");
+});
+
+test("a different login in the same profile cannot execute saved work", async () => {
+  const f = fixture(); let calls = 0;
+  const runner = new ManagedJobRunner(f.service.jobs, f.config, { now: f.now, execute: async () => {
+    calls++; return { kind: "succeeded", reason: "completed", output: "ok" };
+  } });
+  fakeCodexLogin(f.spec.cwd, "different-account");
+  runner.tick([f.window()], f.now()); await runner.settle();
+  expect(calls).toBe(0);
+  expect(f.service.jobs.get(f.job.id)?.reason).toBe("account-binding-changed");
+  expect(() => f.service.jobs.submit(f.spec, f.now(), f.spec.cwd)).toThrow("login account cannot be verified");
+  fakeCodexLogin(f.spec.cwd);
+  f.advance(); runner.tick([f.window()], f.now()); await runner.settle();
+  expect(calls).toBe(1);
+});
+
+test("legacy work without an account binding cannot adopt the current login on resubmission", () => {
+  const f = fixture();
+  const spec = { ...f.spec, key: "legacy" };
+  const legacy = f.service.jobs.submit(spec, f.now());
+  expect(() => f.service.jobs.submit(spec, f.now(), f.spec.cwd)).toThrow("login account cannot be verified");
+  const runner = new ManagedJobRunner(f.service.jobs, f.config, { now: f.now });
+  runner.evaluate([f.window()], f.now());
+  expect(f.service.jobs.get(legacy.id)?.reason).toBe("account-binding-changed");
 });
 
 test("manual jobs need approval and successful checkpoints skip earlier steps", async () => {
@@ -214,6 +242,7 @@ test("older ready jobs still notify after more than one hundred newer registrati
   for (let i = 0; i < 101; i++) {
     const now = f.advance();
     const newer = f.service.jobs.submit({ ...f.spec, key: `newer-${i}` }, now);
+    f.service.jobs.accountBindings.bind("job", newer.id, f.spec.cwd);
     f.service.jobs.cancel(newer.id, now);
   }
   expect(f.service.jobs.summaries().some(job => job.id === f.job.id)).toBeFalse();

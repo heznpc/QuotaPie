@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { fakeCodexLogin } from "./helpers/account";
+import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -8,6 +9,16 @@ import { QuotaPieService } from "../src/service";
 import { ResumeTaskStore, ResumeTaskStoreError } from "../src/storage/resume-task-store";
 import { resumeTaskKey } from "../src/session-discovery";
 import type { QuotaObservation } from "../src/types";
+
+const accountRoots: string[] = [];
+afterEach(() => { for (const root of accountRoots.splice(0)) rmSync(root, {recursive:true,force:true}); });
+function prepareAccounts(config: typeof DEFAULT_CONFIG) {
+  const root = mkdtempSync(resolve(tmpdir(), "qp-resume-identity-")); accountRoots.push(root);
+  for (const profile of config.accounts.codex) {
+    profile.codexHome = resolve(root, profile.id);
+    fakeCodexLogin(profile.codexHome, profile.id);
+  }
+}
 
 const SESSION_A = "11111111-1111-4111-8111-111111111111";
 const SESSION_B = "22222222-2222-4222-8222-222222222222";
@@ -42,6 +53,7 @@ describe("resume task storage", () => {
     const config = structuredClone(DEFAULT_CONFIG);
     config.collection.codexEnabled = false;
     config.alerts.enabled = false;
+    prepareAccounts(config);
     const service = new QuotaPieService(config, db);
     service.ingest([observation(1_000, 100)]);
     const created = service.registerResumeTask({
@@ -95,6 +107,27 @@ describe("resume task storage", () => {
 });
 
 describe("resume readiness", () => {
+  test("same profile with a different login cannot signal recovery or approve resume", async () => {
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.collection.codexEnabled = false;
+    config.alerts.enabled = false;
+    prepareAccounts(config);
+    const root = config.accounts.codex[0]!.codexHome!;
+    const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
+    service.ingest([observation(1_000, 100)]);
+    const task = service.registerResumeTask({ provider: "codex", nativeId: SESSION_A }, 1_500);
+    fakeCodexLogin(root, "different-account");
+    service.ingest([observation(2_000, 10)]);
+    expect(await service.updateResumeReadiness(service.analyses(2_000), 2_000)).toEqual([]);
+    expect(service.resumeTasks.get(task.id)).toMatchObject({state: "waiting", errorDetail: "account-binding-changed"});
+    fakeCodexLogin(root, "default");
+    service.ingest([observation(3_000, 10)]);
+    expect(await service.updateResumeReadiness(service.analyses(3_000), 3_000)).toHaveLength(1);
+    fakeCodexLogin(root, "different-account");
+    await expect(service.approveResumeTask(task.id, 3_100)).rejects.toThrow("login account changed");
+    await service.close();
+  });
+
   test("requires a newer fresh positive snapshot for the exact account and bucket", async () => {
     const config = structuredClone(DEFAULT_CONFIG);
     config.collection.codexEnabled = false;
@@ -106,6 +139,7 @@ describe("resume readiness", () => {
       enabled: true,
     });
     const db = new QuotaDatabase(":memory:");
+    prepareAccounts(config);
     const service = new QuotaPieService(config, db);
     service.ingest([
       observation(1_000, 100),
@@ -148,6 +182,7 @@ describe("resume readiness", () => {
     config.collection.codexEnabled = false;
     config.alerts.enabled = false;
     const db = new QuotaDatabase(":memory:");
+    prepareAccounts(config);
     const service = new QuotaPieService(config, db);
     service.ingest([
       observation(1_000, 60),
@@ -175,6 +210,7 @@ describe("resume readiness", () => {
     const config = structuredClone(DEFAULT_CONFIG);
     config.collection.codexEnabled = false;
     config.alerts.enabled = false;
+    prepareAccounts(config);
     const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
     service.ingest([observation(1_000, 80)]);
     const task = service.registerResumeTask({ provider: "codex", nativeId: SESSION_A }, 1_500);
@@ -201,6 +237,7 @@ describe("resume readiness", () => {
     config.alerts.enabled = false;
     config.accounts.codex = [{ id: "default", label: "Main", codexHome, enabled: true }];
     const db = new QuotaDatabase(":memory:");
+    fakeCodexLogin(codexHome);
     const service = new QuotaPieService(config, db);
     service.ingest([observation(1_000, 100)]);
     const task = service.registerResumeTask({ provider: "codex", nativeId: SESSION_A }, 1_500);
@@ -243,6 +280,7 @@ describe("resume readiness", () => {
     config.collection.codexEnabled = false;
     config.alerts.enabled = false;
     config.accounts.codex = [{ id: "default", label: "Main", codexHome, enabled: true }];
+    prepareAccounts(config);
     const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
     service.ingest([observation(1_000, 100)]);
     const task = service.registerResumeTask({ provider: "codex", nativeId: SESSION_A }, 1_500);
@@ -281,6 +319,7 @@ describe("resume readiness", () => {
     config.collection.codexEnabled = false;
     config.alerts.enabled = false;
     config.accounts.codex = [{ id: "default", label: "Main", codexHome, enabled: true }];
+    prepareAccounts(config);
     const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
     service.ingest([observation(1_000, 100)]);
     const task = service.registerResumeTask({ provider: "codex", nativeId: SESSION_A }, 1_500);
@@ -319,6 +358,7 @@ describe("pause CLI", () => {
     const config = structuredClone(DEFAULT_CONFIG);
     config.collection.codexEnabled = false;
     config.alerts.enabled = false;
+    prepareAccounts(config);
     writeFileSync(configPath, JSON.stringify(config));
     const nowMs = Date.now();
     const db = new QuotaDatabase(resolve(directory, "quotapie.sqlite3"));
@@ -339,6 +379,7 @@ describe("pause CLI", () => {
         ...process.env,
         QUOTAPIE_CONFIG: configPath,
         QUOTAPIE_HOME: directory,
+        CODEX_HOME: config.accounts.codex[0]!.codexHome!,
         CODEX_THREAD_ID: SESSION_A,
         CLAUDE_SESSION_ID: "",
       },
@@ -368,6 +409,8 @@ describe("pause CLI", () => {
     mkdirSync(cwd, { recursive: true });
     mkdirSync(defaultRoot, { recursive: true });
     mkdirSync(workRoot, { recursive: true });
+    fakeCodexLogin(defaultRoot);
+    fakeCodexLogin(workRoot, "work");
     const config = structuredClone(DEFAULT_CONFIG);
     config.collection.codexEnabled = false;
     config.alerts.enabled = false;

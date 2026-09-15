@@ -99,6 +99,7 @@ struct ManagedJobSummary: Decodable, Identifiable {
         case "dispatch-precondition-changed": return Strings.t("jobs.reason.precondition")
         case "quota-scope-unconfirmed", "quota-unavailable": return Strings.t("jobs.reason.scope")
         case "execution-failed", "legacy-step-failed": return Strings.t("jobs.reason.failed")
+        case "account-binding-changed": return Strings.t("jobs.reason.accountChanged")
         case "user-cancelled": return Strings.t("jobs.reason.cancelled")
         default: return Strings.t("jobs.reason.unknown")
         }
