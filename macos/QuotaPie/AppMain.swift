@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import UserNotifications
 import OSLog
+import Combine
 
 @main
 struct QuotaPieApp {
@@ -25,6 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var notificationPresenter: NotificationPresenter?
     private var notificationTimer: Timer?
     private var refreshTimer: Timer?
+    private var selectionSubscription: AnyCancellable?
+    private var activationObserver: NSObjectProtocol?
+    private var renderedAccountID: String?
+    private let menuLogger = Logger(subsystem: "local.quotapie.menubar", category: "MenuBar")
     private var isFetching = false
     private var failureIndex = 0
     private let retrySeconds: [TimeInterval] = [2, 5, 15, 30]
@@ -73,6 +78,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 #endif
         installPopoverContent()
         installKeyboardShortcuts()
+        selectionSubscription = popoverModel.$selectedAccountID
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.render() }
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            self?.followCodexFocus(app)
+        }
+        if let app = NSWorkspace.shared.frontmostApplication { followCodexFocus(app) }
         render()
         refresh()
         notificationTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -110,7 +126,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
         notificationTimer?.invalidate()
+        if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
+        selectionSubscription?.cancel()
         AwakeController.shared.stop()
+    }
+
+    private func followCodexFocus(_ app: NSRunningApplication) {
+        guard app.bundleIdentifier == "com.openai.codex",
+              let identity = CodexProcessIdentity.read(pid: app.processIdentifier) else { return }
+        popoverModel.followCodexFocus(identity, profiles: CodexProfilesModel.shared.profiles)
     }
 
     @objc private func togglePopover() {
@@ -332,7 +356,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     /// keep their text labels; cached quota must not look like a fresh reading.
     private func render() {
         guard let button = statusItem.button else { return }
-        let headline = popoverModel.payload?.headline
+        let headline = popoverModel.selectedHeadline
         let readyTasks = popoverModel.lastError == nil
             ? (popoverModel.payload?.resumeTasks.filter(\.isReady) ?? [])
             : []
@@ -347,8 +371,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             button.image = MenuBarQuotaIndicator.image(label: label, remainingPercent: remaining)
             button.imagePosition = .imageOnly
             button.imageScaling = .scaleNone
-            button.setAccessibilityLabel(headline.localizedTitle)
+            button.setAccessibilityLabel([headline.accountLabel, headline.localizedTitle].compactMap { $0 }.joined(separator: " · "))
             button.toolTip = [headline.localizedTitle, headline.localizedDetail].compactMap { $0 }.joined(separator: "\n")
+            if renderedAccountID != popoverModel.selectedAccount?.id {
+                renderedAccountID = popoverModel.selectedAccount?.id
+                let index = popoverModel.payload?.accounts.firstIndex { $0.id == renderedAccountID } ?? -1
+                menuLogger.info("Rendered selected account index=\(index) image; matches popover=\(remaining == self.popoverModel.selectedAccount?.overviewWindow?.remainingPercent)")
+            }
             return
         }
         button.image = nil
