@@ -1261,6 +1261,14 @@ export class QuotaPieService {
     return this.signalWork;
   }
 
+  private refreshRequested = false;
+  private wakeCollection: (() => void) | null = null;
+
+  requestCollection(): void {
+    this.refreshRequested = true;
+    this.wakeCollection?.();
+  }
+
   async watch(): Promise<void> {
     this.stopped = false;
     this.jobsEnabled = true;
@@ -1271,6 +1279,7 @@ export class QuotaPieService {
     }
     let consecutiveFailures = 0;
     while (!this.stopped) {
+      this.refreshRequested = false;
       const { collected, windows } = await this.tick();
       consecutiveFailures = collected ? 0 : consecutiveFailures + 1;
       if (this.stopped) break;
@@ -1283,12 +1292,18 @@ export class QuotaPieService {
           ]!,
         )
         : scheduled;
-      await Bun.sleep(delay);
+      if (this.refreshRequested) continue;
+      await new Promise<void>((resolve) => {
+        const finish = () => { clearTimeout(timer); this.wakeCollection = null; resolve(); };
+        const timer = setTimeout(finish, delay);
+        this.wakeCollection = finish;
+      });
     }
   }
 
   stop(): void {
     this.stopped = true;
+    this.wakeCollection?.();
     if (this.signalTimer) clearInterval(this.signalTimer);
     this.signalTimer = null;
   }

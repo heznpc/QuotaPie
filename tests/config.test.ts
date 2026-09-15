@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { loadConfig } from "../src/config";
+import { loadConfig, codexUsesFileCredentials } from "../src/config";
 
 function withConfig(value: unknown, run: (path: string) => void): void {
   const directory = mkdtempSync(resolve(tmpdir(), "quotapie-config-"));
@@ -104,5 +104,28 @@ describe("forecast inputs are validated at load", () => {
 
   test("the shipped defaults pass their own validation", () => {
     expect(loadConfig(write({})).profile.recentWeight).toBe(0.7);
+  });
+});
+
+describe("credential store parsing", () => {
+  test("honors root default and rejects malformed or non-file stores", () => {
+    const directory = mkdtempSync(join(tmpdir(), "qp-store-"));
+    const file = join(directory, "config.toml");
+    const profile = { id: "test", label: "Test", enabled: true, codexHome: directory };
+    try {
+      expect(codexUsesFileCredentials(profile)).toBe(true);
+      for (const [contents, expected] of [
+        ['model = "model"', true],
+        ['"cli_auth_credentials_store" = "file"', true],
+        ['cli_auth_credentials_store = "keyring"\n[other]\ncli_auth_credentials_store = "file"', false],
+        ['cli_auth_credentials_store = "auto"', false],
+        ['cli_auth_credentials_store = "ephemeral"', false],
+        ['cli_auth_credentials_store = "file"\ncli_auth_credentials_store = "keyring"', false],
+        ['cli_auth_credentials_store = ', false],
+      ] as const) {
+        writeFileSync(file, contents);
+        expect(codexUsesFileCredentials(profile)).toBe(expected);
+      }
+    } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 });

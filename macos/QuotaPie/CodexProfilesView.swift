@@ -3,6 +3,7 @@ import AppKit
 
 struct CodexProfilesView: View {
     @ObservedObject var status: PopoverModel
+    let actions: PopoverActions
     @ObservedObject private var profiles = CodexProfilesModel.shared
     @State private var adding = false
     @State private var name = ""
@@ -32,6 +33,14 @@ struct CodexProfilesView: View {
                                 .font(.caption).foregroundStyle(observed.collection.isHealthy ? Color.secondary : Color.orange)
                         } else {
                             Text(Strings.t("profiles.awaiting")).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    if let account = profile.collectionAccount {
+                        let tasks = status.activeTasks.filter { $0.provider == "codex" && $0.account == account }
+                        if !tasks.isEmpty {
+                            PausedWorkSection(tasks: tasks, hasActionToken: status.canActOnTasks,
+                                activities: status.resumeActivities, onResume: actions.resumeTask,
+                                onRetry: actions.retryTask, onDismiss: actions.dismissTask)
                         }
                     }
                     DisclosureGroup(Strings.t("profiles.paths")) {
