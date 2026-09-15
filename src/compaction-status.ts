@@ -4,8 +4,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CompactionRequestEvent } from "./codex-compaction";
 import { CompactionPolicySettings, relayHealth } from "./compaction-policy-settings";
+import { TaskSavingsSettings } from "./task-savings-settings";
 import { safeEffort } from "./codex-compaction-policy";
 
+const savingsReasons = new Set(["disabled", "simple_text_edit", "uncertain_task", "keep_setting", "manual_change", "extended_work", "failure_fallback", "unsupported_model", "unidentified_task", "task_disabled"]);
 const phases = new Set(["started", "response_headers", "completed", "failed", "cancelled", "unverified"]);
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const label = /^[a-z0-9_.-]{1,80}$/i;
@@ -23,6 +25,10 @@ function event(value: any): CompactionRequestEvent | null {
     requestedEffort: safeEffort(value.requestedEffort),
     reasoningEffort: safeEffort(value.reasoningEffort),
     at: value.at, durationMs: value.durationMs,
+    ...(savingsReasons.has(value.savingsReason) ? { savingsReason: value.savingsReason } : {}),
+    responseModel: typeof value.responseModel === "string" && label.test(value.responseModel) ? value.responseModel : null,
+    usage: value.usage && [value.usage.input,value.usage.cachedInput,value.usage.output].every(n=>Number.isSafeInteger(n) && n>=0) && value.usage.cachedInput <= value.usage.input
+      ? {input:value.usage.input,cachedInput:value.usage.cachedInput,output:value.usage.output} : null,
     ...(label.test(value.errorCode ?? "") ? { errorCode: value.errorCode } : {}) };
 }
 
@@ -45,8 +51,10 @@ export class CompactionStatusReader {
   private evidenceLoaded = false;
   private savedEvidence = "";
   readonly policy: CompactionPolicySettings;
+  readonly savingsPolicy: TaskSavingsSettings;
   constructor(private root = join(homedir(), ".local/lib/quotapie-compaction"), private fetcher: typeof fetch = fetch) {
     this.policy = new CompactionPolicySettings(root, fetcher);
+    this.savingsPolicy = new TaskSavingsSettings(root, fetcher);
   }
   async status(nowMs = Date.now()) {
     if (this.cached && nowMs - this.cached.checkedAtMs < 2000) return this.cached;
@@ -60,6 +68,7 @@ export class CompactionStatusReader {
     // A stale observer cannot assert that an old request is still running or
     // that a previously acknowledged policy is still live.
     return { ...cached, reachable: 0,
+      savings: {policy: cached.savings.policy ? {...cached.savings.policy,configurable:false,applied:0} : null, active: [], recent: cached.savings.recent},
       policy: cached.policy ? { ...cached.policy, configurable: false, applied: 0 } : null,
       active: [], recent: [...cached.active.map(r => ({ ...r, active: false, phase: "unverified",
         errorCode: "observer_state_stale" })), ...cached.recent].slice(0, 50) };
@@ -138,6 +147,12 @@ export class CompactionStatusReader {
         followup: followup ? { requestId: followup.requestId, model: followup.to, effort: followup.reasoningEffort,
           startedAtMs: Date.parse(followup.at) - followup.durationMs } : null };
     });
+    const savingsRecords = all.filter(r=>r.kind === "response" && r.savingsReason && r.savingsReason !== "disabled")
+      .sort((a,b)=>Date.parse(b.at)-Date.parse(a.at)).slice(0,50).map(item=> {
+        retained.set(item.requestId,item);
+        const active=ongoing(item.phase) && activeIds.has(item.requestId);
+        return {...item,active,phase:ongoing(item.phase) && !active ? "unverified" : item.phase};
+      });
     this.evidence = retained;
     const serialized = JSON.stringify([...retained.values()]);
     if (installed.length && serialized !== this.savedEvidence) {
@@ -151,6 +166,7 @@ export class CompactionStatusReader {
     }
     return { checkedAtMs: nowMs, generations: installed.length, reachable: installed.filter(g => g.reachable).length,
       policy: await this.policy.status(new Map(installed.map(g => [g.path, g.health]))),
+      savings: {policy: await this.savingsPolicy.status(), active: savingsRecords.filter(r=>r.active), recent: savingsRecords.filter(r=>!r.active)},
       active: records.filter(r => r.active), recent: records.filter(r => !r.active) };
   }
 }

@@ -66,6 +66,10 @@ struct DetailsView: View {
                 Button(Strings.t("action.openSettings"), action: actions.openConfig)
             }
         case .activity:
+            if let savings = model.payload?.compaction?.savings {
+                TaskSavingsHistory(payload: savings, busy: model.savingsSaving, undo: { actions.configureSavings(nil, $0) })
+                Divider()
+            }
             if let id = model.focusedResumeTaskID {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(Strings.t("resume.linkedTask")).font(.headline)
@@ -131,6 +135,8 @@ struct DetailsView: View {
                     .font(.callout).foregroundStyle(.secondary)
                 Button(Strings.t("notification.settings"), action: actions.openNotificationSettings)
             }
+            Divider()
+            TaskSavingsSettingsView(model: model, save: { actions.configureSavings($0, nil) })
             Divider()
             CompactionSettingsView(model: model, save: actions.configureCompaction)
             Divider()

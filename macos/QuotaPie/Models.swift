@@ -638,6 +638,7 @@ struct CompactionPayload: Decodable {
     let active: [CompactionRecord]
     let recent: [CompactionRecord]
     let policy: CompactionPolicy?
+    var savings: TaskSavingsPayload? = nil
     var latest: CompactionRecord? { active.first ?? recent.first }
 }
 

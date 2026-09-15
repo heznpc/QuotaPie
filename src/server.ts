@@ -54,6 +54,15 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
       const allowedHosts = new Set(["127.0.0.1", "localhost", "::1", config.dashboard.host.toLowerCase()]);
       if (!hostname || !allowedHosts.has(hostname)) return json({ error: "invalid_host" }, 403);
       const url = new URL(request.url);
+      if (url.pathname === "/api/task-savings/policy") {
+        if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+        if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token"))) return json({ error: "forbidden" }, 403);
+        try {
+          const body = await request.text();
+          if (body.length > 1024) return json({ error: "invalid_policy" }, 400);
+          return json({ policy: await compaction.savingsPolicy.configure(JSON.parse(body)) });
+        } catch { return json({ error: "savings_update_failed" }, 409); }
+      }
       if (url.pathname === "/api/compaction/policy") {
         if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
         if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token"))) {

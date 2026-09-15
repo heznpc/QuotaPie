@@ -151,6 +151,28 @@ To use the CLI from anywhere, add the project's `bin` to your `PATH`, or link `b
 
 For real use, keep the runtime in `~/.local/lib/quotapie` and link it as `~/.local/bin/quotapie`. macOS can block `launchd` from reaching Documents with `Operation not permitted`, so the resident service and the Claude status line are more reliable when they run from a copy outside that protected path. The source directory stays the reference copy.
 
+## Automatic task savings (local opt-in)
+
+In the native app, open **Settings → Task savings**. Clear, short text edits
+requested with Astra High or above can use **Luna Low** before the request is
+sent. Uncertain or complex tasks keep the selected model. Observed failures or
+extended work release the override; manual model/effort changes are respected.
+This local classifier makes no extra AI requests and is independent of the
+Sol Low compaction policy.
+
+Activity shows the incoming setting, outgoing request, provider-reported response
+model, completion, elapsed time, and separate input/cached-input/output counts.
+The composer stays unchanged. **Use original setting for this task** excludes
+future requests for that task; global disable also affects subsequent requests.
+Completion alone does not prove result quality, and token counts are not
+subscription quota deductions or a measured savings percentage.
+
+Automatic routing currently supports **Codex through the compatible local HTTP
+relay**. It is off by default. Existing tasks can remain on older relays; after
+finishing those tasks, restart Codex to load the current relay. The app reports
+partial coverage explicitly. QuotaPie does not require Modore or added skills.
+See execution evidence and limitations.
+
 ## The menu bar app
 
 `script/build_and_run.sh` handles the SwiftPM build, the `.app` bundle, ad-hoc signing, and launching in one step. The Run button in the Codex app is wired to this script too.

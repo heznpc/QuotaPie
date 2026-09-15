@@ -14,6 +14,8 @@ export class ResponseCompletionObserver {
   private failed = false;
   private oversized = false;
   private readonly sse: boolean;
+  responseModel: string | null = null;
+  usage: { input: number; cachedInput: number; output: number } | null = null;
 
   constructor(private contentType: string, private compaction: boolean) {
     this.sse = contentType.includes("text/event-stream");
@@ -59,12 +61,25 @@ export class ResponseCompletionObserver {
       const event: unknown = JSON.parse(data);
       if (!object(event)) return;
       if (["error", "response.failed", "response.incomplete"].includes(String(event.type))) this.failed = true;
+      if (object(event.response)) this.inspectResponse(event.response);
       if (event.type === "response.completed") {
         const status = object(event.response) ? event.response.status : undefined;
         if (status !== undefined && status !== "completed") this.failed = true;
         else this.completed = true;
       }
     } catch { /* Payloads are forwarded unchanged; never log their contents. */ }
+  }
+
+  private inspectResponse(response: Record<string, unknown>): void {
+    if (typeof response.model === "string" && /^[a-z0-9_.-]{1,100}$/i.test(response.model)) this.responseModel = response.model;
+    const usage = response.usage;
+    if (object(usage)) {
+      const input = usage.input_tokens, output = usage.output_tokens;
+      const cached = object(usage.input_tokens_details) ? usage.input_tokens_details.cached_tokens : 0;
+      if ([input, output, cached].every(n => typeof n === "number" && Number.isSafeInteger(n) && n >= 0) && (cached as number) <= (input as number)) {
+        this.usage = { input: input as number, cachedInput: cached as number, output: output as number };
+      }
+    }
   }
 
   terminal(): Completion | null {
@@ -82,7 +97,16 @@ export class ResponseCompletionObserver {
         ? { phase: "unverified", errorCode: "completion_event_too_large" }
         : { phase: "failed", errorCode: "missing_completion_event" };
     }
-    if (!this.compaction) return { phase: "completed" };
+    if (!this.compaction) {
+      try {
+        const result: unknown = JSON.parse(this.pending);
+        if (object(result)) {
+          this.inspectResponse(result);
+          if (result.error || (result.status && result.status !== "completed")) return { phase: "failed", errorCode: "provider_response_error" };
+        }
+      } catch { /* No response-model proof is inferred from an opaque body. */ }
+      return { phase: "completed" };
+    }
     if (!this.oversized && this.contentType.includes("application/json")) {
       try {
         const result: unknown = JSON.parse(this.pending);

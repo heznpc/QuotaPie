@@ -397,7 +397,7 @@
 
 "compaction.composerHint" = "Compaction only · Codex composer stays unchanged";
 
-"compaction.composerNotice" = "Automatic switching applies only to compaction requests. The Codex composer continues to show the original task model, so an unchanged composer label does not mean compaction used that model.";
+"compaction.composerNotice" = "Automatic compaction switching applies only to compaction requests. The Codex composer continues to show the original task model, so an unchanged composer label does not mean compaction used that model.";
 "resume.linkedTask" = "Linked resume task";
 "resume.linkedUnavailable" = "This task is no longer waiting or has already been handled. Check the latest status.";
 "resume.showAll" = "Show all tasks";
@@ -439,3 +439,40 @@
 "alert.jobs.succeeded.message" = "All registered steps completed.";
 "alert.jobs.failed.message" = "Execution failed. Review the job record.";
 "alert.jobs.review.message" = "Review the interrupted attempt before retrying.";
+
+// Task savings
+"savings.title" = "Task savings";
+"savings.scope" = "When enabled, clear text edits requested with Astra High or above use Luna Low. Uncertain work keeps your choice. Applies to Codex requests through a compatible relay; compaction has a separate policy.";
+"savings.enable" = "Use automatic task savings";
+"savings.applied" = "Policy acknowledged by %@ of %@ relays";
+"savings.partial" = "Older tasks may use an older relay. Only requests observed here prove savings; restart Codex when existing work is finished to use the new relay.";
+"savings.unsupported" = "Luna Low support is not confirmed by the local model catalog.";
+"savings.unavailable" = "Install a compatible relay to enable task savings.";
+"savings.saved" = "Saved. In-flight requests finish with their original setting.";
+"savings.error" = "Could not save. Check the live relay status.";
+"savings.waiting" = "Task savings · waiting for request evidence";
+"savings.routed" = "Savings request · %@ %@";
+"savings.kept" = "Kept setting · %@ %@";
+"savings.original" = "Incoming request: %@ %@";
+"savings.response" = "Response model: %@";
+"savings.unverified" = "unverified";
+"savings.tokens" = "Input %@ (cached %@) · output %@ tokens";
+"savings.undo" = "Use original setting for this task";
+"savings.evidenceNotice" = "The composer stays unchanged. Sent effort is a request setting; the response model is shown only when the provider reports it. Completion does not verify result quality. Token counts do not measure subscription allowance or prove savings. Undo applies to the next request and preserves manual choices.";
+"savings.reason.disabled" = "Automatic savings is off.";
+"savings.reason.simple_text_edit" = "A short, specific text edit was identified before sending.";
+"savings.reason.uncertain_task" = "Task complexity is uncertain; kept your setting.";
+"savings.reason.keep_setting" = "The selected setting is outside the savings policy.";
+"savings.reason.manual_change" = "A changed model or effort was detected; honored your selection.";
+"savings.reason.extended_work" = "More than eight requests were needed; returned to the original setting.";
+"savings.reason.failure_fallback" = "A provider or tool failure was observed; returned to the original setting.";
+"savings.reason.unsupported_model" = "Target model support is unverified.";
+"savings.reason.unidentified_task" = "Could not associate the request with a task.";
+"savings.reason.task_disabled" = "Savings was disabled for this task.";
+"savings.phase.started" = "Sending";
+"savings.phase.response_headers" = "Response headers received";
+"savings.phase.completed" = "Response completed";
+"savings.phase.failed" = "Failed";
+"savings.phase.cancelled" = "Cancelled";
+"savings.phase.unverified" = "Unverified";
+"savings.undone" = "This task will use its original setting for subsequent requests.";
