@@ -80,6 +80,31 @@ final class StatusClient {
         }
     }
 
+    func connectProfile(_ profile: CodexDesktopProfile, actionToken: String,
+                        completion: @escaping (Result<String, Error>) -> Void) {
+        do {
+            var request = try authenticatedPOST(pathComponents: ["api", "profiles", "connect"], actionToken: actionToken)
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["name": profile.name, "codexHome": CodexDesktopProfile.canonical(profile.codexHome)])
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.setValue(nil, forHTTPHeaderField: "content-length")
+            session.dataTask(with: request) { data, response, error in
+                if let error { completion(.failure(error)); return }
+                guard let http = response as? HTTPURLResponse, let data else {
+                    completion(.failure(StatusClientError.invalidResponse)); return
+                }
+                if http.statusCode != 200 {
+                    struct Failure: Decodable { let error: String }
+                    let code = (try? JSONDecoder().decode(Failure.self, from: data))?.error ?? "connection_failed"
+                    completion(.failure(ProfileConnectionError(code: code))); return
+                }
+                completion(Result {
+                    struct Reply: Decodable { let account: String }
+                    return try JSONDecoder().decode(Reply.self, from: data).account
+                })
+            }.resume()
+        } catch { completion(.failure(error)) }
+    }
+
     func configureNotifications(key: String, enabled: Bool, actionToken: String,
                                 completion: @escaping (Result<NotificationPreferencesResponse, Error>) -> Void) {
         do {
@@ -345,5 +370,13 @@ final class StatusClient {
             }
             completion(.success(data ?? Data()))
         }.resume()
+    }
+}
+
+struct ProfileConnectionError: LocalizedError {
+    let code: String
+    var errorDescription: String? {
+        let known = ["isolation_required", "settings_changed", "account_disabled", "profile_overlap"]
+        return Strings.t(known.contains(code) ? "profiles." + code : "profiles.connectFailed")
     }
 }

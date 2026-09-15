@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 
 struct CodexProfilesView: View {
+    @ObservedObject var status: PopoverModel
     @ObservedObject private var profiles = CodexProfilesModel.shared
     @State private var adding = false
     @State private var name = ""
@@ -18,8 +19,19 @@ struct CodexProfilesView: View {
                         Text(profile.name).fontWeight(.medium)
                         Spacer()
                         Button(Strings.t("profiles.open")) { profiles.open(profile) }
+                        Button(Strings.t("profiles.connect")) {
+                            profiles.connect(profile, token: status.payload?.actionToken)
+                        }.disabled(!status.canActOnTasks)
                         if profile.id != "primary" {
                             Button(Strings.t("profiles.remove")) { profiles.remove(profile) }
+                        }
+                    }
+                    if let account = profile.collectionAccount {
+                        if let observed = status.payload?.accounts.first(where: { $0.provider == "codex" && $0.account == account }) {
+                            Text(observed.collection.isHealthy ? Strings.t("profiles.collecting") : observed.collection.actionText)
+                                .font(.caption).foregroundStyle(observed.collection.isHealthy ? Color.secondary : Color.orange)
+                        } else {
+                            Text(Strings.t("profiles.awaiting")).font(.caption).foregroundStyle(.secondary)
                         }
                     }
                     DisclosureGroup(Strings.t("profiles.paths")) {

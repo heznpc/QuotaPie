@@ -7,6 +7,7 @@ struct CodexDesktopProfile: Codable, Identifiable, Equatable {
     var name: String
     let codexHome: String
     let appData: String
+    var collectionAccount: String? = nil
 
     static func canonical(_ path: String) -> String {
         var ancestor = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL
@@ -208,6 +209,33 @@ final class CodexProfilesModel: ObservableObject {
             defaults.set(try JSONEncoder().encode(next), forKey: key)
             profiles = next; message = nil
         } catch { message = error.localizedDescription }
+    }
+    private var connectionClient: StatusClient?
+    func connect(_ profile: CodexDesktopProfile, token: String?) {
+        guard !busy, let token, !token.isEmpty else { return }
+        busy = true; message = nil
+        do {
+            let client = try StatusClient()
+            connectionClient = client
+            client.connectProfile(profile, actionToken: token) { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.busy = false
+                    switch result {
+                    case .success(let account):
+                        let next = self.profiles.map { item -> CodexDesktopProfile in
+                            var updated = item
+                            if item.id == profile.id { updated.collectionAccount = account }
+                            return updated
+                        }
+                        self.save(next)
+                        self.message = Strings.t("profiles.connected")
+                    case .failure(let error): self.message = (error as? ProfileConnectionError)?.localizedDescription ?? Strings.t("profiles.connectFailed")
+                    }
+                    self.connectionClient = nil
+                }
+            }
+        } catch { busy = false; message = Strings.t("profiles.connectFailed") }
     }
     func open(_ profile: CodexDesktopProfile) {
         guard !busy else { return }; busy = true; message = nil
