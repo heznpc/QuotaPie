@@ -6,10 +6,11 @@ const id="11111111-1111-4111-8111-111111111111";
 const input=(text='Change the button label from "Save" to "Done".')=>({model:"gpt-6-astra",reasoning:{effort:"xhigh"},stream:true,
  input:[{type:"message",role:"user",content:[{type:"input_text",text}]}]});
 
-test("opt-in routes bounded edits, preserves uncertainty and verifies model support",()=>{
+test("Auto defaults on and routes bounded edits, preserves uncertainty and verifies model support",()=>{
  const router=new TaskSavingsRouter(()=>true);
  const original=input();
- expect(router.route(original,DEFAULT_TASK_SAVINGS,id).reason).toBe("disabled");
+ expect(DEFAULT_TASK_SAVINGS.enabled).toBe(true);
+ expect(router.route(original,{...DEFAULT_TASK_SAVINGS,enabled:false},id).reason).toBe("disabled");
  expect(router.route(original,policy,id).body).toMatchObject({model:"gpt-5.6-luna",reasoning:{effort:"low"}});
  expect(original.model).toBe("gpt-6-astra");
  for(const text of ['Fix the authentication button "Save" and security model.','Inspect and refactor the application','이것도 해결바람','Change the button "Buy" and implement payment handling.']) {

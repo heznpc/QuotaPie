@@ -16,7 +16,7 @@ function stringsKeys(locale: "en" | "ko"): Set<string> {
 describe("semantic localization contract", () => {
   test("every semantic key consumed by the app exists in both native catalogs", () => {
     const wireKeys = MESSAGE_KEYS.filter((key) =>
-      key.startsWith("event.") || key.startsWith("alert.") || key.startsWith("collection.")
+      key.startsWith("model.notice.") || key.startsWith("event.") || key.startsWith("alert.") || key.startsWith("collection.")
     );
     expect(wireKeys.length).toBeGreaterThan(0);
 

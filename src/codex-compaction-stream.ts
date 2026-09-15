@@ -98,18 +98,24 @@ export class ResponseCompletionObserver {
         : { phase: "failed", errorCode: "missing_completion_event" };
     }
     if (!this.compaction) {
-      try {
-        const result: unknown = JSON.parse(this.pending);
-        if (object(result)) {
-          this.inspectResponse(result);
-          if (result.error || (result.status && result.status !== "completed")) return { phase: "failed", errorCode: "provider_response_error" };
-        }
-      } catch { /* No response-model proof is inferred from an opaque body. */ }
-      return { phase: "completed" };
+      if (!this.oversized && this.contentType.includes("application/json")) {
+        try {
+          const result: unknown = JSON.parse(this.pending);
+          if (object(result)) {
+            this.inspectResponse(result);
+            if (result.error || ["failed", "incomplete", "cancelled"].includes(String(result.status))) {
+              return { phase: "failed", errorCode: "provider_response_error" };
+            }
+            if (result.status === "completed" && Array.isArray(result.output)) return { phase: "completed" };
+          }
+        } catch { /* Opaque or truncated bodies cannot establish completion. */ }
+      }
+      return { phase: "unverified", errorCode: "unrecognized_response" };
     }
     if (!this.oversized && this.contentType.includes("application/json")) {
       try {
         const result: unknown = JSON.parse(this.pending);
+        if (object(result)) this.inspectResponse(result);
         if (object(result) && !result.error && Array.isArray(result.output) &&
           result.output.some(item => object(item) && ["compaction", "context_compaction"].includes(String(item.type)))) {
           return { phase: "completed" };

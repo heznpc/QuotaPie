@@ -48,6 +48,8 @@ export class CompactionStatusReader {
   private cached: Awaited<ReturnType<CompactionStatusReader["collect"]>> | null = null;
   private pending: ReturnType<CompactionStatusReader["collect"]> | null = null;
   private evidence = new Map<string, CompactionRequestEvent>();
+  private notificationEvidence: CompactionRequestEvent[] = [];
+  notificationEvents() { return this.notificationEvidence; }
   private evidenceLoaded = false;
   private savedEvidence = "";
   readonly policy: CompactionPolicySettings;
@@ -123,6 +125,7 @@ export class CompactionStatusReader {
     }
     const activeIds = new Set(installed.flatMap(g => [...g.activeIds]));
     const all = [...merged.values()];
+    this.notificationEvidence = all.slice().sort((a,b) => Date.parse(b.at)-Date.parse(a.at)).slice(0, 200);
     const compactions = all.filter(r => r.kind === "compaction").sort((a,b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, 50);
     const retained = new Map<string, CompactionRequestEvent>();
     const records = compactions.map(item => {

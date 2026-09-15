@@ -210,6 +210,17 @@ struct LocalizedMessagePayload: Decodable {
         }
 
         switch key {
+        case "model.notice.compaction", "model.notice.savings", "model.notice.original", "model.notice.unknown":
+            return []
+        case "model.notice.request":
+            return required("fromLabel", "toLabel")
+        case "model.notice.confirmed":
+            return required("toLabel", "label")
+        case "model.notice.completed":
+            guard let to = text("toLabel"), let detail = text("detail"), let label = text("label") else { return nil }
+            return [to, detail, label == "?" ? Strings.t("model.notice.unknown") : label]
+        case "model.notice.failed":
+            return required("toLabel", "detail")
         case "signal.possible", "signal.announced", "signal.reported", "signal.updated", "signal.withdrawn":
             return []
         case "signal.message.relay", "signal.message.direct":

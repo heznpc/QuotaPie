@@ -11,6 +11,15 @@ final class TaskSavingsTests: XCTestCase {
         XCTAssertTrue(record.active)
         XCTAssertEqual(record.requestedEffort, "xhigh")
     }
+    func testModelNotificationUsesNativeLanguageAndSeparatesRequestFromResponse() throws {
+        let data = Data(#"{"key":"model.notice.confirmed","params":{"toLabel":"luna low","label":"luna"}}"#.utf8)
+        let message = try JSONDecoder().decode(LocalizedMessagePayload.self, from: data)
+        let rendered = message.rendered(fallback: "fallback")
+        XCTAssertNotEqual(rendered, "fallback")
+        XCTAssertTrue(rendered.contains("luna low"))
+        XCTAssertTrue(rendered.contains("luna"))
+    }
+
     func testOlderCompactionPayloadKeepsBackwardCompatibility() throws {
         let json = #"{"checkedAtMs":0,"generations":1,"reachable":1,"active":[],"recent":[],"policy":null}"#
         let value = try JSONDecoder().decode(CompactionPayload.self, from: Data(json.utf8))

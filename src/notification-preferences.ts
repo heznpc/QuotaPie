@@ -2,7 +2,7 @@ import type { AppConfig } from "./config";
 import type { NotificationPresentation } from "./types";
 
 export const DEFAULT_NOTIFICATION_TOPICS = {
-  quotaWarnings: true, collectionIssues: true, quotaRecovery: true,
+  modelChanges: true, quotaWarnings: true, collectionIssues: true, quotaRecovery: true,
   accountChanges: true, payments: true, resumeReady: true,
   resetPossible: true, resetAnnounced: true, resetUpdates: true, resetReported: true,
 };
@@ -19,6 +19,7 @@ export function notificationTopic(input: {
   const title = input.presentation?.title.key ?? "";
   const message = input.presentation?.message.key ?? "";
   const key = input.key ?? input.alertKey ?? "";
+  if (key.startsWith("model:") || title.startsWith("model.notice.")) return "modelChanges";
   if (title === "signal.possible") return "resetPossible";
   if (title === "signal.announced") return "resetAnnounced";
   if (title === "signal.updated" || title === "signal.withdrawn") return "resetUpdates";

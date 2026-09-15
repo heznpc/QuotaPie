@@ -442,8 +442,8 @@
 
 // Task savings
 "savings.title" = "작업별 자동 절약";
-"savings.scope" = "켜면 Astra High 이상으로 요청한 명확한 문구 수정에 Luna Low를 사용합니다. 불확실한 작업은 선택한 설정을 유지합니다. 호환 릴레이를 거치는 Codex 요청에 적용하며, 압축 정책은 별개입니다.";
-"savings.enable" = "작업별 자동 절약 사용";
+"savings.scope" = "기본값은 Auto입니다. Astra High 이상으로 요청한 명확한 문구 수정에 Luna Low를 사용합니다. 불확실한 작업은 선택한 설정을 유지합니다. 호환 릴레이를 거치는 Codex 요청에 적용하며, 압축 정책은 별개입니다.";
+"savings.enable" = "작업 절약 모드";
 "savings.applied" = "릴레이 %@/%@개에서 정책 적용 확인";
 "savings.partial" = "기존 작업은 이전 릴레이를 사용할 수 있습니다. 여기서 관측된 요청만 적용을 확인할 수 있습니다. 기존 작업이 끝난 뒤 Codex를 재시작하면 새 릴레이를 사용합니다.";
 "savings.unsupported" = "로컬 모델 카탈로그에서 Luna Low 지원을 확인하지 못했습니다.";
@@ -476,3 +476,16 @@
 "savings.phase.cancelled" = "취소";
 "savings.phase.unverified" = "미검증";
 "savings.undone" = "이 작업은 다음 요청부터 원래 설정을 사용합니다.";
+
+"model.notice.compaction" = "Codex 압축 모델 전환";
+"model.notice.savings" = "Codex Auto 절약 전환";
+"model.notice.original" = "Codex 원래 설정 사용";
+"model.notice.unknown" = "미확인";
+"model.notice.request" = "%@ → %@로 요청했습니다. 응답 모델은 아직 미확인입니다. 입력창 설정은 유지됩니다.";
+"model.notice.confirmed" = "요청 설정: %@. 응답 모델: %@. 추론 단계는 요청에 지정한 값입니다.";
+"model.notice.completed" = "%@ 압축 요청 완료 · %@초. 응답 모델: %@. 입력창 설정은 유지됩니다.";
+"model.notice.failed" = "%@ 요청의 완료를 확인하지 못했습니다 · %@초. QuotaPie에서 상태와 근거를 확인하세요.";
+"notification.topic.modelChanges" = "모델 전환 (압축·Auto 절약)";
+"savings.off" = "끄기";
+
+"savings.pending" = "설정은 저장됐지만 릴레이 적용은 아직 확인되지 않았습니다. 적용 상태를 확인하세요.";

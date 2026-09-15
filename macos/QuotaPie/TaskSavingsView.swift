@@ -44,8 +44,11 @@ struct TaskSavingsSettingsView: View {
             Text(Strings.t("savings.title")).font(.headline)
             Text(Strings.t("savings.scope")).font(.callout).foregroundStyle(.secondary)
             if let policy = model.payload?.compaction?.savings?.policy {
-                Toggle(Strings.t("savings.enable"), isOn: Binding(get: { policy.enabled }, set: save))
-                    .toggleStyle(.switch).disabled(model.savingsSaving || !policy.configurable || (!policy.enabled && !policy.supported))
+                Picker(Strings.t("savings.enable"), selection: Binding(get: { policy.enabled }, set: save)) {
+                    Text("Auto").tag(true)
+                    Text(Strings.t("savings.off")).tag(false)
+                }
+                    .pickerStyle(.segmented).disabled(model.savingsSaving || !policy.configurable || (!policy.enabled && !policy.supported))
                 Text(Strings.t("savings.applied", String(policy.applied), String(policy.generations))).font(.caption)
                 if policy.compatible < policy.generations {
                     Text(Strings.t("savings.partial")).font(.caption).foregroundStyle(.orange)
@@ -73,7 +76,7 @@ struct TaskSavingsHistory: View {
                     Text(Strings.t("savings.original", CompactionRecord.shortModel(record.from), record.requestedEffort ?? "?"))
                     Text(Strings.t("savings.reason." + (record.savingsReason ?? "uncertain_task"))).foregroundStyle(.secondary)
                     Text(Strings.t("savings.response", record.responseModel.map(CompactionRecord.shortModel) ?? Strings.t("savings.unverified")))
-                    Text(Strings.t("savings.phase." + (record.active ? "started" : record.phase)) + " · " + String(format: "%.1f", record.durationMs / 1000) + Strings.t("compaction.seconds"))
+                    Text(Strings.t("savings.phase." + (record.phase)) + " · " + String(format: "%.1f", record.durationMs / 1000) + Strings.t("compaction.seconds"))
                     if let usage = record.usage {
                         Text(Strings.t("savings.tokens", String(usage.input), String(usage.cachedInput), String(usage.output))).monospacedDigit()
                     }

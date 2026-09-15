@@ -151,7 +151,7 @@ To use the CLI from anywhere, add the project's `bin` to your `PATH`, or link `b
 
 For real use, keep the runtime in `~/.local/lib/quotapie` and link it as `~/.local/bin/quotapie`. macOS can block `launchd` from reaching Documents with `Operation not permitted`, so the resident service and the Claude status line are more reliable when they run from a copy outside that protected path. The source directory stays the reference copy.
 
-## Automatic task savings (local opt-in)
+## Automatic task savings (Auto)
 
 In the native app, open **Settings → Task savings**. Clear, short text edits
 requested with Astra High or above can use **Luna Low** before the request is
@@ -167,8 +167,10 @@ future requests for that task; global disable also affects subsequent requests.
 Completion alone does not prove result quality, and token counts are not
 subscription quota deductions or a measured savings percentage.
 
+Native model-change notifications distinguish outgoing requests, response-model evidence, completion/failure, and returning to the original setting. Repeated tool requests are coalesced. Notifications can be muted independently under Notifications → Model changes. Delivery uses the existing native outbox; macOS permission and Focus still control banner visibility.
+
 Automatic routing currently supports **Codex through the compatible local HTTP
-relay**. It is off by default. Existing tasks can remain on older relays; after
+relay**. Auto is the default when no preference exists; an explicit Off preference is preserved. Existing tasks can remain on older relays; after
 finishing those tasks, restart Codex to load the current relay. The app reports
 partial coverage explicitly. QuotaPie does not require Modore or added skills.
 See execution evidence and limitations.
