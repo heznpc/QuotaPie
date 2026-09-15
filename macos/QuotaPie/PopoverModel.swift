@@ -67,6 +67,15 @@ final class PopoverModel: ObservableObject {
             ?? accounts.first
     }
 
+    var selectedHeadline: Headline? {
+        selectedAccount.map(Headline.init(account:)) ?? payload?.headline
+    }
+
+    func followCodexFocus(_ identity: CodexProcessIdentity, profiles: [CodexDesktopProfile]) {
+        guard let accountID = identity.collectionAccountID(in: profiles) else { return }
+        selectedAccountID = accountID
+    }
+
     var activeTasks: [ResumeTask] {
         (payload?.resumeTasks.filter(\.isActive) ?? []).sorted {
             if $0.isReady != $1.isReady { return $0.isReady }

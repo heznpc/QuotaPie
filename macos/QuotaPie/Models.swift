@@ -312,8 +312,7 @@ enum NotificationCompletionDisposition: String {
     case expired
 }
 
-/// The conclusion for the menu bar. The service decides which one wins; the
-/// app only draws it.
+/// Menu bar reading for the selected account, with a backend fallback before selection.
 struct Headline: Decodable {
     let kind: String
     let provider: String?
@@ -330,6 +329,23 @@ struct Headline: Decodable {
     /// above so the app follows the viewer's language, not the daemon's.
     let displayText: String
     let displayDetail: String?
+
+    init(account: AccountState) {
+        let window = account.overviewWindow
+        kind = window?.freshness == "fresh" && account.collection.isHealthy && window?.remainingPercent != nil
+            ? "normal" : "degraded"
+        provider = account.provider
+        self.account = account.account
+        accountLabel = account.accountLabel
+        bucket = window?.bucket
+        windowKind = nil
+        windowLabel = window?.shortLabel
+        remainingPercent = window?.remainingPercent
+        exhaustsAtMs = window?.exhaustsAtMs
+        errorCategory = account.collection.errorCategory ?? (window == nil ? "never-attempted" : "stale-success")
+        displayText = ""
+        displayDetail = nil
+    }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)

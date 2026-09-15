@@ -102,6 +102,12 @@ struct CodexProcessIdentity {
     func matches(_ profile: CodexDesktopProfile) -> Bool {
         codexHome == CodexDesktopProfile.canonical(profile.codexHome) && appData == CodexDesktopProfile.canonical(profile.appData)
     }
+
+    func collectionAccountID(in profiles: [CodexDesktopProfile]) -> String? {
+        let matches = profiles.filter { self.matches($0) }
+        guard matches.count == 1, let account = matches[0].collectionAccount, !account.isEmpty else { return nil }
+        return "codex/" + account
+    }
     func overlaps(_ profile: CodexDesktopProfile) -> Bool {
         [codexHome, appData].contains { running in
             [profile.codexHome, profile.appData].map(CodexDesktopProfile.canonical).contains {

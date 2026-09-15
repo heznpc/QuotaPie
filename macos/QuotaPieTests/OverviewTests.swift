@@ -3,6 +3,51 @@ import XCTest
 @testable import QuotaPie
 
 final class OverviewTests: XCTestCase {
+    func testMenuBarFollowsManualSelectionAcrossRefreshAndCodexFocusChanges() throws {
+        let model = PopoverModel()
+        let payload = try JSONDecoder().decode(StatusPayload.self, from: Data(#"""
+        {"headline":{"kind":"normal","provider":"codex","account":"work","remainingPercent":100},
+         "accounts":[
+          {"provider":"codex","account":"default","accountLabel":"Main","enabled":true,
+           "collection":{"health":"recent-success"},"windows":[
+           {"provider":"codex","account":"default","bucket":"codex:weekly","label":"Weekly","windowSeconds":604800,
+            "freshness":"fresh","observedAtMs":1000,"remainingPercent":18}]},
+          {"provider":"codex","account":"work","accountLabel":"Work","enabled":true,
+           "collection":{"health":"recent-success"},"windows":[
+           {"provider":"codex","account":"work","bucket":"codex:primary","label":"5h","windowSeconds":18000,
+            "freshness":"fresh","observedAtMs":1000,"remainingPercent":100}]}]}
+        """#.utf8))
+        model.payload = payload
+        XCTAssertEqual(model.selectedHeadline?.remainingPercent, 100)
+        model.selectedAccountID = "codex/default"
+        XCTAssertEqual(model.selectedHeadline?.remainingPercent, 18)
+        XCTAssertEqual(model.selectedHeadline?.windowLabel, model.selectedAccount?.overviewWindow?.shortLabel)
+        model.applyStatus(payload, notificationRevision: 0)
+        XCTAssertEqual(model.selectedHeadline?.account, "default")
+        let profile = CodexDesktopProfile(id: "work", name: "Work", codexHome: "/tmp/focus-home",
+                                         appData: "/tmp/focus-data", collectionAccount: "work")
+        let identity = CodexProcessIdentity(codexHome: CodexDesktopProfile.canonical(profile.codexHome),
+                                            appData: CodexDesktopProfile.canonical(profile.appData))
+        model.followCodexFocus(identity, profiles: [profile])
+        XCTAssertEqual(model.selectedHeadline?.remainingPercent, 100)
+        model.selectedAccountID = "codex/default"
+        model.applyStatus(payload, notificationRevision: 0)
+        XCTAssertEqual(model.selectedHeadline?.remainingPercent, 18)
+        model.followCodexFocus(identity, profiles: [])
+        XCTAssertEqual(model.selectedAccountID, "codex/default")
+        model.followCodexFocus(identity, profiles: [profile, profile])
+        XCTAssertEqual(model.selectedAccountID, "codex/default")
+    }
+
+    func testSelectedAccountWithStaleOrMissingQuotaNeverBorrowsAnotherReading() throws {
+        let stale = Headline(account: account([try window("codex:primary", seconds: 18000, remaining: 0, freshness: "stale")]))
+        XCTAssertEqual(stale.kind, "degraded")
+        XCTAssertEqual(stale.remainingPercent, 0)
+        let missing = Headline(account: account([]))
+        XCTAssertNil(missing.remainingPercent)
+        XCTAssertEqual(missing.kind, "degraded")
+    }
+
     func testOverviewUsesShortestGeneralWindowAndDoesNotPromoteSpark() throws {
         let weekly = try window("codex:secondary", seconds: 604800, remaining: 14)
         let short = try window("codex:primary", seconds: 18000, remaining: 70)
