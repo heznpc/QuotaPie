@@ -31,7 +31,7 @@ test('connection persists, updates live config, preserves settings, and is idemp
 
 test('unsafe isolation and changed settings do not alter disk or live registrations', () => fixture((root, path) => {
   const config = loadConfig(path), original = readFileSync(path, 'utf8');
-  writeFileSync(join(root, 'one', 'config.toml'), '');
+  writeFileSync(join(root, 'one', 'config.toml'), 'cli_auth_credentials_store = "keyring"\n');
   expect(() => connectCodexProfile(config, { name: 'Second', codexHome: join(root, 'two') }, path)).toThrow('isolation_required');
   expect(readFileSync(path, 'utf8')).toBe(original);
   expect(config.accounts.codex).toHaveLength(1);
@@ -73,3 +73,13 @@ test('local connection endpoint requires action token and rejects browser origin
     expect(loadConfig(path).accounts.codex).toHaveLength(1);
   } finally { server.stop(true); await service.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+test('default file credentials connect without modifying Codex config', () => fixture((root, path) => {
+  const file = join(root, 'one', 'config.toml');
+  const original = 'model = "existing-model"\n';
+  writeFileSync(file, original);
+  const config = loadConfig(path);
+  connectCodexProfile(config, { name: 'Second', codexHome: join(root, 'two') }, path);
+  expect(config.accounts.codex).toHaveLength(2);
+  expect(readFileSync(file, 'utf8')).toBe(original);
+}));

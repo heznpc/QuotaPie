@@ -63,6 +63,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           const body = await request.text();
           if (body.length > 8192) return json({ error: "invalid_profile" }, 400);
           const connection = connectCodexProfile(config, JSON.parse(body), options.preferencesPath);
+          service.requestCollection();
           return json(connection);
         } catch (error) {
           const code = error instanceof Error ? error.message : "connection_failed";

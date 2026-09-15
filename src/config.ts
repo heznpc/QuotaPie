@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
+import { statSync, chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import type { Provider } from "./types";
@@ -165,12 +165,15 @@ export function codexProfileRoot(profile: CodexAccountConfig): string {
 }
 
 export function codexUsesFileCredentials(profile: CodexAccountConfig): boolean {
+  // Codex defaults to File. Parse TOML so comments, nested fields and strings
+  // cannot masquerade as the root credential-store setting.
+  const root = codexProfileRoot(profile);
+  const path = resolve(root, "config.toml");
   try {
-    const contents = readFileSync(resolve(codexProfileRoot(profile), "config.toml"), "utf8");
-    return /(^|\n)\s*cli_auth_credentials_store\s*=\s*["']file["']/m.test(contents);
-  } catch {
-    return false;
-  }
+    if (!statSync(root).isDirectory()) return false;
+    const parsed = (existsSync(path) ? Bun.TOML.parse(readFileSync(path, "utf8")) : {}) as Record<string, unknown>;
+    return (parsed.cli_auth_credentials_store ?? "file") === "file";
+  } catch { return false; }
 }
 
 function mergeConfig(base: AppConfig, patch: Partial<AppConfig>): AppConfig {
