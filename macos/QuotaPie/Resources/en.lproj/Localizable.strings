@@ -504,7 +504,7 @@
 "profiles.chooseData" = "Choose existing app data…";
 "profiles.cancel" = "Cancel";
 "profiles.register" = "Register";
-"profiles.scope" = "App launch registration is separate from quota collection and Auto routing. Unregistering preserves files and running apps. Use these buttons for order-independent launches.";
+"profiles.scope" = "Sign in through the app, then connect quota. Collection works without a proxy; Auto routing is separate. Unregister removes only the launch entry, preserving collection accounts, files and running apps.";
 "profiles.opened" = "%@ app process confirmed. Complete sign-in in that app if needed.";
 "profiles.error.paths" = "Profile folders overlap or conflict with a running app. Choose separate Codex home and app-data folders.";
 "profiles.error.name" = "Enter a profile name.";
@@ -512,3 +512,21 @@
 "profiles.error.identity" = "Could not verify the running app’s profile. No additional instance was requested after this uncertainty.";
 "profiles.error.launch" = "The app could not be opened or brought forward.";
 "profiles.error.storage" = "Saved profile registrations could not be read.";
+
+"profiles.connect" = "Connect quota";
+
+"profiles.connected" = "Collection account connected. Check collection results in Limits. Sign in through the profile app first if needed.";
+
+"profiles.connectFailed" = "Could not connect. Open the profile app first and ensure each profile uses file credentials. Restart the collector if you edited its settings.";
+
+"profiles.collecting" = "Quota collection healthy";
+
+"profiles.awaiting" = "Waiting for collection status";
+
+"profiles.isolation_required" = "Both the new and existing collection profiles need cli_auth_credentials_store = \"file\" in config.toml. Existing credentials are not migrated automatically.";
+
+"profiles.settings_changed" = "Collection settings changed externally. Restart the collector before reconnecting.";
+
+"profiles.account_disabled" = "This collection account is disabled. Enable it in settings before connecting.";
+
+"profiles.profile_overlap" = "This folder overlaps an existing collection profile. Choose a separate folder.";

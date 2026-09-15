@@ -1,3 +1,4 @@
+import { connectCodexProfile } from "./profile-connection";
 import { ModelNotifications } from "./model-notifications";
 import { buildHeadline } from "./analytics";
 import { CompactionStatusReader } from "./compaction-status";
@@ -55,6 +56,19 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
       const allowedHosts = new Set(["127.0.0.1", "localhost", "::1", config.dashboard.host.toLowerCase()]);
       if (!hostname || !allowedHosts.has(hostname)) return json({ error: "invalid_host" }, 403);
       const url = new URL(request.url);
+      if (url.pathname === "/api/profiles/connect") {
+        if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+        if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token"))) return json({ error: "forbidden" }, 403);
+        try {
+          const body = await request.text();
+          if (body.length > 8192) return json({ error: "invalid_profile" }, 400);
+          const connection = connectCodexProfile(config, JSON.parse(body), options.preferencesPath);
+          return json(connection);
+        } catch (error) {
+          const code = error instanceof Error ? error.message : "connection_failed";
+          return json({ error: ["invalid_profile", "settings_changed", "account_disabled", "isolation_required", "profile_overlap"].includes(code) ? code : "connection_failed" }, 409);
+        }
+      }
       if (url.pathname === "/api/task-savings/policy") {
         if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
         if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token"))) return json({ error: "forbidden" }, 403);

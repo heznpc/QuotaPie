@@ -136,7 +136,7 @@ struct DetailsView: View {
                 Button(Strings.t("notification.settings"), action: actions.openNotificationSettings)
             }
             Divider()
-            CodexProfilesView()
+            CodexProfilesView(status: model)
             Divider()
             TaskSavingsSettingsView(model: model, save: { actions.configureSavings($0, nil) })
             Divider()
