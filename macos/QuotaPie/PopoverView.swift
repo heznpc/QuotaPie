@@ -1,13 +1,24 @@
 import SwiftUI
 
-/// A bounded overview. History and controls have their own persistent window.
+/// Overview and detail navigation stay inside the menu bar popover.
 struct PopoverView: View {
     @ObservedObject var model: PopoverModel
     @ObservedObject private var awake = AwakeController.shared
     let actions: PopoverActions
-    let openDetails: (DetailSection) -> Void
 
     var body: some View {
+        if model.detailSection != nil {
+            DetailsView(model: model, section: Binding(
+                get: { model.detailSection ?? .quota },
+                set: { model.detailSection = $0 }
+            ), actions: actions, back: model.showOverview)
+                .frame(width: 460, height: model.popoverDetailHeight)
+        } else {
+            overview
+        }
+    }
+
+    private var overview: some View {
         VStack(alignment: .leading, spacing: 0) {
 #if DEBUG
             if ProcessInfo.processInfo.environment["QUOTAPIE_DEBUG_AUTO_OPEN"] == "1" {
@@ -49,8 +60,7 @@ struct PopoverView: View {
     }
 
     private func showDetails(_ section: DetailSection, taskID: String? = nil) {
-        model.focusedResumeTaskID = taskID
-        openDetails(section)
+        model.showDetails(section, taskID: taskID)
     }
 
     private var quotaOverview: some View {

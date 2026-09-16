@@ -19,7 +19,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private let popoverModel = PopoverModel()
-    private var detailsWindow: DetailsWindowController?
     private let resumeLauncher = ResumeLauncher()
     private let userNotificationCenter = UNUserNotificationCenter.current()
     private var client: StatusClient?
@@ -97,7 +96,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         if let notificationTimer { RunLoop.main.add(notificationTimer, forMode: .common) }
 
-        if popoverModel.focusedResumeTaskID != nil { detailsWindow?.show(.activity) }
+        if popoverModel.focusedResumeTaskID != nil {
+            popoverModel.detailSection = .activity
+            showPopover()
+        }
 
 #if DEBUG
         if ProcessInfo.processInfo.environment["QUOTAPIE_DEBUG_AUTO_OPEN"] == "1" {
@@ -116,10 +118,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let route = urls.compactMap({ QuotaPieRoute(url: $0) }).first else { return }
         if case .resume(let id) = route {
-            popoverModel.focusedResumeTaskID = id
-            popover.performClose(nil)
-            detailsWindow?.show(.activity)
-            refresh()
+            popoverModel.showDetails(.activity, taskID: id)
+            showPopover()
         }
     }
 
@@ -150,6 +150,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     /// close it again.
     private func showPopover() {
         guard let button = statusItem.button else { return }
+        let available = statusItem.button?.window?.screen?.visibleFrame.height ?? NSScreen.main?.visibleFrame.height ?? 800
+        popoverModel.popoverDetailHeight = min(600, max(300, available - 80))
         if !popover.isShown {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
         }
@@ -183,11 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func installPopoverContent() {
         let actions = popoverActions
-        detailsWindow = DetailsWindowController(model: popoverModel, actions: actions)
-        let view = PopoverView(model: popoverModel, actions: actions, openDetails: { [weak self] section in
-            self?.popover.performClose(nil)
-            self?.detailsWindow?.show(section)
-        })
+        let view = PopoverView(model: popoverModel, actions: actions)
         let controller = NSHostingController(rootView: view)
         controller.sizingOptions = [.preferredContentSize]
         popover.contentViewController = controller

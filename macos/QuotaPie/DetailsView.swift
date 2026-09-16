@@ -1,23 +1,30 @@
 import SwiftUI
 
-final class DetailsModel: ObservableObject {
-    @Published var section: DetailSection = .quota
-}
-
 struct DetailsView: View {
     @ObservedObject var model: PopoverModel
-    @ObservedObject var navigation: DetailsModel
+    @Binding var section: DetailSection
     @ObservedObject private var awake = AwakeController.shared
     let actions: PopoverActions
+    let back: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("", selection: $navigation.section) {
+            HStack {
+                Button(action: back) {
+                    Label(Strings.t("navigation.overview"), systemImage: "chevron.left")
+                }.buttonStyle(.plain)
+                Spacer()
+                if let account = model.selectedAccount {
+                    Text("\(account.providerTitle) · \(account.accountLabel)")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }.padding(.horizontal, 16).padding(.top, 14)
+            Picker("", selection: $section) {
                 ForEach(DetailSection.allCases) { section in
                     Text(section.title).tag(section)
                 }
             }
-            .pickerStyle(.segmented).labelsHidden().padding(20)
+            .pickerStyle(.segmented).labelsHidden().padding(16)
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
@@ -27,10 +34,10 @@ struct DetailsView: View {
                     detailContent
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(24)
+                .padding(16)
             }
             .clipped()
-            .id(navigation.section)
+            .id(section)
             .id(model.detailLocationID)
             Divider()
             HStack {
@@ -44,11 +51,11 @@ struct DetailsView: View {
             }
             .buttonStyle(.borderless).padding(.horizontal, 20).padding(.vertical, 12)
         }
-        .frame(minWidth: 540, minHeight: 420)
+
     }
 
     @ViewBuilder private var detailContent: some View {
-        switch navigation.section {
+        switch section {
         case .quota:
             if let payload = model.payload, !payload.accounts.isEmpty {
                 ForEach(orderedAccounts) { account in
