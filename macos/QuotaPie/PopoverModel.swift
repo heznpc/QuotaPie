@@ -33,6 +33,19 @@ final class PopoverModel: ObservableObject {
     @Published var notificationsAllowed: Bool?
     @Published var resumeActivities: [String: ResumeTaskActivity] = [:]
     @Published var selectedAccountID: String?
+    @Published var detailSection: DetailSection?
+    @Published var popoverDetailHeight: CGFloat = 600
+
+    func showDetails(_ section: DetailSection, taskID: String? = nil) {
+        focusedResumeTaskID = taskID
+        detailSection = section
+    }
+
+    func showOverview() {
+        detailSection = nil
+        focusedResumeTaskID = nil
+    }
+
     @Published private(set) var detailLocationID = UUID()
     @Published var focusedResumeTaskID: String? {
         didSet { detailLocationID = UUID() }

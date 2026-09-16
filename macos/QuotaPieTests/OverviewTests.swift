@@ -3,6 +3,23 @@ import XCTest
 @testable import QuotaPie
 
 final class OverviewTests: XCTestCase {
+    func testInlineDetailNavigationPreservesAccountAndClearsTaskFocusOnReturn() {
+        let model = PopoverModel()
+        model.selectedAccountID = "codex/work"
+        model.showDetails(.activity, taskID: "paused-task")
+        XCTAssertEqual(model.detailSection, .activity)
+        XCTAssertEqual(model.focusedResumeTaskID, "paused-task")
+        model.showOverview()
+        XCTAssertNil(model.detailSection)
+        XCTAssertNil(model.focusedResumeTaskID)
+        XCTAssertEqual(model.selectedAccountID, "codex/work")
+        for section in DetailSection.allCases {
+            model.showDetails(section)
+            XCTAssertEqual(model.detailSection, section)
+            XCTAssertNil(model.focusedResumeTaskID)
+        }
+    }
+
     func testMenuBarFollowsManualSelectionAcrossRefreshAndCodexFocusChanges() throws {
         let model = PopoverModel()
         let payload = try JSONDecoder().decode(StatusPayload.self, from: Data(#"""
