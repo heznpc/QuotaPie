@@ -12,6 +12,11 @@ APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
 APP_BINARY="$APP_MACOS/$APP_NAME"
+AGENT_DOMAIN="gui/$(id -u)"
+AGENT_PLIST="$HOME/Library/LaunchAgents/$BUNDLE_ID.plist"
+RESTORE_AGENT=0
+PREVIOUS_APP=""
+APP_STARTED=0
 
 # Every mode assembles the bundle the same way, so the app the packaging script
 # signs is laid out exactly like the one a local run produces. A second copy of
@@ -48,20 +53,81 @@ if [ "$MODE" = "bundle" ]; then
   exit 0
 fi
 
-pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+case "$MODE" in
+  run|--debug|debug|--logs|logs|--telemetry|telemetry|--verify|verify) ;;
+  *) echo "usage: $0 [run|--debug|--logs|--telemetry|--verify|bundle [dest-dir]]" >&2; exit 2 ;;
+esac
+
+# Keep the installed app available until its replacement has built successfully.
 build_bundle
 codesign --force --sign - --timestamp=none "$APP_CONTENTS/Helpers/QuotaPiePowerHelper"
 codesign --force --sign - --timestamp=none "$APP_BUNDLE" >/dev/null
 
+development_pids() {
+  local pid
+  for pid in $(pgrep -x "$APP_NAME" || true); do
+    if [ "$(ps -p "$pid" -o comm=)" = "$APP_BINARY" ]; then echo "$pid"; fi
+  done
+}
+
+cleanup() {
+  local result=$?
+  trap - EXIT INT TERM
+  if [ "$APP_STARTED" = 1 ]; then
+    local pid
+    for pid in $(development_pids); do kill -TERM "$pid" 2>/dev/null || true; done
+    for _ in {1..50}; do
+      [ -z "$(development_pids)" ] && break
+      sleep 0.1
+    done
+  fi
+  if [ "$RESTORE_AGENT" = 1 ]; then
+    launchctl bootstrap "$AGENT_DOMAIN" "$AGENT_PLIST" || result=1
+  elif [ -n "$PREVIOUS_APP" ]; then
+    /usr/bin/open "$PREVIOUS_APP" || result=1
+  fi
+  exit "$result"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# A SIGTERM alone makes KeepAlive restart the installed copy during verification.
+# Temporarily unload its job, then restore it when the development session ends.
+if launchctl print "$AGENT_DOMAIN/$BUNDLE_ID" >/dev/null 2>&1; then
+  [ -f "$AGENT_PLIST" ] || { echo "Cannot restore the loaded menu bar agent: $AGENT_PLIST is missing" >&2; exit 1; }
+  launchctl bootout "$AGENT_DOMAIN/$BUNDLE_ID"
+  RESTORE_AGENT=1
+else
+  for pid in $(pgrep -x "$APP_NAME" || true); do
+    previous_binary="$(ps -p "$pid" -o comm=)"
+    if [ "$previous_binary" != "$APP_BINARY" ] && [[ "$previous_binary" == *.app/Contents/MacOS/QuotaPie ]]; then
+      PREVIOUS_APP="${previous_binary%/Contents/MacOS/QuotaPie}"
+      break
+    fi
+  done
+fi
+pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+for _ in {1..50}; do
+  pgrep -x "$APP_NAME" >/dev/null || break
+  sleep 0.1
+done
+
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE"
+  APP_STARTED=1
 }
 
 case "$MODE" in
   run)
     open_app
+    # Keep ownership of this development session so Quit or Ctrl-C restores the
+    # user's installed app instead of leaving a second menu bar meter behind.
+    sleep 1
+    while [ -n "$(development_pids)" ]; do sleep 1; done
     ;;
   --debug|debug)
+    APP_STARTED=1
     lldb -- "$APP_BINARY"
     ;;
   --logs|logs)
@@ -75,7 +141,9 @@ case "$MODE" in
   --verify|verify)
     open_app
     for _ in {1..20}; do
-      if pgrep -f "^${APP_BINARY}$" >/dev/null; then
+      if [ -n "$(development_pids)" ]; then
+        sleep 1
+        [ -n "$(development_pids)" ] || break
         exit 0
       fi
       sleep 0.1

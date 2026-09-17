@@ -35,7 +35,7 @@ final class OverviewTests: XCTestCase {
             "freshness":"fresh","observedAtMs":1000,"remainingPercent":100}]}]}
         """#.utf8))
         model.payload = payload
-        XCTAssertEqual(model.selectedHeadline?.remainingPercent, 100)
+        XCTAssertEqual(model.selectedHeadline?.remainingPercent, 18)
         model.accountOpenError = "Previous launch failed"
         model.selectAccount(payload.accounts[0])
         XCTAssertFalse(model.openingAccount)
@@ -48,6 +48,18 @@ final class OverviewTests: XCTestCase {
                                          appData: "/tmp/focus-data", collectionAccount: "work")
         let identity = CodexProcessIdentity(codexHome: CodexDesktopProfile.canonical(profile.codexHome),
                                             appData: CodexDesktopProfile.canonical(profile.appData))
+        var primary = CodexDesktopProfile.primary
+        primary.collectionAccount = "default"
+        let mainIdentity = CodexProcessIdentity(codexHome: CodexDesktopProfile.canonical(primary.codexHome),
+                                              appData: CodexDesktopProfile.canonical(primary.appData))
+        model.selectInitialCodexAccount(frontmost: nil, running: [mainIdentity], profiles: [primary, profile])
+        XCTAssertEqual(model.selectedAccount?.id, "codex/default")
+        model.selectInitialCodexAccount(frontmost: nil, running: [identity], profiles: [primary, profile])
+        XCTAssertEqual(model.selectedAccount?.id, "codex/work")
+        model.selectInitialCodexAccount(frontmost: mainIdentity, running: [identity, mainIdentity], profiles: [primary, profile])
+        XCTAssertEqual(model.selectedAccount?.id, "codex/default")
+        model.selectInitialCodexAccount(frontmost: nil, running: [identity, mainIdentity], profiles: [primary, profile])
+        XCTAssertEqual(model.selectedAccount?.id, "codex/default")
         model.followCodexFocus(identity, profiles: [profile])
         XCTAssertEqual(model.selectedHeadline?.remainingPercent, 100)
         model.selectedAccountID = "codex/default"
@@ -84,7 +96,7 @@ final class OverviewTests: XCTestCase {
         XCTAssertEqual(account([stale, unknown, weekly]).overviewWindow?.bucket, weekly.bucket)
     }
 
-    func testRemovedAccountSelectionFallsBackToTheCurrentHeadline() throws {
+    func testRemovedAccountSelectionFallsBackToPrimaryInsteadOfAnotherAccountsHeadline() throws {
         let model = PopoverModel()
         model.selectedAccountID = "codex/removed"
         model.payload = try JSONDecoder().decode(StatusPayload.self, from: Data(#"""
@@ -95,7 +107,7 @@ final class OverviewTests: XCTestCase {
           {"provider":"claude","account":"work","accountLabel":"Work","enabled":true,
            "collection":{"health":"recent-success"},"windows":[]}]}
         """#.utf8))
-        XCTAssertEqual(model.selectedAccount?.id, "claude/work")
+        XCTAssertEqual(model.selectedAccount?.id, "codex/default")
         model.selectedAccountID = "codex/default"
         XCTAssertEqual(model.selectedAccount?.id, "codex/default")
     }
