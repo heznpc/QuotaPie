@@ -30,7 +30,8 @@ export class CompactionPolicySettings {
 
   private async paths() {
     const manifest = JSON.parse(await readFile(join(this.root, "current.json"), "utf8"));
-    const paths = [...new Set<string>([manifest.settings_path, ...(manifest.retired_settings ?? [])])];
+    const paths = [...new Set<string>([manifest.settings_path,
+      ...(Object.values(manifest.profile_settings ?? {}) as string[]), ...(manifest.retired_settings ?? [])])];
     if (!paths.length || paths.length > 32) throw new Error("invalid_installation");
     for (const path of paths) {
       if (typeof path !== "string" || !/^(?:settings\.json|releases\/\d+\/settings\.json)$/.test(relative(resolve(this.root), resolve(path)))) {

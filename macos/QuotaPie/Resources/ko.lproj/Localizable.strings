@@ -537,3 +537,5 @@
 
 "profiles.accountNotLinked" = "이 계정에 연결된 Codex 앱을 찾지 못했습니다. 설정의 Codex 계정에서 앱 연결을 확인해 주세요.";
 "profiles.openAccount" = "%@ Codex 앱 열기";
+"profiles.connectedWithRelay" = "사용량 수집과 모델 전환 중계에 연결했습니다. 이미 열려 있던 앱·작업은 이전 연결을 쓸 수 있습니다. 진행 중인 작업을 마친 뒤 이 계정의 앱을 다시 열어 주세요.";
+"profiles.profile_relay_failed" = "사용량 수집은 등록했지만 모델 전환 중계 연결에 실패했습니다. 직접 지정한 서버 설정이 있다면 보존됩니다. 중계 상태를 확인한 뒤 다시 연결해 주세요.";

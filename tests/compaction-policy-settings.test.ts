@@ -15,7 +15,7 @@ test("authenticated model selection updates supported generations, preserves cre
   await mkdir(join(root,"releases/122"),{recursive:true});
   const original = paths.map((_,i) => ({port:45000+i,token:String(i+1).repeat(48),route:{from:"gpt-6-astra",to:"gpt-5.6-sol",effort:"low"},unrelated:"keep"}));
   for (let i=0;i<paths.length;i++) await writeFile(paths[i]!,JSON.stringify(original[i]));
-  await writeFile(join(root,"current.json"),JSON.stringify({settings_path:paths[0],retired_settings:paths.slice(1)}));
+  await writeFile(join(root,"current.json"),JSON.stringify({settings_path:paths[0],profile_settings:{"/profile/two":paths[2]},retired_settings:[paths[1]]}));
   const fetcher = (async (url: string | URL | Request) => {
     const i=Number(new URL(String(url)).port)-45000;
     const settings=JSON.parse(await readFile(paths[i]!,"utf8"));

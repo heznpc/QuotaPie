@@ -230,21 +230,22 @@ final class CodexProfilesModel: ObservableObject {
         guard !busy, let token, !token.isEmpty else { return }
         busy = true; message = nil
         do {
-            let client = try StatusClient()
+            // First connection also stages and health-checks a profile relay.
+            let client = try StatusClient(operationTimeout: 60)
             connectionClient = client
             client.connectProfile(profile, actionToken: token) { [weak self] result in
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.busy = false
                     switch result {
-                    case .success(let account):
+                    case .success(let connection):
                         let next = self.profiles.map { item -> CodexDesktopProfile in
                             var updated = item
-                            if item.id == profile.id { updated.collectionAccount = account }
+                            if item.id == profile.id { updated.collectionAccount = connection.account }
                             return updated
                         }
                         self.save(next)
-                        self.message = Strings.t("profiles.connected")
+                        self.message = Strings.t(connection.relayConnected == true ? "profiles.connectedWithRelay" : "profiles.connected")
                     case .failure(let error): self.message = (error as? ProfileConnectionError)?.localizedDescription ?? Strings.t("profiles.connectFailed")
                     }
                     self.connectionClient = nil

@@ -87,6 +87,28 @@ def activate_generation(config_path, old_config, new_config, manifest_path, mani
         raise
 
 
+def registered_settings(manifest):
+    return list(dict.fromkeys([manifest["settings_path"], *manifest.get("profile_settings", {}).values(),
+                               *manifest.get("retired_settings", [])]))
+
+
+def updated_manifest(manifest, candidate, codex_home, primary_home):
+    next_manifest = dict(manifest)
+    profiles = dict(manifest.get("profile_settings", {}))
+    retired = list(manifest.get("retired_settings", []))
+    if manifest.get("settings_path") and codex_home != primary_home:
+        previous = profiles.get(codex_home)
+        profiles[codex_home] = candidate
+    else:
+        previous = manifest.get("settings_path")
+        next_manifest["settings_path"] = candidate
+    if previous and previous not in retired:
+        retired.append(previous)
+    next_manifest["profile_settings"] = profiles
+    next_manifest["retired_settings"] = retired
+    return next_manifest
+
+
 class LocalRelay:
     def __init__(self):
         self.home = Path.home()
@@ -94,6 +116,8 @@ class LocalRelay:
         self.manifest_path = self.runtime / "current.json"
         self.manifest = json.loads(self.manifest_path.read_text()) if self.manifest_path.exists() else {}
         self.settings_path = Path(self.manifest.get("settings_path", self.runtime / "settings.json"))
+        if self.settings_path.exists():
+            self.manifest.setdefault("settings_path", str(self.settings_path))
         self.domain = f"gui/{os.getuid()}"
 
     def settings(self):
@@ -176,10 +200,8 @@ class LocalRelay:
         }
         agent_path = self.agent_path(settings)
         atomic_write(agent_path, plistlib.dumps(agent).decode())
-        retired = list(self.manifest.get("retired_settings", []))
-        if previous and str(self.settings_path) not in retired:
-            retired.append(str(self.settings_path))
-        manifest = {"settings_path": str(candidate_path), "retired_settings": retired}
+        manifest = updated_manifest(self.manifest, str(candidate_path), str(config_path.parent),
+                                    str(Path(previous.get("codex_home", config_path.parent)).resolve()))
         atomic_write(config_path.with_name(f"config.toml.quotapie-compaction-{generation}.bak"), old_config)
         def stop_candidate():
             subprocess.run(["launchctl", "bootout", self.domain + "/" + settings["label"]], capture_output=True)
@@ -188,8 +210,31 @@ class LocalRelay:
                             lambda: subprocess.run(["launchctl", "bootstrap", self.domain, str(agent_path)], check=True, capture_output=True),
                             lambda: self.wait_healthy(settings), stop_candidate)
         self.manifest = manifest
-        self.settings_path = candidate_path
+        self.settings_path = Path(manifest["settings_path"])
+        if str(config_path.parent) in manifest["profile_settings"]:
+            return {"installed": True, "configured": True, "running": True, "restart_required": True,
+                    "settings_path": str(candidate_path), "relay": self.health(settings)}
         return self.status()
+
+    def ensure_profile(self, args):
+        if not args.codex_home:
+            raise ValueError("Profile home required")
+        if not self.settings_path.exists() or not self.status().get("configured"):
+            return {"relayConnected": False}
+        target = Path(args.codex_home).expanduser().resolve()
+        if not target.is_dir():
+            raise ValueError("Profile home does not exist")
+        config_path = target / "config.toml"
+        config = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
+        endpoint = config.get("openai_base_url")
+        for path in registered_settings(self.manifest):
+            settings = json.loads(Path(path).read_text())
+            if Path(settings.get("codex_home", "")).resolve() == target and endpoint == self.endpoint(settings):
+                self.health(settings)
+                return {"relayConnected": True, "restart_required": True}
+        # Existing custom endpoints are rejected by enabled_config, never replaced.
+        self.install(args)
+        return {"relayConnected": True, "restart_required": True}
 
     def status(self):
         if not self.settings_path.exists():
@@ -238,24 +283,34 @@ class LocalRelay:
     def disable(self):
         if not self.settings_path.exists():
             return self.status()
-        settings = self.settings()
-        config_path = Path(settings["codex_home"]) / "config.toml"
-        if config_path.exists():
+        configs = {}
+        for path in registered_settings(self.manifest):
+            settings = json.loads(Path(path).read_text())
+            config_path = Path(settings["codex_home"]) / "config.toml"
+            configs.setdefault(config_path, set()).add(self.endpoint(settings))
+        changes = []
+        for config_path, endpoints in configs.items():
+            if not config_path.exists():
+                continue
             current = config_path.read_text()
             configured = tomllib.loads(current).get("openai_base_url")
-            if configured == self.endpoint(settings):
+            if configured in endpoints:
                 restored = strip_managed_config(current)
                 if restored == current:
                     raise RuntimeError("Configured relay URL has no managed block; refusing to remove unrelated settings")
-                atomic_write(config_path, restored, expected=current)
+                changes.append((config_path, current, restored))
             elif BEGIN in current:
                 raise RuntimeError("Relay endpoint was edited; refusing to overwrite the change")
+        for config_path, current, restored in changes:
+            atomic_write(config_path, restored, expected=current)
         # Leave the relay alive for already-loaded tasks, forwarding without rerouting.
         # New/resumed Codex sessions now connect directly to the original provider.
-        for path in [str(self.settings_path), *self.manifest.get("retired_settings", [])]:
+        for path in registered_settings(self.manifest):
             file = Path(path)
             legacy = json.loads(file.read_text())
             legacy["route"]["to"] = legacy["route"]["from"]
+            if isinstance(legacy.get("taskSavings"), dict):
+                legacy["taskSavings"]["enabled"] = False
             atomic_write(file, json.dumps(legacy, indent=2) + "\n")
         settings = self.settings()
         for _ in range(20):
@@ -268,10 +323,13 @@ class LocalRelay:
                 "next": "Quit and reopen Codex, then run quotapie-compaction stop. The relay remains available to currently loaded tasks until then."}
 
     def stop(self):
-        if self.status().get("configured"):
-            raise RuntimeError("Disable routing before stopping the relay")
+        for path in registered_settings(self.manifest):
+            settings = json.loads(Path(path).read_text())
+            config_path = Path(settings["codex_home"]) / "config.toml"
+            if config_path.exists() and tomllib.loads(config_path.read_text()).get("openai_base_url") == self.endpoint(settings):
+                raise RuntimeError("Disable routing before stopping the relay")
         retained = []
-        for path in [str(self.settings_path), *self.manifest.get("retired_settings", [])]:
+        for path in registered_settings(self.manifest):
             settings = json.loads(Path(path).read_text())
             try:
                 health = self.health(settings)
@@ -295,7 +353,7 @@ class LocalRelay:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["install", "status", "configure", "disable", "stop"])
+    parser.add_argument("action", choices=["install", "ensure-profile", "status", "configure", "disable", "stop"])
     parser.add_argument("--source")
     parser.add_argument("--bun")
     parser.add_argument("--codex-home")
@@ -308,8 +366,8 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX)
         # Another manager may have activated a generation while we waited.
         relay = LocalRelay()
-        if args.action in ["install", "configure"]:
-            result = getattr(relay, args.action)(args)
+        if args.action in ["install", "configure", "ensure-profile"]:
+            result = getattr(relay, args.action.replace("-", "_"))(args)
         else:
             result = getattr(relay, args.action)()
     print(json.dumps(result, indent=2))
