@@ -29,6 +29,10 @@ struct PopoverView: View {
             }
 #endif
             quotaOverview.padding(20)
+            if let error = model.accountOpenError {
+                Text(error).font(.caption).foregroundStyle(.orange)
+                    .padding(.horizontal, 20).padding(.bottom, 12)
+            }
             if let savings = model.payload?.compaction?.savings, savings.policy?.enabled == true {
                 Button { showDetails(.activity) } label: {
                     Label(savings.latest?.summary ?? Strings.t("savings.waiting"), systemImage: "leaf")
@@ -67,6 +71,15 @@ struct PopoverView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .firstTextBaseline) {
                 accountPicker
+                if let account = model.selectedAccount, account.provider == "codex" {
+                    Button { actions.openAccount(account) } label: {
+                        Image(systemName: "arrow.up.forward.app")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(model.openingAccount)
+                    .help(Strings.t("profiles.openAccount", account.accountLabel))
+                    .accessibilityLabel(Strings.t("profiles.openAccount", account.accountLabel))
+                }
                 Spacer(minLength: 8)
                 if let last = model.lastSuccessAt {
                     Text(DisplayFormat.age(since: last))
@@ -123,7 +136,7 @@ struct PopoverView: View {
         Menu {
             ForEach(model.payload?.accounts.filter(\.enabled) ?? []) { account in
                 Button {
-                    model.selectedAccountID = account.id
+                    model.selectAccount(account)
                 } label: {
                     if model.selectedAccount?.id == account.id {
                         Label("\(account.providerTitle) · \(account.accountLabel)", systemImage: "checkmark")

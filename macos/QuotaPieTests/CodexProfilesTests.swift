@@ -3,6 +3,21 @@ import AppKit
 @testable import QuotaPie
 
 final class CodexProfilesTests: XCTestCase {
+    func testAccountOpeningUsesUniqueCollectorBinding() {
+        var main = CodexDesktopProfile.primary
+        main.collectionAccount = "default"
+        let second = CodexDesktopProfile(id: "second", name: main.name, codexHome: "/tmp/account-home",
+                                         appData: "/tmp/account-app", collectionAccount: "second-collector")
+        XCTAssertEqual(CodexDesktopProfile.forAccount("codex/default", in: [second, main]), main)
+        XCTAssertEqual(CodexDesktopProfile.forAccount("codex/second-collector", in: [main, second]), second)
+        XCTAssertNil(CodexDesktopProfile.forAccount("claude/default", in: [main, second]))
+        XCTAssertNil(CodexDesktopProfile.forAccount("codex/unknown", in: [main, second]))
+        var unlinked = main; unlinked.collectionAccount = nil
+        XCTAssertNil(CodexDesktopProfile.forAccount("codex/default", in: [unlinked]))
+        var duplicate = second; duplicate.collectionAccount = "default"
+        XCTAssertNil(CodexDesktopProfile.forAccount("codex/default", in: [main, duplicate]))
+    }
+
     private func bytes(args: [String], environment: [String]) -> [UInt8] {
         let count = UInt32(args.count)
         var result = (0..<4).map { UInt8((count >> ($0 * 8)) & 255) }

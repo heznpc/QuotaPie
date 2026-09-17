@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let popover = NSPopover()
     private let popoverModel = PopoverModel()
     private let resumeLauncher = ResumeLauncher()
+    private let accountLauncher = CodexProfileLauncher()
     private let userNotificationCenter = UNUserNotificationCenter.current()
     private var client: StatusClient?
     private var notificationPresenter: NotificationPresenter?
@@ -177,10 +178,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             retryTask: { [weak self] task in self?.retry(task) },
             dismissTask: { [weak self] task in self?.dismiss(task) },
             quit: { NSApp.terminate(nil) },
+            openAccount: { [weak self] account in self?.openAccount(account) },
             configureCompaction: { [weak self] model in self?.configureCompaction(model) },
             configureSavings: { [weak self] enabled, thread in self?.configureSavings(enabled, thread) },
             configureNotifications: { [weak self] key, enabled in self?.configureNotifications(key, enabled: enabled) }
         )
+    }
+
+    private func openAccount(_ account: AccountState) {
+        guard !popoverModel.openingAccount else { return }
+        popoverModel.accountOpenError = nil
+        guard account.provider == "codex" else { return }
+        guard let profile = CodexDesktopProfile.forAccount(account.id, in: CodexProfilesModel.shared.profiles) else {
+            popoverModel.accountOpenError = Strings.t("profiles.accountNotLinked")
+            return
+        }
+        popoverModel.openingAccount = true
+        // Dismiss before activation so menu dismissal cannot reclaim focus.
+        popover.performClose(nil)
+        accountLauncher.open(profile) { [weak self] result in
+            guard let self else { return }
+            self.popoverModel.openingAccount = false
+            switch result {
+            case .success:
+                self.menuLogger.info("Account window activated")
+            case .failure(let error):
+                self.popoverModel.accountOpenError = error.localizedDescription
+                self.menuLogger.error("Account window activation failed")
+                self.showPopover()
+            }
+        }
     }
 
     private func installPopoverContent() {
