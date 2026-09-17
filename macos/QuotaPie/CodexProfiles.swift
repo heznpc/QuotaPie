@@ -30,6 +30,15 @@ struct CodexDesktopProfile: Codable, Identifiable, Equatable {
     }
     var arguments: [String] { ["--user-data-dir=" + Self.canonical(appData)] }
 
+    /// Match the collector binding, never a display name or the array order.
+    static func forAccount(_ accountID: String, in profiles: [Self]) -> Self? {
+        let matches = profiles.filter { profile in
+            guard let account = profile.collectionAccount, !account.isEmpty else { return false }
+            return accountID == "codex/" + account
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
     static func validate(_ profiles: [Self]) throws {
         var paths: [String] = []
         guard Set(profiles.map(\.id)).count == profiles.count else { throw ProfileError.paths }

@@ -32,6 +32,8 @@ final class PopoverModel: ObservableObject {
     @Published var lastSuccessAt: Date?
     @Published var notificationsAllowed: Bool?
     @Published var resumeActivities: [String: ResumeTaskActivity] = [:]
+    @Published var openingAccount = false
+    @Published var accountOpenError: String?
     @Published var selectedAccountID: String?
     @Published var detailSection: DetailSection?
     @Published var popoverDetailHeight: CGFloat = 600
@@ -78,6 +80,11 @@ final class PopoverModel: ObservableObject {
         return accounts.first { $0.id == selectedAccountID }
             ?? accounts.first { $0.provider == payload?.headline?.provider && $0.account == payload?.headline?.account }
             ?? accounts.first
+    }
+
+    func selectAccount(_ account: AccountState) {
+        selectedAccountID = account.id
+        accountOpenError = nil
     }
 
     var selectedHeadline: Headline? {
@@ -139,6 +146,7 @@ struct PopoverActions {
     let retryTask: (ResumeTask) -> Void
     let dismissTask: (ResumeTask) -> Void
     let quit: () -> Void
+    var openAccount: (AccountState) -> Void = { _ in }
     var configureCompaction: (String) -> Void = { _ in }
     var configureSavings: (Bool?, String?) -> Void = { _, _ in }
     var configureNotifications: (String, Bool) -> Void = { _, _ in }

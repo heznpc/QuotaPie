@@ -534,3 +534,6 @@
 "jobs.reason.accountChanged" = "The login account changed or could not be verified. Restore the original account. Jobs registered by older versions require registration with verified account identity.";
 
 "navigation.overview" = "Overview";
+
+"profiles.accountNotLinked" = "No unique Codex app is linked to this account. Check the connection in Settings → Codex accounts.";
+"profiles.openAccount" = "Open %@ Codex app";

@@ -36,7 +36,10 @@ final class OverviewTests: XCTestCase {
         """#.utf8))
         model.payload = payload
         XCTAssertEqual(model.selectedHeadline?.remainingPercent, 100)
-        model.selectedAccountID = "codex/default"
+        model.accountOpenError = "Previous launch failed"
+        model.selectAccount(payload.accounts[0])
+        XCTAssertFalse(model.openingAccount)
+        XCTAssertNil(model.accountOpenError)
         XCTAssertEqual(model.selectedHeadline?.remainingPercent, 18)
         XCTAssertEqual(model.selectedHeadline?.windowLabel, model.selectedAccount?.overviewWindow?.shortLabel)
         model.applyStatus(payload, notificationRevision: 0)
