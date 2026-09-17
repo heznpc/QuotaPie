@@ -140,7 +140,10 @@ final class ResumeLauncher {
         let allowedEnvironment = executableName == "codex"
             ? Set(["CODEX_HOME"])
             : Set(["CLAUDE_CONFIG_DIR"])
-        guard Set(plan.environment.keys) == allowedEnvironment,
+        let environmentKeys = Set(plan.environment.keys)
+        let validEnvironment = environmentKeys == allowedEnvironment ||
+            (executableName == "claude" && environmentKeys.isEmpty)
+        guard validEnvironment,
               plan.environment.values.allSatisfy({
                   NSString(string: $0).isAbsolutePath && !$0.contains("\0")
               }) else {
@@ -201,7 +204,13 @@ final class ResumeLauncher {
         let environment = plan.environment.keys.sorted().map { key in
             Self.shellQuote("\(key)=\(plan.environment[key]!)")
         }
-        let command = (["/usr/bin/env"] + environment + [Self.shellQuote(plan.executable)]
+        // Terminal can inherit a different Claude profile or credential override.
+        // Clear those first, then apply only this task's explicit profile, if any.
+        let clearedEnvironment = URL(fileURLWithPath: plan.executable).lastPathComponent == "claude"
+            ? ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN",
+               "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"].flatMap { ["-u", $0] }
+            : []
+        let command = (["/usr/bin/env"] + clearedEnvironment + environment + [Self.shellQuote(plan.executable)]
             + plan.arguments.map(Self.shellQuote)).joined(separator: " ")
         let source = """
         #!/bin/zsh

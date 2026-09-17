@@ -1,8 +1,7 @@
 import { spawn } from "node:child_process";
-import { realpathSync } from "node:fs";
-import { homedir } from "node:os";
-import { isAbsolute, basename, resolve } from "node:path";
+import { isAbsolute, basename } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { claudeProfileEnvironment } from "../providers/claude-profile";
 
 export interface JobStepInput {
   provider: "codex" | "claude";
@@ -45,10 +44,6 @@ function authenticationError(value: unknown): boolean {
   return entry !== null && ([entry.code, entry.type, entry.error_code, entry.error].some(
     code => code === "authentication_failed" || code === "authentication_error",
   ) || entry.api_error_status === 401);
-}
-
-function canonicalPath(path: string): string {
-  try { return realpathSync(path); } catch { return resolve(path); }
 }
 
 // Only error envelopes are inspected. Tool output and human-readable messages are
@@ -95,11 +90,7 @@ function executionEnvironment(input: JobStepInput): NodeJS.ProcessEnv {
   env.TERM = "dumb";
   env.NO_COLOR = "1";
   if (input.provider === "codex") env.CODEX_HOME = input.profileRoot;
-  else if (canonicalPath(input.profileRoot) !== canonicalPath(resolve(homedir(), ".claude"))) {
-    // Claude's default native login uses the unqualified Keychain service.
-    // Explicitly setting even ~/.claude selects a different credential namespace.
-    env.CLAUDE_CONFIG_DIR = input.profileRoot;
-  }
+  else Object.assign(env, claudeProfileEnvironment(input.profileRoot));
   return env;
 }
 

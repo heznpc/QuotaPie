@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import * as os from "node:os";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { buildWorkBoundary, writeWorkBoundary } from "../src/work-boundary";
@@ -13,9 +14,11 @@ import type { QuotaObservation } from "../src/types";
 const SESSION = "55555555-5555-4555-8555-555555555555";
 
 describe("resume task API", () => {
-  test("requires the action token, enforces states, and returns a prompt-free Claude plan", async () => {
+  test.each(["default", "custom"])("requires the action token, enforces states, and returns a prompt-free Claude plan (%s profile)", async (profileKind) => {
     const directory = mkdtempSync(resolve(tmpdir(), "quotapie-resume-api-"));
-    const configDir = resolve(directory, "claude");
+    // Exercise the native default namespace without touching the user's Claude data.
+    const home = spyOn(os, "homedir").mockReturnValue(directory);
+    const configDir = resolve(directory, profileKind === "default" ? ".claude" : "claude-custom");
     const cwd = resolve(directory, "project");
     const projectDir = resolve(configDir, "projects", "-project");
     mkdirSync(cwd, { recursive: true });
@@ -111,7 +114,7 @@ describe("resume task API", () => {
       expect(approved.plan).toEqual({
         executable: "claude",
         arguments: ["--resume", SESSION],
-        environment: { CLAUDE_CONFIG_DIR: configDir },
+        environment: profileKind === "default" ? {} : { CLAUDE_CONFIG_DIR: configDir },
         workingDirectory: cwd,
       });
       expect(approved.plan.arguments).not.toContain("--continue");
@@ -146,6 +149,7 @@ describe("resume task API", () => {
     } finally {
       server.stop(true);
       await service.close();
+      home.mockRestore();
       rmSync(directory, { recursive: true, force: true });
     }
   });

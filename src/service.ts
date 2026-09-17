@@ -21,6 +21,7 @@ import type { QuotaStorage } from "./storage/database";
 import { ResumeTaskStore, ResumeTaskStoreError } from "./storage/resume-task-store";
 import { CodexAppServerClient, CodexSnapshotUnavailableError } from "./providers/codex-appserver";
 import { ClaudeUsageError, fetchClaudeUsage, mapClaudeUsage, readClaudeCredentials } from "./providers/claude-oauth";
+import { claudeProfileEnvironment } from "./providers/claude-profile";
 import { resolveLocale, t } from "./i18n";
 import type { Locale } from "./i18n";
 import { nextWakeDelayMs } from "./scheduler";
@@ -807,7 +808,7 @@ export class QuotaPieService {
     return {
       executable: "claude",
       arguments: ["--resume", target.nativeId],
-      environment: { CLAUDE_CONFIG_DIR: configDir },
+      environment: claudeProfileEnvironment(configDir),
       workingDirectory: target.cwd,
     };
   }
