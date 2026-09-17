@@ -67,7 +67,9 @@ test('local connection endpoint requires action token and rejects browser origin
     expect((await post({}, input)).status).toBe(403);
     expect((await post({ 'x-quotapie-action-token': status.actionToken, origin: 'https://example.com' }, input)).status).toBe(403);
     writeFileSync(join(root, 'config.toml'), 'cli_auth_credentials_store = "file"\n');
-    expect((await post({ 'x-quotapie-action-token': status.actionToken }, input)).status).toBe(200);
+    const connected = await post({ 'x-quotapie-action-token': status.actionToken }, input);
+    expect(connected.status).toBe(200);
+    expect((await connected.json() as any).relayConnected).toBe(false);
     const after: any = await (await fetch(base + '/api/status')).json();
     expect(after.accounts.some((a: any) => a.accountLabel === 'Test')).toBe(true);
     expect(loadConfig(path).accounts.codex).toHaveLength(1);

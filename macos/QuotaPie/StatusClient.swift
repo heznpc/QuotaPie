@@ -49,7 +49,7 @@ final class StatusClient {
     private let session: URLSession
     private let sessionDelegate: LocalOnlySessionDelegate
 
-    init(environment: [String: String] = ProcessInfo.processInfo.environment) throws {
+    init(environment: [String: String] = ProcessInfo.processInfo.environment, operationTimeout: TimeInterval = 5) throws {
         let raw = environment["QUOTAPIE_API_URL"] ?? "http://127.0.0.1:47831"
         guard let url = URL(string: raw),
               url.scheme == "http",
@@ -59,8 +59,8 @@ final class StatusClient {
         }
         baseURL = url
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 5
-        configuration.timeoutIntervalForResource = 8
+        configuration.timeoutIntervalForRequest = operationTimeout
+        configuration.timeoutIntervalForResource = max(8, operationTimeout)
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         let delegate = LocalOnlySessionDelegate()
         sessionDelegate = delegate
@@ -81,7 +81,7 @@ final class StatusClient {
     }
 
     func connectProfile(_ profile: CodexDesktopProfile, actionToken: String,
-                        completion: @escaping (Result<String, Error>) -> Void) {
+                        completion: @escaping (Result<ProfileConnectionReply, Error>) -> Void) {
         do {
             var request = try authenticatedPOST(pathComponents: ["api", "profiles", "connect"], actionToken: actionToken)
             request.httpBody = try JSONSerialization.data(withJSONObject: ["name": profile.name, "codexHome": CodexDesktopProfile.canonical(profile.codexHome)])
@@ -98,8 +98,7 @@ final class StatusClient {
                     completion(.failure(ProfileConnectionError(code: code))); return
                 }
                 completion(Result {
-                    struct Reply: Decodable { let account: String }
-                    return try JSONDecoder().decode(Reply.self, from: data).account
+                    try JSONDecoder().decode(ProfileConnectionReply.self, from: data)
                 })
             }.resume()
         } catch { completion(.failure(error)) }
@@ -373,10 +372,15 @@ final class StatusClient {
     }
 }
 
+struct ProfileConnectionReply: Decodable {
+    let account: String
+    let relayConnected: Bool?
+}
+
 struct ProfileConnectionError: LocalizedError {
     let code: String
     var errorDescription: String? {
-        let known = ["isolation_required", "settings_changed", "account_disabled", "profile_overlap"]
+        let known = ["isolation_required", "settings_changed", "account_disabled", "profile_overlap", "profile_relay_failed"]
         return Strings.t(known.contains(code) ? "profiles." + code : "profiles.connectFailed")
     }
 }

@@ -13,7 +13,7 @@ test("savings policy is independent, acknowledges compatible relays, and undo pe
    const dir=join(root,'releases',gen);await mkdir(dir,{recursive:true});const path=join(dir,'settings.json');paths.push(path);
    await writeFile(path,JSON.stringify({port:45000+Number(gen),token:'ab'.repeat(24),route:{from:'gpt-6-astra',to:'gpt-5.6-sol',effort:'low'}}));
   }
-  await writeFile(join(root,'current.json'),JSON.stringify({settings_path:paths[1],retired_settings:[paths[0]]}));
+  await writeFile(join(root,'current.json'),JSON.stringify({settings_path:paths[1],profile_settings:{"/profile/two":paths[0]},retired_settings:[]}));
   const fetcher=(async(url:any)=>{
    const old=String(url).includes('45001');const settings=JSON.parse(await readFile(old?paths[0]!:paths[1]!,'utf8'));
    return Response.json({service:'quotapie-compaction',schemaVersion:old?2:3,savingsModelSupported:true,taskSavings:settings.taskSavings??DEFAULT_TASK_SAVINGS});

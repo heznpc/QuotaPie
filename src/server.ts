@@ -1,3 +1,4 @@
+import { connectProfileRelay } from "./profile-relay";
 import { connectCodexProfile } from "./profile-connection";
 import { ModelNotifications } from "./model-notifications";
 import { buildHeadline } from "./analytics";
@@ -21,7 +22,7 @@ function eventJson(event: QuotaEvent) {
   return { ...event, summary: event.displayText };
 }
 import type { AppConfig } from "./config";
-import { saveNotificationPreferences } from "./config";
+import { codexProfileRoot, saveNotificationPreferences } from "./config";
 import { validateNotificationPatch } from "./notification-preferences";
 import type { QuotaPieService } from "./service";
 
@@ -64,10 +65,12 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           if (body.length > 8192) return json({ error: "invalid_profile" }, 400);
           const connection = connectCodexProfile(config, JSON.parse(body), options.preferencesPath);
           service.requestCollection();
-          return json(connection);
+          const profile = config.accounts.codex.find(profile => profile.id === connection.account)!;
+          const relayConnected = await connectProfileRelay(codexProfileRoot(profile), options.compactionRoot);
+          return json({ ...connection, relayConnected });
         } catch (error) {
           const code = error instanceof Error ? error.message : "connection_failed";
-          return json({ error: ["invalid_profile", "settings_changed", "account_disabled", "isolation_required", "profile_overlap"].includes(code) ? code : "connection_failed" }, 409);
+          return json({ error: ["invalid_profile", "settings_changed", "account_disabled", "isolation_required", "profile_overlap", "profile_relay_failed"].includes(code) ? code : "connection_failed" }, 409);
         }
       }
       if (url.pathname === "/api/task-savings/policy") {

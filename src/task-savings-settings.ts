@@ -9,7 +9,8 @@ export class TaskSavingsSettings {
   constructor(private root: string, private fetcher: typeof fetch = fetch) {}
   private async inspect() {
     const manifest = JSON.parse(await readFile(join(this.root,"current.json"),"utf8"));
-    const paths = [...new Set<string>([manifest.settings_path,...(manifest.retired_settings ?? [])])];
+    const paths = [...new Set<string>([manifest.settings_path,
+      ...(Object.values(manifest.profile_settings ?? {}) as string[]), ...(manifest.retired_settings ?? [])])];
     if (!paths.length || paths.length > 32) throw new Error("invalid_installation");
     const root = await realpath(this.root);
     return Promise.all(paths.map(async (path,index) => {
