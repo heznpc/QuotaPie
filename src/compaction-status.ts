@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { CompactionRequestEvent } from "./codex-compaction";
 import { CompactionPolicySettings, relayHealth } from "./compaction-policy-settings";
 import { TaskSavingsSettings } from "./task-savings-settings";
+import { transportFailure } from "./codex-transport";
 import { safeEffort } from "./codex-compaction-policy";
 
 const savingsReasons = new Set(["disabled", "simple_text_edit", "uncertain_task", "keep_setting", "manual_change", "extended_work", "failure_fallback", "unsupported_model", "unidentified_task", "task_disabled"]);
@@ -25,6 +26,8 @@ function event(value: any): CompactionRequestEvent | null {
     requestedEffort: safeEffort(value.requestedEffort),
     reasoningEffort: safeEffort(value.reasoningEffort),
     at: value.at, durationMs: value.durationMs,
+    ...(Number.isInteger(value.retryCount) && value.retryCount >= 0 && value.retryCount <= 2 ? { retryCount: value.retryCount } : {}),
+    ...(transportFailure({code: value.transportCode}).transportCode ? { transportCode: value.transportCode } : {}),
     ...(savingsReasons.has(value.savingsReason) ? { savingsReason: value.savingsReason } : {}),
     responseModel: typeof value.responseModel === "string" && label.test(value.responseModel) ? value.responseModel : null,
     usage: value.usage && [value.usage.input,value.usage.cachedInput,value.usage.output].every(n=>Number.isSafeInteger(n) && n>=0) && value.usage.cachedInput <= value.usage.input

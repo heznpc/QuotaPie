@@ -171,7 +171,7 @@ describe("Codex compaction request routing", () => {
     try {
       const response = await fetch(`${proxy.baseUrl}/responses`, { method: "POST", body: JSON.stringify(compact) });
       expect(response.status).toBe(502);
-      expect(await response.text()).toBe("Codex upstream unavailable");
+      expect(await response.text()).toBe("QuotaPie relay: upstream_unavailable");
     } finally { proxy.stop(); }
   });
 
