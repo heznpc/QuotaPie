@@ -1,3 +1,4 @@
+import { fetchCodexUpstream, transportFailure } from "./codex-transport";
 import { randomBytes, randomUUID } from "node:crypto";
 import { gunzipSync, inflateSync } from "node:zlib";
 
@@ -21,6 +22,8 @@ export interface CompactionRequestEvent {
   at: string;
   durationMs: number;
   errorCode?: string;
+  transportCode?: string;
+  retryCount?: number;
   savingsReason?: SavingsReason;
   responseModel?: string | null;
   usage?: { input: number; cachedInput: number; output: number } | null;
@@ -108,7 +111,7 @@ export function startCompactionProxy(options: {
       }
       const path = url.pathname.slice(prefix.length);
       if (path === "/quotapie-health" && request.method === "GET") {
-        return Response.json({ service: "quotapie-compaction", schemaVersion: 3, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
+        return Response.json({ service: "quotapie-compaction", schemaVersion: 3, transportRecoveryVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
           route: validateCompactionRoute(route), requests, compactions, attemptedCompactions,
           failedCompactions, cancelledCompactions, unverifiedCompactions, activeRequests, draining,
           active: [...active.values()], recent, lastRequest });
@@ -176,14 +179,17 @@ export function startCompactionProxy(options: {
         return new Response("Invalid or unsupported request body", { status: 400 });
       }
       const started = performance.now();
-      let status = 0, finished = false;
+      let status = 0, finished = false, receivedResponse = false;
+      let retryCount = 0;
+      let transportCode: string | undefined;
       let observer: ResponseCompletionObserver | undefined;
       const cancellation = new AbortController();
       if (event?.routed && event.kind === "compaction") attemptedCompactions++;
       const emit = (phase: CompactionRequestEvent["phase"], errorCode?: string) => {
         if (!event) return;
         const update: CompactionRequestEvent = { ...event, phase, status, at: new Date().toISOString(),
-          durationMs: Math.round(performance.now() - started), ...(errorCode ? { errorCode } : {}),
+          durationMs: Math.round(performance.now() - started), retryCount,
+          ...(transportCode ? { transportCode } : {}), ...(errorCode ? { errorCode } : {}),
           ...(event.kind === "response" ? { responseModel: observer?.responseModel ?? null, usage: observer?.usage ?? null } : {}) };
         lastRequest = update;
         if (phase === "started" || phase === "response_headers") active.set(event.requestId, update);
@@ -221,9 +227,10 @@ export function startCompactionProxy(options: {
       request.signal.addEventListener("abort", onAbort, { once: true });
       if (request.signal.aborted) onAbort();
       try {
-        const response = await upstreamFetch(`${UPSTREAM}${path}${url.search}`, {
+        const response = await fetchCodexUpstream(upstreamFetch, `${UPSTREAM}${path}${url.search}`, {
           method: request.method, headers, body, redirect: "manual", signal: cancellation.signal,
-        });
+        }, code => { retryCount++; transportCode = code; });
+        receivedResponse = true;
         status = response.status;
         if (finished) { await response.body?.cancel(); return new Response(null, { status: 499 }); }
         if ([301, 302, 303, 307, 308].includes(status)) {
@@ -255,7 +262,8 @@ export function startCompactionProxy(options: {
                 observer!.push(next.value);
                 controller.enqueue(next.value);
               }
-            } catch {
+            } catch (error) {
+              transportCode = transportFailure(error).transportCode;
               if (cancellation.signal.aborted) clientClosed();
               else finish("failed", "upstream_stream_interrupted");
               controller.error(new Error("Codex upstream stream interrupted"));
@@ -267,9 +275,16 @@ export function startCompactionProxy(options: {
           },
         });
         return new Response(stream, { status, headers: responseHeaders });
-      } catch {
-        finish(cancellation.signal.aborted ? "cancelled" : "failed", "upstream_unavailable");
-        return new Response("Codex upstream unavailable", { status: 502 });
+      } catch (error) {
+        if (cancellation.signal.aborted) {
+          clientClosed();
+          return new Response(null, { status: 499 });
+        }
+        const failure = transportFailure(error);
+        transportCode = failure.transportCode;
+        const code = receivedResponse ? "relay_response_error" : failure.errorCode;
+        finish("failed", code);
+        return new Response(`QuotaPie relay: ${code}`, { status: 502 });
       }
     },
   });
