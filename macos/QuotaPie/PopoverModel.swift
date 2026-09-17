@@ -78,7 +78,7 @@ final class PopoverModel: ObservableObject {
     var selectedAccount: AccountState? {
         let accounts = payload?.accounts.filter(\.enabled) ?? []
         return accounts.first { $0.id == selectedAccountID }
-            ?? accounts.first { $0.provider == payload?.headline?.provider && $0.account == payload?.headline?.account }
+            ?? accounts.first { $0.provider == "codex" && $0.account == "default" }
             ?? accounts.first
     }
 
@@ -94,6 +94,18 @@ final class PopoverModel: ObservableObject {
     func followCodexFocus(_ identity: CodexProcessIdentity, profiles: [CodexDesktopProfile]) {
         guard let accountID = identity.collectionAccountID(in: profiles) else { return }
         selectedAccountID = accountID
+    }
+
+    /// Quota urgency is not evidence of which desktop account the user is using.
+    /// When another app is frontmost, a single running Codex profile is unambiguous.
+    func selectInitialCodexAccount(frontmost: CodexProcessIdentity?, running: [CodexProcessIdentity],
+                                   profiles: [CodexDesktopProfile]) {
+        if let accountID = frontmost?.collectionAccountID(in: profiles) {
+            selectedAccountID = accountID
+        } else {
+            let accounts = Set(running.compactMap { $0.collectionAccountID(in: profiles) })
+            if accounts.count == 1 { selectedAccountID = accounts.first }
+        }
     }
 
     var activeTasks: [ResumeTask] {

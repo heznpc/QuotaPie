@@ -7,11 +7,27 @@ import Combine
 @main
 struct QuotaPieApp {
     static func main() {
-        let app = NSApplication.shared
-        let delegate = AppDelegate()
-        app.setActivationPolicy(.accessory)
-        app.delegate = delegate
-        app.run()
+        let instance = SingleInstanceLock()
+#if DEBUG
+        let fixturePreview = ProcessInfo.processInfo.environment["QUOTAPIE_DEBUG_AUTO_OPEN"] == "1"
+#else
+        let fixturePreview = false
+#endif
+        do {
+            if !fixturePreview {
+                guard try instance.acquire() else { return }
+            }
+        } catch {
+            fputs("QuotaPie could not acquire its menu bar instance lock.\n", stderr)
+            return
+        }
+        withExtendedLifetime(instance) {
+            let app = NSApplication.shared
+            let delegate = AppDelegate()
+            app.setActivationPolicy(.accessory)
+            app.delegate = delegate
+            app.run()
+        }
     }
 }
 
@@ -88,7 +104,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
             self?.followCodexFocus(app)
         }
-        if let app = NSWorkspace.shared.frontmostApplication { followCodexFocus(app) }
+        let workspace = NSWorkspace.shared
+        let running = workspace.runningApplications.compactMap(codexIdentity)
+        popoverModel.selectInitialCodexAccount(
+            frontmost: workspace.frontmostApplication.flatMap(codexIdentity),
+            running: running, profiles: CodexProfilesModel.shared.profiles
+        )
         render()
         refresh()
         notificationTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -133,9 +154,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func followCodexFocus(_ app: NSRunningApplication) {
-        guard app.bundleIdentifier == "com.openai.codex",
-              let identity = CodexProcessIdentity.read(pid: app.processIdentifier) else { return }
+        guard let identity = codexIdentity(app) else { return }
         popoverModel.followCodexFocus(identity, profiles: CodexProfilesModel.shared.profiles)
+    }
+
+    private func codexIdentity(_ app: NSRunningApplication) -> CodexProcessIdentity? {
+        guard app.bundleIdentifier == "com.openai.codex", !app.isTerminated else { return nil }
+        return CodexProcessIdentity.read(pid: app.processIdentifier)
     }
 
     @objc private func togglePopover() {
