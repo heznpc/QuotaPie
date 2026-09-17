@@ -82,7 +82,10 @@ final class PopoverModel: ObservableObject {
             ?? accounts.first
     }
 
+    private var followsAccountFocus = true
+
     func selectAccount(_ account: AccountState) {
+        followsAccountFocus = false
         selectedAccountID = account.id
         accountOpenError = nil
     }
@@ -93,6 +96,7 @@ final class PopoverModel: ObservableObject {
 
     func followCodexFocus(_ identity: CodexProcessIdentity, profiles: [CodexDesktopProfile]) {
         guard let accountID = identity.collectionAccountID(in: profiles) else { return }
+        followsAccountFocus = true
         selectedAccountID = accountID
     }
 
@@ -100,11 +104,21 @@ final class PopoverModel: ObservableObject {
     /// When another app is frontmost, a single running Codex profile is unambiguous.
     func selectInitialCodexAccount(frontmost: CodexProcessIdentity?, running: [CodexProcessIdentity],
                                    profiles: [CodexDesktopProfile]) {
+        followsAccountFocus = true
+        reconcileRunningCodexAccounts(frontmost: frontmost, running: running, profiles: profiles)
+    }
+
+    /// Preserve an explicit inspection of an offline account. Automatic selection
+    /// follows the remaining running account when the previously focused app exits.
+    func reconcileRunningCodexAccounts(frontmost: CodexProcessIdentity?, running: [CodexProcessIdentity],
+                                       profiles: [CodexDesktopProfile]) {
+        guard followsAccountFocus else { return }
         if let accountID = frontmost?.collectionAccountID(in: profiles) {
             selectedAccountID = accountID
         } else {
             let accounts = Set(running.compactMap { $0.collectionAccountID(in: profiles) })
             if accounts.count == 1 { selectedAccountID = accounts.first }
+            else if let selectedAccountID, !accounts.contains(selectedAccountID) { self.selectedAccountID = nil }
         }
     }
 

@@ -80,3 +80,19 @@ describe("api compatibility during the displayText rename", () => {
     expect(db.recentEvents(1)[0]!.displayText).toBe("stored rendering");
   });
 });
+
+test("runtime identity is captured once, without paths or configuration", async () => {
+  const { runtimeSourceHash } = await import("../src/runtime-identity");
+  const config = structuredClone(DEFAULT_CONFIG);
+  config.dashboard.port = 0;
+  const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
+  const server = startDashboard(service, config);
+  try {
+    const url = `http://127.0.0.1:${server.port}/api/runtime`;
+    const first = await (await fetch(url)).json();
+    expect(first).toEqual(await (await fetch(url)).json());
+    expect(first).toMatchObject({ schemaVersion: 1, pid: process.pid, sourceHash: runtimeSourceHash() });
+    expect(Object.keys(first).sort()).toEqual(["pid", "schemaVersion", "sourceHash", "startedAt"]);
+    expect((await fetch(url, { method: "POST" })).status).toBe(405);
+  } finally { server.stop(true); service.close(); }
+});

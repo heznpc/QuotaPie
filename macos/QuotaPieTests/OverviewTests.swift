@@ -181,3 +181,34 @@ final class OverviewTests: XCTestCase {
                     timeHint: nil, scopeHint: nil, observedVia: "reset-beacon", targetAtMs: target)
     }
 }
+
+extension OverviewTests {
+    func testClosedAutomaticAccountFollowsRemainingAppButManualInspectionSurvives() throws {
+        let model = PopoverModel()
+        let payload = try JSONDecoder().decode(StatusPayload.self, from: Data("""
+        {"events":[],"accounts":[
+          {"provider":"codex","account":"default","accountLabel":"Main","enabled":true,"windows":[],"collection":{"health":"never-attempted","sources":[]}},
+          {"provider":"codex","account":"second","accountLabel":"Second","enabled":true,"windows":[],"collection":{"health":"never-attempted","sources":[]}}
+        ]}
+        """.utf8))
+        model.applyStatus(payload, notificationRevision: 0)
+        let profiles = ["default", "second"].map {
+            CodexDesktopProfile(id: $0, name: $0, codexHome: "/tmp/\($0)-home", appData: "/tmp/\($0)-data", collectionAccount: $0)
+        }
+        let main = CodexProcessIdentity(codexHome: profiles[0].codexHome, appData: profiles[0].appData)
+        let second = CodexProcessIdentity(codexHome: profiles[1].codexHome, appData: profiles[1].appData)
+        model.selectInitialCodexAccount(frontmost: second, running: [main, second], profiles: profiles)
+        XCTAssertEqual(model.selectedAccount?.id, "codex/second")
+        model.reconcileRunningCodexAccounts(frontmost: nil, running: [main], profiles: profiles)
+        XCTAssertEqual(model.selectedAccount?.id, "codex/default")
+        model.selectAccount(payload.accounts[1])
+        model.reconcileRunningCodexAccounts(frontmost: nil, running: [main], profiles: profiles)
+        model.applyStatus(payload, notificationRevision: 0)
+        XCTAssertEqual(model.selectedAccount?.id, "codex/second")
+        model.followCodexFocus(main, profiles: profiles)
+        XCTAssertEqual(model.selectedAccount?.id, "codex/default")
+        model.followCodexFocus(second, profiles: profiles)
+        model.reconcileRunningCodexAccounts(frontmost: nil, running: [], profiles: profiles)
+        XCTAssertEqual(model.selectedAccount?.id, "codex/default")
+    }
+}
