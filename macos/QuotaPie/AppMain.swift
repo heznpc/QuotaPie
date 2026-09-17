@@ -9,7 +9,7 @@ struct QuotaPieApp {
     static func main() {
         let instance = SingleInstanceLock()
 #if DEBUG
-        let fixturePreview = ProcessInfo.processInfo.environment["QUOTAPIE_DEBUG_AUTO_OPEN"] == "1"
+        let fixturePreview = AppVerification.current != nil || ProcessInfo.processInfo.environment["QUOTAPIE_DEBUG_AUTO_OPEN"] == "1"
 #else
         let fixturePreview = false
 #endif
@@ -44,6 +44,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var refreshTimer: Timer?
     private var selectionSubscription: AnyCancellable?
     private var activationObserver: NSObjectProtocol?
+    private var lifecycleObservers: [NSObjectProtocol] = []
+    private let verification = AppVerification.current
+    private var isFixturePreview: Bool {
+#if DEBUG
+        return verification != nil || ProcessInfo.processInfo.environment["QUOTAPIE_DEBUG_AUTO_OPEN"] == "1"
+#else
+        return false
+#endif
+    }
     private var renderedAccountID: String?
     private let menuLogger = Logger(subsystem: "local.quotapie.menubar", category: "MenuBar")
     private var isFetching = false
@@ -56,8 +65,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         do {
-            let client = try StatusClient()
+            let client = try StatusClient(environment: verification.map { ["QUOTAPIE_API_URL": $0.endpoint] }
+                                          ?? ProcessInfo.processInfo.environment)
             self.client = client
+            if isFixturePreview { return }
             let presenter = NotificationPresenter(
                 client: client,
                 scheduler: UserNotificationScheduler(center: userNotificationCenter),
@@ -76,47 +87,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusItem.button?.toolTip = Strings.t("status.tooltip")
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover)
-#if DEBUG
         // A fixture preview is a development window, never a second live meter.
-        statusItem.isVisible = ProcessInfo.processInfo.environment["QUOTAPIE_DEBUG_AUTO_OPEN"] != "1"
-#endif
+        statusItem.isVisible = !isFixturePreview
 
         popover.behavior = .transient
         popover.animates = false
         popover.delegate = self
 
-#if DEBUG
-        if ProcessInfo.processInfo.environment["QUOTAPIE_DEBUG_AUTO_OPEN"] != "1" {
-            AwakeController.shared.start()
-        }
-#else
-        AwakeController.shared.start()
-#endif
+        if !isFixturePreview { AwakeController.shared.start() }
         installPopoverContent()
         installKeyboardShortcuts()
         selectionSubscription = popoverModel.$selectedAccountID
             .removeDuplicates()
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.render() }
-        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
-        ) { [weak self] notification in
-            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-            self?.followCodexFocus(app)
+        if verification == nil {
+            activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+            ) { [weak self] notification in
+                guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+                self?.followCodexFocus(app)
+            }
+            lifecycleObservers = [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification].map { name in
+                NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    let workspace = NSWorkspace.shared
+                    guard let self else { return }
+                    self.popoverModel.reconcileRunningCodexAccounts(
+                        frontmost: workspace.frontmostApplication.flatMap(self.codexIdentity),
+                        running: workspace.runningApplications.compactMap(self.codexIdentity),
+                        profiles: CodexProfilesModel.shared.profiles)
+                }
+            }
+            let workspace = NSWorkspace.shared
+            let running = workspace.runningApplications.compactMap(codexIdentity)
+            popoverModel.selectInitialCodexAccount(
+                frontmost: workspace.frontmostApplication.flatMap(codexIdentity),
+                running: running, profiles: CodexProfilesModel.shared.profiles
+            )
+        } else if let verification {
+            verification.selectInitialAccount(in: popoverModel)
         }
-        let workspace = NSWorkspace.shared
-        let running = workspace.runningApplications.compactMap(codexIdentity)
-        popoverModel.selectInitialCodexAccount(
-            frontmost: workspace.frontmostApplication.flatMap(codexIdentity),
-            running: running, profiles: CodexProfilesModel.shared.profiles
-        )
         render()
         refresh()
-        notificationTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            guard let self, let token = self.currentActionToken else { return }
-            self.notificationPresenter?.statusDidRefresh(actionToken: token)
+        if !isFixturePreview {
+            notificationTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                guard let self, let token = self.currentActionToken else { return }
+                self.notificationPresenter?.statusDidRefresh(actionToken: token)
+            }
+            if let notificationTimer { RunLoop.main.add(notificationTimer, forMode: .common) }
         }
-        if let notificationTimer { RunLoop.main.add(notificationTimer, forMode: .common) }
+        verification?.armTimeout()
 
         if popoverModel.focusedResumeTaskID != nil {
             popoverModel.detailSection = .activity
@@ -149,8 +169,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         refreshTimer?.invalidate()
         notificationTimer?.invalidate()
         if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
+        for observer in lifecycleObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         selectionSubscription?.cancel()
-        AwakeController.shared.stop()
+        if !isFixturePreview { AwakeController.shared.stop() }
     }
 
     private func followCodexFocus(_ app: NSRunningApplication) {
@@ -284,6 +305,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 #endif
 
     private func scheduleRefresh(after seconds: TimeInterval) {
+        guard verification == nil else { return }
         refreshTimer?.invalidate()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
             self?.refresh()
@@ -374,7 +396,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     self.popoverModel.lastError = nil
                     self.popoverModel.statusFailure = nil
                     self.failureIndex = 0
-                    if let actionToken = payload.actionToken, !actionToken.isEmpty {
+                    if !self.isFixturePreview, let actionToken = payload.actionToken, !actionToken.isEmpty {
                         self.userNotificationCenter.getNotificationSettings { [weak self] settings in
                             DispatchQueue.main.async {
                                 guard let self else { return }
@@ -398,6 +420,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     self.scheduleRefresh(after: delay)
                 }
                 self.render()
+                self.verification?.record(model: self.popoverModel, item: self.statusItem,
+                                          content: self.popover.contentViewController)
             }
         }
     }

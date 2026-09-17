@@ -3,6 +3,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 fixture_root="$(mktemp -d -t quotapie-profile-fixture)"
 fixture_app="$fixture_root/Fixture.app"
+trap 'rm -rf "$fixture_root"' EXIT
+fixture_id="local.quotapie.profile-fixture.$(uuidgen)"
 mkdir -p "$fixture_app/Contents/MacOS"
 cat > "$fixture_root/main.swift" <<'SWIFT'
 import AppKit
@@ -24,6 +26,7 @@ cat > "$fixture_app/Contents/Info.plist" <<'PLIST'
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 </dict></plist>
 PLIST
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $fixture_id" "$fixture_app/Contents/Info.plist"
 swiftc -target "$(uname -m)-apple-macos13.0" "$fixture_root/main.swift" -o "$fixture_app/Contents/MacOS/Fixture"
 codesign --force --sign - "$fixture_app"
-QUOTAPIE_TEST_PROFILE_APP="$fixture_app" swift test --filter CodexProfilesTests
+QUOTAPIE_TEST_PROFILE_APP="$fixture_app" swift test "$@"

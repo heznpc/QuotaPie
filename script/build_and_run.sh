@@ -17,6 +17,13 @@ AGENT_PLIST="$HOME/Library/LaunchAgents/$BUNDLE_ID.plist"
 RESTORE_AGENT=0
 PREVIOUS_APP=""
 APP_STARTED=0
+BUILD_CONFIGURATION="${QUOTAPIE_BUILD_CONFIGURATION:-release}"
+
+# Verification owns an isolated debug bundle and loopback fixture. It never
+# unloads the installed launch agent or terminates a user's app.
+if [[ "$MODE" == "--verify" || "$MODE" == "verify" ]]; then
+  exec bun "$ROOT_DIR/script/verify-macos.ts"
+fi
 
 # Every mode assembles the bundle the same way, so the app the packaging script
 # signs is laid out exactly like the one a local run produces. A second copy of
@@ -24,10 +31,10 @@ APP_STARTED=0
 # or Resources gains a file.
 build_bundle() {
   cd "$ROOT_DIR"
-  swift build -c release --product "$APP_NAME"
-  swift build -c release --product QuotaPiePowerHelper
+  swift build -c "$BUILD_CONFIGURATION" --product "$APP_NAME"
+  swift build -c "$BUILD_CONFIGURATION" --product QuotaPiePowerHelper
   local build_binary
-  build_binary="$(swift build -c release --show-bin-path)/$APP_NAME"
+  build_binary="$(swift build -c "$BUILD_CONFIGURATION" --show-bin-path)/$APP_NAME"
 
   rm -rf "$APP_BUNDLE"
   mkdir -p "$APP_MACOS" "$APP_CONTENTS/Resources"
@@ -107,7 +114,13 @@ else
     fi
   done
 fi
-pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+# Terminate only this checkout's app or the exact installed app we will restore.
+for pid in $(pgrep -x "$APP_NAME" || true); do
+  command="$(ps -p "$pid" -o comm=)"
+  if [ "$command" = "$APP_BINARY" ] || { [ -n "$PREVIOUS_APP" ] && [ "$command" = "$PREVIOUS_APP/Contents/MacOS/$APP_NAME" ]; }; then
+    kill -TERM "$pid" 2>/dev/null || true
+  fi
+done
 for _ in {1..50}; do
   pgrep -x "$APP_NAME" >/dev/null || break
   sleep 0.1
@@ -137,19 +150,6 @@ case "$MODE" in
   --telemetry|telemetry)
     open_app
     /usr/bin/log stream --info --style compact --predicate "subsystem == \"$BUNDLE_ID\""
-    ;;
-  --verify|verify)
-    open_app
-    for _ in {1..20}; do
-      if [ -n "$(development_pids)" ]; then
-        sleep 1
-        [ -n "$(development_pids)" ] || break
-        exit 0
-      fi
-      sleep 0.1
-    done
-    echo "$APP_NAME did not remain running" >&2
-    exit 1
     ;;
   *)
     echo "usage: $0 [run|--debug|--logs|--telemetry|--verify|bundle [dest-dir]]" >&2

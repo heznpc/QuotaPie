@@ -71,8 +71,9 @@ final class CodexProfilesTests: XCTestCase {
             throw XCTSkip("Dedicated app fixture required")
         }
         let appURL = URL(fileURLWithPath: path)
-        XCTAssertEqual(Bundle(url: appURL)?.bundleIdentifier, "local.quotapie.profile-fixture")
-        guard Bundle(url: appURL)?.bundleIdentifier == "local.quotapie.profile-fixture" else { return }
+        let fixtureID = try XCTUnwrap(Bundle(url: appURL)?.bundleIdentifier)
+        XCTAssertTrue(fixtureID.hasPrefix("local.quotapie.profile-fixture."))
+        guard fixtureID.hasPrefix("local.quotapie.profile-fixture.") else { return }
         // Inspect Mach-O deployment target before Launch Services can show an alert.
         let executable = try XCTUnwrap(Bundle(url: appURL)?.executableURL)
         let inspector = Process()
@@ -102,7 +103,7 @@ final class CodexProfilesTests: XCTestCase {
         }
         let launcher = CodexProfileLauncher()
         func instances() -> [NSRunningApplication] {
-            NSWorkspace.shared.runningApplications.filter { $0.bundleIdentifier == "local.quotapie.profile-fixture" }
+            NSWorkspace.shared.runningApplications.filter { $0.bundleIdentifier == fixtureID }
         }
         XCTAssertTrue(instances().isEmpty)
         guard instances().isEmpty else { return }
