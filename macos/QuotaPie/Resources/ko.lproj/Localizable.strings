@@ -539,3 +539,11 @@
 "profiles.openAccount" = "%@ Codex 앱 열기";
 "profiles.connectedWithRelay" = "사용량 수집과 모델 전환 중계에 연결했습니다. 이미 열려 있던 앱·작업은 이전 연결을 쓸 수 있습니다. 진행 중인 작업을 마친 뒤 이 계정의 앱을 다시 열어 주세요.";
 "profiles.profile_relay_failed" = "사용량 수집은 등록했지만 모델 전환 중계 연결에 실패했습니다. 직접 지정한 서버 설정이 있다면 보존됩니다. 중계 상태를 확인한 뒤 다시 연결해 주세요.";
+
+"pool.enabled" = "새 작업 계정 자동 배정";
+"pool.lastCompleted" = "최근 응답 처리: %@";
+"pool.lastRouted" = "최근 요청 배정: %@";
+"pool.loginUnchanged" = "위 잔여량은 선택한 계정 기준입니다.";
+"pool.waiting" = "새 작업에서 사용할 계정을 배정합니다.";
+"pool.disabled" = "새 계정 배정 꺼짐 · 기존 연결 유지";
+"pool.blocked" = "계정 라우팅이 중단됐습니다. 계정·인증·잔여량을 확인하세요.";

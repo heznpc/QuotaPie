@@ -1,6 +1,8 @@
-import { readFileSync, unwatchFile, watchFile } from "node:fs";
+import { readFileSync, realpathSync, unwatchFile, watchFile } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { AccountPool, poolAccounts, readPoolPolicy } from "./account-pool";
+import { codexProfileRoot, loadConfig } from "./config";
 import { DEFAULT_TASK_SAVINGS, validateTaskSavings, type TaskSavingsPolicy } from "./task-savings";
 import { startCompactionProxy, validateCompactionRoute, type CompactionRoute } from "./codex-compaction";
 
@@ -29,8 +31,14 @@ const supportsSavings = () => {
     return catalog.models?.some((m: any) => m.slug === "gpt-5.6-luna" && m.supported_reasoning_levels?.some((r: any) => r.effort === "low")) === true;
   } catch { return false; }
 };
+const config = () => loadConfig();
+const sourceAccount = config().accounts.codex.find(p => {
+  try { return realpathSync(codexProfileRoot(p)) === realpathSync(settings.codex_home ?? homedir() + "/.codex"); } catch { return false; }
+})?.id;
+const accountPool = sourceAccount ? new AccountPool({ sourceAccount, accounts: () => poolAccounts(config()), policy: () => readPoolPolicy() }) : undefined;
 const proxy = startCompactionProxy({
   ...settings,
+  accountPool,
   savingsModelSupported: supportsSavings,
   onRequest: (event) => {
     if (event.kind === "compaction" || event.kind === "response") {
@@ -50,6 +58,6 @@ watchFile(settingsPath, { interval: 500 }, () => {
     Object.assign(settings.taskSavings!, savings);
   } catch { console.error("Relay settings reload failed; retaining current route"); }
 });
-const stop = () => { unwatchFile(settingsPath); proxy.stop(); process.exit(0); };
+const stop = () => { unwatchFile(settingsPath); proxy.stop(); accountPool?.close(); process.exit(0); };
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);

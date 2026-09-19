@@ -29,6 +29,16 @@ struct PopoverView: View {
             }
 #endif
             quotaOverview.padding(20)
+            if let pool = model.payload?.accountPool, pool.enabled || !pool.recent.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    Label(Strings.t(pool.enabled ? "pool.enabled" : "pool.disabled"), systemImage: "arrow.triangle.branch")
+                    if pool.error != nil { Text(Strings.t("pool.blocked")).foregroundStyle(.orange) }
+                    if let request = pool.recent.first {
+                        Text(Strings.t(request.state == "completed" ? "pool.lastCompleted" : "pool.lastRouted", request.accountLabel))
+                        Text(Strings.t("pool.loginUnchanged")).foregroundStyle(.secondary)
+                    } else { Text(Strings.t("pool.waiting")).foregroundStyle(.secondary) }
+                }.font(.caption).padding(.horizontal, 20).padding(.bottom, 12)
+            }
             if let error = model.accountOpenError {
                 Text(error).font(.caption).foregroundStyle(.orange)
                     .padding(.horizontal, 20).padding(.bottom, 12)

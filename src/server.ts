@@ -1,6 +1,7 @@
 import { connectProfileRelay } from "./profile-relay";
 import { connectCodexProfile } from "./profile-connection";
 import { ModelNotifications } from "./model-notifications";
+import { poolStatus } from "./account-pool";
 import { buildHeadline } from "./analytics";
 import { captureRuntimeIdentity } from "./runtime-identity";
 import { CompactionStatusReader } from "./compaction-status";
@@ -246,6 +247,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           resetSignals: service.signalCollector.status(nowMs),
           resetTracking: service.resetTracking(nowMs, accounts),
           compaction: compaction.snapshot(nowMs),
+          accountPool: (() => { try { return poolStatus(); } catch { return { enabled: false, accounts: [], recent: [], error: "pool_status_unavailable" }; } })(),
           // Kept for existing consumers. It only contains accounts that have
           // windows, so new consumers should read accounts instead.
           statuses: service.statuses(nowMs),

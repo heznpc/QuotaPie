@@ -332,6 +332,8 @@ Usage:
   quotapie explain [--account ID] [--json]
                                  Explain resets, relief, re-bases, and paid-credit changes
   quotapie accounts [--json]    Show local account aliases and isolated profile roots
+  quotapie pool enable --accounts ID,ID | disable | status
+                                 Assign new text tasks across registered Codex accounts
   quotapie pause [--provider codex|claude] [--account ID] [--session UUID]
                  [--cwd PATH] [--label NAME] [--bucket ID] [--json]
                                  Register this task for an explicit resume after quota recovers
@@ -363,6 +365,8 @@ Environment:
   quotapie explain [--account ID] [--json]
                                  리셋, 충전, 시각 재조정, 유료 크레딧 변화 설명
   quotapie accounts [--json]    로컬 계정 별칭과 격리된 프로필 경로 표시
+  quotapie pool enable --accounts ID,ID | disable | status
+                                 등록된 Codex 계정에 새 텍스트 작업 자동 배정
   quotapie pause [--provider codex|claude] [--account ID] [--session UUID]
                  [--cwd PATH] [--label NAME] [--bucket ID] [--json]
                                  한도 회복 후 명시적으로 재개할 작업 등록
