@@ -151,6 +151,24 @@ To use the CLI from anywhere, add the project's `bin` to your `PATH`, or link `b
 
 For real use, keep the runtime in `~/.local/lib/quotapie` and link it as `~/.local/bin/quotapie`. macOS can block `launchd` from reaching Documents with `Operation not permitted`, so the resident service and the Claude status line are more reliable when they run from a copy outside that protected path. The source directory stays the reference copy.
 
+## Codex account pool
+
+After installing the current resident relay for each participating profile, run
+`quotapie pool enable --accounts ID,ID` with IDs from `quotapie accounts`.
+New text tasks use the eligible account with the most remaining shared quota.
+Each task's serving account is persisted across restarts. Existing histories
+stay with their original account; failed requests are never replayed on another
+account. Cross-account attachments and models with unverified quota scope are
+blocked. The menu bar distinguishes the selected account's quota from the recent
+serving account.
+
+`quotapie pool status` reports routing; `quotapie pool disable` stops assigning
+new tasks while preserving existing bindings. Finish loaded work and reopen
+Codex to load a newly installed relay. This uses separate registered logins;
+it does not merge their subscriptions. Real cross-account text requests and
+continuation have been exercised; desktop preflight with a truly exhausted
+login remains unverified.
+
 ## Automatic task savings (Auto)
 
 In the native app, open **Settings → Task savings**. Clear, short text edits

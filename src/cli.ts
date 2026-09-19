@@ -23,6 +23,7 @@ import type { Provider } from "./types";
 import { configureAwakeHooks, releaseAwakeTask } from "./awake";
 import { runCompactionCodex } from "./codex-compaction";
 import { runJobsCommand } from "./jobs/cli";
+import { runPoolCommand } from "./account-pool";
 
 const ROOT = resolve(import.meta.dir, "..");
 const BIN = resolve(ROOT, "bin", "quotapie");
@@ -240,6 +241,7 @@ let outputLocale = resolveLocale("auto");
 async function main(): Promise<number> {
   const [command = "status", ...args] = process.argv.slice(2);
   outputLocale = configuredLocale();
+  if (command === "pool") return runPoolCommand(args);
   if (command === "codex") {
     return runCompactionCodex(args, loadConfig().collection.codexCommand);
   }

@@ -539,3 +539,11 @@
 "profiles.openAccount" = "Open %@ Codex app";
 "profiles.connectedWithRelay" = "Connected quota collection and model routing. Existing apps and tasks may still use their previous connection. Reopen this profile app after current work finishes.";
 "profiles.profile_relay_failed" = "Quota collection was registered, but model routing could not be connected. Custom server settings are preserved. Check the relay and connect again.";
+
+"pool.enabled" = "Automatic account selection for new tasks";
+"pool.lastCompleted" = "Last response served by: %@";
+"pool.lastRouted" = "Last request assigned to: %@";
+"pool.loginUnchanged" = "Quota above belongs to the selected account.";
+"pool.waiting" = "An account will be selected for a new task.";
+"pool.disabled" = "New routing off · existing bindings retained";
+"pool.blocked" = "Account routing is blocked. Check accounts, sign-in and quota.";

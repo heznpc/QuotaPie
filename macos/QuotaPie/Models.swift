@@ -13,6 +13,7 @@ struct StatusPayload: Decodable {
     let resetSignals: ResetSignalPayload?
     let resetTracking: ResetTracking?
     let compaction: CompactionPayload?
+    var accountPool: AccountPoolPayload? = nil
     var notificationPreferences: NotificationPreferences?
 
     init(from decoder: Decoder) throws {
@@ -27,12 +28,29 @@ struct StatusPayload: Decodable {
         resetSignals = try values.decodeIfPresent(ResetSignalPayload.self, forKey: .resetSignals)
         resetTracking = try values.decodeIfPresent(ResetTracking.self, forKey: .resetTracking)
         compaction = try values.decodeIfPresent(CompactionPayload.self, forKey: .compaction)
+        accountPool = try values.decodeIfPresent(AccountPoolPayload.self, forKey: .accountPool)
         notificationPreferences = try values.decodeIfPresent(NotificationPreferences.self, forKey: .notificationPreferences)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case nowMs, headline, accounts, events, actionToken, resumeTasks, jobs, resetSignals, resetTracking, compaction, notificationPreferences
+        case nowMs, headline, accounts, events, actionToken, resumeTasks, jobs, resetSignals, resetTracking, compaction, notificationPreferences, accountPool
     }
+}
+
+struct AccountPoolPayload: Decodable {
+    let enabled: Bool
+    let accounts: [String]
+    let recent: [RoutedAccountRequest]
+    var error: String? = nil
+}
+
+struct RoutedAccountRequest: Decodable {
+    let sourceAccount: String
+    let account: String
+    let accountLabel: String
+    let state: String
+    let status: Int
+    let atMs: Double
 }
 
 /// Public execution metadata only. Registration and approval stay in the CLI;

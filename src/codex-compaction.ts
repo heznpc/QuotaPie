@@ -5,6 +5,7 @@ import { gunzipSync, inflateSync } from "node:zlib";
 import { DEFAULT_COMPACTION_ROUTE, isCompaction, object, routeCompaction, safeEffort, validateCompactionRoute, type CompactionRoute } from "./codex-compaction-policy";
 import { DEFAULT_TASK_SAVINGS, TaskSavingsRouter, validateTaskSavings, type TaskSavingsPolicy, type SavingsReason } from "./task-savings";
 import { ResponseCompletionObserver } from "./codex-compaction-stream";
+import { PoolError, type AccountPool, type PoolRoute } from "./account-pool";
 export { DEFAULT_COMPACTION_ROUTE, routeCompaction, validateCompactionRoute, type CompactionRoute } from "./codex-compaction-policy";
 
 export interface CompactionRequestEvent {
@@ -27,6 +28,7 @@ export interface CompactionRequestEvent {
   savingsReason?: SavingsReason;
   responseModel?: string | null;
   usage?: { input: number; cachedInput: number; output: number } | null;
+  accountRouting?: PoolRoute;
 }
 
 function protocolId(value: unknown): string | null {
@@ -82,6 +84,7 @@ export function startCompactionProxy(options: {
   taskSavings?: TaskSavingsPolicy;
   savingsModelSupported?: () => boolean;
   fetchUpstream?: (url: string, init: RequestInit) => Promise<Response>;
+  accountPool?: AccountPool;
 } = {}) {
   const route = options.route ?? { ...DEFAULT_COMPACTION_ROUTE };
   validateCompactionRoute(route);
@@ -111,7 +114,7 @@ export function startCompactionProxy(options: {
       }
       const path = url.pathname.slice(prefix.length);
       if (path === "/quotapie-health" && request.method === "GET") {
-        return Response.json({ service: "quotapie-compaction", schemaVersion: 3, transportRecoveryVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
+        return Response.json({ service: "quotapie-compaction", schemaVersion: 3, accountPoolVersion: options.accountPool ? 1 : 0, transportRecoveryVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
           route: validateCompactionRoute(route), requests, compactions, attemptedCompactions,
           failedCompactions, cancelledCompactions, unverifiedCompactions, activeRequests, draining,
           active: [...active.values()], recent, lastRequest });
@@ -129,12 +132,13 @@ export function startCompactionProxy(options: {
       if (!/^\/[a-zA-Z0-9_/-]+$/.test(path) || !["GET", "POST"].includes(request.method)) {
         return new Response("Unsupported route", { status: 400 });
       }
-      const headers = transportHeaders(request.headers);
+      let headers = transportHeaders(request.headers);
       // Bun fetch decompresses upstream responses; request identity to keep streaming simple.
       headers.set("accept-encoding", "identity");
       let body: Uint8Array<ArrayBuffer> | string | undefined;
       let expectsSse = false;
       let event: Omit<CompactionRequestEvent, "phase" | "status" | "at" | "durationMs"> | undefined;
+      let poolSelection: ReturnType<AccountPool["select"]> = null;
       // Freeze the policy for this request. A live policy update cannot change
       // its target, effort, or attribution after the request has been sent.
       const policy = validateCompactionRoute(route);
@@ -166,6 +170,11 @@ export function startCompactionProxy(options: {
                 requestedEffort: safeEffort(object(input.reasoning) ? input.reasoning.effort : null),
                 reasoningEffort: safeEffort(object(outgoing.reasoning) ? outgoing.reasoning.effort : null),
               };
+              if (options.accountPool) {
+                poolSelection = options.accountPool.select({ threadId: event.threadId, requestId: event.requestId,
+                  body: input, model: event.to, headers });
+                if (poolSelection) { headers = poolSelection.headers; event.accountRouting = poolSelection.route; }
+              }
             }
             // Unchanged requests retain their exact original bytes and encoding.
             if (routed.routed) {
@@ -174,8 +183,11 @@ export function startCompactionProxy(options: {
             }
           }
         }
-      } catch {
+      } catch (error) {
         activeRequests--;
+        if (options.accountPool) { try { options.accountPool.reject(error instanceof PoolError ? error.code : "pool_request_rejected"); } catch {} }
+        if (error instanceof PoolError) return Response.json({ error: { message: error.code, type: "quotapie_account_pool", code: error.code } }, { status: error.status });
+        if (options.accountPool) return Response.json({ error: { message: "pool_request_rejected", type: "quotapie_account_pool" } }, { status: 503 });
         return new Response("Invalid or unsupported request body", { status: 400 });
       }
       const started = performance.now();
@@ -214,6 +226,7 @@ export function startCompactionProxy(options: {
           if (phase === "unverified") unverifiedCompactions++;
         }
         emit(phase, errorCode);
+        if (poolSelection && event) { try { options.accountPool!.finish(event.requestId, phase); } catch { /* telemetry must not replay inference */ } }
       };
       const clientClosed = () => {
         // Codex closes its SSE reader immediately after response.completed;
@@ -232,6 +245,7 @@ export function startCompactionProxy(options: {
         }, code => { retryCount++; transportCode = code; });
         receivedResponse = true;
         status = response.status;
+        if (poolSelection && event) { try { options.accountPool!.response(event.requestId, poolSelection.identity, status, response.headers.get("retry-after")); } catch { /* do not replay a dispatched request */ } }
         if (finished) { await response.body?.cancel(); return new Response(null, { status: 499 }); }
         if ([301, 302, 303, 307, 308].includes(status)) {
           await response.body?.cancel(); finish("failed", "upstream_redirect");

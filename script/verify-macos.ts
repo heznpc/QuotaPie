@@ -61,7 +61,8 @@ async function run() {
     collection: { health: "recent-success", sources: [] } });
   // Independent expected values: no production account-selection or headline code.
   const payload = { headline: { kind: "normal", provider: "codex", account: "second", remainingPercent: 100 },
-    accounts: [account("default", "Main", 18), account("second", "Second", 100)], events: [], resumeTasks: [] };
+    accounts: [account("default", "Main", 18), account("second", "Second", 100)], events: [], resumeTasks: [],
+    accountPool: {enabled:true, accounts:["default","second"], recent:[{sourceAccount:"default",account:"second",accountLabel:"Second",state:"completed",status:200,atMs:Date.now()}]} };
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: request => {
     if (request.method !== "GET" || new URL(request.url).pathname !== "/api/status") return new Response("Unexpected request", { status: 400 });
     return malformed ? new Response("{invalid", { headers: { "content-type": "application/json" } }) : Response.json(payload);
