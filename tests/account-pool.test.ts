@@ -3,11 +3,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { AccountPool, isFreshTextTurn, poolStatus, savePoolPolicy, type PoolAccount } from "../src/account-pool";
 import { startCompactionProxy } from "../src/codex-compaction";
 
 const now=2_000_000_000_000;
 const body={model:"gpt-6-astra",input:[{role:"user",content:"synthetic"}],stream:true};
+const inlineImage = { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=" };
 function account(id:string,remaining:number):PoolAccount {return {id,label:id,identity:id+"-identity",accessToken:id+"-token",upstreamAccount:id+"-remote",tokenExpiresAt:now+3600_000,models:[body.model],remaining,validUntil:now+60_000};}
 function fixture(work:(f:{pool:AccountPool; accounts:PoolAccount[]; policy:{enabled:boolean;accounts:string[]};path:string;select:(thread?:string,input?:unknown)=>ReturnType<AccountPool["select"]>})=>void) {
   const dir=mkdtempSync(join(tmpdir(),"qp-pool-test-")),path=join(dir,"pool.sqlite3");
@@ -78,6 +80,59 @@ test("first text input accepts system context but rejects opaque continuation",(
   expect(isFreshTextTurn({...body,input:[{role:"developer",content:"rules"},...body.input,...body.input]})).toBe(true);
   expect(isFreshTextTurn({...body,conversation:"old"})).toBe(false);
   expect(isFreshTextTurn({...body,input:[]})).toBe(false);
+});
+
+test("a pinned conversation accepts inline images and keeps its account on follow-up", () => fixture(({ select, policy, accounts }) => {
+  const thread = randomUUID();
+  expect(select(thread)?.route.account).toBe("b");
+  accounts[0]!.remaining = 99;
+  policy.enabled = false;
+  const imageTurn = { ...body, input: [...body.input, { role: "assistant", content: "previous response" },
+    { role: "user", content: [inlineImage, { type: "input_text", text: "describe" }] }] };
+  expect(select(thread, imageTurn)?.route).toMatchObject({ account: "b", reason: "pinned" });
+  expect(select(thread, { ...imageTurn, input: [...imageTurn.input, { role: "user", content: "follow-up" }] })?.route.account).toBe("b");
+  expect(select(thread, { ...body, input: [{ type: "function_call_output", output: [inlineImage] }] })?.route.account).toBe("b");
+}));
+
+test("account-scoped or unverified attachment references cannot silently switch a binding", () => fixture(({ select }) => {
+  const thread = randomUUID(); select(thread);
+  for (const attachment of [
+    { type: "input_image", file_id: "file-private" },
+    { ...inlineImage, file_id: "file-private" },
+    { type: "input_image", image_url: "https://example.com/private-image" },
+    { type: "input_image", image_url: "data:image/png;base64," },
+    { type: "input_file", file_id: "file-private" },
+  ]) {
+    for (const item of [{ role: "user", content: [attachment] }, { type: "function_call_output", output: [attachment] }])
+      expect(() => select(thread, { ...body, input: [item] })).toThrow("pool_attachment_account_unverified");
+  }
+  expect(select(thread)?.route.account).toBe("b");
+}));
+
+test("a first image turn stays on the source account", () => fixture(({ select, accounts }) => {
+  accounts[0]!.remaining = 20;
+  expect(select(randomUUID(), { ...body, input: [{ role: "user", content: [inlineImage] }] })?.route.account).toBe("a");
+}));
+
+test("proxy forwards compressed inline images unchanged through the pinned account", async () => {
+  const pool = new AccountPool({ path: ":memory:", sourceAccount: "a", accounts: () => [account("a", 0), account("b", 75)],
+    policy: () => ({ enabled: true, accounts: ["a", "b"] }), now: () => now });
+  const forwarded: Uint8Array[] = [];
+  const proxy = startCompactionProxy({ accountPool: pool, fetchUpstream: async (_, init) => {
+    expect(new Headers(init.headers).get("authorization")).toBe("Bearer b-token");
+    forwarded.push(new Uint8Array(init.body as Uint8Array));
+    return new Response('data: {"type":"response.completed","response":{"status":"completed"}}\n\n',
+      { headers: { "content-type": "text/event-stream" } });
+  } });
+  try {
+    const headers = { authorization: "Bearer a-token", "chatgpt-account-id": "a-remote", session_id: randomUUID() };
+    await (await fetch(proxy.baseUrl + "/responses", { method: "POST", headers, body: JSON.stringify(body) })).text();
+    const compressed = gzipSync(JSON.stringify({ ...body, input: [{ role: "user", content: [inlineImage] }] }));
+    const response = await fetch(proxy.baseUrl + "/responses", { method: "POST", headers: { ...headers, "content-encoding": "gzip" }, body: compressed });
+    expect(response.status).toBe(200); await response.text();
+    expect(forwarded).toHaveLength(2);
+    expect(forwarded[1]).toEqual(new Uint8Array(compressed));
+  } finally { proxy.stop(); pool.close(); }
 });
 
 test("real proxy records selected account and never replays a 429",async()=>{
