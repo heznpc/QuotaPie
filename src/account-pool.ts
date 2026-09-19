@@ -79,9 +79,18 @@ export function isFreshTextTurn(body: any): boolean {
   return users >= 1;
 }
 
-function hasAttachments(body: any): boolean {
+function hasUnverifiedAttachments(body: any): boolean {
+  // Inline image bytes travel with the request and do not refer to a file
+  // uploaded under the login account. A later screenshot must not strand an
+  // already-bound text conversation. Keep the binding and body unchanged.
+  const unverified = (part: any): boolean => {
+    if (part?.type === "input_file") return true;
+    if (part?.type !== "input_image") return false;
+    return part.file_id != null || typeof part.image_url !== "string" ||
+      !/^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/.test(part.image_url);
+  };
   return Array.isArray(body?.input) && body.input.some((item: any) =>
-    Array.isArray(item?.content) && item.content.some((c: any) => ["input_image", "input_file"].includes(c?.type)));
+    [item?.content, item?.output].some(parts => Array.isArray(parts) && parts.some(unverified)));
 }
 
 type Binding = { account: string; identity: string; source_identity: string; label: string };
@@ -136,7 +145,7 @@ export class AccountPool {
       if (cooling(selected) || selected.remaining === 0 && selected.validUntil > now) throw new PoolError("pool_bound_account_exhausted", 429);
       if (selected.id !== sourceID && !selected.models.includes(input.model)) throw new PoolError("pool_model_unavailable", 409);
       if (selected.id !== sourceID && !SHARED_QUOTA_MODELS.has(input.model)) throw new PoolError("pool_quota_scope_unsupported", 409);
-      if (selected.id !== sourceID && hasAttachments(input.body)) throw new PoolError("pool_attachment_account_unverified", 409);
+      if (selected.id !== sourceID && hasUnverifiedAttachments(input.body)) throw new PoolError("pool_attachment_account_unverified", 409);
       this.db.query(`INSERT INTO bindings VALUES (?,?,?,?,?,?,?) ON CONFLICT(source,thread) DO UPDATE SET updated_ms=excluded.updated_ms`)
         .run(sourceID, thread, selected.id, selected.identity, source.identity, selected.label, now);
       this.db.query("INSERT INTO requests(id,source,thread,account,label,reason,state,at_ms) VALUES (?,?,?,?,?,?,?,?)")

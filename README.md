@@ -158,15 +158,17 @@ After installing the current resident relay for each participating profile, run
 New text tasks use the eligible account with the most remaining shared quota.
 Each task's serving account is persisted across restarts. Existing histories
 stay with their original account; failed requests are never replayed on another
-account. Cross-account attachments and models with unverified quota scope are
-blocked. The menu bar distinguishes the selected account's quota from the recent
+account. Later screenshots embedded as image data stay on the bound account;
+account-scoped file references, remote image URLs, and models with unverified
+quota scope are blocked. The menu bar distinguishes the selected account's quota from the recent
 serving account.
 
 `quotapie pool status` reports routing; `quotapie pool disable` stops assigning
 new tasks while preserving existing bindings. Finish loaded work and reopen
 Codex to load a newly installed relay. This uses separate registered logins;
-it does not merge their subscriptions. Real cross-account text requests and
-continuation have been exercised; desktop preflight with a truly exhausted
+it does not merge their subscriptions. Real cross-account text requests,
+inline image attachments, and subsequent continuation have been exercised;
+desktop preflight with a truly exhausted
 login remains unverified.
 
 ## Automatic task savings (Auto)
