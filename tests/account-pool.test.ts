@@ -118,7 +118,8 @@ test("proxy forwards compressed inline images unchanged through the pinned accou
   const pool = new AccountPool({ path: ":memory:", sourceAccount: "a", accounts: () => [account("a", 0), account("b", 75)],
     policy: () => ({ enabled: true, accounts: ["a", "b"] }), now: () => now });
   const forwarded: Uint8Array[] = [];
-  const proxy = startCompactionProxy({ accountPool: pool, fetchUpstream: async (_, init) => {
+  const events: any[] = [];
+  const proxy = startCompactionProxy({ accountPool: pool, onRequest: e => events.push(e), fetchUpstream: async (_, init) => {
     expect(new Headers(init.headers).get("authorization")).toBe("Bearer b-token");
     forwarded.push(new Uint8Array(init.body as Uint8Array));
     return new Response('data: {"type":"response.completed","response":{"status":"completed"}}\n\n',
@@ -132,6 +133,7 @@ test("proxy forwards compressed inline images unchanged through the pinned accou
     expect(response.status).toBe(200); await response.text();
     expect(forwarded).toHaveLength(2);
     expect(forwarded[1]).toEqual(new Uint8Array(compressed));
+    expect(events.filter(e => e.phase === "completed").map(e => e.inlineImageCount)).toEqual([0, 1]);
   } finally { proxy.stop(); pool.close(); }
 });
 
@@ -201,3 +203,58 @@ test("separate relay processes agree on a single durable account for concurrent 
     expect(results[0]).toBe(results[1]);
   } finally { for (const child of children) child.kill(); rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("observed source credentials survive refresh and relay restart without accepting another login", () => fixture(({pool, accounts, policy, path, select}) => {
+  const thread = randomUUID(); select(thread);
+  accounts[0]!.accessToken = "a-refreshed-token";
+  expect(select(thread)?.headers.get("authorization")).toBe("Bearer b-token");
+  const restarted = new AccountPool({path, sourceAccount:"a", accounts:()=>accounts, policy:()=>policy, now:()=>now});
+  const input = {threadId:thread, requestId:randomUUID(), body, model:body.model,
+    headers:new Headers({authorization:"Bearer a-token", "chatgpt-account-id":"a-remote"})};
+  try {
+    expect(restarted.select(input)?.route.account).toBe("b");
+    input.headers.set("authorization", "Bearer forged-token");
+    expect(()=>restarted.select({...input,requestId:randomUUID()})).toThrow("pool_source_identity_mismatch");
+    accounts[0]!.identity = "another-login";
+    input.headers.set("authorization", "Bearer a-token");
+    expect(()=>restarted.select({...input,requestId:randomUUID()})).toThrow("pool_source_identity_mismatch");
+  } finally {restarted.close();}
+}));
+
+test("expired remembered source credentials are rejected", () => {
+  let time = now;
+  const accounts = [account("a", 20), account("b", 75)];
+  accounts[0]!.tokenExpiresAt = now + 60_000;
+  const pool = new AccountPool({path:":memory:",sourceAccount:"a",accounts:()=>accounts,policy:()=>({enabled:true,accounts:["a","b"]}),now:()=>time});
+  accounts[0]!.accessToken = "refreshed"; accounts[0]!.tokenExpiresAt = now + 3600_000; time += 60_000;
+  try { expect(()=>pool.select({threadId:randomUUID(),requestId:randomUUID(),body,model:body.model,
+    headers:new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"})})).toThrow("pool_source_identity_mismatch"); }
+  finally {pool.close();}
+});
+
+test("forks inherit the ancestor binding even after new selection is disabled", () => fixture(({select, accounts, policy, path}) => {
+  const parent=randomUUID(), child=randomUUID(), middle=randomUUID(); select(parent);
+  accounts[0]!.remaining=99; policy.enabled=false;
+  const parents:Record<string,string> = {[child]:middle,[middle]:parent};
+  const pool=new AccountPool({path,sourceAccount:"a",accounts:()=>accounts,policy:()=>policy,now:()=>now,
+    forkParent:thread=>({status:"known",parentId:parents[thread]??null})});
+  try {
+    expect(pool.select({threadId:child,requestId:randomUUID(),body:{...body,input:[{type:"compaction",encrypted_content:"opaque"}]},model:body.model,
+      headers:new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"})})?.route).toMatchObject({account:"b",reason:"pinned"});
+    expect(select(child)?.route.account).toBe("b");
+    accounts[1]!.identity="replaced";
+    expect(()=>select(child)).toThrow("pool_bound_identity_changed");
+  } finally {pool.close();}
+}));
+
+test("unavailable or cyclic fork metadata cannot create a source binding", () => fixture(({accounts, policy, path}) => {
+  const thread=randomUUID(); let cycle=false;
+  const pool=new AccountPool({path,sourceAccount:"a",accounts:()=>accounts,policy:()=>policy,now:()=>now,
+    forkParent:()=>cycle?{status:"known",parentId:thread}:{status:"unknown"}});
+  const input={threadId:thread,requestId:randomUUID(),body,model:body.model,
+    headers:new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"})};
+  try {
+    expect(()=>pool.select(input)).toThrow("pool_lineage_unavailable"); cycle=true;
+    expect(()=>pool.select(input)).toThrow("pool_lineage_invalid");
+  } finally {pool.close();}
+}));

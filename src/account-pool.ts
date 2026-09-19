@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { codexProfileRoot, codexUsesFileCredentials, dataDirectory, loadConfig, type AppConfig } from "./config";
+import type { CodexForkParentResult } from "./account-pool-lineage";
 import { defaultWorkBoundaryPath, profileReference } from "./work-boundary";
 
 export interface PoolPolicy { enabled: boolean; accounts: string[] }
@@ -97,7 +98,7 @@ type Binding = { account: string; identity: string; source_identity: string; lab
 export class AccountPool {
   private db: Database;
   constructor(private options: {
-    path?: string; sourceAccount: string; accounts: () => PoolAccount[]; policy: () => PoolPolicy; now?: () => number;
+    path?: string; sourceAccount: string; accounts: () => PoolAccount[]; policy: () => PoolPolicy; now?: () => number; forkParent?: (threadId: string) => CodexForkParentResult;
   }) {
     const path = options.path ?? poolDatabasePath();
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -111,20 +112,56 @@ export class AccountPool {
     this.db.run(`CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, source TEXT NOT NULL, thread TEXT NOT NULL,
       account TEXT NOT NULL, label TEXT NOT NULL, reason TEXT NOT NULL, state TEXT NOT NULL, status INTEGER NOT NULL DEFAULT 0, at_ms INTEGER NOT NULL)`);
     this.db.run("CREATE TABLE IF NOT EXISTS errors (source TEXT PRIMARY KEY, code TEXT NOT NULL, at_ms INTEGER NOT NULL)");
+    this.db.run(`CREATE TABLE IF NOT EXISTS source_credentials (source TEXT NOT NULL, identity TEXT NOT NULL,
+      digest TEXT NOT NULL, expires_ms INTEGER NOT NULL, PRIMARY KEY(source,identity,digest))`);
+    this.rememberSource(this.options.accounts().find(a => a.id === this.options.sourceAccount));
     if (path !== ":memory:") for (const p of [path, path + "-wal", path + "-shm"]) if (existsSync(p)) chmodSync(p, 0o600);
   }
   close() { this.db.close(); }
   private now() { return this.options.now?.() ?? Date.now(); }
+  private rememberSource(source: PoolAccount | undefined) {
+    this.db.query("DELETE FROM source_credentials WHERE expires_ms <= ?").run(this.now() + 30_000);
+    if (source && source.tokenExpiresAt > this.now() + 30_000)
+      this.db.query("INSERT OR REPLACE INTO source_credentials VALUES (?,?,?,?)")
+        .run(source.id, source.identity, createHash("sha256").update(source.accessToken).digest("hex"), source.tokenExpiresAt);
+  }
+  private inheritedBinding(source: string, thread: string): Binding | null {
+    if (!this.options.forkParent) return null;
+    const seen = new Set([thread]);
+    for (let depth = 0; depth < 32; depth++) {
+      const lineage = this.options.forkParent(thread);
+      if (lineage.status === "unknown") throw new PoolError("pool_lineage_unavailable", 409);
+      if (!lineage.parentId) return null;
+      thread = lineage.parentId;
+      if (seen.has(thread)) throw new PoolError("pool_lineage_invalid", 409);
+      seen.add(thread);
+      const binding = this.db.query<Binding, [string,string]>("SELECT * FROM bindings WHERE source=? AND thread=?").get(source, thread);
+      if (binding) return binding;
+    }
+    throw new PoolError("pool_lineage_invalid", 409);
+  }
   select(input: { threadId: string | null; requestId: string; body: unknown; model: string; headers: Headers }): { route: PoolRoute; headers: Headers; identity: string } | null {
     const policy = this.options.policy(), sourceID = this.options.sourceAccount, thread = input.threadId;
     if (!thread) { if (policy.enabled && policy.accounts.includes(sourceID)) throw new PoolError("pool_thread_identity_required", 409); return null; }
     const execute = this.db.transaction(() => {
-      const saved = this.db.query<Binding, [string,string]>("SELECT * FROM bindings WHERE source=? AND thread=?").get(sourceID, thread);
+      let saved = this.db.query<Binding, [string,string]>("SELECT * FROM bindings WHERE source=? AND thread=?").get(sourceID, thread);
+      // Resolve forks even with new assignment disabled: inherited remote state
+      // must remain on the account that created it.
+      if (!saved && this.options.forkParent && (policy.accounts.includes(sourceID) ||
+          this.db.query("SELECT 1 FROM bindings WHERE source=? LIMIT 1").get(sourceID)))
+        saved = this.inheritedBinding(sourceID, thread);
       if (!saved && (!policy.enabled || !policy.accounts.includes(sourceID))) return null;
       const now = this.now(), accounts = this.options.accounts(), source = accounts.find(a => a.id === sourceID);
       if (!source || source.tokenExpiresAt <= now + 30_000) throw new PoolError("pool_source_auth_unavailable", 401);
-      // A profile endpoint cannot be used with an unrelated caller identity.
-      if (input.headers.get("chatgpt-account-id") !== source.upstreamAccount || input.headers.get("authorization") !== `Bearer ${source.accessToken}`)
+      // Accept only current or previously observed file credentials for this
+      // exact login identity. Do not trust unsigned JWT identity claims from a
+      // caller. Hashes survive relay restart; expired credentials are pruned.
+      this.rememberSource(source);
+      const bearer = input.headers.get("authorization");
+      const digest = bearer?.startsWith("Bearer ") ? createHash("sha256").update(bearer.slice(7)).digest("hex") : "";
+      const known = this.db.query("SELECT 1 FROM source_credentials WHERE source=? AND identity=? AND digest=? AND expires_ms>?")
+        .get(sourceID, source.identity, digest, now + 30_000);
+      if (input.headers.get("chatgpt-account-id") !== source.upstreamAccount || !known)
         throw new PoolError("pool_source_identity_mismatch", 401);
       const cooling = (a: PoolAccount) => (this.db.query<{until_ms:number}, [string]>("SELECT until_ms FROM cooldowns WHERE identity=?").get(a.identity)?.until_ms ?? 0) > now;
       let selected: PoolAccount | undefined, reason: PoolRoute["reason"];
