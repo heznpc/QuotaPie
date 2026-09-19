@@ -29,6 +29,7 @@ export interface CompactionRequestEvent {
   responseModel?: string | null;
   usage?: { input: number; cachedInput: number; output: number } | null;
   accountRouting?: PoolRoute;
+  inlineImageCount?: number;
 }
 
 function protocolId(value: unknown): string | null {
@@ -114,7 +115,7 @@ export function startCompactionProxy(options: {
       }
       const path = url.pathname.slice(prefix.length);
       if (path === "/quotapie-health" && request.method === "GET") {
-        return Response.json({ service: "quotapie-compaction", schemaVersion: 3, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolInlineImagesVersion: options.accountPool ? 1 : 0, transportRecoveryVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
+        return Response.json({ service: "quotapie-compaction", schemaVersion: 3, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 2 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
           route: validateCompactionRoute(route), requests, compactions, attemptedCompactions,
           failedCompactions, cancelledCompactions, unverifiedCompactions, activeRequests, draining,
           active: [...active.values()], recent, lastRequest });
@@ -166,6 +167,10 @@ export function startCompactionProxy(options: {
                 kind: isCompaction(path, input) ? "compaction" : "response",
                 from: input.model, to: typeof outgoing.model === "string" ? outgoing.model : input.model,
                 ...(savings ? { savingsReason: savings.reason } : {}),
+                inlineImageCount: Array.isArray(input.input) ? input.input.reduce((count: number, item: any) => count +
+                  [item?.content, item?.output].reduce((n: number, parts: any) => n + (Array.isArray(parts) ? parts.filter((p: any) =>
+                    p?.type === "input_image" && p.file_id == null && typeof p.image_url === "string" &&
+                    /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/.test(p.image_url)).length : 0), 0), 0) : 0,
                 routed: routed.routed,
                 requestedEffort: safeEffort(object(input.reasoning) ? input.reasoning.effort : null),
                 reasoningEffort: safeEffort(object(outgoing.reasoning) ? outgoing.reasoning.effort : null),

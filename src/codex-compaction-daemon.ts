@@ -1,6 +1,7 @@
 import { readFileSync, realpathSync, unwatchFile, watchFile } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { readCodexForkParent } from "./account-pool-lineage";
 import { AccountPool, poolAccounts, readPoolPolicy } from "./account-pool";
 import { codexProfileRoot, loadConfig } from "./config";
 import { DEFAULT_TASK_SAVINGS, validateTaskSavings, type TaskSavingsPolicy } from "./task-savings";
@@ -35,7 +36,8 @@ const config = () => loadConfig();
 const sourceAccount = config().accounts.codex.find(p => {
   try { return realpathSync(codexProfileRoot(p)) === realpathSync(settings.codex_home ?? homedir() + "/.codex"); } catch { return false; }
 })?.id;
-const accountPool = sourceAccount ? new AccountPool({ sourceAccount, accounts: () => poolAccounts(config()), policy: () => readPoolPolicy() }) : undefined;
+const accountPool = sourceAccount ? new AccountPool({ sourceAccount, accounts: () => poolAccounts(config()), policy: () => readPoolPolicy(),
+  forkParent: thread => readCodexForkParent(settings.codex_home ?? join(homedir(), ".codex"), thread) }) : undefined;
 const proxy = startCompactionProxy({
   ...settings,
   accountPool,
