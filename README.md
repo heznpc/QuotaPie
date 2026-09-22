@@ -137,19 +137,52 @@ The project installs no additional runtime packages. SQLite and the HTTP server 
 
 ## Quick start
 
+Install the collector and menu bar app together, and start both at login:
+
 ```bash
 cd /path/to/quotapie
-./bin/quotapie init
-./bin/quotapie doctor
-./bin/quotapie serve
-./script/build_and_run.sh --verify
+./script/install.sh
 ```
 
-After that, the single conclusion in the menu bar is all you need to read (`56% left`, `⚠ weekly at risk`, `Limits unconfirmed`, `Setup needed`). `serve` is not a browser command: it runs collection, alerts, and the local API that the menu bar app reads. Open the detailed web view only when you want it, from the menu or at [http://127.0.0.1:47831](http://127.0.0.1:47831).
+The source installer requires macOS, Bun 1.3+, and the Apple Swift toolchain.
+It builds before replacing an existing installation, keeps your configuration
+and data, and verifies that the installed collector and menu bar app are running.
+The runtime goes in `~/.local/lib/quotapie`, the CLI in `~/.local/bin/quotapie`,
+and the app in `~/Applications/QuotaPie.app`. These locations also keep the
+background service outside macOS's protected Documents directory.
 
-To use the CLI from anywhere, add the project's `bin` to your `PATH`, or link `bin/quotapie` into a local bin directory of your choice.
+An installed service does not establish account access. Log in to the Codex CLI
+and run `~/.local/bin/quotapie doctor` to check collection; connect Claude using
+the instructions below. Add `~/.local/bin` to your `PATH` to use `quotapie`
+from any terminal. Installing does not enable Claude OAuth, modify Codex relay
+settings, or install the optional privileged power helper.
 
-For real use, keep the runtime in `~/.local/lib/quotapie` and link it as `~/.local/bin/quotapie`. macOS can block `launchd` from reaching Documents with `Operation not permitted`, so the resident service and the Claude status line are more reliable when they run from a copy outside that protected path. The source directory stays the reference copy.
+For a packaged DMG, run **Install QuotaPie.command** inside the mounted image.
+It installs the included app and collector together. Bun 1.3+ is still required;
+the Swift toolchain is only needed when building from source.
+
+The menu bar shows the current conclusion (`56% left`, `⚠ weekly at risk`,
+`Limits unconfirmed`, or `Setup needed`). Open the detailed web view from the
+menu or at [http://127.0.0.1:47831](http://127.0.0.1:47831).
+
+For a temporary development run instead of installation, use **two terminals**.
+In the first:
+
+```bash
+./bin/quotapie init
+./bin/quotapie serve
+```
+
+Keep that terminal open; `serve` runs the collector and local API in the
+foreground. In a second terminal at the same checkout:
+
+```bash
+./script/build_and_run.sh
+```
+
+Use this development flow only when the installed collector is stopped, or
+with a separate configuration and unused port. `--verify` is an isolated smoke
+check that exits and removes its test app; it does not leave a usable app running.
 
 ## Codex account pool
 
@@ -212,20 +245,17 @@ See execution evidence and limitations.
 
 ```bash
 ./script/build_and_run.sh            # build, then run
-./script/build_and_run.sh --verify   # also confirm the process is running
+./script/build_and_run.sh --verify   # isolated launch/render checks, then exit
 ```
 
-To start it at login, first copy the built app into your user Applications folder, then register a LaunchAgent separate from the backend's.
+For normal use and launch at login, use the combined installer:
 
 ```bash
-mkdir -p ~/Applications ~/Library/LaunchAgents
-ditto dist/QuotaPie.app ~/Applications/QuotaPie.app
-./bin/quotapie menubar-launchd > /tmp/local.quotapie.menubar.plist
-plutil -lint /tmp/local.quotapie.menubar.plist
-cp /tmp/local.quotapie.menubar.plist ~/Library/LaunchAgents/local.quotapie.menubar.plist
-pkill -x QuotaPie 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/local.quotapie.menubar.plist
+./script/install.sh
 ```
+
+It registers separate LaunchAgents for the collector and the menu bar app.
+`quotapie menubar-launchd` remains available to print a plist for manual setup.
 
 Collection and alert evaluation keep running even if the menu bar app quits. Native alerts already accepted into the outbox wait for the app to return; optional command triggers keep running. Quitting from the menu deliberately does not immediately relaunch it, but the LaunchAgent does restart it after an abnormal exit.
 
@@ -600,14 +630,17 @@ For example, to run a macOS Shortcut alongside the notification:
 
 ## Running as a resident service
 
-QuotaPie does not install `launchd` files for you. It prints them so you can read them first.
+`./script/install.sh` installs and starts both LaunchAgents. For a manual,
+collector-only setup, the CLI can also print the service plist:
 
 ```bash
-./bin/quotapie launchd > /tmp/local.quotapie.plist
+~/.local/bin/quotapie launchd > /tmp/local.quotapie.plist
 plutil -lint /tmp/local.quotapie.plist
 ```
 
-Once you have reviewed it, move it to `~/Library/LaunchAgents/local.quotapie.plist` and register it yourself. QuotaPie performs no system changes such as deleting or overwriting on your behalf.
+For this manual path, run the installed CLI under `~/.local/bin` so the plist
+points to the resident runtime, then register it yourself. Stop an existing
+collector before registering a replacement.
 
 ```bash
 mkdir -p ~/Library/LaunchAgents
