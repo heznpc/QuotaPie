@@ -123,6 +123,26 @@ class LocalRelay:
     def settings(self):
         return json.loads(self.settings_path.read_text())
 
+    def registered_entries(self):
+        """Require current/profile settings, but tolerate damaged historical files."""
+        active = {self.manifest["settings_path"], *self.manifest.get("profile_settings", {}).values()}
+        entries = []
+        for value in registered_settings(self.manifest):
+            try:
+                path = Path(value)
+                raw = path.read_text()
+                settings = json.loads(raw)
+                if (not isinstance(settings, dict) or not isinstance(settings.get("route"), dict)
+                        or not all(isinstance(settings["route"].get(key), str) for key in ("from", "to"))
+                        or not isinstance(settings.get("codex_home"), str)
+                        or not isinstance(settings.get("port"), int) or not isinstance(settings.get("token"), str)):
+                    raise ValueError("Invalid relay settings")
+                entries.append((path, raw, settings))
+            except (OSError, ValueError, TypeError):
+                if value in active:
+                    raise
+        return entries
+
     def agent_path(self, settings):
         return self.home / "Library/LaunchAgents" / (settings.get("label", LABEL) + ".plist")
 
@@ -227,8 +247,7 @@ class LocalRelay:
         config_path = target / "config.toml"
         config = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
         endpoint = config.get("openai_base_url")
-        for path in registered_settings(self.manifest):
-            settings = json.loads(Path(path).read_text())
+        for _, _, settings in self.registered_entries():
             if Path(settings.get("codex_home", "")).resolve() == target and endpoint == self.endpoint(settings):
                 self.health(settings)
                 return {"relayConnected": True, "restart_required": True}
@@ -258,34 +277,53 @@ class LocalRelay:
         return result
 
     def configure(self, args):
-        settings = self.settings()
-        if self.health(settings).get("schemaVersion", 1) < 2:
-            raise RuntimeError("Install the current relay before changing compaction policy")
-        old = self.settings_path.read_text()
-        if args.compact_model:
-            settings["route"]["to"] = args.compact_model
-        if args.compact_effort:
-            settings["route"]["effort"] = args.compact_effort
-        candidate = self.settings_path.with_name("policy-candidate.json")
-        atomic_write(candidate, json.dumps(settings))
-        try:
-            subprocess.run([settings["bun"], str(self.settings_path.parent / "relay.js"), "--check-policy", str(candidate)], check=True, capture_output=True)
-            atomic_write(self.settings_path, json.dumps(settings, indent=2) + "\n", expected=old)
+        changes = []
+        # Match the dashboard: update every compatible live generation, including
+        # endpoints retained by loaded tasks and separately registered profiles.
+        for path, old, settings in self.registered_entries():
             try:
+                compatible = self.health(settings).get("schemaVersion", 1) >= 2
+            except (OSError, ValueError, RuntimeError):
+                if path == self.settings_path:
+                    raise
+                continue
+            if not compatible:
+                if path == self.settings_path:
+                    raise RuntimeError("Install the current relay before changing compaction policy")
+                continue
+            if args.compact_model:
+                settings["route"]["to"] = args.compact_model
+            if args.compact_effort:
+                settings["route"]["effort"] = args.compact_effort
+            candidate = path.with_name("policy-candidate.json")
+            try:
+                atomic_write(candidate, json.dumps(settings))
+                subprocess.run([settings["bun"], str(path.parent / "relay.js"), "--check-policy", str(candidate)], check=True, capture_output=True)
+            finally:
+                candidate.unlink(missing_ok=True)
+            changes.append((path, old, json.dumps(settings, indent=2) + "\n", settings))
+        written = []
+        try:
+            for path, old, content, settings in changes:
+                atomic_write(path, content, expected=old)
+                written.append((path, old, content))
+            for _, _, _, settings in changes:
                 self.wait_healthy(settings)
-            except Exception:
-                atomic_write(self.settings_path, old, expected=json.dumps(settings, indent=2) + "\n")
-                raise
-        finally:
-            candidate.unlink(missing_ok=True)
+        except Exception:
+            for path, old, content in reversed(written):
+                try:
+                    atomic_write(path, old, expected=content)
+                except (OSError, RuntimeError):
+                    pass  # Preserve concurrent edits while restoring the other generations.
+            raise
         return self.status()
 
     def disable(self):
         if not self.settings_path.exists():
             return self.status()
         configs = {}
-        for path in registered_settings(self.manifest):
-            settings = json.loads(Path(path).read_text())
+        entries = self.registered_entries()
+        for _, _, settings in entries:
             config_path = Path(settings["codex_home"]) / "config.toml"
             configs.setdefault(config_path, set()).add(self.endpoint(settings))
         changes = []
@@ -305,13 +343,11 @@ class LocalRelay:
             atomic_write(config_path, restored, expected=current)
         # Leave the relay alive for already-loaded tasks, forwarding without rerouting.
         # New/resumed Codex sessions now connect directly to the original provider.
-        for path in registered_settings(self.manifest):
-            file = Path(path)
-            legacy = json.loads(file.read_text())
+        for file, raw, legacy in entries:
             legacy["route"]["to"] = legacy["route"]["from"]
             if isinstance(legacy.get("taskSavings"), dict):
                 legacy["taskSavings"]["enabled"] = False
-            atomic_write(file, json.dumps(legacy, indent=2) + "\n")
+            atomic_write(file, json.dumps(legacy, indent=2) + "\n", expected=raw)
         settings = self.settings()
         for _ in range(20):
             try:
@@ -323,30 +359,42 @@ class LocalRelay:
                 "next": "Quit and reopen Codex, then run quotapie-compaction stop. The relay remains available to currently loaded tasks until then."}
 
     def stop(self):
-        for path in registered_settings(self.manifest):
-            settings = json.loads(Path(path).read_text())
+        entries = self.registered_entries()
+        for _, _, settings in entries:
             config_path = Path(settings["codex_home"]) / "config.toml"
             if config_path.exists() and tomllib.loads(config_path.read_text()).get("openai_base_url") == self.endpoint(settings):
                 raise RuntimeError("Disable routing before stopping the relay")
         retained = []
-        for path in registered_settings(self.manifest):
-            settings = json.loads(Path(path).read_text())
+        for path, _, settings in entries:
+            def retain(reason):
+                retained.append({"settings_path": str(path), "reason": reason})
+
             try:
                 health = self.health(settings)
-            except (OSError, ValueError, RuntimeError):
-                health = None
-            if health and health.get("schemaVersion", 1) < 2:
-                retained.append({"settings_path": path, "reason": "Legacy relay cannot report active requests; retained for loaded tasks"})
+                if health.get("schemaVersion", 1) < 2:
+                    retain("Legacy relay cannot report active requests; retained for loaded tasks")
+                    continue
+            except (OSError, ValueError, RuntimeError, TypeError, AttributeError):
+                retain("Relay health could not be verified; retained until idle can be confirmed")
                 continue
-            if health:
+            try:
                 request = urllib.request.Request(self.endpoint(settings) + "/quotapie-drain", method="POST")
                 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
                 with opener.open(request, timeout=2) as response:
                     drain = json.load(response)
-                if drain["activeRequests"]:
-                    retained.append({"settings_path": path, "reason": "Waiting for active requests to finish; run stop again"})
-                    continue
-            subprocess.run(["launchctl", "bootout", self.domain + "/" + settings.get("label", LABEL)], capture_output=True)
+                if (not isinstance(drain, dict) or drain.get("draining") is not True
+                        or type(drain.get("activeRequests")) is not int or drain["activeRequests"] < 0):
+                    raise ValueError("Invalid relay drain response")
+            except (OSError, ValueError, RuntimeError):
+                retain("Relay drain could not be verified; retained until idle can be confirmed")
+                continue
+            if drain["activeRequests"]:
+                retain("Waiting for active requests to finish; run stop again")
+                continue
+            stopped = subprocess.run(["launchctl", "bootout", self.domain + "/" + settings.get("label", LABEL)], capture_output=True)
+            if stopped.returncode != 0:
+                retain("Relay unload failed; run stop again")
+                continue
             self.agent_path(settings).unlink(missing_ok=True)
         return {"configured": False, "retained": retained, "running": bool(retained)}
 

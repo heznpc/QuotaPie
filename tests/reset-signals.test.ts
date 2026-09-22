@@ -29,6 +29,27 @@ describe("reset signal classification", () => {
     expect(classify(reply,[parent])?.state).toBe("reported");
     expect(classify(post("Maybe", "102", "dkundel",[{id:"100",type:"quoted"}]),[parent])?.state).toBe("possible");
   });
+  test("an explicit timed reply supplies its own reset promise", () => {
+    const parent = post("you owe us a banked reset", "2101093319501664368", "udiWertheimer");
+    const references = [{ id: parent.id, type: "replied_to" as const }];
+    // https://x.com/thsottiaux/status/2101352781219258527, 2026-09-19T16:48:38Z.
+    const reply = post("@udiWertheimer OK fine. But it’s also still coming in Tuesday",
+      "2101352781219258527", "thsottiaux", references);
+    const signal = classify(reply, [parent])!;
+    expect(signal.state).toBe("announced");
+    expect(signal.resetKind).toBe("banked");
+    expect(signal.timeHint).toBe("But it’s also still coming in Tuesday");
+    expect(signal.targetAtMs).toBeNull();
+    expect(classify(reply)).toBeNull();
+    expect(classify(reply, [{ ...parent, text: "the community night was great" }])).toBeNull();
+    for (const text of ["Yes", "Tuesday", "It’s coming Tuesday?", "It’s coming Tuesday, maybe."]) {
+      expect(classify({ ...reply, text }, [parent])?.state).toBe("possible");
+    }
+    for (const text of ["I will improve the docs on Tuesday", "The new feature is coming Tuesday",
+      "Maybe it’s coming Tuesday", "It’s not coming Tuesday"]) {
+      expect(classify({ ...reply, text }, [parent])).toBeNull();
+    }
+  });
   test("corrections and withdrawals have distinct alert identities", () => {
     const parent = post("Codex reset tomorrow");
     const ref = [{id:"100",type:"replied_to"}];

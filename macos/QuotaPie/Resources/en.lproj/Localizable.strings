@@ -205,14 +205,14 @@
 "signal.health.error" = "Collection failed · showing saved signals";
 "signal.health.stale" = "Collection is stale · showing saved signals";
 "signal.health.off" = "Signal collection off";
-"signal.checked" = "Last collected %@";
+"signal.checked" = "Last collection check %@";
 "signal.empty" = "No reset signals collected yet";
 "signal.source" = "View on X";
 "signal.kind.banked" = "Banked reset credit";
 "signal.kind.direct" = "Direct reset";
 "signal.kind.unknown" = "Reset type unspecified";
-"signal.elapsed" = "Feed estimate %@ has passed · account application unverified";
-"signal.feedTime" = "Feed estimate %@ · see original time wording";
+"signal.elapsed" = "Relay feed estimate %@ has passed · account application unverified";
+"signal.feedTime" = "Relay feed estimate %@ · not a confirmed schedule";
 "signal.accountNotice" = "Public signals do not change your account’s quota clock.";
 
 // Account recovery evidence
@@ -279,8 +279,8 @@
 "signal.summary.withdrawn" = "Reset news corrected or withdrawn";
 "signal.summary.updated" = "Reset announcement changed";
 "signal.summary.reported" = "Reset reportedly rolled out";
-"signal.summary.elapsed" = "Announced time has passed";
-"signal.summary.scheduled" = "Reset expected · time announced";
+"signal.summary.elapsed" = "Reset announced · relay estimate passed";
+"signal.summary.scheduled" = "Reset announced · relay estimate available";
 "signal.summary.announced" = "Reset announced · timing unclear";
 "signal.summary.possible" = "Possible reset mentioned";
 "signal.summary.accountUnknown" = "Account application unconfirmed";
@@ -317,13 +317,18 @@
 "signal.sourceState.off" = "Off";
 "signal.attempt" = "Last request %@";
 "signal.latestEvidence" = "Latest evidence published %@";
-"signal.newEvidence" = "New evidence obtained %@";
+"signal.newEvidence" = "New item collected %@";
 "signal.noNewEvidence" = "No additional evidence in this check";
 "signal.via.x-api" = "Collected from X API";
 "signal.via.codexreset" = "Via Codex Reset Monitor · original unverified";
 "signal.via.public-feed" = "Via Reset Beacon · original unverified";
 "signal.timeUnresolved" = "Original time wording. No local deadline is inferred until its timezone and reference date are established.";
 "signal.summary.timeHint" = "Reset time mentioned · exact deadline unverified";
+"signal.published" = "Posted %@";
+"signal.detected" = "This content collected %@";
+"signal.originalTime" = "Original time wording: “%@”";
+"signal.collectionDetails" = "Collection status";
+"signal.replyContext" = "Reply context";
 
 "headline.cached" = "%@ %@ %@%% · last reading";
 "headline.cachedReason" = "%@ %@ %@%% · %@";
