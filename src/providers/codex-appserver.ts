@@ -381,7 +381,10 @@ export class CodexAppServerClient {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`Codex App Server ${method} timed out`));
+        // A silent child is a transport failure, not an untrusted identity
+        // response. Let the bounded read retry restart it while preserving
+        // this client's last confirmed account and plan context.
+        reject(new CodexTransportError(`Codex App Server ${method} timed out`));
       }, this.timeoutMs);
       this.pending.set(id, { resolve, reject, timeout });
       try {
