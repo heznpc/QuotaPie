@@ -760,6 +760,8 @@ struct ResetSignal: Decodable, Identifiable {
     let scopeHint: String?
     let observedVia: String
     let targetAtMs: Double?
+    var detectedAtMs: Double? = nil
+    var contextText: String? = nil
 
     var safeSourceURL: URL? {
         guard let url = URL(string: sourceUrl), url.scheme == "https", url.host == "x.com",

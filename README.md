@@ -777,6 +777,12 @@ first version classifies English reset phrases and several contextual hints;
 it can miss jokes, images, and novel wording. No LLM key is required. Relative
 times remain as original wording instead of guessing the author's timezone.
 
+The overview shows the latest post's author, publication date, and original
+time wording. History separates when a post was published from when QuotaPie
+collected that version; collecting an older post today does not make it a new
+announcement. Source coverage diagnostics follow the posts. These timestamps
+do not establish when a rumor first began or when a reset reached an account.
+
 Collection runs independently of quota polling, at most every five minutes by
 default. Errors preserve history and the last successful cursor; API responses,
 pagination, and context lookups are bounded. `quotapie signals --refresh` reads

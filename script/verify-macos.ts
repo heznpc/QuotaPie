@@ -62,6 +62,12 @@ async function run() {
   // Independent expected values: no production account-selection or headline code.
   const payload = { headline: { kind: "normal", provider: "codex", account: "second", remainingPercent: 100 },
     accounts: [account("default", "Main", 18), account("second", "Second", 100)], events: [], resumeTasks: [],
+    resetSignals: { enabled: true, source: "multiple", state: "ready", lastSuccessMs: Date.now(),
+      coverage: "partial-relays", signals: [{ id: "100", fingerprint: "fixture-reset", author: "thsottiaux",
+        sourceUrl: "https://x.com/thsottiaux/status/100", text: "We are almost Tuesday and I promised a reset for Tuesday.",
+        publishedAtMs: Date.now() - 86_400_000, detectedAtMs: Date.now() - 60_000,
+        state: "announced", resetKind: "unknown", observedVia: "codexreset", targetAtMs: null,
+        timeHint: "We are almost Tuesday and I promised a reset for Tuesday" }] },
     accountPool: {enabled:true, accounts:["default","second"], recent:[{sourceAccount:"default",account:"second",accountLabel:"Second",state:"completed",status:200,atMs:Date.now()}]} };
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: request => {
     if (request.method !== "GET" || new URL(request.url).pathname !== "/api/status") return new Response("Unexpected request", { status: 400 });

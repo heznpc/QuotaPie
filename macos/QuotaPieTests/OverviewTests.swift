@@ -127,7 +127,46 @@ final class OverviewTests: XCTestCase {
                                       lastSuccessMs: 3000, error: nil, signals: [correction, older])
         XCTAssertEqual(feed.latestSignal?.state, "withdrawn")
         XCTAssertEqual(feed.signals.count, 2)
-        XCTAssertEqual(feed.latestSignal?.sourceStatusKey, "signal.summary.unverified")
+        XCTAssertEqual(feed.latestSignal?.sourceStatusKey, "signal.via.public-feed")
+    }
+
+    func testOriginalTimeWordingDoesNotTurnPossibilityIntoAnAnnouncement() {
+        let possible = signal("possible", target: nil, hint: "Maybe tomorrow")
+        let announced = signal("announced", target: nil, hint: "Codex resets tomorrow")
+        XCTAssertEqual(possible.summaryKey(nowMs: 2000), "signal.summary.possible")
+        XCTAssertEqual(announced.summaryKey(nowMs: 2000), "signal.summary.announced")
+        XCTAssertEqual(possible.summaryTimeHint, "Maybe tomorrow")
+        XCTAssertEqual(announced.summaryTimeHint, "Codex resets tomorrow")
+        XCTAssertEqual(signal("possible", target: 3000, hint: "Maybe tomorrow").summaryKey(nowMs: 2000),
+                       "signal.summary.possible")
+    }
+
+    func testPublishedDateAndCollectionDateRemainSeparateAndLegacyPayloadsDecode() throws {
+        let published: Double = 1_800_000_000_000
+        let detected = published + 86_400_000
+        let payload = """
+        {"id":"1","fingerprint":"post","author":"openai","sourceUrl":"https://x.com/openai/status/1",
+         "text":"Maybe tomorrow","publishedAtMs":\(published),"state":"possible","resetKind":"unknown",
+         "timeHint":"tomorrow","observedVia":"codexreset","detectedAtMs":\(detected),"contextText":"you owe us a banked reset"}
+        """
+        let decoder = JSONDecoder()
+        let post = try decoder.decode(ResetSignal.self, from: Data(payload.utf8))
+        XCTAssertEqual(post.detectedAtMs, detected)
+        XCTAssertEqual(post.contextText, "you owe us a banked reset")
+        XCTAssertEqual(post.publishedAtMs, published)
+        XCTAssertEqual(post.publicationText, "@openai · " + Strings.t("signal.published", ResetSignal.stamp(published)))
+        XCTAssertFalse(post.publicationText.contains(ResetSignal.stamp(detected)))
+        let legacy = payload.replacingOccurrences(of: ",\"detectedAtMs\":\(detected),\"contextText\":\"you owe us a banked reset\"", with: "")
+        let oldPost = try decoder.decode(ResetSignal.self, from: Data(legacy.utf8))
+        XCTAssertNil(oldPost.detectedAtMs)
+        XCTAssertNil(oldPost.contextText)
+    }
+
+    func testSummaryNamesTheActualRetrievalPath() {
+        XCTAssertEqual(signal("possible", target: nil, via: "codexreset").sourceStatusKey, "signal.via.codexreset")
+        XCTAssertEqual(signal("possible", target: nil, via: "public-feed").sourceStatusKey, "signal.via.public-feed")
+        XCTAssertEqual(signal("possible", target: nil, via: "reset-beacon").sourceStatusKey, "signal.via.public-feed")
+        XCTAssertEqual(signal("possible", target: nil, via: "x-api").sourceStatusKey, "signal.via.x-api")
     }
 
     func testMultipleSourcesPreserveCoverageAndSeparateRecentPostsFromResetEvidence() throws {
@@ -175,10 +214,11 @@ final class OverviewTests: XCTestCase {
                      windows: windows, bottleneckBucket: nil, updatedAtMs: nil)
     }
 
-    private func signal(_ state: String, target: Double?, published: Double = 1000) -> ResetSignal {
+    private func signal(_ state: String, target: Double?, published: Double = 1000,
+                        hint: String? = nil, via: String = "public-feed") -> ResetSignal {
         ResetSignal(id: "1", fingerprint: "\(published)", author: "openai", sourceUrl: "https://x.com/openai/status/1",
                     text: "Synthetic post", publishedAtMs: published, state: state, resetKind: "unknown",
-                    timeHint: nil, scopeHint: nil, observedVia: "reset-beacon", targetAtMs: target)
+                    timeHint: hint, scopeHint: nil, observedVia: via, targetAtMs: target)
     }
 }
 
