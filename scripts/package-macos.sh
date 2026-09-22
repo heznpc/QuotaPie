@@ -7,11 +7,12 @@
 # nowhere else. Developer ID signing plus notarization is what makes a
 # downloaded copy open, and this script is the only path that produces one.
 #
-# The bundle includes the menu bar client and its fixed-function power helper. QuotaPie is two processes: this
-# SwiftUI app, and a Bun backend run separately from bin/quotapie. The backend is
-# the half that reads ~/.claude/.credentials.json, queries the keychain, and
-# binds 127.0.0.1:47831; none of it is inside the bundle. The app is a plain HTTP
-# client of that port and holds no credentials of its own.
+# The bundle includes the menu bar client, its fixed-function power helper, and
+# the collector runtime in Contents/Resources/Collector. The DMG's installer
+# installs the app and registers the Bun collector as a per-user background
+# service. Bun must already be installed; Xcode and Swift are not needed by the
+# recipient. The collector reads credentials and binds 127.0.0.1:47831. The app
+# is a plain HTTP client of that port and holds no credentials of its own.
 #
 # QuotaPie is therefore not sandboxed. The app's "Open config" action hands
 # ~/.config/quotapie/config.json to NSWorkspace, an arbitrary home-directory path
@@ -41,8 +42,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # ── Repo-specific ────────────────────────────────────────────────────
-# Everything below the closing marker is shared verbatim with the other
-# Heznpc macOS repos; keep edits above it so the shared half stays diffable.
+# Keep repo-specific bundle preparation here; the signing flow calls these
+# hooks before signing the app and while assembling the DMG.
 PRODUCTS_DIR="${ROOT}/build/Release"
 ENTITLEMENTS="${ROOT}/macos/QuotaPie/QuotaPie.entitlements"
 
@@ -57,6 +58,14 @@ build_app() {
   # that the other modes perform, and writes to the directory named here instead
   # of dist/ — so packaging never disturbs a running copy or the local build.
   ( cd "${ROOT}" && ./script/build_and_run.sh bundle "${PRODUCTS_DIR}" >/dev/null )
+}
+
+prepare_app() {
+  bun "${ROOT}/script/prepare-distribution.ts" bundle "${ROOT}" "$1" >/dev/null
+}
+
+prepare_dmg_stage() {
+  bun "${ROOT}/script/prepare-distribution.ts" dmg "$1" "$2" >/dev/null
 }
 # ── End repo-specific ────────────────────────────────────────────────
 
@@ -83,6 +92,7 @@ fi
   || die "no Developer ID Application identity in the keychain — cannot produce a distributable build"
 
 [ -f "${ENTITLEMENTS}" ] || die "missing entitlements file: ${ENTITLEMENTS}"
+command -v bun >/dev/null 2>&1 || die "Bun is required to prepare the bundled collector (https://bun.sh)"
 
 # ── Build ────────────────────────────────────────────────────────────
 if [ "${SKIP_BUILD:-}" != "1" ]; then
@@ -100,6 +110,7 @@ ZIP_PATH="${DIST_DIR}/${BASE}-notarize.zip"
 rm -rf "${DIST_DIR}" "${STAGE_DIR}"
 mkdir -p "${DIST_DIR}"
 ditto "${APP_SRC}" "${APP}"
+prepare_app "${APP}"
 
 plist_get() { /usr/libexec/PlistBuddy -c "Print :$1" "${APP}/Contents/Info.plist" 2>/dev/null; }
 
@@ -171,7 +182,9 @@ build_dmg() {
   rm -rf "${STAGE_DIR}" "${DMG_PATH}"
   mkdir -p "${STAGE_DIR}"
   ditto "${APP}" "${STAGE_DIR}/${APP_NAME}"
-  ln -s /Applications "${STAGE_DIR}/Applications"
+  # Installing only the app leaves its collector unavailable. Make the bundled
+  # installer the DMG's primary entry point instead of a drag-to-Applications link.
+  prepare_dmg_stage "${STAGE_DIR}" "${APP_NAME}"
   hdiutil create \
     -volname "${BASE}" \
     -srcfolder "${STAGE_DIR}" \
@@ -232,7 +245,7 @@ fi
 
 # ── Notarize and staple ──────────────────────────────────────────────
 # Both artifacts get their own ticket. Stapling the .app before it goes into the
-# image means the copy the user drags to /Applications is already self-sufficient,
+# image means the copy the installer places in Applications already has its ticket,
 # even if the DMG's own ticket never reaches them.
 log "notarizing the app (2-10 minutes) …"
 ditto -c -k --keepParent "${APP}" "${ZIP_PATH}"
