@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { gzipSync } from "node:zlib";
-import { AccountPool, isFreshTextTurn, poolStatus, savePoolPolicy, type PoolAccount } from "../src/account-pool";
+import { AccountPool, isFreshTextTurn, PoolError, poolStatus, savePoolPolicy, type PoolAccount } from "../src/account-pool";
 import { startCompactionProxy } from "../src/codex-compaction";
 
 const now=2_000_000_000_000;
@@ -48,11 +48,27 @@ test("an unregistered continuation never migrates its account",()=>fixture(({sel
     expect(select(randomUUID(),input)?.route).toMatchObject({account:"a",reason:"existing"});
 }));
 
-test("stale, unknown, expired and unsupported candidates cannot receive new work",()=>fixture(({select,accounts})=>{
-  for (const patch of [{remaining:null},{validUntil:now-1},{tokenExpiresAt:now-1},{models:[]}]) {
+test("unavailable quota and unsupported candidates fall back to the original login",()=>fixture(({select,accounts})=>{
+  for (const patch of [{remaining:0},{remaining:null},{validUntil:now-1},{tokenExpiresAt:now-1},{models:[]}]) {
     Object.assign(accounts[1]!,account("b",75),patch);
-    expect(()=>select()).toThrow("pool_no_eligible_account");
+    expect(select()?.route).toMatchObject({ account:"a", reason:"source_fallback" });
   }
+}));
+
+test("source fallback creates a durable binding when another account later recovers",()=>fixture(({select,accounts})=>{
+  accounts[1]!.remaining=null;
+  const thread=randomUUID();
+  expect(select(thread)?.route).toMatchObject({account:"a",reason:"source_fallback"});
+  accounts[1]!.remaining=90;
+  expect(select(thread,{...body,previous_response_id:"original-login-response"})?.route).toMatchObject({account:"a",reason:"pinned"});
+}));
+
+test("a zero quota snapshot never blocks the bound account from checking upstream recovery",()=>fixture(({select,accounts})=>{
+  const thread=randomUUID();
+  expect(select(thread)?.route.account).toBe("b");
+  accounts[1]!.remaining=0; accounts[0]!.remaining=99;
+  expect(select(thread,{...body,input:[{type:"compaction",encrypted_content:"opaque"}]})?.route)
+    .toMatchObject({account:"b",reason:"pinned"});
 }));
 
 test("credential identity changes and account removal never silently rebind",()=>fixture(({select,accounts,policy})=>{
@@ -62,13 +78,51 @@ test("credential identity changes and account removal never silently rebind",()=
   expect(()=>select(thread)).toThrow("pool_bound_account_removed");
 }));
 
-test("429 and authentication errors quarantine the selected identity",()=>fixture(({pool,select,accounts})=>{
+test("upstream 429 keeps the selected identity on cooldown with its retry delay",()=>fixture(({pool,select,accounts})=>{
   const thread=randomUUID();select(thread);
   pool.response("not-a-request","b-identity",429,"120");
-  expect(()=>select(thread)).toThrow("pool_bound_account_exhausted");
+  try { select(thread); throw new Error("Expected cooldown"); }
+  catch (error) {
+    expect(error).toBeInstanceOf(PoolError);
+    expect(error).toMatchObject({code:"pool_account_cooldown",status:429,retryAfterSeconds:120});
+  }
   accounts[0]!.remaining=40;
   expect(select()?.route.account).toBe("a");
 }));
+
+for (const status of [401,403]) test(`upstream ${status} quarantines only the rejected token and refresh preserves the binding`,()=>fixture(({pool,select,accounts})=>{
+  const thread=randomUUID(), selected=select(thread)!;
+  expect(selected.credentialDigest).toMatch(/^[a-f0-9]{64}$/);
+  pool.response("not-a-request",selected.identity,status,null,selected.credentialDigest);
+  try { select(thread); throw new Error("Expected authentication cooldown"); }
+  catch(error) {
+    expect(error).toBeInstanceOf(PoolError);
+    expect(error).toMatchObject({code:"pool_auth_cooldown",status,retryAfterSeconds:60});
+  }
+  accounts[1]!.accessToken="b-refreshed-token";
+  const refreshed=select(thread)!;
+  expect(refreshed.route).toMatchObject({account:"b",reason:"pinned"});
+  expect(refreshed.credentialDigest).not.toBe(selected.credentialDigest);
+  // A delayed failure for the old request must not quarantine the new token.
+  pool.response("late-request",selected.identity,status,null,selected.credentialDigest);
+  expect(select(thread)?.headers.get("authorization")).toBe("Bearer b-refreshed-token");
+}));
+
+test("cooldown expires without rebinding a conversation",()=>{
+  let time=now;
+  const accounts=[account("a",20),account("b",75)];
+  const pool=new AccountPool({path:":memory:",sourceAccount:"a",accounts:()=>accounts,
+    policy:()=>({enabled:true,accounts:["a","b"]}),now:()=>time});
+  const input={threadId:randomUUID(),requestId:randomUUID(),body,model:body.model,
+    headers:new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"})};
+  try {
+    pool.select(input);
+    pool.response(input.requestId,"b-identity",429,"2"); time+=1001;
+    expect(()=>pool.select({...input,requestId:randomUUID()})).toThrow("pool_account_cooldown");
+    time+=999;
+    expect(pool.select({...input,requestId:randomUUID()})?.route).toMatchObject({account:"b",reason:"pinned"});
+  } finally {pool.close();}
+});
 
 test("missing thread identity and caller credential mismatch fail closed",()=>fixture(({pool})=>{
   const input={threadId:null,requestId:randomUUID(),body,model:body.model,headers:new Headers()};
@@ -219,6 +273,77 @@ test("observed source credentials survive refresh and relay restart without acce
     input.headers.set("authorization", "Bearer a-token");
     expect(()=>restarted.select({...input,requestId:randomUUID()})).toThrow("pool_source_identity_mismatch");
   } finally {restarted.close();}
+}));
+
+test("observed file credentials survive a rejected routing transaction and another refresh",()=>fixture(({pool,accounts,policy,path,select})=>{
+  const thread=randomUUID(); select(thread);
+  accounts[0]!.accessToken="a-first-refresh";
+  expect(()=>select(thread,{...body,input:[{role:"user",content:[{type:"input_file",file_id:"account-scoped"}]}]}))
+    .toThrow("pool_attachment_account_unverified");
+  accounts[0]!.accessToken="a-second-refresh";
+  const restarted=new AccountPool({path,sourceAccount:"a",accounts:()=>accounts,policy:()=>policy,now:()=>now});
+  try {
+    const input={threadId:thread,requestId:randomUUID(),body,model:body.model,
+      headers:new Headers({authorization:"Bearer a-first-refresh","chatgpt-account-id":"a-remote"})};
+    expect(restarted.select(input)?.route).toMatchObject({account:"b",reason:"pinned"});
+    input.headers.set("authorization","Bearer never-observed-token");
+    expect(()=>restarted.select({...input,requestId:randomUUID()})).toThrow("pool_source_identity_mismatch");
+  } finally {restarted.close();}
+}));
+
+test("rejections retain their task context and only that task's successful response resolves the error",()=>fixture(({pool,path})=>{
+  const rejectedThread=randomUUID(), rejectedRequest=randomUUID();
+  pool.reject("pool_lineage_unavailable",{requestId:rejectedRequest,threadId:rejectedThread,status:409});
+  const complete=(threadId:string)=>{
+    const requestId=randomUUID();
+    const selected=pool.select({threadId,requestId,body,model:body.model,
+      headers:new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"})})!;
+    pool.response(requestId,selected.identity,200,null,selected.credentialDigest);
+    pool.finish(requestId,"completed");
+  };
+  complete(randomUUID());
+  const status=poolStatus(path,join(dirname(path),"missing.json"));
+  expect(status.error).toBe("pool_lineage_unavailable");
+  expect(status.rejected).toEqual([expect.objectContaining({requestId:rejectedRequest,threadId:rejectedThread,
+    sourceAccount:"a",code:"pool_lineage_unavailable",status:409})]);
+  expect(status.recent).toHaveLength(1);
+  expect(status.recent[0]).toMatchObject({account:"b",state:"completed"});
+  complete(rejectedThread);
+  expect(poolStatus(path,join(dirname(path),"missing.json")).error).toBeNull();
+}));
+
+test("legacy errors clear only after a later successful HTTP response completes",()=>fixture(({pool,path})=>{
+  const status=()=>poolStatus(path,join(dirname(path),"missing.json"));
+  const request=()=>{
+    const requestId=randomUUID();
+    const selected=pool.select({threadId:randomUUID(),requestId,body,model:body.model,
+      headers:new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"})})!;
+    return {requestId,selected};
+  };
+  pool.reject("pool_no_eligible_account");
+  const failed=request();
+  pool.response(failed.requestId,failed.selected.identity,400,null,failed.selected.credentialDigest);
+  pool.finish(failed.requestId,"completed");
+  expect(status().error).toBe("pool_no_eligible_account");
+  const recovered=request();
+  expect(status().error).toBe("pool_no_eligible_account");
+  pool.response(recovered.requestId,recovered.selected.identity,200,null,recovered.selected.credentialDigest);
+  expect(status().error).toBe("pool_no_eligible_account");
+  pool.finish(recovered.requestId,"completed");
+  expect(status().error).toBeNull();
+}));
+
+test("a completing request preserves legacy errors recorded after it started",()=>fixture(({pool,path,accounts,policy})=>{
+  const requestId=randomUUID();
+  const selected=pool.select({threadId:randomUUID(),requestId,body,model:body.model,
+    headers:new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"})})!;
+  const later=new AccountPool({path,sourceAccount:"a",accounts:()=>accounts,policy:()=>policy,now:()=>now+1});
+  try {
+    later.reject("pool_request_rejected");
+    pool.response(requestId,selected.identity,200,null,selected.credentialDigest);
+    pool.finish(requestId,"completed");
+    expect(poolStatus(path,join(dirname(path),"missing.json")).error).toBe("pool_request_rejected");
+  } finally {later.close();}
 }));
 
 test("expired remembered source credentials are rejected", () => {

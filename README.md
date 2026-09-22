@@ -156,15 +156,26 @@ For real use, keep the runtime in `~/.local/lib/quotapie` and link it as `~/.loc
 After installing the current resident relay for each participating profile, run
 `quotapie pool enable --accounts ID,ID` with IDs from `quotapie accounts`.
 New text tasks use the eligible account with the most remaining shared quota.
+Fresh quota is required to choose another account. If no such candidate is
+available, a new task stays on its verified login account (`source_fallback`)
+and the provider decides whether it can run. Missing or stale collection data
+does not manufacture a local quota-exhaustion error.
 Each task's serving account is persisted across restarts. Existing histories
 stay with their original account; failed requests are never replayed on another
-account. Later screenshots embedded as image data stay on the bound account;
+account. A zero quota snapshot does not block a bound task from checking actual
+provider recovery. Actual upstream rate limits impose a bounded cooldown with
+`Retry-After`; authentication rejection quarantines only the rejected credential,
+so a refreshed credential can recover without waiting for a quota timer.
+Later screenshots embedded as image data stay on the bound account;
 account-scoped file references, remote image URLs, and models with unverified
 quota scope are blocked. The menu bar distinguishes the selected account's quota from the recent
 serving account.
 
 `quotapie pool status` reports routing; `quotapie pool disable` stops assigning
-new tasks while preserving existing bindings. Finish loaded work and reopen
+new tasks while preserving existing bindings. Requests rejected before dispatch
+appear separately from serving-account records, with task identity, reason and
+status; they also appear in relay health and logs without request bodies or
+credentials. Finish loaded work and reopen
 Codex to load a newly installed relay. This uses separate registered logins;
 it does not merge their subscriptions. Real cross-account text requests,
 inline image attachments, and subsequent continuation have been exercised;
@@ -407,7 +418,9 @@ Change compaction policy independently of the Codex work-model picker:
 quotapie-compaction configure --compact-model gpt-5.6-sol --compact-effort low
 ```
 
-A policy change affects future compaction requests. In-flight requests retain
+A policy change updates compatible live generations across registered profiles
+and retained endpoints; failed validation rolls back the files changed by that
+operation without overwriting concurrent edits. It affects future compaction requests. In-flight requests retain
 their captured policy. The Codex model picker still sets persistent work intent;
 manually changing it is **not** a temporary compaction setting. There is no
 hidden `thread/settings/update` or stale-snapshot restoration that overwrites a
@@ -428,7 +441,9 @@ unrelated edits. It changes all retained generations into pass-through relays so
 loaded tasks can continue while you restart Codex. Stop drains version 2
 listeners and unloads only those without active requests; rerun it after pending
 requests finish. Legacy version 1 listeners cannot prove they are idle and are
-reported as retained rather than automatically terminated. Configuration
+reported as retained rather than automatically terminated. An unavailable health
+check or an unconfirmed drain also retains the listener. Missing historical
+settings do not prevent managing the current registered profiles. Configuration
 backups and generation directories remain available.
 The relay starts again at login while enabled; if it stops unexpectedly, launchd
 restarts it. Codex requests depend on this local service until the configuration

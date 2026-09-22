@@ -11,13 +11,14 @@ export interface PoolAccount {
   id: string; label: string; identity: string; accessToken: string; upstreamAccount: string;
   tokenExpiresAt: number; models: string[]; remaining: number | null; validUntil: number;
 }
-export interface PoolRoute { sourceAccount: string; account: string; accountLabel: string; reason: "new" | "pinned" | "existing" }
+export interface PoolRoute { sourceAccount: string; account: string; accountLabel: string; reason: "new" | "pinned" | "existing" | "source_fallback" }
 export class PoolError extends Error {
-  constructor(readonly code: string, readonly status = 503) { super(code); }
+  constructor(readonly code: string, readonly status = 503, readonly retryAfterSeconds?: number) { super(code); }
 }
 export const poolPolicyPath = () => join(dataDirectory(), "account-pool.json");
 export const poolDatabasePath = () => join(dataDirectory(), "account-pool.sqlite3");
 const SHARED_QUOTA_MODELS = new Set(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]);
+const credentialDigest = (token: string) => createHash("sha256").update(token).digest("hex");
 export function readPoolPolicy(path = poolPolicyPath()): PoolPolicy {
   if (!existsSync(path)) return { enabled: false, accounts: [] };
   const value = JSON.parse(readFileSync(path, "utf8"));
@@ -109,8 +110,13 @@ export class AccountPool {
     this.db.run(`CREATE TABLE IF NOT EXISTS bindings (source TEXT NOT NULL, thread TEXT NOT NULL, account TEXT NOT NULL,
       identity TEXT NOT NULL, source_identity TEXT NOT NULL, label TEXT NOT NULL, updated_ms INTEGER NOT NULL, PRIMARY KEY(source,thread))`);
     this.db.run(`CREATE TABLE IF NOT EXISTS cooldowns (identity TEXT PRIMARY KEY, until_ms INTEGER NOT NULL)`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS auth_cooldowns (identity TEXT NOT NULL, digest TEXT NOT NULL,
+      status INTEGER NOT NULL, until_ms INTEGER NOT NULL, PRIMARY KEY(identity,digest))`);
     this.db.run(`CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, source TEXT NOT NULL, thread TEXT NOT NULL,
       account TEXT NOT NULL, label TEXT NOT NULL, reason TEXT NOT NULL, state TEXT NOT NULL, status INTEGER NOT NULL DEFAULT 0, at_ms INTEGER NOT NULL)`);
+    this.db.run("CREATE INDEX IF NOT EXISTS requests_at_ms ON requests(at_ms)");
+    this.db.run("CREATE INDEX IF NOT EXISTS requests_thread_at_ms ON requests(source,thread,at_ms)");
+    this.db.run("CREATE INDEX IF NOT EXISTS requests_rejected_at_ms ON requests(at_ms) WHERE state='rejected'");
     this.db.run("CREATE TABLE IF NOT EXISTS errors (source TEXT PRIMARY KEY, code TEXT NOT NULL, at_ms INTEGER NOT NULL)");
     this.db.run(`CREATE TABLE IF NOT EXISTS source_credentials (source TEXT NOT NULL, identity TEXT NOT NULL,
       digest TEXT NOT NULL, expires_ms INTEGER NOT NULL, PRIMARY KEY(source,identity,digest))`);
@@ -120,10 +126,13 @@ export class AccountPool {
   close() { this.db.close(); }
   private now() { return this.options.now?.() ?? Date.now(); }
   private rememberSource(source: PoolAccount | undefined) {
-    this.db.query("DELETE FROM source_credentials WHERE expires_ms <= ?").run(this.now() + 30_000);
-    if (source && source.tokenExpiresAt > this.now() + 30_000)
-      this.db.query("INSERT OR REPLACE INTO source_credentials VALUES (?,?,?,?)")
-        .run(source.id, source.identity, createHash("sha256").update(source.accessToken).digest("hex"), source.tokenExpiresAt);
+    const now = this.now();
+    this.db.transaction(() => {
+      this.db.query("DELETE FROM source_credentials WHERE expires_ms <= ?").run(now + 30_000);
+      if (source && source.tokenExpiresAt > now + 30_000)
+        this.db.query("INSERT OR REPLACE INTO source_credentials VALUES (?,?,?,?)")
+          .run(source.id, source.identity, credentialDigest(source.accessToken), source.tokenExpiresAt);
+    }).immediate();
   }
   private inheritedBinding(source: string, thread: string): Binding | null {
     if (!this.options.forkParent) return null;
@@ -140,9 +149,13 @@ export class AccountPool {
     }
     throw new PoolError("pool_lineage_invalid", 409);
   }
-  select(input: { threadId: string | null; requestId: string; body: unknown; model: string; headers: Headers }): { route: PoolRoute; headers: Headers; identity: string } | null {
+  select(input: { threadId: string | null; requestId: string; body: unknown; model: string; headers: Headers }): { route: PoolRoute; headers: Headers; identity: string; credentialDigest: string } | null {
     const policy = this.options.policy(), sourceID = this.options.sourceAccount, thread = input.threadId;
     if (!thread) { if (policy.enabled && policy.accounts.includes(sourceID)) throw new PoolError("pool_thread_identity_required", 409); return null; }
+    const now = this.now(), accounts = this.options.accounts(), source = accounts.find(a => a.id === sourceID);
+    // File observations must survive a later routing rejection. Caller-supplied
+    // credentials are never added to this trusted history.
+    this.rememberSource(source);
     const execute = this.db.transaction(() => {
       let saved = this.db.query<Binding, [string,string]>("SELECT * FROM bindings WHERE source=? AND thread=?").get(sourceID, thread);
       // Resolve forks even with new assignment disabled: inherited remote state
@@ -151,19 +164,20 @@ export class AccountPool {
           this.db.query("SELECT 1 FROM bindings WHERE source=? LIMIT 1").get(sourceID)))
         saved = this.inheritedBinding(sourceID, thread);
       if (!saved && (!policy.enabled || !policy.accounts.includes(sourceID))) return null;
-      const now = this.now(), accounts = this.options.accounts(), source = accounts.find(a => a.id === sourceID);
       if (!source || source.tokenExpiresAt <= now + 30_000) throw new PoolError("pool_source_auth_unavailable", 401);
       // Accept only current or previously observed file credentials for this
       // exact login identity. Do not trust unsigned JWT identity claims from a
       // caller. Hashes survive relay restart; expired credentials are pruned.
-      this.rememberSource(source);
       const bearer = input.headers.get("authorization");
-      const digest = bearer?.startsWith("Bearer ") ? createHash("sha256").update(bearer.slice(7)).digest("hex") : "";
+      const digest = bearer?.startsWith("Bearer ") ? credentialDigest(bearer.slice(7)) : "";
       const known = this.db.query("SELECT 1 FROM source_credentials WHERE source=? AND identity=? AND digest=? AND expires_ms>?")
         .get(sourceID, source.identity, digest, now + 30_000);
       if (input.headers.get("chatgpt-account-id") !== source.upstreamAccount || !known)
         throw new PoolError("pool_source_identity_mismatch", 401);
-      const cooling = (a: PoolAccount) => (this.db.query<{until_ms:number}, [string]>("SELECT until_ms FROM cooldowns WHERE identity=?").get(a.identity)?.until_ms ?? 0) > now;
+      const cooldownUntil = (a: PoolAccount) => this.db.query<{until_ms:number}, [string]>("SELECT until_ms FROM cooldowns WHERE identity=?").get(a.identity)?.until_ms ?? 0;
+      const authCooldown = (a: PoolAccount) => this.db.query<{status:number;until_ms:number}, [string,string,number]>(
+        "SELECT status,until_ms FROM auth_cooldowns WHERE identity=? AND digest=? AND until_ms>?")
+        .get(a.identity, credentialDigest(a.accessToken), now);
       let selected: PoolAccount | undefined, reason: PoolRoute["reason"];
       if (saved) {
         selected = accounts.find(a => a.id === saved.account);
@@ -173,13 +187,18 @@ export class AccountPool {
       } else if (!isFreshTextTurn(input.body) || !SHARED_QUOTA_MODELS.has(input.model)) { selected = source; reason = "existing"; }
       else {
         selected = accounts.filter(a => policy.accounts.includes(a.id) && a.tokenExpiresAt > now + 30_000 &&
-          a.models.includes(input.model) && a.remaining != null && a.remaining > 0 && a.validUntil > now && !cooling(a))
+          a.models.includes(input.model) && a.remaining != null && a.remaining > 0 && a.validUntil > now && cooldownUntil(a) <= now && !authCooldown(a))
           .sort((a,b) => b.remaining! - a.remaining! || a.id.localeCompare(b.id))[0];
-        reason = "new";
+        // Unknown or zero local quota must not disable the caller's own login.
+        // Only cross-account assignment requires fresh positive quota evidence.
+        reason = selected ? "new" : "source_fallback";
+        selected ??= source;
       }
-      if (!selected) throw new PoolError("pool_no_eligible_account", 429);
       if (selected.tokenExpiresAt <= now + 30_000) throw new PoolError("pool_target_auth_unavailable", 401);
-      if (cooling(selected) || selected.remaining === 0 && selected.validUntil > now) throw new PoolError("pool_bound_account_exhausted", 429);
+      const until = cooldownUntil(selected);
+      if (until > now) throw new PoolError("pool_account_cooldown", 429, Math.ceil((until - now) / 1000));
+      const auth = authCooldown(selected);
+      if (auth) throw new PoolError("pool_auth_cooldown", auth.status, Math.ceil((auth.until_ms - now) / 1000));
       if (selected.id !== sourceID && !selected.models.includes(input.model)) throw new PoolError("pool_model_unavailable", 409);
       if (selected.id !== sourceID && !SHARED_QUOTA_MODELS.has(input.model)) throw new PoolError("pool_quota_scope_unsupported", 409);
       if (selected.id !== sourceID && hasUnverifiedAttachments(input.body)) throw new PoolError("pool_attachment_account_unverified", 409);
@@ -189,17 +208,23 @@ export class AccountPool {
         .run(input.requestId, sourceID, thread, selected.id, selected.label, reason, "started", now);
       // Keep durable bindings; only old request telemetry is pruned.
       this.db.query("DELETE FROM requests WHERE at_ms < ?").run(now - 30 * 86400_000);
-      this.db.query("DELETE FROM errors WHERE source=?").run(sourceID);
       const headers = new Headers(input.headers);
       headers.set("authorization", `Bearer ${selected.accessToken}`);
       headers.set("chatgpt-account-id", selected.upstreamAccount);
-      return { route: { sourceAccount: sourceID, account: selected.id, accountLabel: selected.label, reason }, headers, identity: selected.identity };
+      return { route: { sourceAccount: sourceID, account: selected.id, accountLabel: selected.label, reason }, headers,
+        identity: selected.identity, credentialDigest: credentialDigest(selected.accessToken) };
     });
     return execute.immediate();
   }
-  response(requestId: string, identity: string, status: number, retryAfter: string | null) {
+  response(requestId: string, identity: string, status: number, retryAfter: string | null, digest?: string) {
     this.db.query("UPDATE requests SET status=? WHERE id=?").run(status, requestId);
-    if ([401,403,429].includes(status)) {
+    if ([401,403].includes(status) && digest) {
+      this.db.query(`INSERT INTO auth_cooldowns VALUES (?,?,?,?) ON CONFLICT(identity,digest)
+        DO UPDATE SET status=excluded.status,until_ms=MAX(until_ms,excluded.until_ms)`)
+        .run(identity, digest, status, this.now() + 60_000);
+    } else if ([401,403,429].includes(status)) {
+      // Missing digests retain legacy behavior for older callers. New relays
+      // quarantine authentication failures by token so refresh can recover.
       const seconds = Number(retryAfter);
       const until = status === 429 && retryAfter != null
         ? Number.isFinite(seconds) ? this.now() + Math.max(1, Math.min(seconds, 86400)) * 1000 : Date.parse(retryAfter)
@@ -208,19 +233,51 @@ export class AccountPool {
         .run(identity, Number.isFinite(until) && until > this.now() ? Math.min(until, this.now()+86400_000) : this.now() + 60_000);
     }
   }
-  finish(requestId: string, state: string) { this.db.query("UPDATE requests SET state=? WHERE id=?").run(state,requestId); }
-  reject(code: string) { this.db.query("INSERT INTO errors VALUES (?,?,?) ON CONFLICT(source) DO UPDATE SET code=excluded.code,at_ms=excluded.at_ms")
-    .run(this.options.sourceAccount, code, this.now()); }
+  finish(requestId: string, state: string) {
+    this.db.transaction(() => {
+      this.db.query("UPDATE requests SET state=? WHERE id=?").run(state,requestId);
+      if (state === "completed") {
+        // Legacy errors have no task identity. Clear only errors already present
+        // when this successful request started, never a newer concurrent failure.
+        this.db.query(`DELETE FROM errors WHERE EXISTS (SELECT 1 FROM requests r
+          WHERE r.id=? AND r.source=errors.source AND r.status>=200 AND r.status<300
+            AND errors.at_ms<=r.at_ms)`).run(requestId);
+      }
+    }).immediate();
+  }
+  reject(code: string, context?: { requestId: string; threadId: string | null; status: number }) {
+    const source = this.options.sourceAccount, now = this.now();
+    this.db.transaction(() => {
+      if (context) {
+        // No serving account was selected; do not attribute this to the source.
+        this.db.query(`INSERT INTO requests(id,source,thread,account,label,reason,state,status,at_ms)
+          VALUES (?,?,?,?,?,?,?,?,?)`).run(context.requestId, source, context.threadId ?? "", "", "", code, "rejected", context.status, now);
+        this.db.query("DELETE FROM errors WHERE source=?").run(source);
+        this.db.query("DELETE FROM requests WHERE at_ms < ?").run(now - 30 * 86400_000);
+      } else {
+        this.db.query("INSERT INTO errors VALUES (?,?,?) ON CONFLICT(source) DO UPDATE SET code=excluded.code,at_ms=excluded.at_ms")
+          .run(source, code, now);
+      }
+    }).immediate();
+  }
 }
 
 export function poolStatus(path = poolDatabasePath(), policyPath = poolPolicyPath()) {
   const policy = readPoolPolicy(policyPath);
-  if (!existsSync(path)) return { ...policy, recent: [] };
+  if (!existsSync(path)) return { ...policy, recent: [], rejected: [], error: null };
   const db = new Database(path, { readonly: true });
   try {
-    const recent = db.query("SELECT source AS sourceAccount, account, label AS accountLabel, reason, state, status, at_ms AS atMs FROM requests ORDER BY at_ms DESC LIMIT 5").all();
-    const error = db.query<{code:string}, []>("SELECT code FROM errors ORDER BY at_ms DESC LIMIT 1").get()?.code ?? null;
-    return { ...policy, recent, error };
+    const recent = db.query("SELECT source AS sourceAccount, account, label AS accountLabel, reason, state, status, at_ms AS atMs FROM requests WHERE account<>'' ORDER BY at_ms DESC,rowid DESC LIMIT 5").all();
+    const rejected = db.query(`SELECT id AS requestId,source AS sourceAccount,thread AS threadId,reason AS code,status,at_ms AS atMs
+      FROM requests WHERE state='rejected' ORDER BY at_ms DESC,rowid DESC LIMIT 5`).all();
+    // An unrelated task succeeding does not erase another task's rejection.
+    const unresolved = db.query<{code:string}, []>(`SELECT reason AS code FROM requests r WHERE state='rejected'
+      AND NOT EXISTS (SELECT 1 FROM requests done WHERE done.source=r.source AND done.thread=r.thread
+        AND done.state='completed' AND done.status>=200 AND done.status<300
+        AND (done.at_ms>r.at_ms OR (done.at_ms=r.at_ms AND done.rowid>r.rowid)))
+      ORDER BY at_ms DESC,rowid DESC LIMIT 1`).get();
+    const error = unresolved?.code ?? db.query<{code:string}, []>("SELECT code FROM errors ORDER BY at_ms DESC LIMIT 1").get()?.code ?? null;
+    return { ...policy, recent, rejected, error };
   } finally { db.close(); }
 }
 
