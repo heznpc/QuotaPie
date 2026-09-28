@@ -5,20 +5,20 @@ import { inspectRelaySettings, replaceRelaySettings, withRelaySettingsLock } fro
 export class TaskSavingsSettings {
   private busy = false;
   constructor(private root: string, private fetcher: typeof fetch = fetch) {}
-  private async inspect() {
+  private async inspect(healthByPath?: Map<string, any>) {
     return inspectRelaySettings(this.root, async ({ path, raw, settings, current }) => {
       const saved = validateTaskSavings(settings.taskSavings ?? DEFAULT_TASK_SAVINGS);
       let health: any = null;
-      try { health = await relayHealth(settings,this.fetcher); } catch { /* No endpoint details in status. */ }
+      try { health = healthByPath?.has(path) ? healthByPath.get(path) : await relayHealth(settings,this.fetcher); } catch { /* No endpoint details in status. */ }
       const configurable = health?.schemaVersion >= 3 && !!health.taskSavings;
       return {path,raw,settings,saved,current,configurable,
         supported:health?.savingsModelSupported === true,
         effective:configurable ? validateTaskSavings(health.taskSavings) : null};
     });
   }
-  async status() {
+  async status(healthByPath?: Map<string, any>) {
     try {
-      const entries = await this.inspect(), current = entries[0]!;
+      const entries = await this.inspect(healthByPath), current = entries[0]!;
       return {...current.saved,configurable:current.configurable,supported:current.supported,
         generations:entries.length,compatible:entries.filter(e=>e.configurable).length,
         applied:entries.filter(e=>e.effective && JSON.stringify(e.effective)===JSON.stringify(current.saved)).length};
