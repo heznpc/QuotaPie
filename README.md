@@ -188,15 +188,23 @@ check that exits and removes its test app; it does not leave a usable app runnin
 
 After installing the current resident relay for each participating profile, run
 `quotapie pool enable --accounts ID,ID` with IDs from `quotapie accounts`.
-New text tasks use the eligible account with the most remaining shared quota.
+New text tasks prefer their verified login account. When it is exhausted or on
+cooldown, they use an eligible registered account with remaining shared quota.
 Fresh quota is required to choose another account. If no such candidate is
 available, a new task stays on its verified login account (`source_fallback`)
 and the provider decides whether it can run. Missing or stale collection data
 does not manufacture a local quota-exhaustion error.
-Each task's serving account is persisted across restarts. Existing histories
-stay with their original account; failed requests are never replayed on another
-account. A zero quota snapshot does not block a bound task from checking actual
-provider recovery. Actual upstream rate limits impose a bounded cooldown with
+Each task's serving account is persisted across restarts. An exhausted binding
+can transfer a complete request history to an eligible account. Messages, paired
+tool calls/results and inline images are retained; foreign encrypted reasoning
+cache and old response item IDs are removed from outgoing requests only. Local
+rollouts are not rewritten. A verified change of the local login releases the
+old binding using the same full-history check. Remote response/file references and opaque compaction
+state are not transferred. An HTTP 429 before any model output can trigger one
+retry on another account; partial streams, authentication failures and arbitrary
+HTTP errors are never replayed. When no safe replacement exists, the original
+account is retained. A zero quota snapshot alone does not prevent checking actual
+provider recovery. Upstream rate limits impose a bounded cooldown with
 `Retry-After`; authentication rejection quarantines only the rejected credential,
 so a refreshed credential can recover without waiting for a quota timer.
 Later screenshots embedded as image data stay on the bound account;

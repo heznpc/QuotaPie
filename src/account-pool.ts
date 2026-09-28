@@ -5,13 +5,14 @@ import { dirname, join } from "node:path";
 import { codexProfileRoot, codexUsesFileCredentials, dataDirectory, loadConfig, type AppConfig } from "./config";
 import type { CodexForkParentResult } from "./account-pool-lineage";
 import { defaultWorkBoundaryPath, profileReference } from "./work-boundary";
+import { portableReplay, filterForeignReasoning } from "./account-replay";
 
 export interface PoolPolicy { enabled: boolean; accounts: string[] }
 export interface PoolAccount {
   id: string; label: string; identity: string; accessToken: string; upstreamAccount: string;
   tokenExpiresAt: number; models: string[]; remaining: number | null; validUntil: number;
 }
-export interface PoolRoute { sourceAccount: string; account: string; accountLabel: string; reason: "new" | "pinned" | "existing" | "source_fallback" }
+export interface PoolRoute { sourceAccount: string; account: string; accountLabel: string; reason: "new" | "pinned" | "existing" | "source_fallback" | "recovered"; previousAccountLabel?: string }
 export class PoolError extends Error {
   constructor(readonly code: string, readonly status = 503, readonly retryAfterSeconds?: number) { super(code); }
 }
@@ -95,7 +96,7 @@ function hasUnverifiedAttachments(body: any): boolean {
     [item?.content, item?.output].some(parts => Array.isArray(parts) && parts.some(unverified)));
 }
 
-type Binding = { account: string; identity: string; source_identity: string; label: string };
+type Binding = { account: string; identity: string; source_identity: string; label: string; foreignReasoning?: string[] };
 export class AccountPool {
   private db: Database;
   constructor(private options: {
@@ -110,6 +111,8 @@ export class AccountPool {
     this.db.run(`CREATE TABLE IF NOT EXISTS bindings (source TEXT NOT NULL, thread TEXT NOT NULL, account TEXT NOT NULL,
       identity TEXT NOT NULL, source_identity TEXT NOT NULL, label TEXT NOT NULL, updated_ms INTEGER NOT NULL, PRIMARY KEY(source,thread))`);
     this.db.run(`CREATE TABLE IF NOT EXISTS cooldowns (identity TEXT PRIMARY KEY, until_ms INTEGER NOT NULL)`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS replay_filters (source TEXT NOT NULL, thread TEXT NOT NULL,
+      fingerprints TEXT NOT NULL, PRIMARY KEY(source,thread))`);
     this.db.run(`CREATE TABLE IF NOT EXISTS auth_cooldowns (identity TEXT NOT NULL, digest TEXT NOT NULL,
       status INTEGER NOT NULL, until_ms INTEGER NOT NULL, PRIMARY KEY(identity,digest))`);
     this.db.run(`CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, source TEXT NOT NULL, thread TEXT NOT NULL,
@@ -125,6 +128,22 @@ export class AccountPool {
   }
   close() { this.db.close(); }
   private now() { return this.options.now?.() ?? Date.now(); }
+  private foreignReasoning(source: string, thread: string): string[] | undefined {
+    const row = this.db.query<{fingerprints:string}, [string,string]>("SELECT fingerprints FROM replay_filters WHERE source=? AND thread=?").get(source, thread);
+    return row ? JSON.parse(row.fingerprints) : undefined;
+  }
+  private eligible(accounts: PoolAccount[], model: string, exclude?: string): PoolAccount[] {
+    const now = this.now(), policy = this.options.policy();
+    return accounts.filter(a => a.id !== exclude && policy.accounts.includes(a.id) && a.tokenExpiresAt > now + 30_000 &&
+      a.models.includes(model) && a.remaining != null && a.remaining > 0 && a.validUntil > now &&
+      !this.db.query("SELECT 1 FROM cooldowns WHERE identity=? AND until_ms>?").get(a.identity, now) &&
+      !this.db.query("SELECT 1 FROM auth_cooldowns WHERE identity=? AND digest=? AND until_ms>?").get(a.identity, credentialDigest(a.accessToken), now))
+      .sort((a,b) => Number(b.id === this.options.sourceAccount) - Number(a.id === this.options.sourceAccount) || b.remaining! - a.remaining! || a.id.localeCompare(b.id));
+  }
+  canRecover(account: string, model: string, body: unknown): boolean {
+    return this.options.policy().enabled && SHARED_QUOTA_MODELS.has(model) && !!portableReplay(body) &&
+      this.eligible(this.options.accounts(), model, account).length > 0;
+  }
   private rememberSource(source: PoolAccount | undefined) {
     const now = this.now();
     this.db.transaction(() => {
@@ -145,11 +164,11 @@ export class AccountPool {
       if (seen.has(thread)) throw new PoolError("pool_lineage_invalid", 409);
       seen.add(thread);
       const binding = this.db.query<Binding, [string,string]>("SELECT * FROM bindings WHERE source=? AND thread=?").get(source, thread);
-      if (binding) return binding;
+      if (binding) return { ...binding, foreignReasoning: this.foreignReasoning(source, thread) };
     }
     throw new PoolError("pool_lineage_invalid", 409);
   }
-  select(input: { threadId: string | null; requestId: string; body: unknown; model: string; headers: Headers }): { route: PoolRoute; headers: Headers; identity: string; credentialDigest: string } | null {
+  select(input: { threadId: string | null; requestId: string; body: unknown; model: string; headers: Headers }): { route: PoolRoute; headers: Headers; identity: string; credentialDigest: string; body: unknown } | null {
     const policy = this.options.policy(), sourceID = this.options.sourceAccount, thread = input.threadId;
     if (!thread) { if (policy.enabled && policy.accounts.includes(sourceID)) throw new PoolError("pool_thread_identity_required", 409); return null; }
     const now = this.now(), accounts = this.options.accounts(), source = accounts.find(a => a.id === sourceID);
@@ -179,16 +198,44 @@ export class AccountPool {
         "SELECT status,until_ms FROM auth_cooldowns WHERE identity=? AND digest=? AND until_ms>?")
         .get(a.identity, credentialDigest(a.accessToken), now);
       let selected: PoolAccount | undefined, reason: PoolRoute["reason"];
-      if (saved) {
+      let foreignReasoning = saved?.foreignReasoning ?? this.foreignReasoning(sourceID, thread);
+      let replayBody = filterForeignReasoning(input.body, foreignReasoning);
+      let previousAccountLabel: string | undefined;
+      if (saved && source.identity !== saved.source_identity) {
+        // A login changed in the trusted local credential store. Honor that
+        // explicit login instead of trapping it behind the previous binding.
+        const replay = portableReplay(input.body);
+        if (!replay) throw new PoolError("pool_recovery_requires_full_history", 409);
+        selected = source; reason = "recovered"; previousAccountLabel = saved.label;
+        replayBody = replay.body;
+        foreignReasoning = [...new Set([...(foreignReasoning ?? []), ...replay.fingerprints])];
+      } else if (saved) {
         selected = accounts.find(a => a.id === saved.account);
         if (source.identity !== saved.source_identity || !selected || selected.identity !== saved.identity) throw new PoolError("pool_bound_identity_changed", 409);
         if (selected.id !== sourceID && !policy.accounts.includes(selected.id)) throw new PoolError("pool_bound_account_removed", 409);
         reason = "pinned";
+        // Only a new, complete HTTP request can move. Partial streamed responses
+        // are never replayed. Keep all messages/tool outputs; remove only foreign
+        // encrypted reasoning cache, and persist its fingerprints for later turns.
+        if (policy.enabled && SHARED_QUOTA_MODELS.has(input.model) &&
+            (cooldownUntil(selected) > now || selected.remaining === 0 && selected.validUntil > now)) {
+          const replacement = this.eligible(accounts, input.model, selected.id)[0];
+          if (replacement) {
+            const replay = portableReplay(replayBody);
+            if (replay) {
+              previousAccountLabel = selected.label;
+              selected = replacement; reason = "recovered"; replayBody = replay.body;
+              foreignReasoning = [...new Set([...(foreignReasoning ?? []), ...replay.fingerprints])];
+            } else if (cooldownUntil(selected) > now) {
+              throw new PoolError("pool_recovery_requires_full_history", 409);
+            }
+          }
+        }
       } else if (!isFreshTextTurn(input.body) || !SHARED_QUOTA_MODELS.has(input.model)) { selected = source; reason = "existing"; }
       else {
-        selected = accounts.filter(a => policy.accounts.includes(a.id) && a.tokenExpiresAt > now + 30_000 &&
-          a.models.includes(input.model) && a.remaining != null && a.remaining > 0 && a.validUntil > now && cooldownUntil(a) <= now && !authCooldown(a))
-          .sort((a,b) => b.remaining! - a.remaining! || a.id.localeCompare(b.id))[0];
+        // Unknown source quota is not permission to silently change the login.
+        selected = source.remaining == null && cooldownUntil(source) <= now && !authCooldown(source)
+          ? source : this.eligible(accounts, input.model)[0];
         // Unknown or zero local quota must not disable the caller's own login.
         // Only cross-account assignment requires fresh positive quota evidence.
         reason = selected ? "new" : "source_fallback";
@@ -202,8 +249,11 @@ export class AccountPool {
       if (selected.id !== sourceID && !selected.models.includes(input.model)) throw new PoolError("pool_model_unavailable", 409);
       if (selected.id !== sourceID && !SHARED_QUOTA_MODELS.has(input.model)) throw new PoolError("pool_quota_scope_unsupported", 409);
       if (selected.id !== sourceID && hasUnverifiedAttachments(input.body)) throw new PoolError("pool_attachment_account_unverified", 409);
-      this.db.query(`INSERT INTO bindings VALUES (?,?,?,?,?,?,?) ON CONFLICT(source,thread) DO UPDATE SET updated_ms=excluded.updated_ms`)
+      this.db.query(`INSERT INTO bindings VALUES (?,?,?,?,?,?,?) ON CONFLICT(source,thread) DO UPDATE SET
+        account=excluded.account,identity=excluded.identity,source_identity=excluded.source_identity,label=excluded.label,updated_ms=excluded.updated_ms`)
         .run(sourceID, thread, selected.id, selected.identity, source.identity, selected.label, now);
+      if (foreignReasoning) this.db.query("INSERT OR REPLACE INTO replay_filters VALUES (?,?,?)")
+        .run(sourceID, thread, JSON.stringify(foreignReasoning));
       this.db.query("INSERT INTO requests(id,source,thread,account,label,reason,state,at_ms) VALUES (?,?,?,?,?,?,?,?)")
         .run(input.requestId, sourceID, thread, selected.id, selected.label, reason, "started", now);
       // Keep durable bindings; only old request telemetry is pruned.
@@ -211,7 +261,8 @@ export class AccountPool {
       const headers = new Headers(input.headers);
       headers.set("authorization", `Bearer ${selected.accessToken}`);
       headers.set("chatgpt-account-id", selected.upstreamAccount);
-      return { route: { sourceAccount: sourceID, account: selected.id, accountLabel: selected.label, reason }, headers,
+      return { route: { sourceAccount: sourceID, account: selected.id, accountLabel: selected.label, reason,
+        ...(previousAccountLabel ? { previousAccountLabel } : {}) }, headers, body: replayBody,
         identity: selected.identity, credentialDigest: credentialDigest(selected.accessToken) };
     });
     return execute.immediate();

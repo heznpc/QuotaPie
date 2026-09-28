@@ -108,9 +108,9 @@ for (const status of [401,403]) test(`upstream ${status} quarantines only the re
   expect(select(thread)?.headers.get("authorization")).toBe("Bearer b-refreshed-token");
 }));
 
-test("cooldown expires without rebinding a conversation",()=>{
+test("cooldown expires when no alternate account has capacity",()=>{
   let time=now;
-  const accounts=[account("a",20),account("b",75)];
+  const accounts=[account("a",0),account("b",75)];
   const pool=new AccountPool({path:":memory:",sourceAccount:"a",accounts:()=>accounts,
     policy:()=>({enabled:true,accounts:["a","b"]}),now:()=>time});
   const input={threadId:randomUUID(),requestId:randomUUID(),body,model:body.model,

@@ -23,7 +23,7 @@ async function fixture(run: (context: {
   const dbPath = join(directory, "pool.sqlite3"), policyPath = join(directory, "absent-policy.json");
   const accounts = ["source", "other"].map((id, index): PoolAccount => ({
     id, label: id, identity: id + "-identity", accessToken: id + "-token", upstreamAccount: id + "-upstream",
-    tokenExpiresAt: now + 3600_000, models: [model], remaining: index ? 80 : 20, validUntil: now + 600_000,
+    tokenExpiresAt: now + 3600_000, models: [model], remaining: index ? 80 : 0, validUntil: now + 600_000,
   }));
   const events: CompactionRequestEvent[] = [];
   let handler = (_headers: Headers) => completed();
@@ -41,7 +41,7 @@ async function fixture(run: (context: {
   } finally { proxy.stop(); pool.close(); rmSync(directory, { recursive: true, force: true }); }
 }
 
-test("a zero snapshot cannot strand an existing account binding after provider recovery", async () => fixture(async c => {
+test("an exhausted binding moves full history to an account with capacity", async () => fixture(async c => {
   const thread = randomUUID(), served: string[] = [];
   c.upstream(headers => { served.push(headers.get("authorization")!); return completed(); });
   await (await c.request(thread)).text();
@@ -50,8 +50,8 @@ test("a zero snapshot cannot strand an existing account binding after provider r
   const resumed = await c.request(thread);
   expect(resumed.status).toBe(200); await resumed.text();
   await (await c.request(randomUUID())).text();
-  expect(served).toEqual(["Bearer other-token", "Bearer other-token", "Bearer source-token"]);
-  expect(c.events.filter(e => e.phase === "completed").map(e => e.accountRouting?.reason)).toEqual(["new", "pinned", "new"]);
+  expect(served).toEqual(["Bearer other-token", "Bearer source-token", "Bearer source-token"]);
+  expect(c.events.filter(e => e.phase === "completed").map(e => e.accountRouting?.reason)).toEqual(["new", "recovered", "new"]);
 }));
 
 test("a new text task with a deep link falls back to its login when quota collection is unavailable", async () => fixture(async c => {
