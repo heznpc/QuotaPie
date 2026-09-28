@@ -315,6 +315,23 @@ export class QuotaPieService {
     return nowMs - state.lastSuccessMs <= this.config.collection.staleAfterSeconds * 1_000;
   }
 
+  private recordCodexRead(account: string, observations: QuotaObservation[]) {
+    // Polls and validated push refreshes must agree on collection health.
+    // Empty reads keep the last snapshot but do not establish fresh quota.
+    if (!observations.length) {
+      const message = "rate limit response contained no windows";
+      this.codexPollState.set(account, { count: 0, error: message });
+      this.collection.recordAttempt("codex", account, CODEX_SOURCE, Date.now(), message, "no-windows");
+      return { ok: false as const, events: [] as QuotaEvent[], message };
+    }
+    this.codexPollState.set(account, { count: observations.length, error: null });
+    this.collection.recordAttempt("codex", account, CODEX_SOURCE, Date.now(), null, null);
+    return {
+      ok: true as const,
+      events: this.closing ? [] : this.ingestCodexSnapshot(observations),
+    };
+  }
+
   async pollCodex(): Promise<QuotaEvent[]> {
     if (!this.config.collection.codexEnabled) return [];
     const profiles = this.config.accounts.codex.filter((profile) => profile.enabled);
@@ -337,21 +354,7 @@ export class QuotaPieService {
       }
       try {
         const observations = await client.readRateLimits();
-        // A response that arrives with no windows is not a success. Recording
-        // it as one lets /health pass it as recent-success while doctor fails
-        // it on window count, putting the two surfaces back at odds.
-        if (!observations.length) {
-          const message = "rate limit response contained no windows";
-          this.codexPollState.set(profile.id, { count: 0, error: message });
-          this.collection.recordAttempt("codex", profile.id, CODEX_SOURCE, Date.now(), message, "no-windows");
-          return { ok: false as const, events: [] as QuotaEvent[], message };
-        }
-        this.codexPollState.set(profile.id, { count: observations.length, error: null });
-        this.collection.recordAttempt("codex", profile.id, CODEX_SOURCE, Date.now(), null, null);
-        return {
-          ok: true as const,
-          events: this.closing ? [] : this.ingestCodexSnapshot(observations),
-        };
+        return this.recordCodexRead(profile.id, observations);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.codexPollState.set(profile.id, { count: 0, error: message });
@@ -452,8 +455,7 @@ export class QuotaPieService {
     );
     client.onUpdate((observations) => {
       if (this.closing) return;
-      this.codexPollState.set(profile.id, { count: observations.length, error: null });
-      this.ingestCodexSnapshot(observations);
+      this.recordCodexRead(profile.id, observations);
     });
     return client;
   }

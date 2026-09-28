@@ -137,34 +137,78 @@ The project installs no additional runtime packages. SQLite and the HTTP server 
 
 ## Quick start
 
+Install the collector and menu bar app together, and start both at login:
+
 ```bash
 cd /path/to/quotapie
-./bin/quotapie init
-./bin/quotapie doctor
-./bin/quotapie serve
-./script/build_and_run.sh --verify
+./script/install.sh
 ```
 
-After that, the single conclusion in the menu bar is all you need to read (`56% left`, `⚠ weekly at risk`, `Limits unconfirmed`, `Setup needed`). `serve` is not a browser command: it runs collection, alerts, and the local API that the menu bar app reads. Open the detailed web view only when you want it, from the menu or at [http://127.0.0.1:47831](http://127.0.0.1:47831).
+The source installer requires macOS, Bun 1.3+, and the Apple Swift toolchain.
+It builds before replacing an existing installation, keeps your configuration
+and data, and verifies that the installed collector and menu bar app are running.
+The runtime goes in `~/.local/lib/quotapie`, the CLI in `~/.local/bin/quotapie`,
+and the app in `~/Applications/QuotaPie.app`. These locations also keep the
+background service outside macOS's protected Documents directory.
 
-To use the CLI from anywhere, add the project's `bin` to your `PATH`, or link `bin/quotapie` into a local bin directory of your choice.
+An installed service does not establish account access. Log in to the Codex CLI
+and run `~/.local/bin/quotapie doctor` to check collection; connect Claude using
+the instructions below. Add `~/.local/bin` to your `PATH` to use `quotapie`
+from any terminal. Installing does not enable Claude OAuth, modify Codex relay
+settings, or install the optional privileged power helper.
 
-For real use, keep the runtime in `~/.local/lib/quotapie` and link it as `~/.local/bin/quotapie`. macOS can block `launchd` from reaching Documents with `Operation not permitted`, so the resident service and the Claude status line are more reliable when they run from a copy outside that protected path. The source directory stays the reference copy.
+For a packaged DMG, run **Install QuotaPie.command** inside the mounted image.
+It installs the included app and collector together. Bun 1.3+ is still required;
+the Swift toolchain is only needed when building from source.
+
+The menu bar shows the current conclusion (`56% left`, `⚠ weekly at risk`,
+`Limits unconfirmed`, or `Setup needed`). Open the detailed web view from the
+menu or at [http://127.0.0.1:47831](http://127.0.0.1:47831).
+
+For a temporary development run instead of installation, use **two terminals**.
+In the first:
+
+```bash
+./bin/quotapie init
+./bin/quotapie serve
+```
+
+Keep that terminal open; `serve` runs the collector and local API in the
+foreground. In a second terminal at the same checkout:
+
+```bash
+./script/build_and_run.sh
+```
+
+Use this development flow only when the installed collector is stopped, or
+with a separate configuration and unused port. `--verify` is an isolated smoke
+check that exits and removes its test app; it does not leave a usable app running.
 
 ## Codex account pool
 
 After installing the current resident relay for each participating profile, run
 `quotapie pool enable --accounts ID,ID` with IDs from `quotapie accounts`.
 New text tasks use the eligible account with the most remaining shared quota.
+Fresh quota is required to choose another account. If no such candidate is
+available, a new task stays on its verified login account (`source_fallback`)
+and the provider decides whether it can run. Missing or stale collection data
+does not manufacture a local quota-exhaustion error.
 Each task's serving account is persisted across restarts. Existing histories
 stay with their original account; failed requests are never replayed on another
-account. Later screenshots embedded as image data stay on the bound account;
+account. A zero quota snapshot does not block a bound task from checking actual
+provider recovery. Actual upstream rate limits impose a bounded cooldown with
+`Retry-After`; authentication rejection quarantines only the rejected credential,
+so a refreshed credential can recover without waiting for a quota timer.
+Later screenshots embedded as image data stay on the bound account;
 account-scoped file references, remote image URLs, and models with unverified
 quota scope are blocked. The menu bar distinguishes the selected account's quota from the recent
 serving account.
 
 `quotapie pool status` reports routing; `quotapie pool disable` stops assigning
-new tasks while preserving existing bindings. Finish loaded work and reopen
+new tasks while preserving existing bindings. Requests rejected before dispatch
+appear separately from serving-account records, with task identity, reason and
+status; they also appear in relay health and logs without request bodies or
+credentials. Finish loaded work and reopen
 Codex to load a newly installed relay. This uses separate registered logins;
 it does not merge their subscriptions. Real cross-account text requests,
 inline image attachments, and subsequent continuation have been exercised;
@@ -212,17 +256,14 @@ running at startup. This adds no polling timer. The development run temporarily
 unloads the installed LaunchAgent and restores it on exit; verification uses a
 separate bundle identity and never creates another live menu bar meter.
 
-To start it at login, first copy the built app into your user Applications folder, then register a LaunchAgent separate from the backend's.
+For normal use and launch at login, use the combined installer:
 
 ```bash
-mkdir -p ~/Applications ~/Library/LaunchAgents
-ditto dist/QuotaPie.app ~/Applications/QuotaPie.app
-./bin/quotapie menubar-launchd > /tmp/local.quotapie.menubar.plist
-plutil -lint /tmp/local.quotapie.menubar.plist
-cp /tmp/local.quotapie.menubar.plist ~/Library/LaunchAgents/local.quotapie.menubar.plist
-pkill -x QuotaPie 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/local.quotapie.menubar.plist
+./script/install.sh
 ```
+
+It registers separate LaunchAgents for the collector and the menu bar app.
+`quotapie menubar-launchd` remains available to print a plist for manual setup.
 
 Collection and alert evaluation keep running even if the menu bar app quits. Native alerts already accepted into the outbox wait for the app to return; optional command triggers keep running. Quitting from the menu deliberately does not immediately relaunch it, but the LaunchAgent does restart it after an abnormal exit.
 
@@ -415,7 +456,9 @@ Change compaction policy independently of the Codex work-model picker:
 quotapie-compaction configure --compact-model gpt-5.6-sol --compact-effort low
 ```
 
-A policy change affects future compaction requests. In-flight requests retain
+A policy change updates compatible live generations across registered profiles
+and retained endpoints; failed validation rolls back the files changed by that
+operation without overwriting concurrent edits. It affects future compaction requests. In-flight requests retain
 their captured policy. The Codex model picker still sets persistent work intent;
 manually changing it is **not** a temporary compaction setting. There is no
 hidden `thread/settings/update` or stale-snapshot restoration that overwrites a
@@ -436,7 +479,9 @@ unrelated edits. It changes all retained generations into pass-through relays so
 loaded tasks can continue while you restart Codex. Stop drains version 2
 listeners and unloads only those without active requests; rerun it after pending
 requests finish. Legacy version 1 listeners cannot prove they are idle and are
-reported as retained rather than automatically terminated. Configuration
+reported as retained rather than automatically terminated. An unavailable health
+check or an unconfirmed drain also retains the listener. Missing historical
+settings do not prevent managing the current registered profiles. Configuration
 backups and generation directories remain available.
 The relay starts again at login while enabled; if it stops unexpectedly, launchd
 restarts it. Codex requests depend on this local service until the configuration
@@ -593,14 +638,17 @@ For example, to run a macOS Shortcut alongside the notification:
 
 ## Running as a resident service
 
-QuotaPie does not install `launchd` files for you. It prints them so you can read them first.
+`./script/install.sh` installs and starts both LaunchAgents. For a manual,
+collector-only setup, the CLI can also print the service plist:
 
 ```bash
-./bin/quotapie launchd > /tmp/local.quotapie.plist
+~/.local/bin/quotapie launchd > /tmp/local.quotapie.plist
 plutil -lint /tmp/local.quotapie.plist
 ```
 
-Once you have reviewed it, move it to `~/Library/LaunchAgents/local.quotapie.plist` and register it yourself. QuotaPie performs no system changes such as deleting or overwriting on your behalf.
+For this manual path, run the installed CLI under `~/.local/bin` so the plist
+points to the resident runtime, then register it yourself. Stop an existing
+collector before registering a replacement.
 
 ```bash
 mkdir -p ~/Library/LaunchAgents
@@ -769,6 +817,12 @@ referenced posts and conversation roots supply bounded context. A deterministic
 first version classifies English reset phrases and several contextual hints;
 it can miss jokes, images, and novel wording. No LLM key is required. Relative
 times remain as original wording instead of guessing the author's timezone.
+
+The overview shows the latest post's author, publication date, and original
+time wording. History separates when a post was published from when QuotaPie
+collected that version; collecting an older post today does not make it a new
+announcement. Source coverage diagnostics follow the posts. These timestamps
+do not establish when a rumor first began or when a reset reached an account.
 
 Collection runs independently of quota polling, at most every five minutes by
 default. Errors preserve history and the last successful cursor; API responses,

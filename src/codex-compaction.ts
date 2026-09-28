@@ -76,6 +76,18 @@ function decodeBody(bytes: Uint8Array, encoding: string | null): Uint8Array {
   }
 }
 
+function poolErrorMessage(error: PoolError): string {
+  if (error.code === "pool_account_cooldown")
+    return `QuotaPie: this task's account is temporarily rate limited. Retry in ${error.retryAfterSeconds ?? 60} seconds. The task remains on its original account.`;
+  if (error.code === "pool_auth_cooldown")
+    return "QuotaPie: this task's account credentials were rejected. Refresh that account's login before retrying.";
+  if (["pool_source_auth_unavailable", "pool_target_auth_unavailable", "pool_source_identity_mismatch"].includes(error.code))
+    return "QuotaPie: the task's registered account credentials need to be refreshed. Its account binding has been preserved.";
+  if (["pool_bound_identity_changed", "pool_bound_account_removed"].includes(error.code))
+    return "QuotaPie: the task's original account is unavailable or has changed. Restore that registered account to continue this task.";
+  return `QuotaPie could not route this request (${error.code}). No request was sent to the provider.`;
+}
+
 /** One loopback relay per launched Codex process. Credentials and bodies stay in memory. */
 export function startCompactionProxy(options: {
   route?: CompactionRoute;
@@ -95,6 +107,7 @@ export function startCompactionProxy(options: {
   if (!/^[a-f0-9]{48}$/.test(token)) throw new Error("Invalid relay token");
   const prefix = `/${token}/backend-api/codex`;
   let requests = 0;
+  let rejectedRequests = 0;
   let compactions = 0;
   let lastRequest: CompactionRequestEvent | null = null;
   let attemptedCompactions = 0, failedCompactions = 0, cancelledCompactions = 0, unverifiedCompactions = 0;
@@ -102,6 +115,18 @@ export function startCompactionProxy(options: {
   let draining = false;
   const active = new Map<string, CompactionRequestEvent>();
   const recent: CompactionRequestEvent[] = [];
+  const record = (update: CompactionRequestEvent) => {
+    lastRequest = update;
+    if (update.phase === "started" || update.phase === "response_headers") active.set(update.requestId, update);
+    else {
+      active.delete(update.requestId);
+      recent.push(update);
+      if (recent.length > 32) recent.shift();
+    }
+    // Both local rejection and upstream completion use the same evidence path.
+    // Observability callbacks must not break or repeat an inference request.
+    try { options.onRequest?.(update); } catch { /* Never log callback errors. */ }
+  };
   const upstreamFetch = options.fetchUpstream ?? fetch;
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -115,8 +140,8 @@ export function startCompactionProxy(options: {
       }
       const path = url.pathname.slice(prefix.length);
       if (path === "/quotapie-health" && request.method === "GET") {
-        return Response.json({ service: "quotapie-compaction", schemaVersion: 3, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 2 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
-          route: validateCompactionRoute(route), requests, compactions, attemptedCompactions,
+        return Response.json({ service: "quotapie-compaction", schemaVersion: 3, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 2 : 0, accountPoolRecoveryVersion: options.accountPool ? 1 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
+          route: validateCompactionRoute(route), requests, rejectedRequests, compactions, attemptedCompactions,
           failedCompactions, cancelledCompactions, unverifiedCompactions, activeRequests, draining,
           active: [...active.values()], recent, lastRequest });
       }
@@ -140,6 +165,8 @@ export function startCompactionProxy(options: {
       let expectsSse = false;
       let event: Omit<CompactionRequestEvent, "phase" | "status" | "at" | "durationMs"> | undefined;
       let poolSelection: ReturnType<AccountPool["select"]> = null;
+      let selectingAccount = false;
+      const started = performance.now();
       // Freeze the policy for this request. A live policy update cannot change
       // its target, effort, or attribution after the request has been sent.
       const policy = validateCompactionRoute(route);
@@ -176,6 +203,7 @@ export function startCompactionProxy(options: {
                 reasoningEffort: safeEffort(object(outgoing.reasoning) ? outgoing.reasoning.effort : null),
               };
               if (options.accountPool) {
+                selectingAccount = true;
                 poolSelection = options.accountPool.select({ threadId: event.threadId, requestId: event.requestId,
                   body: input, model: event.to, headers });
                 if (poolSelection) { headers = poolSelection.headers; event.accountRouting = poolSelection.route; }
@@ -190,12 +218,21 @@ export function startCompactionProxy(options: {
         }
       } catch (error) {
         activeRequests--;
-        if (options.accountPool) { try { options.accountPool.reject(error instanceof PoolError ? error.code : "pool_request_rejected"); } catch {} }
-        if (error instanceof PoolError) return Response.json({ error: { message: error.code, type: "quotapie_account_pool", code: error.code } }, { status: error.status });
-        if (options.accountPool) return Response.json({ error: { message: "pool_request_rejected", type: "quotapie_account_pool" } }, { status: 503 });
+        if (selectingAccount) {
+          const code = error instanceof PoolError ? error.code : "pool_request_rejected";
+          const status = error instanceof PoolError ? error.status : 503;
+          rejectedRequests++;
+          if (event) record({ ...event, phase: "failed", status, errorCode: code, at: new Date().toISOString(),
+            durationMs: Math.round(performance.now() - started), retryCount: 0 });
+          try { options.accountPool!.reject(code, event ? { requestId: event.requestId, threadId: event.threadId, status } : undefined); } catch { /* Rejection telemetry must not retry or forward a request. */ }
+          const responseHeaders = new Headers();
+          if (error instanceof PoolError && error.retryAfterSeconds != null)
+            responseHeaders.set("retry-after", String(error.retryAfterSeconds));
+          return Response.json({ error: { message: error instanceof PoolError ? poolErrorMessage(error) : "QuotaPie account routing is temporarily unavailable. No request was sent to the provider.",
+            type: "quotapie_account_pool", code } }, { status, headers: responseHeaders });
+        }
         return new Response("Invalid or unsupported request body", { status: 400 });
       }
-      const started = performance.now();
       let status = 0, finished = false, receivedResponse = false;
       let retryCount = 0;
       let transportCode: string | undefined;
@@ -208,15 +245,7 @@ export function startCompactionProxy(options: {
           durationMs: Math.round(performance.now() - started), retryCount,
           ...(transportCode ? { transportCode } : {}), ...(errorCode ? { errorCode } : {}),
           ...(event.kind === "response" ? { responseModel: observer?.responseModel ?? null, usage: observer?.usage ?? null } : {}) };
-        lastRequest = update;
-        if (phase === "started" || phase === "response_headers") active.set(event.requestId, update);
-        else {
-          active.delete(event.requestId);
-          recent.push(update);
-          if (recent.length > 32) recent.shift();
-        }
-        // Observability callbacks must not break or repeat an inference request.
-        try { options.onRequest?.(update); } catch { /* Never log callback errors. */ }
+        record(update);
       };
       const finish = (phase: "completed" | "failed" | "cancelled" | "unverified", errorCode?: string) => {
         if (finished) return;
@@ -250,7 +279,7 @@ export function startCompactionProxy(options: {
         }, code => { retryCount++; transportCode = code; });
         receivedResponse = true;
         status = response.status;
-        if (poolSelection && event) { try { options.accountPool!.response(event.requestId, poolSelection.identity, status, response.headers.get("retry-after")); } catch { /* do not replay a dispatched request */ } }
+        if (poolSelection && event) { try { options.accountPool!.response(event.requestId, poolSelection.identity, status, response.headers.get("retry-after"), poolSelection.credentialDigest); } catch { /* do not replay a dispatched request */ } }
         if (finished) { await response.body?.cancel(); return new Response(null, { status: 499 }); }
         if ([301, 302, 303, 307, 308].includes(status)) {
           await response.body?.cancel(); finish("failed", "upstream_redirect");

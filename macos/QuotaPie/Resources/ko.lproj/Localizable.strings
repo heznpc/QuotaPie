@@ -205,14 +205,14 @@
 "signal.health.error" = "수집 실패 · 저장된 소식 표시 중";
 "signal.health.stale" = "수집 지연 · 저장된 소식 표시 중";
 "signal.health.off" = "소식 수집 꺼짐";
-"signal.checked" = "마지막 수집 %@";
+"signal.checked" = "마지막 수집 확인 %@";
 "signal.empty" = "아직 수집된 리셋 소식이 없습니다";
 "signal.source" = "X에서 보기";
 "signal.kind.banked" = "저장형 리셋 지급";
 "signal.kind.direct" = "즉시 한도 리셋";
 "signal.kind.unknown" = "리셋 종류 미확인";
-"signal.elapsed" = "피드 예상 시각 %@ 지남 · 계정 적용 미확인";
-"signal.feedTime" = "피드 예상 시각 %@ · 원문 시간 표현 확인";
+"signal.elapsed" = "중계 피드 추정 시각 %@ 지남 · 계정 적용 미확인";
+"signal.feedTime" = "중계 피드 추정 시각 %@ · 확정 일정 아님";
 "signal.accountNotice" = "공개 소식과 내 계정 한도·리셋 시각은 별개입니다.";
 
 // Account recovery evidence
@@ -279,8 +279,8 @@
 "signal.summary.withdrawn" = "리셋 소식 정정·철회됨";
 "signal.summary.updated" = "리셋 예고 변경됨";
 "signal.summary.reported" = "리셋 시행 소식 있음";
-"signal.summary.elapsed" = "예고 시간 지남";
-"signal.summary.scheduled" = "리셋 예고 있음 · 시간 제시됨";
+"signal.summary.elapsed" = "리셋 예고 · 중계 추정 시각 지남";
+"signal.summary.scheduled" = "리셋 예고 · 중계 추정 시각 있음";
 "signal.summary.announced" = "리셋 예고 있음 · 시각 미확인";
 "signal.summary.possible" = "리셋 가능성 언급됨";
 "signal.summary.accountUnknown" = "계정 적용 미확인";
@@ -317,13 +317,18 @@
 "signal.sourceState.off" = "꺼짐";
 "signal.attempt" = "마지막 요청 %@";
 "signal.latestEvidence" = "최신 근거 게시 %@";
-"signal.newEvidence" = "새 근거 확보 %@";
+"signal.newEvidence" = "새 항목을 수집한 시각 %@";
 "signal.noNewEvidence" = "이번 확인에서 추가 근거 없음";
 "signal.via.x-api" = "X API에서 수집";
 "signal.via.codexreset" = "Codex Reset Monitor 경유 · 원문 미검증";
 "signal.via.public-feed" = "Reset Beacon 경유 · 원문 미검증";
 "signal.timeUnresolved" = "원문의 시간 표현입니다. 시간대·기준일 확인 전에는 내 지역의 확정 시각으로 환산하지 않습니다.";
 "signal.summary.timeHint" = "리셋 시간 언급 있음 · 확정 시각 미확인";
+"signal.published" = "게시 %@";
+"signal.detected" = "이 내용 수집 %@";
+"signal.originalTime" = "원문 시간 표현: “%@”";
+"signal.collectionDetails" = "수집 상태";
+"signal.replyContext" = "답글 문맥";
 
 "headline.cached" = "%@ %@ %@%% · 이전 값";
 "headline.cachedReason" = "%@ %@ %@%% · %@";

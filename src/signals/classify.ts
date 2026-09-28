@@ -41,8 +41,14 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>)
   // Keep short, contextual answers without borrowing the parent's certainty.
   const shortAnswer = /^(?:yes|maybe|perhaps|possibly|soon|forgot to say)(?:[.!?,]|$)/i.test(reply);
   const timeAnswer = /^(?:(?:on|by|at|around|in|landing|lands?)\s+)?(?:today|tomorrow|midnight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}(?::\d{2})?\s*(?:am|pm|hours?))\b/i.test(reply);
+  // A contextual promise can omit "reset" while explicitly naming its
+  // arrival. Require the pronoun and a time in the same short answer; a
+  // weekday elsewhere in a reply is not enough to inherit the request.
+  const timedFollowup = contextRelevant && reply.length <= 200 &&
+    /^(?:(?:ok(?:ay)?(?:,?\s+fine)?|yes)[.!]\s*)?(?:but\s+)?it(?:['’]s|\s+is|\s+will\s+be)\s+(?:(?:also|still)\s+){0,2}(?:coming|landing|arriving)\s+(?:(?:on|by|in)\s+)?(?:today|tomorrow|midnight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b(?=$|[.!?,])/i.test(reply);
+  const promisedFollowup = timedFollowup && !tentative.test(text) && !/\?|\b(?:not|never|won't|will not)\b/i.test(text);
   const followup = contextRelevant && (done.test(text) || correction.test(text) || withdrawal.test(text) ||
-    reply.length <= 200 && (shortAnswer || timeAnswer));
+    reply.length <= 200 && (shortAnswer || timeAnswer)) || timedFollowup;
   const implicit = post.author.toLowerCase() === "thsottiaux" && hint.test(text) && (subject.test(text) || contextRelevant);
   // General explanations of how resets work, and mentions of prior resets,
   // are not evidence of another reset. Raw monitored posts include both.
@@ -51,7 +57,7 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>)
   if (!(explicit && eventEvidence) && !followup && !implicit) return null;
   // Quoting a reset request alone is insufficient to declare a reset promised.
   const state: SignalState = withdrawal.test(text) && !/\?|\bwho\s+(?:says|said)\b/i.test(text) ? "withdrawn" : correction.test(text) ? "updated"
-    : done.test(text) ? "reported" : explicit && promised.test(text) && !/\?/.test(text) ? "announced" : "possible";
+    : done.test(text) ? "reported" : promisedFollowup || explicit && promised.test(text) && !/\?/.test(text) ? "announced" : "possible";
   const combined = `${text}\n${parentText}`;
   const resetKind = /\bbanked\b|reset\s+(?:card|credit|token)/i.test(text) ? "banked"
     : /\b(?:direct|instant|automatic|system.wide|global)\b|\ball\s+reset\s+for\s+everyone\b/i.test(text) ? "direct"
