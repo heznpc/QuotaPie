@@ -201,8 +201,16 @@ See execution evidence and limitations.
 
 ```bash
 ./script/build_and_run.sh            # build, then run
-./script/build_and_run.sh --verify   # also confirm the process is running
+./script/build_and_run.sh --verify   # isolated UI fixtures; leaves the installed app running
+./script/verify-single-instance.sh   # isolated real-app lifecycle checks
 ```
+
+Only one live menu bar instance owns the shared process lock across installation
+and worktree paths. The owner also watches macOS application-launch notifications
+and asks legacy copies that predate the lock to quit, including copies already
+running at startup. This adds no polling timer. The development run temporarily
+unloads the installed LaunchAgent and restores it on exit; verification uses a
+separate bundle identity and never creates another live menu bar meter.
 
 To start it at login, first copy the built app into your user Applications folder, then register a LaunchAgent separate from the backend's.
 

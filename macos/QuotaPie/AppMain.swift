@@ -21,11 +21,17 @@ struct QuotaPieApp {
             fputs("QuotaPie could not acquire its menu bar instance lock.\n", stderr)
             return
         }
-        withExtendedLifetime(instance) {
+#if DEBUG
+        let instanceGuard = fixturePreview ? nil : MenuBarInstanceGuard()
+#else
+        let instanceGuard: MenuBarInstanceGuard? = MenuBarInstanceGuard()
+#endif
+        withExtendedLifetime((instance, instanceGuard)) {
             let app = NSApplication.shared
             let delegate = AppDelegate()
             app.setActivationPolicy(.accessory)
             app.delegate = delegate
+            instanceGuard?.start()
             app.run()
         }
     }
