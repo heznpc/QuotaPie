@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CompactionStatusReader } from "../src/compaction-status";
 import { startCompactionProxy } from "../src/codex-compaction";
 
 test("reads retired generations, distinguishes HTTP headers, completion and lost live state without exposing credentials", async () => {
-  const root = await mkdtemp(join(tmpdir(), "quotapie-observation-"));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "quotapie-observation-")));
   const generation = join(root, "releases", "123");
   await mkdir(generation, {recursive:true});
   let controller!: ReadableStreamDefaultController<Uint8Array>;
@@ -15,13 +15,22 @@ test("reads retired generations, distinguishes HTTP headers, completion and lost
   const proxy = startCompactionProxy({token, fetchUpstream: async () => new Response(new ReadableStream({start(c) {controller=c; c.enqueue(new TextEncoder().encode(": keepalive\n\n"));}}),
     {headers:{"content-type":"text/event-stream"}}), onRequest: e => events.push(e)});
   try {
-    const settings = {port:Number(new URL(proxy.baseUrl).port), token};
+    const settings = {port:Number(new URL(proxy.baseUrl).port), token,
+      route:{from:"gpt-6-astra",to:"gpt-5.6-sol",effort:"low"}};
     await writeFile(join(generation, "settings.json"), JSON.stringify(settings));
+    await writeFile(join(root, "current.json"), JSON.stringify({settings_path:join(generation, "settings.json")}));
     const response = await fetch(proxy.baseUrl + "/responses/compact", {method:"POST", body:JSON.stringify({model:"gpt-6-astra",reasoning:{effort:"xhigh"}})});
     const body = response.text();
     // Headers reached the client; the compaction is still in progress.
-    const reader = new CompactionStatusReader(root);
+    let healthRequests = 0;
+    const reader = new CompactionStatusReader(root, ((...args: Parameters<typeof fetch>) => {
+      healthRequests++;
+      return fetch(...args);
+    }) as typeof fetch);
     const running = await reader.status();
+    expect(healthRequests).toBe(1);
+    expect(running.policy).not.toBeNull();
+    expect(running.savings.policy).not.toBeNull();
     expect(running.active[0]?.phase).toBe("response_headers");
     expect(running.active[0]?.to).toBe("gpt-5.6-sol");
     expect(running.active[0]?.reasoningEffort).toBe("low");

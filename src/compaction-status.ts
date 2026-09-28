@@ -1,4 +1,5 @@
-import { open, readdir, readFile, rename, writeFile, unlink } from "node:fs/promises";
+import { readdir, readFile, rename, writeFile, unlink } from "node:fs/promises";
+import { IncrementalJsonlReader } from "./incremental-jsonl";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -35,19 +36,8 @@ function event(value: any): CompactionRequestEvent | null {
     ...(label.test(value.errorCode ?? "") ? { errorCode: value.errorCode } : {}) };
 }
 
-async function logTail(path: string): Promise<string> {
-  const file = await open(path, "r");
-  try {
-    const size = (await file.stat()).size;
-    const start = Math.max(0, size - 2_000_000);
-    const buffer = Buffer.alloc(size - start);
-    await file.read(buffer, 0, buffer.length, start);
-    const text = buffer.toString("utf8");
-    return start ? text.slice(text.indexOf("\n") + 1) : text;
-  } finally { await file.close(); }
-}
-
 export class CompactionStatusReader {
+  private logs = new IncrementalJsonlReader(event, item => item.requestId);
   private cached: Awaited<ReturnType<CompactionStatusReader["collect"]>> | null = null;
   private pending: ReturnType<CompactionStatusReader["collect"]> | null = null;
   private evidence = new Map<string, CompactionRequestEvent>();
@@ -95,15 +85,14 @@ export class CompactionStatusReader {
         if (entry.isDirectory() && /^\d+$/.test(entry.name)) directories.push(join(this.root, "releases", entry.name));
       }
     } catch { /* Not installed yet. */ }
+    this.logs.retain(new Set(directories.map(directory => join(directory, "relay.log"))));
     const generations = await Promise.all(directories.map(async directory => {
       let settings: any;
       try { settings = JSON.parse(await readFile(join(directory, "settings.json"), "utf8")); }
       catch { return null; }
       const records = new Map<string, CompactionRequestEvent>();
       try {
-        for (const line of (await logTail(join(directory, "relay.log"))).split("\n")) {
-          try { const item = event(JSON.parse(line)); if (item) records.set(item.requestId, item); } catch { /* Partial log line. */ }
-        }
+        for (const item of await this.logs.read(join(directory, "relay.log"))) records.set(item.requestId, item);
       } catch { /* Live state may still be available. */ }
       let reachable = false;
       let health: any = null;
@@ -128,22 +117,36 @@ export class CompactionStatusReader {
     }
     const activeIds = new Set(installed.flatMap(g => [...g.activeIds]));
     const all = [...merged.values()];
-    this.notificationEvidence = all.slice().sort((a,b) => Date.parse(b.at)-Date.parse(a.at)).slice(0, 200);
-    const compactions = all.filter(r => r.kind === "compaction").sort((a,b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, 50);
+    // Parse timestamps once and index by thread. Looking for each compaction's
+    // follow-up must not rescan and reparse every generation's entire history.
+    const timed = all.map(item => {
+      const at = Date.parse(item.at);
+      return {item, at, start: at - item.durationMs};
+    });
+    type Timed = typeof timed[number];
+    const byThread = new Map<string, {compactions: Timed[]; responses: Timed[]}>();
+    for (const entry of timed) {
+      if (!entry.item.threadId) continue;
+      let group = byThread.get(entry.item.threadId);
+      if (!group) byThread.set(entry.item.threadId, group = {compactions: [], responses: []});
+      (entry.item.kind === "compaction" ? group.compactions : group.responses).push(entry);
+    }
+    for (const group of byThread.values()) group.responses.sort((a,b) => a.start - b.start);
+    timed.sort((a,b) => b.at - a.at);
+    this.notificationEvidence = timed.slice(0, 200).map(entry => entry.item);
+    const compactions = timed.filter(entry => entry.item.kind === "compaction").slice(0, 50);
     const retained = new Map<string, CompactionRequestEvent>();
-    const records = compactions.map(item => {
+    const records = compactions.map(({item, at: end}) => {
       retained.set(item.requestId, item);
       const active = ongoing(item.phase) && activeIds.has(item.requestId);
-      const end = Date.parse(item.at);
-      const nextCompaction = all.filter(r => r.kind === "compaction" && r.threadId === item.threadId && r.requestId !== item.requestId)
-        .map(r => Date.parse(r.at) - r.durationMs).filter(start => start >= end).sort((a,b) => a-b)[0] ?? Infinity;
+      const group = item.threadId ? byThread.get(item.threadId) : undefined;
+      const nextCompaction = group?.compactions.reduce((next, entry) =>
+        entry.item.requestId !== item.requestId && entry.start >= end ? Math.min(next, entry.start) : next, Infinity) ?? Infinity;
       // Match actual requests, never saved composer settings. A different turn,
       // an overlapping request or another task cannot establish continuation.
       const followup = item.threadId && !ongoing(item.phase) && item.phase !== "unverified"
-        ? all.filter(r => r.kind === "response" && r.threadId === item.threadId &&
-            (!item.turnId || r.turnId === item.turnId) && Date.parse(r.at) - r.durationMs >= end &&
-            Date.parse(r.at) - r.durationMs < nextCompaction)
-            .sort((a,b) => (Date.parse(a.at)-a.durationMs) - (Date.parse(b.at)-b.durationMs))[0] : undefined;
+        ? group?.responses.find(entry => (!item.turnId || entry.item.turnId === item.turnId) &&
+            entry.start >= end && entry.start < nextCompaction)?.item : undefined;
       if (followup) retained.set(followup.requestId, followup);
       return { ...item, phase: ongoing(item.phase) && !active ? "unverified" : item.phase,
         ...(ongoing(item.phase) && !active ? { errorCode: "relay_state_unavailable" } : {}),
@@ -153,8 +156,8 @@ export class CompactionStatusReader {
         followup: followup ? { requestId: followup.requestId, model: followup.to, effort: followup.reasoningEffort,
           startedAtMs: Date.parse(followup.at) - followup.durationMs } : null };
     });
-    const savingsRecords = all.filter(r=>r.kind === "response" && r.savingsReason && r.savingsReason !== "disabled")
-      .sort((a,b)=>Date.parse(b.at)-Date.parse(a.at)).slice(0,50).map(item=> {
+    const savingsRecords = timed.filter(({item})=>item.kind === "response" && item.savingsReason && item.savingsReason !== "disabled")
+      .slice(0,50).map(({item})=> {
         retained.set(item.requestId,item);
         const active=ongoing(item.phase) && activeIds.has(item.requestId);
         return {...item,active,phase:ongoing(item.phase) && !active ? "unverified" : item.phase};
@@ -172,7 +175,7 @@ export class CompactionStatusReader {
     }
     return { checkedAtMs: nowMs, generations: installed.length, reachable: installed.filter(g => g.reachable).length,
       policy: await this.policy.status(new Map(installed.map(g => [g.path, g.health]))),
-      savings: {policy: await this.savingsPolicy.status(), active: savingsRecords.filter(r=>r.active), recent: savingsRecords.filter(r=>!r.active)},
+      savings: {policy: await this.savingsPolicy.status(new Map(installed.map(g => [g.path, g.health]))), active: savingsRecords.filter(r=>r.active), recent: savingsRecords.filter(r=>!r.active)},
       active: records.filter(r => r.active), recent: records.filter(r => !r.active) };
   }
 }
