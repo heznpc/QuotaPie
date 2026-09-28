@@ -23,6 +23,8 @@ final class PopoverModel: ObservableObject {
     private(set) var notificationPreferencesRevision = 0
     @Published var savingsSaving = false
     @Published var savingsMessage: String?
+    @Published var poolSaving = false
+    @Published var poolSaveMessage: String?
     @Published var compactionSaving = false
     @Published var compactionSaveMessage: String?
 
@@ -175,6 +177,7 @@ struct PopoverActions {
     var openAccount: (AccountState) -> Void = { _ in }
     var configureCompaction: (String) -> Void = { _ in }
     var configureSavings: (Bool?, String?) -> Void = { _, _ in }
+    var configurePool: (Bool?, String?, Int?) -> Void = { _, _, _ in }
     var configureNotifications: (String, Bool) -> Void = { _, _ in }
 }
 

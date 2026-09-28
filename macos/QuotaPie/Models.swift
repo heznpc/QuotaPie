@@ -42,7 +42,9 @@ struct AccountPoolPayload: Decodable {
     let accounts: [String]
     let recent: [RoutedAccountRequest]
     var error: String? = nil
+    var reservePercent: [String: Int]? = nil
 }
+struct AccountPoolResponse: Decodable { let pool: AccountPoolPayload }
 
 struct RoutedAccountRequest: Decodable {
     let sourceAccount: String
@@ -51,6 +53,7 @@ struct RoutedAccountRequest: Decodable {
     let state: String
     let status: Int
     let atMs: Double
+    var reason: String? = nil
 }
 
 /// Public execution metadata only. Registration and approval stay in the CLI;

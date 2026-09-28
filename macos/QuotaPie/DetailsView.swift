@@ -145,6 +145,8 @@ struct DetailsView: View {
             Divider()
             CodexProfilesView(status: model, actions: actions)
             Divider()
+            AccountPoolSettingsView(model: model, save: actions.configurePool)
+            Divider()
             TaskSavingsSettingsView(model: model, save: { actions.configureSavings($0, nil) })
             Divider()
             CompactionSettingsView(model: model, save: actions.configureCompaction)

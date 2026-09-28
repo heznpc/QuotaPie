@@ -552,3 +552,21 @@
 "pool.waiting" = "An account will be selected for a new task.";
 "pool.disabled" = "New routing off · existing bindings retained";
 "pool.blocked" = "Account routing is blocked. Check accounts, sign-in and quota.";
+
+// Account reserves
+"pool.settings.title" = "Account reserves";
+"pool.settings.enabled" = "Automatic account selection";
+"pool.settings.explanation" = "Keep a percentage of each account available. When either its short-term or weekly remaining quota reaches this level, the next request uses another eligible account.";
+"pool.settings.reserve" = "Keep %@%%";
+"pool.settings.accountReserve" = "%@ remaining quota to keep";
+"pool.settings.zero" = "No reserve set";
+"pool.settings.usage" = "Switch after using %@%%";
+"pool.settings.whenBlocked" = "If every eligible account reaches its reserve, requests pause. Lower a reserve or wait for quota to recover.";
+"pool.settings.limits" = "Applies to Codex requests routed through this Mac. Collection delay and requests already in progress can cross the threshold. A protected destination needs up to 5 extra percentage points; account-bound history may prevent a transfer.";
+"pool.settings.switched" = "The last request switched accounts to preserve a reserve.";
+"pool.settings.saved" = "Saved. Applies to the next request through a compatible connection.";
+"pool.settings.upgrade" = "After first installing this feature, finish active work and reopen Codex. Existing chats may still use an older connection that does not enforce reserves.";
+"pool.settings.error" = "Could not save. The previous setting is still active.";
+"pool.settings.unavailable" = "Register at least two Codex accounts in the account pool to set reserves.";
+"pool.settings.blocked" = "Requests paused to preserve your remaining quota. Review account reserves in Settings.";
+"pool.settings.stale" = "Requests paused until current quota can be checked.";

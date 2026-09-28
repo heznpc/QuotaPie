@@ -1,7 +1,7 @@
 import { connectProfileRelay } from "./profile-relay";
 import { connectCodexProfile } from "./profile-connection";
 import { ModelNotifications } from "./model-notifications";
-import { poolStatus } from "./account-pool";
+import { poolStatus, configurePoolPolicy, PoolError } from "./account-pool";
 import { buildHeadline } from "./analytics";
 import { captureRuntimeIdentity } from "./runtime-identity";
 import { CompactionStatusReader } from "./compaction-status";
@@ -38,7 +38,7 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
-export function startDashboard(service: QuotaPieService, config: AppConfig, options: { compactionRoot?: string; preferencesPath?: string } = {}) {
+export function startDashboard(service: QuotaPieService, config: AppConfig, options: { compactionRoot?: string; preferencesPath?: string; poolPolicyPath?: string; poolDatabasePath?: string } = {}) {
   const runtime = captureRuntimeIdentity();
   const compaction = new CompactionStatusReader(options.compactionRoot);
   const dashboardFile = Bun.file(new URL("./dashboard.html", import.meta.url));
@@ -62,6 +62,18 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
       const url = new URL(request.url);
       if (url.pathname === "/api/runtime") {
         return request.method === "GET" ? json(runtime) : json({ error: "method_not_allowed" }, 405);
+      }
+      if (url.pathname === "/api/account-pool/policy") {
+        if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+        if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token"))) return json({ error: "forbidden" }, 403);
+        try {
+          const body = await request.text();
+          if (body.length > 2048) return json({ error: "pool_invalid_policy" }, 400);
+          configurePoolPolicy(JSON.parse(body), options.poolPolicyPath);
+          return json({ pool: poolStatus(options.poolDatabasePath, options.poolPolicyPath) });
+        } catch (error) {
+          return json({ error: error instanceof PoolError ? error.code : "pool_policy_update_failed" }, error instanceof PoolError ? error.status : 400);
+        }
       }
       if (url.pathname === "/api/profiles/connect") {
         if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
@@ -247,7 +259,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           resetSignals: service.signalCollector.status(nowMs),
           resetTracking: service.resetTracking(nowMs, accounts),
           compaction: compaction.snapshot(nowMs),
-          accountPool: (() => { try { return poolStatus(); } catch { return { enabled: false, accounts: [], recent: [], error: "pool_status_unavailable" }; } })(),
+          accountPool: (() => { try { return poolStatus(options.poolDatabasePath, options.poolPolicyPath); } catch { return { enabled: false, accounts: [], recent: [], error: "pool_status_unavailable" }; } })(),
           // Kept for existing consumers. It only contains accounts that have
           // windows, so new consumers should read accounts instead.
           statuses: service.statuses(nowMs),
