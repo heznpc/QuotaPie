@@ -554,9 +554,9 @@
 "pool.blocked" = "Account routing is blocked. Check accounts, sign-in and quota.";
 
 // Account reserves
-"pool.settings.title" = "Account reserves";
+"pool.settings.title" = "Account switching thresholds";
 "pool.settings.enabled" = "Automatic account selection";
-"pool.settings.explanation" = "Keep a percentage of each account available. When either its short-term or weekly remaining quota reaches this level, the next request uses another eligible account.";
+"pool.settings.explanation" = "Set the remaining quota to keep for each account. When either its short-term or weekly quota reaches this threshold, the next request switches to another eligible account.";
 "pool.settings.reserve" = "Keep %@%%";
 "pool.settings.accountReserve" = "%@ remaining quota to keep";
 "pool.settings.zero" = "No reserve set";
