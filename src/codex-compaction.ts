@@ -77,6 +77,8 @@ function decodeBody(bytes: Uint8Array, encoding: string | null): Uint8Array {
 }
 
 function poolErrorMessage(error: PoolError): string {
+  if (error.code === "pool_recovery_requires_full_history")
+    return "QuotaPie: another account has capacity, but this request contains account-bound history that cannot be transferred safely. Keep this task and retry after its account recovers.";
   if (error.code === "pool_account_cooldown")
     return `QuotaPie: this task's account is temporarily rate limited. Retry in ${error.retryAfterSeconds ?? 60} seconds. The task remains on its original account.`;
   if (error.code === "pool_auth_cooldown")
@@ -140,7 +142,7 @@ export function startCompactionProxy(options: {
       }
       const path = url.pathname.slice(prefix.length);
       if (path === "/quotapie-health" && request.method === "GET") {
-        return Response.json({ service: "quotapie-compaction", schemaVersion: 3, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 2 : 0, accountPoolRecoveryVersion: options.accountPool ? 1 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
+        return Response.json({ service: "quotapie-compaction", schemaVersion: 3, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 3 : 0, accountPoolRecoveryVersion: options.accountPool ? 2 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
           route: validateCompactionRoute(route), requests, rejectedRequests, compactions, attemptedCompactions,
           failedCompactions, cancelledCompactions, unverifiedCompactions, activeRequests, draining,
           active: [...active.values()], recent, lastRequest });
@@ -165,6 +167,7 @@ export function startCompactionProxy(options: {
       let expectsSse = false;
       let event: Omit<CompactionRequestEvent, "phase" | "status" | "at" | "durationMs"> | undefined;
       let poolSelection: ReturnType<AccountPool["select"]> = null;
+      let poolInput: { body: unknown; headers: Headers } | undefined;
       let selectingAccount = false;
       const started = performance.now();
       // Freeze the policy for this request. A live policy update cannot change
@@ -205,13 +208,20 @@ export function startCompactionProxy(options: {
               if (options.accountPool) {
                 selectingAccount = true;
                 poolSelection = options.accountPool.select({ threadId: event.threadId, requestId: event.requestId,
-                  body: input, model: event.to, headers });
-                if (poolSelection) { headers = poolSelection.headers; event.accountRouting = poolSelection.route; }
+                  body: outgoing, model: event.to, headers });
+                poolInput = { body: outgoing, headers: new Headers(headers) };
+                if (poolSelection) {
+                  headers = poolSelection.headers; event.accountRouting = poolSelection.route;
+                  if (poolSelection.body !== outgoing) {
+                    body = JSON.stringify(poolSelection.body);
+                    headers.delete("content-encoding");
+                  }
+                }
               }
             }
             // Unchanged requests retain their exact original bytes and encoding.
             if (routed.routed) {
-              body = JSON.stringify(routed.body);
+              body = JSON.stringify(poolSelection?.body ?? routed.body);
               headers.delete("content-encoding");
             }
           }
@@ -274,12 +284,37 @@ export function startCompactionProxy(options: {
       request.signal.addEventListener("abort", onAbort, { once: true });
       if (request.signal.aborted) onAbort();
       try {
-        const response = await fetchCodexUpstream(upstreamFetch, `${UPSTREAM}${path}${url.search}`, {
+        let response = await fetchCodexUpstream(upstreamFetch, `${UPSTREAM}${path}${url.search}`, {
           method: request.method, headers, body, redirect: "manual", signal: cancellation.signal,
         }, code => { retryCount++; transportCode = code; });
         receivedResponse = true;
         status = response.status;
         if (poolSelection && event) { try { options.accountPool!.response(event.requestId, poolSelection.identity, status, response.headers.get("retry-after"), poolSelection.credentialDigest); } catch { /* do not replay a dispatched request */ } }
+        // A rejected HTTP request has produced no model output. Retry once with
+        // complete portable history; never retry a 200 stream or partial output.
+        if (status === 429 && poolSelection && poolInput && event && !finished && !cancellation.signal.aborted) {
+          let replacement: ReturnType<AccountPool["select"]> = null;
+          const nextId = randomUUID();
+          try {
+            if (options.accountPool!.canRecover(poolSelection.route.account, event.to, poolInput.body))
+              replacement = options.accountPool!.select({ threadId: event.threadId, requestId: nextId,
+                body: poolInput.body, model: event.to, headers: poolInput.headers });
+          } catch { /* Preserve the original 429 when safe recovery is unavailable. */ }
+          if (replacement?.route.reason === "recovered") {
+            emit("failed", "account_rate_limited");
+            try { options.accountPool!.finish(event.requestId, "failed"); } catch { /* telemetry only */ }
+            await response.body?.cancel();
+            poolSelection = replacement; headers = replacement.headers;
+            headers.delete("content-encoding"); body = JSON.stringify(replacement.body);
+            event = { ...event, requestId: nextId, accountRouting: replacement.route };
+            retryCount++; status = 0; emit("started");
+            response = await fetchCodexUpstream(upstreamFetch, `${UPSTREAM}${path}${url.search}`, {
+              method: request.method, headers, body, redirect: "manual", signal: cancellation.signal,
+            }, code => { retryCount++; transportCode = code; });
+            status = response.status;
+            try { options.accountPool!.response(event.requestId, replacement.identity, status, response.headers.get("retry-after"), replacement.credentialDigest); } catch { /* do not replay a dispatched request */ }
+          }
+        }
         if (finished) { await response.body?.cancel(); return new Response(null, { status: 499 }); }
         if ([301, 302, 303, 307, 308].includes(status)) {
           await response.body?.cancel(); finish("failed", "upstream_redirect");
