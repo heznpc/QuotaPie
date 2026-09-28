@@ -212,8 +212,8 @@ account-scoped file references, remote image URLs, and models with unverified
 quota scope are blocked. The menu bar distinguishes the selected account's quota from the recent
 serving account.
 
-In **Settings → Account reserves**, set the percentage to leave unused for each
-registered Codex account (default: 0%). For example, a 30% reserve switches the
+In **Settings → Account switching thresholds**, set the remaining quota to keep
+for each registered Codex account (default: 0%). For example, a 30% reserve switches the
 next request when either the short or weekly window has 30% or less remaining.
 The CLI equivalent is `quotapie pool reserve ACCOUNT 30`. The destination needs
 fresh quota above its own reserve, with up to five percentage points of headroom.
@@ -225,8 +225,8 @@ Mac's QuotaPie Codex relay. Transfers require the same portable history checks
 described above, and disabling automatic routing also disables reserve enforcement.
 After first installing reserve support, finish active work and reopen Codex:
 already-loaded tasks may still use an older relay that does not enforce reserves.
-Use only accounts you are authorized to access; this feature does not establish
-provider permission for account sharing or automated switching.
+Use only accounts you are authorized to access, in accordance with the applicable
+provider terms.
 
 `quotapie pool status` reports routing; `quotapie pool disable` stops assigning
 new tasks while preserving existing bindings. Requests rejected before dispatch
