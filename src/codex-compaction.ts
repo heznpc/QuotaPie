@@ -77,6 +77,10 @@ function decodeBody(bytes: Uint8Array, encoding: string | null): Uint8Array {
 }
 
 function poolErrorMessage(error: PoolError): string {
+  if (error.code === "pool_reserve_reached")
+    return "QuotaPie paused this request to preserve your configured remaining quota. No eligible account is above its reserve. Lower the reserve or wait for quota to recover in QuotaPie Settings.";
+  if (error.code === "pool_reserve_quota_unavailable")
+    return "QuotaPie paused this request because remaining quota is not current enough to protect your reserve. Refresh quota in QuotaPie or lower the reserve.";
   if (error.code === "pool_recovery_requires_full_history")
     return "QuotaPie: another account has capacity, but this request contains account-bound history that cannot be transferred safely. Keep this task and retry after its account recovers.";
   if (error.code === "pool_account_cooldown")
@@ -142,7 +146,7 @@ export function startCompactionProxy(options: {
       }
       const path = url.pathname.slice(prefix.length);
       if (path === "/quotapie-health" && request.method === "GET") {
-        return Response.json({ service: "quotapie-compaction", schemaVersion: 3, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 3 : 0, accountPoolRecoveryVersion: options.accountPool ? 2 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
+        return Response.json({ service: "quotapie-compaction", schemaVersion: 3, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolReserveVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 3 : 0, accountPoolRecoveryVersion: options.accountPool ? 2 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
           route: validateCompactionRoute(route), requests, rejectedRequests, compactions, attemptedCompactions,
           failedCompactions, cancelledCompactions, unverifiedCompactions, activeRequests, draining,
           active: [...active.values()], recent, lastRequest });

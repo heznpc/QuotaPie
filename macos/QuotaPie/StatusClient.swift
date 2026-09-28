@@ -118,6 +118,23 @@ final class StatusClient {
         } catch { completion(.failure(error)) }
     }
 
+    func configurePool(enabled: Bool?, account: String?, reservePercent: Int?, actionToken: String,
+                       completion: @escaping (Result<AccountPoolResponse, Error>) -> Void) {
+        do {
+            var request = try authenticatedPOST(pathComponents: ["api", "account-pool", "policy"], actionToken: actionToken)
+            var body: [String: Any] = [:]
+            if let enabled { body["enabled"] = enabled }
+            if let account { body["account"] = account }
+            if let reservePercent { body["reservePercent"] = reservePercent }
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            request.setValue(nil, forHTTPHeaderField: "content-length")
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            perform(request) { result in
+                completion(Result { try JSONDecoder().decode(AccountPoolResponse.self, from: result.get()) })
+            }
+        } catch { completion(.failure(error)) }
+    }
+
     func configureSavings(enabled: Bool?, bypassThread: String?, actionToken: String,
                           completion: @escaping (Result<TaskSavingsPolicyResponse, Error>) -> Void) {
         do {

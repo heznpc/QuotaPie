@@ -233,6 +233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             openAccount: { [weak self] account in self?.openAccount(account) },
             configureCompaction: { [weak self] model in self?.configureCompaction(model) },
             configureSavings: { [weak self] enabled, thread in self?.configureSavings(enabled, thread) },
+            configurePool: { [weak self] enabled, account, reserve in self?.configurePool(enabled, account, reserve) },
             configureNotifications: { [weak self] key, enabled in self?.configureNotifications(key, enabled: enabled) }
         )
     }
@@ -333,6 +334,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     self.popoverModel.finishNotificationSave(nil)
                     self.popoverModel.notificationSaveMessage = Strings.t("notification.preferences.error")
                 }
+            }
+        }
+    }
+
+    private func configurePool(_ enabled: Bool?, _ account: String?, _ reserve: Int?) {
+        guard !popoverModel.poolSaving, let client, let token = currentActionToken else { return }
+        popoverModel.poolSaving = true
+        popoverModel.poolSaveMessage = nil
+        client.configurePool(enabled: enabled, account: account, reservePercent: reserve, actionToken: token) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.popoverModel.poolSaving = false
+                switch result {
+                case .success(let response):
+                    self.popoverModel.payload?.accountPool = response.pool
+                    self.popoverModel.poolSaveMessage = Strings.t("pool.settings.saved")
+                case .failure:
+                    self.popoverModel.poolSaveMessage = Strings.t("pool.settings.error")
+                }
+                self.refresh()
             }
         }
     }

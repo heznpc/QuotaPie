@@ -7,12 +7,12 @@ import type { CodexForkParentResult } from "./account-pool-lineage";
 import { defaultWorkBoundaryPath, profileReference } from "./work-boundary";
 import { portableReplay, filterForeignReasoning } from "./account-replay";
 
-export interface PoolPolicy { enabled: boolean; accounts: string[] }
+export interface PoolPolicy { enabled: boolean; accounts: string[]; reservePercent?: Record<string, number> }
 export interface PoolAccount {
   id: string; label: string; identity: string; accessToken: string; upstreamAccount: string;
   tokenExpiresAt: number; models: string[]; remaining: number | null; validUntil: number;
 }
-export interface PoolRoute { sourceAccount: string; account: string; accountLabel: string; reason: "new" | "pinned" | "existing" | "source_fallback" | "recovered"; previousAccountLabel?: string }
+export interface PoolRoute { sourceAccount: string; account: string; accountLabel: string; reason: "new" | "pinned" | "existing" | "source_fallback" | "recovered" | "reserve"; previousAccountLabel?: string }
 export class PoolError extends Error {
   constructor(readonly code: string, readonly status = 503, readonly retryAfterSeconds?: number) { super(code); }
 }
@@ -22,17 +22,46 @@ const SHARED_QUOTA_MODELS = new Set(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terr
 const credentialDigest = (token: string) => createHash("sha256").update(token).digest("hex");
 export function readPoolPolicy(path = poolPolicyPath()): PoolPolicy {
   if (!existsSync(path)) return { enabled: false, accounts: [] };
-  const value = JSON.parse(readFileSync(path, "utf8"));
+  return validatePoolPolicy(JSON.parse(readFileSync(path, "utf8")));
+}
+export function validatePoolPolicy(value: any): PoolPolicy {
+  if (!value || typeof value !== "object") throw new PoolError("pool_invalid_policy");
   if (typeof value.enabled !== "boolean" || !Array.isArray(value.accounts) ||
       value.accounts.length > 32 || value.accounts.some((id: unknown) => typeof id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,31}$/.test(id)) ||
       new Set(value.accounts).size !== value.accounts.length) throw new PoolError("pool_invalid_policy");
-  return { enabled: value.enabled, accounts: value.accounts };
+  const reserves = value.reservePercent;
+  if (reserves != null && (typeof reserves !== "object" || Array.isArray(reserves) ||
+      Object.entries(reserves).some(([id, percent]) => !value.accounts.includes(id) ||
+        !Number.isInteger(percent) || (percent as number) < 0 || (percent as number) > 100)))
+    throw new PoolError("pool_invalid_reserve", 400);
+  return { enabled: value.enabled, accounts: value.accounts,
+    ...(reserves != null ? { reservePercent: { ...reserves } } : {}) };
 }
 export function savePoolPolicy(policy: PoolPolicy, path = poolPolicyPath()): void {
+  const valid = validatePoolPolicy(policy);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = path + "." + randomUUID();
-  writeFileSync(temporary, JSON.stringify(policy) + "\n", { mode: 0o600, flag: "wx" });
+  writeFileSync(temporary, JSON.stringify(valid) + "\n", { mode: 0o600, flag: "wx" });
   renameSync(temporary, path);
+}
+
+/** One small patch per action, so editing one account preserves the others. */
+export function configurePoolPolicy(input: any, path = poolPolicyPath()): PoolPolicy {
+  if (!input || typeof input !== "object" || Array.isArray(input) ||
+      Object.keys(input).some(k => !["enabled", "account", "reservePercent"].includes(k))) throw new PoolError("pool_invalid_policy", 400);
+  const policy = readPoolPolicy(path);
+  if (Object.hasOwn(input, "enabled")) {
+    if (Object.keys(input).length !== 1 || typeof input.enabled !== "boolean" ||
+        input.enabled && policy.accounts.length < 2) throw new PoolError("pool_invalid_policy", 400);
+    policy.enabled = input.enabled;
+  } else {
+    if (Object.keys(input).length !== 2 || !policy.accounts.includes(input.account) ||
+        !Number.isInteger(input.reservePercent) || input.reservePercent < 0 || input.reservePercent > 100)
+      throw new PoolError("pool_invalid_reserve", 400);
+    policy.reservePercent = { ...policy.reservePercent, [input.account]: input.reservePercent };
+  }
+  savePoolPolicy(policy, path);
+  return policy;
 }
 
 // No credentials are copied, refreshed or persisted here. The existing Codex
@@ -128,6 +157,17 @@ export class AccountPool {
   }
   close() { this.db.close(); }
   private now() { return this.options.now?.() ?? Date.now(); }
+  private reserve(account: PoolAccount): number {
+    const policy = this.options.policy();
+    return policy.enabled && policy.reservePercent && Object.hasOwn(policy.reservePercent, account.id)
+      ? policy.reservePercent[account.id]! : 0;
+  }
+  private reserveBlock(account: PoolAccount): string | null {
+    const reserve = this.reserve(account);
+    if (reserve <= 0) return null;
+    if (account.remaining == null || account.validUntil <= this.now()) return "pool_reserve_quota_unavailable";
+    return account.remaining <= reserve ? "pool_reserve_reached" : null;
+  }
   private foreignReasoning(source: string, thread: string): string[] | undefined {
     const row = this.db.query<{fingerprints:string}, [string,string]>("SELECT fingerprints FROM replay_filters WHERE source=? AND thread=?").get(source, thread);
     return row ? JSON.parse(row.fingerprints) : undefined;
@@ -135,7 +175,10 @@ export class AccountPool {
   private eligible(accounts: PoolAccount[], model: string, exclude?: string): PoolAccount[] {
     const now = this.now(), policy = this.options.policy();
     return accounts.filter(a => a.id !== exclude && policy.accounts.includes(a.id) && a.tokenExpiresAt > now + 30_000 &&
-      a.models.includes(model) && a.remaining != null && a.remaining > 0 && a.validUntil > now &&
+      a.models.includes(model) && a.remaining != null && a.remaining > this.reserve(a) && a.validUntil > now &&
+      // Leave a small margin before entering a protected account, avoiding
+      // repeated transfers when quota observations hover around its threshold.
+      (this.reserve(a) === 0 || a.remaining >= Math.min(100, this.reserve(a) + 5)) &&
       !this.db.query("SELECT 1 FROM cooldowns WHERE identity=? AND until_ms>?").get(a.identity, now) &&
       !this.db.query("SELECT 1 FROM auth_cooldowns WHERE identity=? AND digest=? AND until_ms>?").get(a.identity, credentialDigest(a.accessToken), now))
       .sort((a,b) => Number(b.id === this.options.sourceAccount) - Number(a.id === this.options.sourceAccount) || b.remaining! - a.remaining! || a.id.localeCompare(b.id));
@@ -218,15 +261,16 @@ export class AccountPool {
         // are never replayed. Keep all messages/tool outputs; remove only foreign
         // encrypted reasoning cache, and persist its fingerprints for later turns.
         if (policy.enabled && SHARED_QUOTA_MODELS.has(input.model) &&
-            (cooldownUntil(selected) > now || selected.remaining === 0 && selected.validUntil > now)) {
+            (cooldownUntil(selected) > now || selected.remaining === 0 && selected.validUntil > now || this.reserveBlock(selected))) {
           const replacement = this.eligible(accounts, input.model, selected.id)[0];
           if (replacement) {
             const replay = portableReplay(replayBody);
             if (replay) {
               previousAccountLabel = selected.label;
-              selected = replacement; reason = "recovered"; replayBody = replay.body;
+              reason = this.reserveBlock(selected) && cooldownUntil(selected) <= now ? "reserve" : "recovered";
+              selected = replacement; replayBody = replay.body;
               foreignReasoning = [...new Set([...(foreignReasoning ?? []), ...replay.fingerprints])];
-            } else if (cooldownUntil(selected) > now) {
+            } else if (cooldownUntil(selected) > now || this.reserveBlock(selected)) {
               throw new PoolError("pool_recovery_requires_full_history", 409);
             }
           }
@@ -234,14 +278,16 @@ export class AccountPool {
       } else if (!isFreshTextTurn(input.body) || !SHARED_QUOTA_MODELS.has(input.model)) { selected = source; reason = "existing"; }
       else {
         // Unknown source quota is not permission to silently change the login.
-        selected = source.remaining == null && cooldownUntil(source) <= now && !authCooldown(source)
+        selected = !this.reserveBlock(source) && (source.remaining == null || source.remaining > 0) && cooldownUntil(source) <= now && !authCooldown(source)
           ? source : this.eligible(accounts, input.model)[0];
         // Unknown or zero local quota must not disable the caller's own login.
         // Only cross-account assignment requires fresh positive quota evidence.
-        reason = selected ? "new" : "source_fallback";
+        reason = selected ? (this.reserveBlock(source) && selected.id !== source.id ? "reserve" : "new") : "source_fallback";
         selected ??= source;
       }
       if (selected.tokenExpiresAt <= now + 30_000) throw new PoolError("pool_target_auth_unavailable", 401);
+      const reserveBlock = this.reserveBlock(selected);
+      if (reserveBlock) throw new PoolError(reserveBlock, 409);
       const until = cooldownUntil(selected);
       if (until > now) throw new PoolError("pool_account_cooldown", 429, Math.ceil((until - now) / 1000));
       const auth = authCooldown(selected);
@@ -342,8 +388,14 @@ export function runPoolCommand(args: string[]): number {
       throw new PoolError("pool_requires_two_registered_file_accounts");
     if (new Set(ids.map(id => known.find(a => a.id === id)!.upstreamAccount)).size !== ids.length)
       throw new PoolError("pool_duplicate_login");
-    savePoolPolicy({ enabled: true, accounts: ids });
+    const previous = readPoolPolicy();
+    savePoolPolicy({ enabled: true, accounts: ids, ...(previous.reservePercent ? {
+      reservePercent: Object.fromEntries(Object.entries(previous.reservePercent).filter(([id]) => ids.includes(id))) } : {}) });
   } else if (action === "disable") savePoolPolicy({ ...readPoolPolicy(), enabled: false });
+  else if (action === "reserve") {
+    if (args.length !== 3 || !/^\d{1,3}$/.test(args[2]!)) throw new PoolError("pool_invalid_reserve", 400);
+    configurePoolPolicy({ account: args[1], reservePercent: Number(args[2]) });
+  }
   else if (action !== "status") throw new PoolError("pool_invalid_command");
   console.log(JSON.stringify(poolStatus(), null, 2));
   return 0;

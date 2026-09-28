@@ -32,7 +32,10 @@ struct PopoverView: View {
             if let pool = model.payload?.accountPool, pool.enabled || !pool.recent.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
                     Label(Strings.t(pool.enabled ? "pool.enabled" : "pool.disabled"), systemImage: "arrow.triangle.branch")
-                    if pool.error != nil { Text(Strings.t("pool.blocked")).foregroundStyle(.orange) }
+                    if let error = pool.error {
+                        Text(Strings.t(error == "pool_reserve_reached" ? "pool.settings.blocked" :
+                            error == "pool_reserve_quota_unavailable" ? "pool.settings.stale" : "pool.blocked")).foregroundStyle(.orange)
+                    }
                     if let request = pool.recent.first {
                         Text(Strings.t(request.state == "completed" ? "pool.lastCompleted" : "pool.lastRouted", request.accountLabel))
                         Text(Strings.t("pool.loginUnchanged")).foregroundStyle(.secondary)

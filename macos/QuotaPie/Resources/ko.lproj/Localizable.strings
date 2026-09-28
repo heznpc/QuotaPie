@@ -552,3 +552,21 @@
 "pool.waiting" = "새 작업에서 사용할 계정을 배정합니다.";
 "pool.disabled" = "새 계정 배정 꺼짐 · 기존 연결 유지";
 "pool.blocked" = "계정 라우팅이 중단됐습니다. 계정·인증·잔여량을 확인하세요.";
+
+// Account reserves
+"pool.settings.title" = "계정별 남겨둘 몫";
+"pool.settings.enabled" = "계정 자동 전환";
+"pool.settings.explanation" = "각 계정에 남겨둘 잔여량을 정합니다. 단기·주간 한도 중 하나라도 이 비율에 도달하면 다음 요청부터 다른 계정을 사용합니다.";
+"pool.settings.reserve" = "%@%% 남기기";
+"pool.settings.accountReserve" = "%@ 계정에 남겨둘 잔여량";
+"pool.settings.zero" = "남겨둘 몫을 설정하지 않음";
+"pool.settings.usage" = "%@%% 사용하면 전환";
+"pool.settings.whenBlocked" = "전환할 계정이 없으면 요청을 멈춥니다. 설정을 낮추거나 한도가 회복되면 다시 진행할 수 있습니다.";
+"pool.settings.limits" = "이 Mac의 QuotaPie를 거치는 Codex 요청에 적용됩니다. 수집 지연·진행 중인 요청 때문에 기준을 넘을 수 있습니다. 전환 대상에는 최대 5퍼센트포인트의 추가 여유가 필요하며, 계정에 종속된 기록은 전환이 제한될 수 있습니다.";
+"pool.settings.upgrade" = "기능을 처음 설치했다면 진행 중인 작업을 마친 뒤 Codex 앱을 다시 열어 주세요. 기존 대화의 이전 연결에는 기준이 적용되지 않을 수 있습니다.";
+"pool.settings.switched" = "남겨둘 몫을 보호하기 위해 최근 요청의 계정을 전환했습니다.";
+"pool.settings.saved" = "저장했습니다. 이 기능을 지원하는 연결의 다음 요청부터 적용됩니다.";
+"pool.settings.error" = "저장하지 못했습니다. 이전 설정이 유지됩니다.";
+"pool.settings.unavailable" = "자동 배정에 사용할 Codex 계정을 두 개 이상 등록하면 설정할 수 있습니다.";
+"pool.settings.blocked" = "남겨둘 몫을 보호하기 위해 요청을 멈췄습니다. 설정에서 계정별 기준을 확인하세요.";
+"pool.settings.stale" = "잔여량을 확인할 수 없어 요청을 멈췄습니다. 새로고침해 주세요.";
