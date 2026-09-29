@@ -27,6 +27,13 @@ try {
   const { startDashboard } = await load("server.ts");
   const { startCompactionProxy, DEFAULT_COMPACTION_ROUTE } = await load("codex-compaction.ts");
   const { parseCodexRateLimits } = await load("providers/codex-appserver.ts");
+  const { selectTaskModel } = await load("task-model-selection.ts");
+  const selected = selectTaskModel({ phase: "implementation",
+    defaultSelection: { provider: "fixture", model: "work", effort: "low" },
+    capabilities: [{ provider: "fixture", model: "work", efforts: ["low"] }],
+  });
+  assert.deepEqual(selected, { status: "selected", phase: "implementation", source: "default",
+    selection: { provider: "fixture", model: "work", effort: "low" }, reason: "default_selection" });
   const config = structuredClone(DEFAULT_CONFIG);
   config.collection.codexEnabled = false;
   config.collection.claudeOAuthEnabled = false;
@@ -61,10 +68,12 @@ try {
     await Bun.sleep(100);
   }
   assert.equal(status.accounts[0].windows[0].remainingPercent, 77);
+  assert.deepEqual(status.jobs, []);
+  assert.deepEqual(status.resumeTasks, []);
   assert.equal(status.compaction.recent[0].phase, "completed");
   assert.equal(status.compaction.recent[0].responseModel, "gpt-5.6-sol");
   assert.equal(status.compaction.policy.model, "gpt-5.6-sol");
-  console.log(JSON.stringify({ packagedCollector: "pass", installedSourceIdentity: "pass", quotaApi: "pass", compactionApi: "pass", developerDependencies: false, liveProvider: "not-tested" }));
+  console.log(JSON.stringify({ packagedCollector: "pass", installedSourceIdentity: "pass", taskModelSelection: "pass", implicitExecution: false, quotaApi: "pass", compactionApi: "pass", developerDependencies: false, liveProvider: "not-tested" }));
 } finally {
   server?.stop(true);
   relay?.stop();

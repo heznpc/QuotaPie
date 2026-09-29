@@ -621,6 +621,8 @@ export class QuotaPieService {
   }
 
   registerResumeTask(input: RegisterResumeTaskInput, nowMs = Date.now()): ResumeTaskSummary {
+    // Explicit QuotaPie opt-in only; observing another host's session or quota
+    // must never call this as an automatic transfer of execution ownership.
     const account = input.account ?? "default";
     if (!this.isEnabledAccount(input.provider, account)) {
       throw new Error(`unknown or disabled ${input.provider} account alias: ${account}`);
