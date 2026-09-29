@@ -501,9 +501,9 @@ export class QuotaPieService {
     });
   }
 
-  statuses(nowMs = Date.now()): ProviderStatus[] {
+  statuses(nowMs = Date.now(), analysed?: WindowAnalysis[]): ProviderStatus[] {
     return groupStatuses(
-      this.analyses(nowMs),
+      analysed ?? this.analyses(nowMs),
       (provider, account) => this.accountLabel(provider, account),
     ).sort((left, right) => {
       const providerDifference = (left.provider === "codex" ? 0 : 1) - (right.provider === "codex" ? 0 : 1);
