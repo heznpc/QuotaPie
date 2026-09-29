@@ -84,6 +84,14 @@ final class PopoverModel: ObservableObject {
             ?? accounts.first
     }
 
+    /// This is the latest observed route, not a claim about the focused chat.
+    var latestRoutedAccount: AccountState? {
+        guard let request = payload?.accountPool?.recent.first else { return nil }
+        return payload?.accounts.first { $0.provider == "codex" && $0.account == request.account }
+    }
+
+    var latestRoutedHeadline: Headline? { latestRoutedAccount.map(Headline.init(account:)) }
+
     private var followsAccountFocus = true
 
     func selectAccount(_ account: AccountState) {

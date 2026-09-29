@@ -96,3 +96,36 @@ for await(const line of createInterface({input:process.stdin})) {
     expect((await client.readRateLimits())[0]?.usedPercent).toBe(25);
   } finally {await client.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+test("resident metadata collector follows an updated executable symlink and reaps only its old child", async () => {
+  const { symlinkSync, renameSync, readFileSync } = await import("node:fs");
+  const dir = mkdtempSync(join(tmpdir(), "quotapie-executable-update-"));
+  const command = join(dir, "codex");
+  const binary = (version: number) => join(dir, `codex-${version}`);
+  writeFileSync(join(dir, "auth.json"), "{}");
+  for (const version of [1, 2]) writeFileSync(binary(version), `#!${process.execPath}
+import {appendFileSync} from 'node:fs';
+import {createInterface} from 'node:readline';
+appendFileSync(process.env.CODEX_HOME + '/pids', process.pid + '\\n');
+for await (const line of createInterface({input:process.stdin})) {
+ const req=JSON.parse(line); if(req.id==null) continue;
+ const result=req.method==='account/read' ? {account:{type:'chatgpt',email:'fixture@example.invalid',planType:'plus'}} :
+ req.method==='account/rateLimits/read' ? {rateLimits:{limitId:'codex',primary:{usedPercent:${version * 10},windowDurationMins:300}}} : {};
+ console.log(JSON.stringify({id:req.id,result}));
+}
+`, {mode:0o700});
+  symlinkSync(binary(1), command);
+  const client = new CodexAppServerClient(command, "fixture", 2000, dir);
+  try {
+    const before = (await client.readRateLimits())[0]!;
+    symlinkSync(binary(2), command + ".next"); renameSync(command + ".next", command);
+    const after = (await client.readRateLimits())[0]!;
+    expect(before.usedPercent).toBe(10); expect(after.usedPercent).toBe(20);
+    expect(after.metadata?.accountContext).toBe(before.metadata?.accountContext);
+    expect(after.metadata?.collectorEpoch).not.toBe(before.metadata?.collectorEpoch);
+    const pids = readFileSync(join(dir, "pids"), "utf8").trim().split("\n").map(Number);
+    expect(pids).toHaveLength(2);
+    expect(() => process.kill(pids[0]!, 0)).toThrow();
+    expect(() => process.kill(pids[1]!, 0)).not.toThrow();
+  } finally { await client.close(); rmSync(dir, {recursive:true,force:true}); }
+});

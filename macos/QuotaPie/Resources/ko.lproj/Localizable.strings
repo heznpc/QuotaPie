@@ -548,7 +548,7 @@
 "pool.enabled" = "새 작업 계정 자동 배정";
 "pool.lastCompleted" = "최근 응답 처리: %@";
 "pool.lastRouted" = "최근 요청 배정: %@";
-"pool.loginUnchanged" = "위 잔여량은 선택한 계정 기준입니다.";
+"pool.loginUnchanged" = "메뉴 막대와 상단 잔여량은 선택한 계정 기준입니다.";
 "pool.waiting" = "새 작업에서 사용할 계정을 배정합니다.";
 "pool.disabled" = "새 계정 배정 꺼짐 · 기존 연결 유지";
 "pool.blocked" = "계정 라우팅이 중단됐습니다. 계정·인증·잔여량을 확인하세요.";
@@ -570,3 +570,5 @@
 "pool.settings.unavailable" = "자동 배정에 사용할 Codex 계정을 두 개 이상 등록하면 설정할 수 있습니다.";
 "pool.settings.blocked" = "설정한 잔여량을 유지하기 위해 요청을 멈췄습니다. 설정에서 계정별 기준을 확인하세요.";
 "pool.settings.stale" = "잔여량을 확인할 수 없어 요청을 멈췄습니다. 새로고침해 주세요.";
+
+"pool.requestFailed" = "최근 요청이 실패했거나 완료를 확인하지 못했습니다.";

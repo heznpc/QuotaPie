@@ -17,4 +17,15 @@ final class AccountPoolSettingsTests: XCTestCase {
         XCTAssertEqual(response.pool.recent.first?.reason, "reserve")
         XCTAssertEqual(response.pool.recent.first?.account, "b")
     }
+    func testRoutedQuotaUsesServingAccountWhileSelectionRemainsIndependent() throws {
+        let data = Data(#"{"accounts":[{"provider":"codex","account":"a","accountLabel":"Login","enabled":true,"collection":{"health":"recent-success","sources":[]},"windows":[]},{"provider":"codex","account":"b","accountLabel":"Serving","enabled":true,"collection":{"health":"recent-success","sources":[]},"windows":[{"provider":"codex","account":"b","bucket":"codex:primary","label":"5h","remainingPercent":72,"freshness":"fresh","observedAtMs":1000}]}],"accountPool":{"enabled":true,"accounts":["a","b"],"recent":[{"sourceAccount":"a","account":"b","accountLabel":"Serving","state":"completed","status":200,"atMs":1000}]}}"#.utf8)
+        let model = PopoverModel()
+        model.payload = try JSONDecoder().decode(StatusPayload.self, from: data)
+        model.selectedAccountID = "codex/a"
+        XCTAssertEqual(model.selectedAccount?.account, "a")
+        XCTAssertEqual(model.latestRoutedAccount?.account, "b")
+        XCTAssertEqual(model.latestRoutedHeadline?.remainingPercent, 72)
+        XCTAssertEqual(model.latestRoutedHeadline?.kind, "normal")
+    }
+
 }

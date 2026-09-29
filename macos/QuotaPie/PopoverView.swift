@@ -34,10 +34,14 @@ struct PopoverView: View {
                     Label(Strings.t(pool.enabled ? "pool.enabled" : "pool.disabled"), systemImage: "arrow.triangle.branch")
                     if let error = pool.error {
                         Text(Strings.t(error == "pool_reserve_reached" ? "pool.settings.blocked" :
-                            error == "pool_reserve_quota_unavailable" ? "pool.settings.stale" : "pool.blocked")).foregroundStyle(.orange)
+                            error == "pool_reserve_quota_unavailable" ? "pool.settings.stale" :
+                            ["pool_request_failed", "pool_response_unverified"].contains(error) ? "pool.requestFailed" : "pool.blocked")).foregroundStyle(.orange)
                     }
                     if let request = pool.recent.first {
                         Text(Strings.t(request.state == "completed" ? "pool.lastCompleted" : "pool.lastRouted", request.accountLabel))
+                        if let headline = model.latestRoutedHeadline {
+                            Text(headline.localizedTitle).foregroundStyle(.secondary)
+                        }
                         Text(Strings.t("pool.loginUnchanged")).foregroundStyle(.secondary)
                     } else { Text(Strings.t("pool.waiting")).foregroundStyle(.secondary) }
                 }.font(.caption).padding(.horizontal, 20).padding(.bottom, 12)
