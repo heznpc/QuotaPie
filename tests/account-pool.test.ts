@@ -383,3 +383,17 @@ test("unavailable or cyclic fork metadata cannot create a source binding", () =>
     expect(()=>pool.select(input)).toThrow("pool_lineage_invalid");
   } finally {pool.close();}
 }));
+
+
+test("anonymous routing rejection resolves when the same source later routes a complete response",()=>fixture(({pool,path})=>{
+  const requestId=randomUUID(), headers=new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"});
+  pool.reject("pool_thread_identity_required",{requestId:randomUUID(),threadId:null,status:409});
+  const status=()=>poolStatus(path,join(dirname(path),"missing.json"));
+  expect(status().error).toBe("pool_thread_identity_required");
+  const route=pool.select({threadId:randomUUID(),requestId,body,model:body.model,headers})!;
+  pool.response(requestId,route.identity,200,null,route.credentialDigest);
+  expect(status().error).toBe("pool_thread_identity_required");
+  pool.finish(requestId,"completed");
+  expect(status().error).toBeNull();
+  expect(status().rejected).toHaveLength(1);
+}));

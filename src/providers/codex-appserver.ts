@@ -183,6 +183,7 @@ export class CodexAppServerClient {
   private notificationRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private closing = false;
   private credentialStamp: string | undefined;
+  private executableStamp: string | null = null;
   private collectorEpoch = randomUUID();
   private remoteAccount: string | undefined;
   private remotePlan: string | null = null;
@@ -194,6 +195,14 @@ export class CodexAppServerClient {
       const stat = statSync(resolve(this.codexHome ?? process.env.CODEX_HOME ?? resolve(homedir(), ".codex"), "auth.json"));
       return `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
     } catch { return "absent"; }
+  }
+
+  private currentExecutableStamp(): string | null {
+    try {
+      const path = Bun.which(this.command) ?? this.command;
+      const stat = statSync(path);
+      return `${path}:${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.size}`;
+    } catch { return null; }
   }
 
   constructor(
@@ -210,7 +219,12 @@ export class CodexAppServerClient {
   async connect(): Promise<void> {
     if (this.closing) throw new Error("Codex App Server client is closing");
     if (this.connectTask) return this.connectTask;
-    if (this.process && this.initialized && this.credentialStamp === this.currentCredentialStamp()) return;
+    // A stable command/symlink can point to a new executable after an update.
+    // Restart only our read-only metadata child, never a user's inference process.
+    // A temporarily missing file during replacement need not stop a healthy child.
+    const executable = this.currentExecutableStamp();
+    if (this.process && this.initialized && this.credentialStamp === this.currentCredentialStamp()
+        && (executable == null || executable === this.executableStamp)) return;
     const task = this.initializeConnection();
     this.connectTask = task;
     try {
@@ -226,6 +240,7 @@ export class CodexAppServerClient {
     await this.disconnect();
     if (this.closing) throw new Error("Codex App Server client is closing");
     this.credentialStamp = this.currentCredentialStamp();
+    this.executableStamp = this.currentExecutableStamp();
     this.collectorEpoch = randomUUID();
     this.initialized = false;
     this.process = Bun.spawn(

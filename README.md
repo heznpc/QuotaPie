@@ -457,6 +457,14 @@ Newly loaded tasks use the new endpoint. `status` distinguishes installed,
 configured, and running, and lists generations retained for loaded tasks.
 No automatic compaction threshold is changed in the real profile.
 
+Successful generation installs now archive the superseded generation's login
+LaunchAgent as `retired-launch-agent.plist` beside its settings, after verifying
+a healthy configured replacement and the exact job arguments. Existing loaded
+listeners and their crash recovery remain available for the rest of this login;
+obsolete generations no longer start after logout/reboot. `quotapie-compaction retire` applies this to earlier installations. It never drains or unloads a live
+listener. Idle time alone does not prove a loaded conversation has released its
+endpoint, so immediate reclamation during the current login is not automatic.
+
 Version 2 health reports attempted, completed, failed, cancelled, and unverified
 compactions separately. A response header is not completion: native SSE needs a
 successful `response.completed` event; a disconnect before that is cancellation.
@@ -890,3 +898,28 @@ and uncertain observations cannot provide candidates. The six-hour proximity win
 and 30-minute observation-gap limit are conservative display rules, not calibrated
 confidence scores. A candidate never establishes that the public event caused the
 recovery, modifies quota records, or requeues the recovery notification.
+
+### Isolated account routing verification
+
+```bash
+bun script/verify-account-routing.ts /tmp/quotapie-routing-evidence.json
+bun script/verify-macos.ts /tmp/quotapie-routing-evidence.json
+python3 script/verify-relay-retirement.py
+```
+
+The first command connects a real loopback backend, relay, and status API using
+synthetic accounts. It checks threshold transfer, no eligible replacement,
+stale quota, authentication recovery, bounded 429 failover, interrupted streams,
+opaque compaction rejection, and draining with a response in flight. The native
+checker renders those observed routes and compares their account and quota with
+the backend receipts. The selected login quota remains independent; the latest
+served account now shows its own quota beside the routing history. Neither
+fixture proves that a real account crossed a threshold. Encrypted compaction
+state cannot transfer between accounts; complete portable history is required.
+
+The retirement check launches two temporary jobs, holds a real HTTP request on
+the older listener, archives its login job, and verifies that the same process
+finishes the request. It never touches installed profiles or tests a real logout.
+The metadata collector also detects replacement of its configured executable or
+symlink on its next read; a missing explicit path is not silently replaced by a
+different CLI.
