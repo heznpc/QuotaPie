@@ -20,6 +20,8 @@ function fixture(existing = true) {
   function tree(path: string, version: string) {
     file(join(path, "src/cli.ts"), version);
     file(join(path, "src/server.ts"), "server");
+    file(join(path, "packages/quota-core/src/index.ts"), "export {}");
+    file(join(path, "packages/quota-core/package.json"), '{"name":"@heznpc/quota-core","type":"module"}');
     file(join(path, "bin/quotapie"), "#!/bin/sh\n");
     file(join(path, "script/awake_hook.py"), "# hook");
     file(join(path, "script/install-macos.ts"), "// installer");
@@ -233,11 +235,30 @@ test("staging omits private data, dependencies and hidden trees but retains exec
     writeFileSync(join(f.source, "local.sqlite3"), "private");
     const staged = join(f.root, "staged"); stageRuntime(f.source, staged);
     expect(existsSync(join(staged, "src/cli.ts"))).toBe(true);
+    expect(existsSync(join(staged, "packages/quota-core/src/index.ts"))).toBe(true);
+    expect(existsSync(join(staged, "packages/quota-core/package.json"))).toBe(true);
     expect(existsSync(join(staged, "script/install.sh"))).toBe(true);
     expect(readFileSync(join(staged, "LICENSE"), "utf8")).toBe("MIT License");
     expect(existsSync(join(staged, "src/node_modules"))).toBe(false);
     expect(existsSync(join(staged, "src/.private"))).toBe(false);
     expect(existsSync(join(staged, "src/auth.json"))).toBe(false);
     expect(existsSync(join(staged, "local.sqlite3"))).toBe(false);
+  } finally { f.close(); }
+});
+
+
+test("staging rejects symlinked shared-package parents", () => {
+  const f = fixture(false);
+  try {
+    const external = join(f.root, "external-core");
+    cpSync(join(f.source, "packages/quota-core"), external, { recursive: true });
+    rmSync(join(f.source, "packages/quota-core"), { recursive: true });
+    symlinkSync(external, join(f.source, "packages/quota-core"));
+    expect(() => stageRuntime(f.source, join(f.root, "staged"))).toThrow("symlink");
+    rmSync(join(f.source, "packages/quota-core"));
+    cpSync(external, join(f.source, "packages/quota-core"), { recursive: true });
+    rmSync(join(f.source, "packages/quota-core/package.json"));
+    symlinkSync(join(external, "package.json"), join(f.source, "packages/quota-core/package.json"));
+    expect(() => stageRuntime(f.source, join(f.root, "staged-manifest"))).toThrow("symlink");
   } finally { f.close(); }
 });

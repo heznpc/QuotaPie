@@ -7,6 +7,8 @@ export const COLLECTOR_FILES = [
   "bin/quotapie",
   "package.json",
   "LICENSE",
+  "packages/quota-core/package.json",
+  "packages/quota-core/LICENSE",
   "script/awake_hook.py",
   "script/install.sh",
   "script/install-macos.ts",
@@ -29,6 +31,7 @@ function sourceFiles(root: string): string[] {
     }
   }
   walk("src");
+  walk("packages/quota-core/src");
   if (!files.includes("src/cli.ts")) throw new Error("Distribution source is missing src/cli.ts");
   for (const relative of COLLECTOR_FILES) {
     // Check every path component: a symlinked script directory could otherwise

@@ -39,12 +39,14 @@ test("reads retired generations, distinguishes HTTP headers, completion and lost
     expect(stale.active).toHaveLength(0);
     expect(stale.recent[0]?.phase).toBe("unverified");
     expect(stale.reachable).toBe(0);
-    controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed"}\n\n')); controller.close();
+    controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed","response":{"model":"gpt-5.6-sol","usage":{"input_tokens":20,"output_tokens":5}}}\n\n')); controller.close();
     await body;
     await writeFile(join(generation,"relay.log"), events.map(e=>JSON.stringify(e)).join("\n")+"\n");
     const completed = await reader.status(Date.now()+3000);
     expect(completed.active).toHaveLength(0);
     expect(completed.recent[0]?.phase).toBe("completed");
+    expect(completed.recent[0]?.responseModel).toBe("gpt-5.6-sol");
+    expect(completed.recent[0]?.usage).toEqual({ input: 20, cachedInput: 0, output: 5 });
     proxy.stop();
     // Retained log survives relay loss. An unfinished log never implies success.
     const unfinished = {...events[0],requestId:"11111111-1111-4111-8111-111111111111"};

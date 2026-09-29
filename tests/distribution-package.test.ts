@@ -13,19 +13,19 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), "quotapie-distribution-"));
   const app = join(root, "build", "QuotaPie.app");
   write(app, "Contents/Info.plist", "fixture");
-  for (const path of [...COLLECTOR_FILES, "src/cli.ts", "src/dashboard.html", "src/providers/codex.ts"]) write(root, path);
+  for (const path of [...COLLECTOR_FILES, "src/cli.ts", "src/dashboard.html", "src/providers/codex.ts", "packages/quota-core/src/index.ts"]) write(root, path);
   return { root, app };
 }
 
 test("distribution includes runtime inputs without local data and replaces old payloads without nesting", () => {
   const { root, app } = fixture();
   try {
-    for (const path of [".git/config", "auth.json", "config.json", "node_modules/private.ts", "src/cache.sqlite", "src/.env", "src/node_modules/private.ts", "script/verify-macos.ts", "scripts/probe-codex-compaction.py"]) write(root, path, "private");
+    for (const path of [".git/config", "auth.json", "config.json", "node_modules/private.ts", "src/cache.sqlite", "src/.env", "src/node_modules/private.ts", "script/verify-macos.ts", "scripts/probe-codex-compaction.py", "packages/quota-core/dist/index.js", "packages/quota-core/auth.json"]) write(root, path, "private");
     const collector = bundleCollector(root, app);
-    for (const path of [...COLLECTOR_FILES, "src/cli.ts", "src/dashboard.html", "src/providers/codex.ts"]) {
+    for (const path of [...COLLECTOR_FILES, "src/cli.ts", "src/dashboard.html", "src/providers/codex.ts", "packages/quota-core/src/index.ts"]) {
       expect(readFileSync(join(collector, path), "utf8")).toBe(path);
     }
-    for (const path of [".git", "auth.json", "config.json", "node_modules", "src/cache.sqlite", "src/.env", "src/node_modules", "script/verify-macos.ts", "scripts/probe-codex-compaction.py", "build"]) {
+    for (const path of [".git", "auth.json", "config.json", "node_modules", "src/cache.sqlite", "src/.env", "src/node_modules", "script/verify-macos.ts", "scripts/probe-codex-compaction.py", "build", "packages/quota-core/dist", "packages/quota-core/auth.json"]) {
       expect(existsSync(join(collector, path))).toBe(false);
     }
     write(collector, "stale.ts");

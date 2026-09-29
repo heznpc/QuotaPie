@@ -1,0 +1,27 @@
+{
+  "name": "@heznpc/quota-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared quota normalization, conservative routing policies and request evidence for QuotaPie and Taxi.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  }
+}

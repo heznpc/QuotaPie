@@ -64,6 +64,13 @@ export function stageRuntime(source: string, destination: string) {
     }
   }
   for (const directory of ["src", "bin", "script", "scripts"]) if (existsSync(join(source, directory))) copy(directory);
+  for (const directory of ["packages", "packages/quota-core"]) {
+    if (lstatSync(join(source, directory)).isSymbolicLink()) throw new Error(`Runtime input must not be a symlink: ${directory}`);
+  }
+  copy("packages/quota-core/src");
+  if (lstatSync(join(source, "packages/quota-core/package.json")).isSymbolicLink()) throw new Error("Runtime package manifest must not be a symlink");
+  copyFileSync(join(source, "packages/quota-core/package.json"), join(destination, "packages/quota-core/package.json"), constants.COPYFILE_EXCL);
+  chmodSync(join(destination, "packages/quota-core/package.json"), 0o600);
   const packagePath = join(source, "package.json");
   if (JSON.parse(readFileSync(packagePath, "utf8")).name !== "quotapie") throw new Error("Not a QuotaPie source tree");
   copyFileSync(packagePath, join(destination, "package.json"), constants.COPYFILE_EXCL);
@@ -72,7 +79,7 @@ export function stageRuntime(source: string, destination: string) {
     copyFileSync(join(source, "LICENSE"), join(destination, "LICENSE"), constants.COPYFILE_EXCL);
     chmodSync(join(destination, "LICENSE"), 0o600);
   }
-  for (const file of ["bin/quotapie", "src/cli.ts", "script/awake_hook.py", "script/install.sh", "script/install-macos.ts"]) {
+  for (const file of ["bin/quotapie", "src/cli.ts", "script/awake_hook.py", "script/install.sh", "script/install-macos.ts", "packages/quota-core/src/index.ts", "packages/quota-core/package.json"]) {
     if (!existsSync(join(destination, file))) throw new Error(`Missing runtime input: ${file}`);
   }
 }

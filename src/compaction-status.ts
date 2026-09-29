@@ -6,35 +6,10 @@ import { join } from "node:path";
 import type { CompactionRequestEvent } from "./codex-compaction";
 import { CompactionPolicySettings, relayHealth } from "./compaction-policy-settings";
 import { TaskSavingsSettings } from "./task-savings-settings";
-import { transportFailure } from "./codex-transport";
-import { safeEffort } from "./codex-compaction-policy";
 
-const savingsReasons = new Set(["disabled", "simple_text_edit", "uncertain_task", "keep_setting", "manual_change", "extended_work", "failure_fallback", "unsupported_model", "unidentified_task", "task_disabled"]);
-const phases = new Set(["started", "response_headers", "completed", "failed", "cancelled", "unverified"]);
-const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
-const label = /^[a-z0-9_.-]{1,80}$/i;
+import { parseCompactionRequestEvent as event } from "../packages/quota-core/src/events.js";
+import { summarizeRequestEvents } from "../packages/quota-core/src/observations.js";
 const ongoing = (phase: string) => phase === "started" || phase === "response_headers";
-
-// Explicit metadata projection: credentials, URLs and request bodies never leave this reader.
-function event(value: any): CompactionRequestEvent | null {
-  if (!["compaction", "response"].includes(value?.kind) || !uuid.test(value.requestId) || !phases.has(value.phase) ||
-      typeof value.from !== "string" || typeof value.to !== "string" ||
-      !label.test(value.from) || !label.test(value.to) || !Number.isFinite(Date.parse(value.at)) ||
-      !Number.isFinite(value.durationMs) || value.durationMs < 0) return null;
-  return { requestId: value.requestId, threadId: uuid.test(value.threadId) ? value.threadId : null,
-    turnId: uuid.test(value.turnId) ? value.turnId : null, kind: value.kind, from: value.from, to: value.to,
-    routed: value.routed === true, phase: value.phase, status: Number.isInteger(value.status) ? value.status : 0,
-    requestedEffort: safeEffort(value.requestedEffort),
-    reasoningEffort: safeEffort(value.reasoningEffort),
-    at: value.at, durationMs: value.durationMs,
-    ...(Number.isInteger(value.retryCount) && value.retryCount >= 0 && value.retryCount <= 2 ? { retryCount: value.retryCount } : {}),
-    ...(transportFailure({code: value.transportCode}).transportCode ? { transportCode: value.transportCode } : {}),
-    ...(savingsReasons.has(value.savingsReason) ? { savingsReason: value.savingsReason } : {}),
-    responseModel: typeof value.responseModel === "string" && label.test(value.responseModel) ? value.responseModel : null,
-    usage: value.usage && [value.usage.input,value.usage.cachedInput,value.usage.output].every(n=>Number.isSafeInteger(n) && n>=0) && value.usage.cachedInput <= value.usage.input
-      ? {input:value.usage.input,cachedInput:value.usage.cachedInput,output:value.usage.output} : null,
-    ...(label.test(value.errorCode ?? "") ? { errorCode: value.errorCode } : {}) };
-}
 
 export class CompactionStatusReader {
   private logs = new IncrementalJsonlReader(event, item => item.requestId);
@@ -116,52 +91,8 @@ export class CompactionStatusReader {
       if (!previous || Date.parse(item.at) >= Date.parse(previous.at)) merged.set(item.requestId, item);
     }
     const activeIds = new Set(installed.flatMap(g => [...g.activeIds]));
-    const all = [...merged.values()];
-    // Parse timestamps once and index by thread. Looking for each compaction's
-    // follow-up must not rescan and reparse every generation's entire history.
-    const timed = all.map(item => {
-      const at = Date.parse(item.at);
-      return {item, at, start: at - item.durationMs};
-    });
-    type Timed = typeof timed[number];
-    const byThread = new Map<string, {compactions: Timed[]; responses: Timed[]}>();
-    for (const entry of timed) {
-      if (!entry.item.threadId) continue;
-      let group = byThread.get(entry.item.threadId);
-      if (!group) byThread.set(entry.item.threadId, group = {compactions: [], responses: []});
-      (entry.item.kind === "compaction" ? group.compactions : group.responses).push(entry);
-    }
-    for (const group of byThread.values()) group.responses.sort((a,b) => a.start - b.start);
-    timed.sort((a,b) => b.at - a.at);
-    this.notificationEvidence = timed.slice(0, 200).map(entry => entry.item);
-    const compactions = timed.filter(entry => entry.item.kind === "compaction").slice(0, 50);
-    const retained = new Map<string, CompactionRequestEvent>();
-    const records = compactions.map(({item, at: end}) => {
-      retained.set(item.requestId, item);
-      const active = ongoing(item.phase) && activeIds.has(item.requestId);
-      const group = item.threadId ? byThread.get(item.threadId) : undefined;
-      const nextCompaction = group?.compactions.reduce((next, entry) =>
-        entry.item.requestId !== item.requestId && entry.start >= end ? Math.min(next, entry.start) : next, Infinity) ?? Infinity;
-      // Match actual requests, never saved composer settings. A different turn,
-      // an overlapping request or another task cannot establish continuation.
-      const followup = item.threadId && !ongoing(item.phase) && item.phase !== "unverified"
-        ? group?.responses.find(entry => (!item.turnId || entry.item.turnId === item.turnId) &&
-            entry.start >= end && entry.start < nextCompaction)?.item : undefined;
-      if (followup) retained.set(followup.requestId, followup);
-      return { ...item, phase: ongoing(item.phase) && !active ? "unverified" : item.phase,
-        ...(ongoing(item.phase) && !active ? { errorCode: "relay_state_unavailable" } : {}),
-        active, startedAtMs: end - item.durationMs,
-        finishedAtMs: ongoing(item.phase) ? null : end,
-        elapsedMs: active ? Math.max(item.durationMs, nowMs - end + item.durationMs) : item.durationMs,
-        followup: followup ? { requestId: followup.requestId, model: followup.to, effort: followup.reasoningEffort,
-          startedAtMs: Date.parse(followup.at) - followup.durationMs } : null };
-    });
-    const savingsRecords = timed.filter(({item})=>item.kind === "response" && item.savingsReason && item.savingsReason !== "disabled")
-      .slice(0,50).map(({item})=> {
-        retained.set(item.requestId,item);
-        const active=ongoing(item.phase) && activeIds.has(item.requestId);
-        return {...item,active,phase:ongoing(item.phase) && !active ? "unverified" : item.phase};
-      });
+    const { records, savingsRecords, retained, notificationEvidence } = summarizeRequestEvents([...merged.values()], activeIds, nowMs);
+    this.notificationEvidence = notificationEvidence;
     this.evidence = retained;
     const serialized = JSON.stringify([...retained.values()]);
     if (installed.length && serialized !== this.savedEvidence) {

@@ -1,24 +1,7 @@
 import type { MessageKey, MessageParams, WindowKind } from "./i18n";
 
-export type Provider = "codex" | "claude";
-
-export type SourceQuality = "authoritative" | "fallback" | "derived";
-
-export interface QuotaObservation {
-  provider: Provider;
-  account: string;
-  bucket: string;
-  label: string;
-  windowSeconds: number | null;
-  usedPercent: number | null;
-  resetsAtMs: number | null;
-  observedAtMs: number;
-  source: string;
-  quality: SourceQuality;
-  creditBalance?: number | null;
-  resetCreditsAvailable?: number | null;
-  metadata?: Record<string, string | number | boolean | null>;
-}
+import type { Provider, SourceQuality } from "../packages/quota-core/src/quota-types.js";
+export type { Provider, SourceQuality, QuotaObservation } from "../packages/quota-core/src/quota-types.js";
 
 export type EventKind =
   | "first_observation"

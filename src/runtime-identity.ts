@@ -20,6 +20,8 @@ export function runtimeSourceHash(root = resolve(import.meta.dir, "..")): string
     }
   }
   walk("src");
+  walk("packages/quota-core/src");
+  add("packages/quota-core/package.json");
   add("bin/quotapie");
   add("script/awake_hook.py");
   return hash.digest("hex");
