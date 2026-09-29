@@ -6,10 +6,14 @@
   "scripts": {
     "quotapie": "bun run src/cli.ts",
     "test": "bun test ./tests",
-    "check": "bun run check:backend && bun run check:macos",
+    "check": "bun run check:backend && bun run check:quota-core && bun run check:quota-core:host && bun run check:macos",
     "check:backend": "bun test ./tests && tsc --noEmit && bun build src/cli.ts --target=bun --outdir /tmp/quotapie-build",
     "check:macos": "bash script/test_codex_profiles.sh && bash script/build_and_run.sh --verify",
-    "check:runtime": "bun script/check-runtime.ts"
+    "check:runtime": "bun script/check-runtime.ts",
+    "build:quota-core": "tsc -p packages/quota-core/tsconfig.json",
+    "pack:quota-core": "python3 script/pack-quota-core.py",
+    "check:quota-core": "bun run pack:quota-core && node script/check-quota-core.mjs",
+    "check:quota-core:host": "bun script/check-quota-core-host.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.3.10",

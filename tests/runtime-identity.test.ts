@@ -9,10 +9,16 @@ test("runtime identity detects changed and missing code but ignores notes and bu
   try {
     for (const path of ["src", "bin", "script", "dist"]) mkdirSync(join(root, path));
     for (const file of ["src/cli.ts", "bin/quotapie", "script/awake_hook.py"]) writeFileSync(join(root, file), "initial");
+    mkdirSync(join(root, "packages/quota-core/src"), { recursive: true });
+    writeFileSync(join(root, "packages/quota-core/package.json"), "{}");
+    writeFileSync(join(root, "packages/quota-core/src/index.ts"), "initial");
     const initial = runtimeSourceHash(root);
     writeFileSync(join(root, "TODO.md"), "notes");
     writeFileSync(join(root, "dist/app"), "build");
     expect(runtimeSourceHash(root)).toBe(initial);
+    writeFileSync(join(root, "packages/quota-core/src/index.ts"), "changed core");
+    expect(runtimeSourceHash(root)).not.toBe(initial);
+    writeFileSync(join(root, "packages/quota-core/src/index.ts"), "initial");
     writeFileSync(join(root, "src/cli.ts"), "changed");
     expect(runtimeSourceHash(root)).not.toBe(initial);
     writeFileSync(join(root, "src/provider.ts"), "provider");

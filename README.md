@@ -37,6 +37,16 @@ Currently supports Codex and Claude Code.
 
 The native settings window lets you select Sol, Luna, or Terra for future Astra compression requests, with the validated Low effort. It applies the choice to reachable relay generations that support live policy changes and shows how many acknowledge the selected model; older routes may retain their previous policy. Running requests keep their original policy snapshot. Activity groups compression start/end and the model of a later observed request from the same task (and the same turn when the turn ID is known). Unobserved follow-up models stay unverified. A bounded private metadata record preserves observed continuations after the relay’s live history rolls over.
 
+## Shared quota core
+
+QuotaPie consumes the single TypeScript source in [`packages/quota-core`](packages/quota-core/README.md).
+Taxi can embed the versioned ESM package independently; neither product requires
+the other app. The core owns compression/task model policies, provider quota
+normalization and request evidence. Credentials, transport, installation and
+session orchestration remain host responsibilities. Build a reproducible private
+package with `bun run pack:quota-core` and verify its Node/Bun consumption with
+`bun run check:quota-core`. No registry publication is required.
+
 ## Integration boundary: quota.json
 
 Task-specific navigation uses a separate work continuity contract; quota.json v2 remains unchanged.

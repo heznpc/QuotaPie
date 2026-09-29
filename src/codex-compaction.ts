@@ -8,26 +8,8 @@ import { ResponseCompletionObserver } from "./codex-compaction-stream";
 import { PoolError, type AccountPool, type PoolRoute } from "./account-pool";
 export { DEFAULT_COMPACTION_ROUTE, routeCompaction, validateCompactionRoute, type CompactionRoute } from "./codex-compaction-policy";
 
-export interface CompactionRequestEvent {
-  requestId: string;
-  threadId: string | null;
-  turnId: string | null;
-  kind: "compaction" | "response";
-  from: string;
-  to: string;
-  routed: boolean;
-  phase: "started" | "response_headers" | "completed" | "failed" | "cancelled" | "unverified";
-  status: number;
-  requestedEffort: string | null;
-  reasoningEffort: string | null;
-  at: string;
-  durationMs: number;
-  errorCode?: string;
-  transportCode?: string;
-  retryCount?: number;
-  savingsReason?: SavingsReason;
-  responseModel?: string | null;
-  usage?: { input: number; cachedInput: number; output: number } | null;
+import type { CompactionRequestEvent as CoreRequestEvent } from "../packages/quota-core/src/events.js";
+export interface CompactionRequestEvent extends CoreRequestEvent {
   accountRouting?: PoolRoute;
   inlineImageCount?: number;
 }
@@ -258,7 +240,7 @@ export function startCompactionProxy(options: {
         const update: CompactionRequestEvent = { ...event, phase, status, at: new Date().toISOString(),
           durationMs: Math.round(performance.now() - started), retryCount,
           ...(transportCode ? { transportCode } : {}), ...(errorCode ? { errorCode } : {}),
-          ...(event.kind === "response" ? { responseModel: observer?.responseModel ?? null, usage: observer?.usage ?? null } : {}) };
+          responseModel: observer?.responseModel ?? null, usage: observer?.usage ?? null };
         record(update);
       };
       const finish = (phase: "completed" | "failed" | "cancelled" | "unverified", errorCode?: string) => {

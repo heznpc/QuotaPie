@@ -1,7 +1,8 @@
 import { validateCompactionRoute, type CompactionRoute } from "./codex-compaction-policy";
 import { inspectRelaySettings, replaceRelaySettings, withRelaySettingsLock } from "./relay-settings";
 
-export const COMPACTION_MODELS = ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra"];
+import { COMPACTION_MODELS } from "../packages/quota-core/src/codex-compaction-policy.js";
+export { COMPACTION_MODELS } from "../packages/quota-core/src/codex-compaction-policy.js";
 
 export async function relayHealth(settings: any, fetcher: typeof fetch) {
   if (!Number.isInteger(settings.port) || settings.port < 1024 || settings.port > 65535 ||
