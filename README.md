@@ -47,6 +47,20 @@ session orchestration remain host responsibilities. Build a reproducible private
 package with `bun run pack:quota-core` and verify its Node/Bun consumption with
 `bun run check:quota-core`. No registry publication is required.
 
+The 0.2.0 core adds `selectTaskModel` for explicit task phases: manual selection,
+then a phase preference, then a default, validated against host-supplied provider
+model/effort capabilities. An unsupported choice returns a reason without silently
+substituting another model. QuotaPie's `src/task-model-selection.ts` re-exports
+the same implementation that Taxi installs; the exact public types are in the
+[core contract](packages/quota-core/README.md#explicit-task-model-selection-added-in-020).
+Compression policy and session creation remain separate decisions.
+
+QuotaPie's quota recovery and approved pause/resume or local batch jobs remain
+independent host features. They act only on work explicitly registered with
+QuotaPie. Taxi owns its own executions and must not also enqueue those executions
+as QuotaPie jobs or resume registrations. A shared model selection or quota
+observation grants no execution authority and does not transfer ownership.
+
 ## Integration boundary: quota.json
 
 Task-specific navigation uses a separate work continuity contract; quota.json v2 remains unchanged.

@@ -1,6 +1,6 @@
 {
   "name": "@heznpc/quota-core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Shared quota normalization, conservative routing policies and request evidence for QuotaPie and Taxi.",

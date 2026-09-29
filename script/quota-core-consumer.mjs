@@ -2,11 +2,26 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { readFileSync } from 'node:fs';
 import {
   routeCompaction, DEFAULT_COMPACTION_ROUTE, TaskSavingsRouter, DEFAULT_TASK_SAVINGS,
   ResponseCompletionObserver, parseCompactionRequestEvent, summarizeRequestEvents,
   parseCodexRateLimits, parseClaudeStatusLine, mapClaudeUsage, QUOTA_CORE_EVENT_SCHEMA_VERSION,
+  selectTaskModel,
 } from '@heznpc/quota-core';
+
+const installedPackage = JSON.parse(readFileSync(new URL('../package.json', import.meta.resolve('@heznpc/quota-core')), 'utf8')).version;
+const selectionInput = { phase: 'verification',
+  phasePreferences: { verification: { provider: 'fixture', model: 'review', effort: 'high' } },
+  defaultSelection: { provider: 'fixture', model: 'work' },
+  capabilities: [{ provider: 'fixture', model: 'review', efforts: ['high'] }, { provider: 'fixture', model: 'work', efforts: [] }],
+};
+assert.deepEqual(selectTaskModel(selectionInput), { status: 'selected', phase: 'verification',
+  source: 'phase', selection: { provider: 'fixture', model: 'review', effort: 'high' }, reason: 'phase_preference' });
+assert.deepEqual(selectTaskModel({ ...selectionInput, manualSelection: { provider: 'fixture', model: 'missing' } }), {
+  status: 'unavailable', phase: 'verification', source: 'manual', selection: null,
+  requested: { provider: 'fixture', model: 'missing' }, reason: 'unsupported_model',
+});
 
 const original = { model: 'gpt-6-astra', reasoning: { effort: 'high' }, input: [{ role: 'user', content: [{ type: 'input_text', text: 'Fix the button typo "Svae".' }] }] };
 const before = JSON.stringify(original);
@@ -65,4 +80,4 @@ const claude = parseClaudeStatusLine({ session_id: 'fixture-session-secret', rat
 assert.equal(claude[0].usedPercent, 20);
 assert.equal(claude[0].metadata.sessionHash.length, 16);
 assert.equal(JSON.stringify(claude).includes('fixture-session-secret'), false);
-console.log(JSON.stringify({ runtime: process.versions.bun ? 'bun' : 'node', installedPackage: '0.1.0', loopbackRouting: 'pass', completionEvidence: 'pass', metadataProjection: 'pass', quotaNormalization: 'pass', liveProvider: 'not-tested', quality: 'not-tested' }));
+console.log(JSON.stringify({ runtime: process.versions.bun ? 'bun' : 'node', installedPackage, taskModelSelection: 'pass', loopbackRouting: 'pass', completionEvidence: 'pass', metadataProjection: 'pass', quotaNormalization: 'pass', liveProvider: 'not-tested', quality: 'not-tested' }));

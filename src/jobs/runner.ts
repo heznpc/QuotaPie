@@ -98,6 +98,8 @@ export class ManagedJobRunner {
     if (this.stopped) return;
     this.evaluate(windows, nowMs);
     if (this.running) return;
+    // Only explicitly submitted QuotaPie jobs are eligible. Shared policy or
+    // quota observations do not enroll executions owned by another host (Taxi).
     for (const job of this.store.active()) {
       if (job.state !== "ready") continue;
       const claim = this.store.claim(job.id, nowMs);

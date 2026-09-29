@@ -8,3 +8,4 @@ export * from "./codex-usage.js";
 export * from "./claude-usage.js";
 export * from "./claude-statusline.js";
 export * from "./transport-failure.js";
+export * from "./task-model-selection.js";
