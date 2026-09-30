@@ -54,13 +54,13 @@ test("an exhausted binding moves full history to an account with capacity", asyn
   expect(c.events.filter(e => e.phase === "completed").map(e => e.accountRouting?.reason)).toEqual(["new", "recovered", "new"]);
 }));
 
-test("a new text task with a deep link falls back to its login when quota collection is unavailable", async () => fixture(async c => {
+test("a new text task stops before paid fallback when source quota is exhausted", async () => fixture(async c => {
   c.accounts[0]!.remaining = 0;
   c.accounts[1]!.remaining = null;
-  c.upstream(headers => { expect(headers.get("authorization")).toBe("Bearer source-token"); return completed(); });
+  c.upstream(() => { throw new Error("An exhausted request reached the provider"); });
   const response = await c.request(randomUUID(), { ...body, input: [{ role: "user", content: `codex://threads/${randomUUID()}` }] });
-  expect(response.status).toBe(200); await response.text();
-  expect(c.events.at(-1)?.accountRouting).toMatchObject({ account: "source", reason: "source_fallback" });
+  expect(response.status).toBe(409);
+  expect((await response.json() as any).error.code).toBe("pool_source_quota_exhausted");
 }));
 
 test("real rate limits retain their account and expose bounded cooldown rejection evidence", async () => fixture(async c => {

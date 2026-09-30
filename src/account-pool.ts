@@ -260,7 +260,17 @@ export class AccountPool {
         // Only a new, complete HTTP request can move. Partial streamed responses
         // are never replayed. Keep all messages/tool outputs; remove only foreign
         // encrypted reasoning cache, and persist its fingerprints for later turns.
-        if (policy.enabled && SHARED_QUOTA_MODELS.has(input.model) &&
+        const restoredSource = policy.enabled && selected.id !== sourceID && SHARED_QUOTA_MODELS.has(input.model)
+          ? this.eligible(accounts, input.model, selected.id).find(a => a.id === sourceID) : undefined;
+        if (restoredSource) {
+          const replay = portableReplay(replayBody);
+          if (replay && !hasUnverifiedAttachments(replay.body)) {
+            previousAccountLabel = selected.label;
+            selected = restoredSource; reason = "recovered"; replayBody = replay.body;
+            foreignReasoning = [...new Set([...(foreignReasoning ?? []), ...replay.fingerprints])];
+          }
+        }
+        if (reason === "pinned" && policy.enabled && SHARED_QUOTA_MODELS.has(input.model) &&
             (cooldownUntil(selected) > now || selected.remaining === 0 && selected.validUntil > now || this.reserveBlock(selected))) {
           const replacement = this.eligible(accounts, input.model, selected.id)[0];
           if (replacement) {
@@ -270,7 +280,7 @@ export class AccountPool {
               reason = this.reserveBlock(selected) && cooldownUntil(selected) <= now ? "reserve" : "recovered";
               selected = replacement; replayBody = replay.body;
               foreignReasoning = [...new Set([...(foreignReasoning ?? []), ...replay.fingerprints])];
-            } else if (cooldownUntil(selected) > now || this.reserveBlock(selected)) {
+            } else if (cooldownUntil(selected) > now || selected.remaining === 0 || this.reserveBlock(selected)) {
               throw new PoolError("pool_recovery_requires_full_history", 409);
             }
           }
@@ -286,6 +296,10 @@ export class AccountPool {
         selected ??= source;
       }
       if (selected.tokenExpiresAt <= now + 30_000) throw new PoolError("pool_target_auth_unavailable", 401);
+      // A confirmed exhausted source must not silently spend paid credits when
+      // this request cannot be moved to a registered account with quota.
+      if (policy.enabled && selected.id === sourceID && selected.remaining === 0 && selected.validUntil > now)
+        throw new PoolError("pool_source_quota_exhausted", 409);
       const reserveBlock = this.reserveBlock(selected);
       if (reserveBlock) throw new PoolError(reserveBlock, 409);
       const until = cooldownUntil(selected);
