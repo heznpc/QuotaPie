@@ -167,8 +167,8 @@
           "event.label.meter_correction": "Meter correction",
           "event.label.source_unknown": "Source value missing",
           "event.label.source_changed": "Data source changed",
-          "event.label.paid_usage": "Paid credits used",
-          "event.label.credit_topup": "Credit balance increased",
+          "event.label.paid_usage": "Reported credits decreased",
+          "event.label.credit_topup": "Reported credits increased",
           "event.label.banked_reset_consumed": "Banked reset used",
           "event.label.bucket_retired": "Tracking stopped",
           "event.label.out_of_order": "Out-of-order response ignored",
@@ -182,8 +182,8 @@
           "event.allowance_relief": "{label} usage fell sharply — a reset, a larger allowance, or a server correction.",
           "event.meter_correction": "{label} usage moved slightly backwards.",
           "event.schedule_rebased": "{label} reset time was rescheduled.",
-          "event.paid_usage": "{provider} paid credits were used.",
-          "event.credit_topup": "{provider} credit balance increased.",
+          "event.paid_usage": "{provider} reported credits: {balanceBefore} → {balanceAfter}. Spending and billing balance changes are unverified.",
+          "event.credit_topup": "{provider} reported credits: {balanceBefore} → {balanceAfter}. Top-ups and billing balance changes are unverified.",
           "event.banked_reset_consumed": "A banked reset appears to have been used.",
           "event.bucket_retired": "{label} disappeared from the provider's full response; tracking stopped.",
           "event.window_changed": "Displayed limit changed: {fromLabel} → {toLabel}. Account or plan change unverified.",
@@ -266,8 +266,8 @@
           "event.label.meter_correction": "사용률 보정",
           "event.label.source_unknown": "원본 누락",
           "event.label.source_changed": "데이터 소스 변경",
-          "event.label.paid_usage": "유료 크레딧 사용",
-          "event.label.credit_topup": "크레딧 증가",
+          "event.label.paid_usage": "크레딧 조회값 감소",
+          "event.label.credit_topup": "크레딧 조회값 증가",
           "event.label.banked_reset_consumed": "저장형 리셋 사용",
           "event.label.bucket_retired": "항목 추적 종료",
           "event.label.out_of_order": "오래된 응답 무시",
@@ -281,8 +281,8 @@
           "event.allowance_relief": "{label} 사용률이 크게 낮아졌습니다. 리셋·한도 증액·서버 보정 중 하나일 수 있습니다.",
           "event.meter_correction": "{label} 사용률이 소폭 역행했습니다.",
           "event.schedule_rebased": "{label} 리셋 시각이 재조정됐습니다.",
-          "event.paid_usage": "{provider} 유료 크레딧이 사용됐습니다.",
-          "event.credit_topup": "{provider} 크레딧 잔액이 증가했습니다.",
+          "event.paid_usage": "{provider} 크레딧 조회값: {balanceBefore} → {balanceAfter}. 실제 사용·결제 잔액 변동은 미확인입니다.",
+          "event.credit_topup": "{provider} 크레딧 조회값: {balanceBefore} → {balanceAfter}. 실제 충전·결제 잔액 변동은 미확인입니다.",
           "event.banked_reset_consumed": "저장형 리셋이 사용된 것으로 보입니다.",
           "event.bucket_retired": "{label} 항목이 공급자 전체 응답에서 사라져 추적을 종료했습니다.",
           "event.window_changed": "한도 표시 변경: {fromLabel} → {toLabel} · 계정·플랜 변경 여부 미확인",
@@ -372,7 +372,7 @@
       const eventMessage = (event) => {
         const required = EVENT_MESSAGE_PARAMS[event.kind];
         if (required == null) return event.displayText ?? event.kind;
-        const params = { provider: event.provider, account: event.account, ...(event.details ?? {}) };
+        const params = { balanceBefore: "?", balanceAfter: "?", provider: event.provider, account: event.account, ...(event.details ?? {}) };
         if (required.some((name) => params[name] == null)) return event.displayText ?? event.kind;
         return t(`event.${event.kind}`, params);
       };

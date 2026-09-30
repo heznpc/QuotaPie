@@ -23,7 +23,7 @@ Currently supports Codex and Claude Code.
 - 5-hour, weekly, and per-model windows are tracked independently.
 - With several Claude sessions open at once, quota collection stores only short hashes; the latest value per hash is reconciled so that a stale window cannot roll back a newer usage figure.
 - Codex promotional and per-model entries retire automatically after disappearing from two consecutive full responses, so no ghost timers are left behind.
-- Normal resets, early external resets, possible allowance increases or server corrections, reset-clock rebases, and paid credit changes are each recorded as distinct events.
+- Normal resets, early external resets, possible allowance increases or server corrections, reset-clock rebases, and provider-reported credit changes are each recorded as distinct events.
 - Measured consumption uses elapsed time, including overnight work. A refill, reset-clock change, or authenticated collector change starts a new rate baseline. Forecasts require recent measured usage and estimate actual exhaustion, not entry into a hidden safety reserve.
 - Codex reloads its resident collector when the profile credential file changes. Opaque collection epochs keep old account history and disappeared windows out of the current display; raw account identifiers and credential-file contents are not stored.
 - While the collector is running, Codex account continuity and the quota response's plan type distinguish a different login from a plan change on the same login. Both start a new usage baseline and have separate notifications. A window-duration change alone reports an unverified cause; token refreshes and collector restarts do not prove an account change. Email is compared only in memory, with random session-scoped continuity markers persisted instead.
@@ -679,7 +679,7 @@ For example, to run a macOS Shortcut alongside the notification:
 | Usage is unchanged but the reset time moves | timer resynchronisation |
 | The source value is null or missing | unknown; the previous value is kept as history only |
 | The scheduled time has passed with no new source value | reset_due; no phantom refill |
-| The credit balance falls | paid usage warning |
+| The provider-reported credit value changes | credit observation with before/after values; actual spending, top-ups and billing balance changes are unverified |
 | The provider exposes a banked reset count and it falls | a banked reset was likely consumed |
 
 `quotapie explain` shows the verdict and the reasoning behind each change.

@@ -276,7 +276,8 @@ struct LocalizedMessagePayload: Decodable {
         case "alert.test.title", "alert.test.message", "event.banked_reset_consumed", "event.account_changed":
             return []
         case "event.paid_usage", "event.credit_topup":
-            return required("provider")
+            guard let provider = text("provider") else { return nil }
+            return [provider, text("balanceBefore") ?? "?", text("balanceAfter") ?? "?"]
         case "event.window_changed":
             return required("fromLabel", "toLabel")
         case "event.plan_changed":

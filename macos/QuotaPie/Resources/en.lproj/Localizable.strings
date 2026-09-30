@@ -136,27 +136,27 @@
 "event.allowance_relief" = "%@ usage fell sharply — a reset, a larger allowance, or a server correction.";
 "event.meter_correction" = "%@ usage moved slightly backwards.";
 "event.schedule_rebased" = "%@ reset time was rescheduled.";
-"event.paid_usage" = "%@ paid credits were used.";
-"event.credit_topup" = "%@ credit balance increased.";
+"event.paid_usage" = "%@ reported credits: %@ → %@. Spending and billing balance changes are unverified.";
+"event.credit_topup" = "%@ reported credits: %@ → %@. Top-ups and billing balance changes are unverified.";
 "event.banked_reset_consumed" = "A banked reset appears to have been used.";
 "event.bucket_retired" = "%@ disappeared from the provider's full response; tracking stopped.";
 "event.window_changed" = "Displayed limit changed: %@ → %@. Account or plan change unverified.";
 
 /* Semantic notification messages received from the local service */
-"alert.remaining.title" = "%@/%@ limit running low";
+"alert.remaining.title" = "%@ · %@ limit running low";
 "alert.remaining.message" = "%@ has %@%% left (threshold %@%%).";
-"alert.pace.title.measured" = "%@/%@ burning too fast";
-"alert.pace.title.projected" = "%@/%@ pace forecast";
+"alert.pace.title.measured" = "%@ · %@ burning too fast";
+"alert.pace.title.projected" = "%@ · %@ pace forecast";
 "alert.pace.message.measured" = "%@ is on course to exhaust its safety margin about %@ before the reset.";
 "alert.pace.message.projected" = "%@: on this pattern the safety margin runs out about %@ before the reset.";
-"alert.stale.title" = "%@/%@ collection stalled";
+"alert.stale.title" = "%@ · %@ collection stalled";
 "alert.stale.message" = "%@ has had no fresh value for a while.";
-"alert.event.title.payment" = "%@/%@ billable usage changed";
+"alert.event.title.payment" = "%@ · %@ reported credits changed";
 "alert.event.title.window" = "Codex %@ · limit display changed";
-"alert.event.title.resync" = "%@/%@ timer resynchronised";
+"alert.event.title.resync" = "%@ · %@ timer resynchronised";
 "alert.test.title" = "QuotaPie test";
 "alert.test.message" = "The notification channel is connected.";
-"alert.resume.ready.title" = "%@/%@ task is ready";
+"alert.resume.ready.title" = "%@ · %@ task is ready";
 "alert.resume.ready.message" = "%@ has fresh quota again. Open QuotaPie to approve resuming it.";
 
 // Working-task power control
@@ -239,7 +239,7 @@
 
 /* Observed quota and notification status */
 "headline.remaining" = "%@ %@ %@%% left";
-"alert.rapid.title" = "%@/%@ quota dropping quickly";
+"alert.rapid.title" = "%@ · %@ quota dropping quickly";
 "alert.rapid.message" = "%@: %@ min · %@ percentage points used · %@%% left.";
 "window.recentUsage" = "Last %@ min · %@ percentage points used";
 "window.measuredRate" = "Recent rate · %@ percentage points/hour";
@@ -384,7 +384,7 @@
 "notification.topic.quotaWarnings" = "Low quota and fast consumption";
 "notification.topic.quotaRecovery" = "Unexpected quota recovery detected";
 "notification.topic.accountChanges" = "Account, plan, and quota schedule changes";
-"notification.topic.payments" = "Paid usage and credit top-ups";
+"notification.topic.payments" = "Reported credit changes";
 "notification.topic.resumeReady" = "Paused work ready to resume";
 "notification.topic.collectionIssues" = "Quota collection delays";
 "notification.topic.resetPossible" = "Evidence of a possible reset";

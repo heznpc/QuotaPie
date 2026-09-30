@@ -25,7 +25,7 @@ import { claudeProfileEnvironment } from "./providers/claude-profile";
 import { resolveLocale, t } from "./i18n";
 import type { Locale } from "./i18n";
 import { nextWakeDelayMs } from "./scheduler";
-import { alertScope, deliverTrigger, planTriggers } from "./triggers";
+import { alertScope, deliverTrigger, notificationAccountParams, planTriggers } from "./triggers";
 import { randomUUID } from "node:crypto";
 import { basename, resolve } from "node:path";
 import {
@@ -1011,7 +1011,7 @@ export class QuotaPieService {
     ) || Boolean(this.config.alerts.command?.length);
     if (!hasChannel) return;
     for (const task of this.resumeTasks.active().filter((item) => item.state === "ready")) {
-      const titleParams = { provider: task.provider, account: task.account };
+      const titleParams = notificationAccountParams(this.config, task.provider, task.account);
       const messageParams = { label: task.projectLabel };
       const decision: TriggerDecision = {
         key: `resume:${task.id}:ready`,
