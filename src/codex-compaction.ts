@@ -65,6 +65,8 @@ function poolErrorMessage(error: PoolError): string {
     return "QuotaPie paused this request because remaining quota is not current enough to protect your reserve. Refresh quota in QuotaPie or lower the reserve.";
   if (error.code === "pool_recovery_requires_full_history")
     return "QuotaPie: another account has capacity, but this request contains account-bound history that cannot be transferred safely. Keep this task and retry after its account recovers.";
+  if (error.code === "pool_source_quota_exhausted")
+    return "QuotaPie paused this request because the original account's quota is exhausted and continuing may spend paid credits. No request was sent. Retry after quota recovers or use an eligible account in a new task.";
   if (error.code === "pool_account_cooldown")
     return `QuotaPie: this task's account is temporarily rate limited. Retry in ${error.retryAfterSeconds ?? 60} seconds. The task remains on its original account.`;
   if (error.code === "pool_auth_cooldown")

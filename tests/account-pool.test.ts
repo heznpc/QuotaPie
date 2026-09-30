@@ -48,26 +48,43 @@ test("an unregistered continuation never migrates its account",()=>fixture(({sel
     expect(select(randomUUID(),input)?.route).toMatchObject({account:"a",reason:"existing"});
 }));
 
-test("unavailable quota and unsupported candidates fall back to the original login",()=>fixture(({select,accounts})=>{
+test("exhausted source quota blocks paid fallback when no eligible account exists",()=>fixture(({select,accounts})=>{
   for (const patch of [{remaining:0},{remaining:null},{validUntil:now-1},{tokenExpiresAt:now-1},{models:[]}]) {
     Object.assign(accounts[1]!,account("b",75),patch);
-    expect(select()?.route).toMatchObject({ account:"a", reason:"source_fallback" });
+    expect(()=>select()).toThrow("pool_source_quota_exhausted");
   }
 }));
 
 test("source fallback creates a durable binding when another account later recovers",()=>fixture(({select,accounts})=>{
-  accounts[1]!.remaining=null;
+  accounts[0]!.remaining=null; accounts[1]!.remaining=null;
   const thread=randomUUID();
-  expect(select(thread)?.route).toMatchObject({account:"a",reason:"source_fallback"});
+  expect(select(thread)?.route.account).toBe("a");
   accounts[1]!.remaining=90;
   expect(select(thread,{...body,previous_response_id:"original-login-response"})?.route).toMatchObject({account:"a",reason:"pinned"});
 }));
 
-test("a zero quota snapshot never blocks the bound account from checking upstream recovery",()=>fixture(({select,accounts})=>{
+test("an exhausted bound account cannot forward nonportable history to paid usage",()=>fixture(({select,accounts})=>{
   const thread=randomUUID();
   expect(select(thread)?.route.account).toBe("b");
   accounts[1]!.remaining=0; accounts[0]!.remaining=99;
-  expect(select(thread,{...body,input:[{type:"compaction",encrypted_content:"opaque"}]})?.route)
+  expect(()=>select(thread,{...body,input:[{type:"compaction",encrypted_content:"opaque"}]}))
+    .toThrow("pool_recovery_requires_full_history");
+}));
+
+test("a portable continuation returns to its original login when quota recovers",()=>fixture(({select,accounts})=>{
+  const thread=randomUUID();
+  expect(select(thread)?.route).toMatchObject({account:"b",reason:"new"});
+  accounts[0]!.remaining=99;
+  const returned=select(thread,{...body,input:[...body.input,{role:"assistant",content:"previous reply"},
+    {role:"user",content:"continue"}]})!;
+  expect(returned.route).toMatchObject({account:"a",reason:"recovered",previousAccountLabel:"b"});
+  expect(select(thread)?.route).toMatchObject({account:"a",reason:"pinned"});
+}));
+
+test("an account-bound continuation waits until its source recovers before returning",()=>fixture(({select,accounts})=>{
+  const thread=randomUUID(); select(thread);
+  accounts[0]!.remaining=99;
+  expect(select(thread,{...body,previous_response_id:"other-account-response"})?.route)
     .toMatchObject({account:"b",reason:"pinned"});
 }));
 
@@ -227,7 +244,8 @@ test("interrupted pooled response is not replayed or reassigned", async () => {
     expect(events.at(-1).phase).toBe("failed");
     accounts[0]!.remaining = 99;
     expect(pool.select({ threadId: thread, requestId: randomUUID(), body, model: body.model,
-      headers: new Headers({ authorization: "Bearer a-token", "chatgpt-account-id": "a-remote" }) })?.route.account).toBe("b");
+      headers: new Headers({ authorization: "Bearer a-token", "chatgpt-account-id": "a-remote" }) })?.route)
+      .toMatchObject({account:"a",reason:"recovered"});
   } finally { proxy.stop(); pool.close(); }
 });
 

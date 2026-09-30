@@ -22,7 +22,7 @@ function fixture() {
   return { accounts, policy, pool, headers, select };
 }
 
-test("threshold routes new work and existing complete history before exhaustion, without returning after a reset", () => {
+test("threshold routes complete history away and returns it after source quota recovers", () => {
   const c = fixture();
   try {
     const thread = randomUUID(); expect(c.select(thread)?.route.account).toBe("a");
@@ -31,7 +31,7 @@ test("threshold routes new work and existing complete history before exhaustion,
     expect(c.select(thread, { ...body, input: [...body.input, { role: "assistant", content: "saved progress" }, ...body.input] })?.route)
       .toMatchObject({ account: "b", reason: "reserve", previousAccountLabel: "a" });
     c.accounts[0]!.remaining = 100;
-    expect(c.select(thread)?.route).toMatchObject({ account: "b", reason: "pinned" });
+    expect(c.select(thread)?.route).toMatchObject({ account: "a", reason: "recovered", previousAccountLabel: "b" });
   } finally { c.pool.close(); }
 });
 
