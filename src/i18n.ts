@@ -51,6 +51,8 @@ export interface MessageParams {
   threshold?: number;
   balanceBefore?: number;
   balanceAfter?: number;
+  countBefore?: number;
+  countAfter?: number;
   detail?: string;
   path?: string;
   root?: string;
@@ -150,8 +152,8 @@ const CATALOG = {
     ko: (p) => `${p.provider} 크레딧 조회값: ${p.balanceBefore ?? "?"} → ${p.balanceAfter ?? "?"}. 실제 충전·결제 잔액 변동은 미확인입니다.`,
   },
   "event.banked_reset_consumed": {
-    en: () => "A banked reset appears to have been used.",
-    ko: () => "저장형 리셋이 사용된 것으로 보입니다.",
+    en: (p) => `Banked reset tickets: ${p.countBefore ?? "?"} → ${p.countAfter ?? "?"}. A ticket appears to have been used.`,
+    ko: (p) => `저장형 리셋권 ${p.countBefore ?? "?"}개 → ${p.countAfter ?? "?"}개. 리셋권이 사용된 것으로 보입니다.`,
   },
   "event.bucket_retired": {
     en: (p) => `${p.label} disappeared from the provider's full response; tracking stopped.`,

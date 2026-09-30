@@ -90,6 +90,14 @@ describe("classifyDelta", () => {
     expect(kinds).not.toContain("scheduled_reset");
   });
 
+  test("a spent reset ticket takes precedence over an early provider reset", () => {
+    const previous = observation({ resetCreditsAvailable: 3 });
+    const next = observation({ observedAtMs: HOUR, resetsAtMs: 6 * HOUR,
+      usedPercent: 0, resetCreditsAvailable: 2 });
+    const kinds = classifyDelta(previous, next, DEFAULT_CONFIG).map(e => e.kind);
+    expect(kinds).toEqual(["banked_reset_consumed"]);
+  });
+
   test.each([[0, 62500, "credit_topup"], [62500, 0, "paid_usage"]] as const)(
     "credit report %s -> %s records evidence without confirming billing (%s)", (before, after, kind) => {
       const value = classifyDelta(observation({ creditBalance: before }),

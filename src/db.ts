@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { resolve } from "node:path";
-import { classifyDelta } from "./classify";
+import { classifyDelta, classifyResetAcrossCollectorEpoch } from "./classify";
 import { QuotaStorage } from "./storage/database";
 import type { AppConfig } from "./config";
 import { dataDirectory } from "./config";
@@ -200,6 +200,10 @@ export class QuotaDatabase {
     // Different authenticated collection epochs are separate baselines, not
     // evidence that the same account received an allowance/reset/credit change.
     const events = classifyDelta(newCollector ? null : previous, observation, config);
+    if (newCollector && previous) {
+      const reset = classifyResetAcrossCollectorEpoch(previous, observation, config);
+      if (reset) events.splice(0, events.length, reset);
+    }
     if (previous && observation.observedAtMs < previous.observedAtMs) {
       return events.filter((value) => this.insertEvent(value));
     }

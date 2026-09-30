@@ -103,7 +103,10 @@ export function classifyDelta(
 
     // A provider clock advancing to a new window is a stronger reset signal than
     // the absolute drop. Low-use windows commonly reset from only 2–10% to 0%.
-    if (resetChanged && meaningfulDrop && nearScheduledReset) {
+    if (evidence.resetCreditDecreased && meaningfulDrop) {
+      // The provider also reports an earned reset being spent. Do not present
+      // the resulting recovery as a provider-granted or scheduled reset.
+    } else if (resetChanged && meaningfulDrop && nearScheduledReset) {
       events.push(
         event(
           next,
@@ -220,4 +223,46 @@ export function classifyDelta(
   }
 
   return events;
+}
+
+// A collector restart is a new baseline for quota and balance deltas. Preserve
+// the narrower provider fact that an earned reset disappeared at the same time
+// the exhausted window recovered. A different login can also change the count,
+// so this remains a medium-confidence observation, not proof of who clicked it.
+export function classifyResetAcrossCollectorEpoch(
+  previous: QuotaObservation,
+  next: QuotaObservation,
+  config: AppConfig,
+): QuotaEvent | null {
+  if (previous.provider !== "codex" || next.provider !== "codex" ||
+    previous.account !== next.account || previous.bucket !== next.bucket ||
+    previous.source !== next.source || previous.quality !== "authoritative" ||
+    next.quality !== "authoritative" || next.observedAtMs <= previous.observedAtMs ||
+    next.observedAtMs - previous.observedAtMs > 30 * 60_000 ||
+    previous.resetCreditsAvailable == null || next.resetCreditsAvailable == null ||
+    next.resetCreditsAvailable >= previous.resetCreditsAvailable ||
+    previous.usedPercent == null || previous.usedPercent < 99 || next.usedPercent == null ||
+    next.usedPercent >= previous.usedPercent ||
+    previous.resetsAtMs == null || next.resetsAtMs == null ||
+    next.resetsAtMs <= previous.resetsAtMs ||
+    previous.metadata?.planType == null ||
+    previous.metadata.planType !== next.metadata?.planType) return null;
+  return event(next, "banked_reset_consumed", "info", "medium", config, {
+    countBefore: previous.resetCreditsAvailable,
+    countAfter: next.resetCreditsAvailable,
+    usedPercentBefore: previous.usedPercent,
+    usedPercentAfter: next.usedPercent,
+    previousObservedAtMs: previous.observedAtMs,
+    nextObservedAtMs: next.observedAtMs,
+    previousResetsAtMs: previous.resetsAtMs,
+    nextResetsAtMs: next.resetsAtMs,
+    previousSource: previous.source,
+    nextSource: next.source,
+    previousQuality: previous.quality,
+    nextQuality: next.quality,
+    previousWindowSeconds: previous.windowSeconds,
+    nextWindowSeconds: next.windowSeconds,
+    resetCreditDecreased: true,
+    collectorEpochChanged: true,
+  });
 }

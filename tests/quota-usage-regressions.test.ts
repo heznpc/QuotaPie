@@ -171,6 +171,49 @@ test("a collector restart does not re-send a low-quota warning already shown", a
   } finally { await service.close(); }
 });
 
+test("a collector restart preserves evidence of a spent reset ticket", () => {
+  const db = new QuotaDatabase(":memory:");
+  try {
+    const before = { ...point(0, 100), resetCreditsAvailable: 3,
+      creditBalance: 62500, metadata: { collectorEpoch: "old-process", planType: "pro" } };
+    const after = { ...point(1, 0, "new-process"), resetCreditsAvailable: 2,
+      creditBalance: 62494.31367, resetsAtMs: before.resetsAtMs! + 7 * 86400000,
+      metadata: { collectorEpoch: "new-process", planType: "pro" } };
+    db.ingestObservation(before, DEFAULT_CONFIG);
+    const events = db.ingestObservation(after, DEFAULT_CONFIG);
+    expect(events.map(e => e.kind)).toEqual(["banked_reset_consumed"]);
+    expect(events.find(e => e.kind === "banked_reset_consumed")?.details).toMatchObject({
+      countBefore: 3, countAfter: 2, collectorEpochChanged: true,
+    });
+  } finally { db.close(); }
+});
+
+test("a collector restart without a ticket decrease cannot claim ticket use", () => {
+  const db = new QuotaDatabase(":memory:");
+  try {
+    const before = { ...point(0, 100), resetCreditsAvailable: 3,
+      metadata: { collectorEpoch: "old-process", planType: "pro" } };
+    const after = { ...point(1, 0, "new-process"), resetCreditsAvailable: 3,
+      resetsAtMs: before.resetsAtMs! + 7 * 86400000,
+      metadata: { collectorEpoch: "new-process", planType: "pro" } };
+    db.ingestObservation(before, DEFAULT_CONFIG);
+    expect(db.ingestObservation(after, DEFAULT_CONFIG).map(e => e.kind)).not.toContain("banked_reset_consumed");
+  } finally { db.close(); }
+});
+
+test("a distant collector restart cannot attribute an old ticket change to this recovery", () => {
+  const db = new QuotaDatabase(":memory:");
+  try {
+    const before = { ...point(0, 100), resetCreditsAvailable: 3,
+      metadata: { collectorEpoch: "old-process", planType: "pro" } };
+    const after = { ...point(60, 0, "new-process"), resetCreditsAvailable: 2,
+      resetsAtMs: before.resetsAtMs! + 7 * 86400000,
+      metadata: { collectorEpoch: "new-process", planType: "pro" } };
+    db.ingestObservation(before, DEFAULT_CONFIG);
+    expect(db.ingestObservation(after, DEFAULT_CONFIG).map(e => e.kind)).not.toContain("banked_reset_consumed");
+  } finally { db.close(); }
+});
+
 test("fast provider push updates retain a rapid drop even inside ten seconds", () => {
   const history = [point(-0.05, 10), point(0, 25)];
   const analysis = analyzeWindow(history[1]!, history, DEFAULT_CONFIG, NOW);
