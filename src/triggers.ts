@@ -4,6 +4,7 @@ import { humanGap, resolveLocale, t } from "./i18n";
 import type { MessageKey, MessageParams } from "./i18n";
 import type {
   QuotaEvent,
+  Provider,
   TriggerDecision,
   WindowAnalysis,
 } from "./types";
@@ -15,6 +16,14 @@ export function alertScope(provider: string, account: string, bucket: string): s
   return account === "default"
     ? `${provider}:${bucket}`
     : `${provider}:${account}:${bucket}`;
+}
+
+/** Presentation only: stable account IDs still own cooldowns and delivery keys. */
+export function notificationAccountParams(config: AppConfig, provider: Provider, account: string) {
+  return {
+    provider: provider === "codex" ? "Codex" : "Claude",
+    account: config.accounts[provider].find(profile => profile.id === account)?.label?.trim() || account,
+  };
 }
 
 export function planTriggers(
@@ -42,7 +51,7 @@ export function planTriggers(
 
   for (const window of windows) {
     const windowKey = alertScope(window.provider, window.account, window.bucket);
-    const who = { provider: window.provider, account: window.account, label: window.label };
+    const who = { ...notificationAccountParams(config, window.provider, window.account), label: window.label };
     const staleNeedsAlert = config.alerts.staleProviders.includes(window.provider) && (
       window.freshness === "stale" ||
       window.freshness === "unknown" ||
@@ -139,16 +148,15 @@ export function planTriggers(
     const key = `event:${alertScope(event.provider, event.account, event.bucket)}:${event.kind}`;
     if (plannedEventKeys.has(key)) continue;
     plannedEventKeys.add(key);
-    const titleKey = event.kind === "paid_usage" || event.kind === "credit_topup"
+    const creditEvent = event.kind === "paid_usage" || event.kind === "credit_topup";
+    const titleKey = creditEvent
       ? "alert.event.title.payment"
       : event.kind === "account_changed" ? "alert.event.title.account"
       : event.kind === "plan_changed" ? "alert.event.title.plan"
       : event.kind === "window_changed"
         ? "alert.event.title.window"
         : "alert.event.title.resync";
-    const identifiesAccount = ["account_changed", "plan_changed", "window_changed"].includes(event.kind);
-    const accountLabel = config.accounts[event.provider].find(profile => profile.id === event.account)?.label?.trim() || event.account;
-    const titleParams = { provider: event.provider, account: identifiesAccount ? accountLabel : event.account };
+    const titleParams = notificationAccountParams(config, event.provider, event.account);
     const messageKey = `event.${event.kind}` as MessageKey;
     const messageParams = {
       provider: event.provider,
@@ -163,7 +171,9 @@ export function planTriggers(
       // Keep the stored rendering for shell/command compatibility, including
       // old rows whose details predate the semantic contract. Native clients
       // use `presentation.message` and localise from kind + details instead.
-      message: event.displayText,
+      // Old credit rows claimed confirmed spending/top-ups. Re-render them with
+      // the observed values and explicit uncertainty for every delivery channel.
+      message: creditEvent ? wording.message : event.displayText,
       severity: event.severity,
     });
   }

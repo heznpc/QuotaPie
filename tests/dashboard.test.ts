@@ -73,7 +73,7 @@ function statusPayload() {
   };
 }
 
-async function render(language: string) {
+async function render(language: string, payload = statusPayload()) {
   const elements = new Map<string, FakeElement>();
   const element = (id: string) => {
     let value = elements.get(id);
@@ -84,7 +84,6 @@ async function render(language: string) {
     return value;
   };
   const documentElement = { lang: "" };
-  const payload = statusPayload();
   const context = createContext({
     navigator: { language, languages: [language] },
     document: { documentElement, getElementById: element },
@@ -101,6 +100,21 @@ async function render(language: string) {
 }
 
 describe("dashboard localization", () => {
+  test("stored credit messages render reported values and billing uncertainty in both locales", async () => {
+    const payload = statusPayload();
+    const initial = payload.events[0]!;
+    const creditPayload = { ...payload, events: [{ ...initial, kind: "credit_topup",
+      details: { ...initial.details, balanceBefore: 0, balanceAfter: 62500 },
+    }] };
+    for (const language of ["en-US", "ko-KR"]) {
+      const page = await render(language, creditPayload);
+      const html = page.element("events").innerHTML;
+      expect(html).toContain("0 → 62500");
+      expect(html).toContain(language === "ko-KR" ? "미확인" : "unverified");
+      expect(html).not.toContain("STORED_DAEMON_LANGUAGE_TEXT");
+    }
+  });
+
   test("uses the semantic wire key for sentences and a label namespace for short names", () => {
     expect(dashboard).toContain('"event.external_relief": "{label} was refilled ahead of schedule."');
     expect(dashboard).toContain('"event.label.external_relief": "Early refill"');

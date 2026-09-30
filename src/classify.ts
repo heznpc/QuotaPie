@@ -176,15 +176,19 @@ export function classifyDelta(
     }
   }
 
+  // Historical event IDs describe a provider-reported numeric delta only.
+  // A balance snapshot does not establish a purchase, charge or billing-page change.
   if (
     previous.creditBalance != null &&
     next.creditBalance != null &&
     next.creditBalance < previous.creditBalance - 0.000_001
   ) {
     events.push(
-      event(next, "paid_usage", "warning", "high", config, {
+      event(next, "paid_usage", "info", "medium", config, {
+        ...evidence,
         balanceBefore: previous.creditBalance,
         balanceAfter: next.creditBalance,
+        billingVerified: false,
       }),
     );
   } else if (
@@ -193,9 +197,11 @@ export function classifyDelta(
     next.creditBalance > previous.creditBalance + 0.000_001
   ) {
     events.push(
-      event(next, "credit_topup", "warning", "medium", config, {
+      event(next, "credit_topup", "info", "medium", config, {
+        ...evidence,
         balanceBefore: previous.creditBalance,
         balanceAfter: next.creditBalance,
+        billingVerified: false,
       }),
     );
   }

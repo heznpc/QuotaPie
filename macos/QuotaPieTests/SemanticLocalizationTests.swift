@@ -3,11 +3,14 @@ import XCTest
 @testable import QuotaPie
 
 final class SemanticLocalizationTests: XCTestCase {
-    func testTransitionNotificationsRetainTheConfiguredAccountLabel() {
-        for key in ["alert.event.title.account", "alert.event.title.plan", "alert.event.title.window"] {
-            let personal = LocalizedMessagePayload(key: key, params: ["account": .string("개인 검증용")])
+    func testAccountNotificationsRetainTheConfiguredAccountLabel() {
+        for key in ["alert.event.title.account", "alert.event.title.plan", "alert.event.title.window",
+                    "alert.event.title.payment", "alert.event.title.resync", "alert.remaining.title",
+                    "alert.stale.title", "alert.rapid.title", "alert.pace.title.measured",
+                    "alert.pace.title.projected", "alert.resume.ready.title"] {
+            let personal = LocalizedMessagePayload(key: key, params: ["provider": .string("Codex"), "account": .string("개인 검증용")])
                 .rendered(fallback: "UNSUPPORTED")
-            let work = LocalizedMessagePayload(key: key, params: ["account": .string("업무 검증용")])
+            let work = LocalizedMessagePayload(key: key, params: ["provider": .string("Codex"), "account": .string("업무 검증용")])
                 .rendered(fallback: "UNSUPPORTED")
             XCTAssertTrue(personal.contains("개인 검증용"))
             XCTAssertTrue(work.contains("업무 검증용"))
@@ -53,6 +56,20 @@ final class SemanticLocalizationTests: XCTestCase {
                 .rendered(fallback: "UNSUPPORTED")
             XCTAssertNotEqual(rendered, "UNSUPPORTED", "Missing native renderer mapping for \(key)")
             XCTAssertNotEqual(rendered, key, "Missing native localization for \(key)")
+        }
+    }
+
+    func testCreditMessagesShowReportedValuesWithoutConfirmingBilling() {
+        for key in ["event.credit_topup", "event.paid_usage"] {
+            let rendered = LocalizedMessagePayload(key: key, params: [
+                "provider": .string("Codex"), "balanceBefore": .number(0), "balanceAfter": .number(62500)
+            ]).rendered(fallback: "STALE_CONFIRMED_BILLING")
+            XCTAssertEqual(rendered, Strings.t(key, "Codex", "0", "62500"))
+            XCTAssertTrue(rendered.contains("0 → 62500"))
+            let legacy = LocalizedMessagePayload(key: key, params: ["provider": .string("Codex")])
+                .rendered(fallback: "STALE_CONFIRMED_BILLING")
+            XCTAssertTrue(legacy.contains("? → ?"))
+            XCTAssertFalse(legacy.contains("STALE_CONFIRMED_BILLING"))
         }
     }
 

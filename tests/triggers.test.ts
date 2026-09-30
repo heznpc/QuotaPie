@@ -1,7 +1,8 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { DEFAULT_CONFIG } from "../src/config";
 import { QuotaDatabase } from "../src/db";
-import { alertScope, deliverTrigger, planTriggers } from "../src/triggers";
+import { alertScope, deliverTrigger, notificationAccountParams, planTriggers } from "../src/triggers";
+import { ALERTABLE_EVENT_KINDS } from "../src/types";
 import type { QuotaEvent, WindowAnalysis } from "../src/types";
 import { AlertStore } from "../src/storage/alert-store";
 
@@ -92,13 +93,80 @@ describe("trigger planning and claims", () => {
     expect(decision?.presentation).toEqual({
       title: {
         key: "alert.event.title.window",
-        params: { provider: "codex", account: "Main" },
+        params: { provider: "Codex", account: "Main" },
       },
       message: {
         key: "event.window_changed",
         params: { provider: "codex", account: "default" },
       },
     });
+  });
+
+  test("all event titles identify configured accounts without changing delivery keys", () => {
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.accounts.codex = [
+      { id: "default", label: "Personal", enabled: true, codexHome: null },
+      { id: "opaque-profile-id", label: "업무 계정", enabled: true, codexHome: null },
+    ];
+    for (const locale of ["en", "ko"]) {
+      config.profile.locale = locale;
+      for (const kind of ALERTABLE_EVENT_KINDS) {
+        const events: QuotaEvent[] = config.accounts.codex.map(({ id: account }) => ({
+          provider: "codex", account, bucket: "primary", kind, occurredAtMs: 1_000,
+          severity: "info", confidence: "high", displayText: "recorded event", details: {},
+        }));
+        const decisions = planTriggers([], events, config, 0, 2_000);
+        expect(decisions.map(d => d.key)).toEqual([
+          `event:codex:primary:${kind}`, `event:codex:opaque-profile-id:primary:${kind}`,
+        ]);
+        for (const [index, profile] of config.accounts.codex.entries()) {
+          expect(decisions[index]!.title).toContain(profile.label);
+          expect(decisions[index]!.title).not.toContain(profile.id);
+          expect(decisions[index]!.presentation!.title.params).toEqual({ provider: "Codex", account: profile.label });
+        }
+        if (kind === "credit_topup") expect(decisions[0]!.title).toBe(locale === "ko"
+          ? "Codex · Personal 크레딧 조회값 변경" : "Codex · Personal reported credits changed");
+      }
+    }
+  });
+
+  test("quota and resume presentation resolves labels in the right provider, falling back to the ID", () => {
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.accounts.codex[0]!.label = "Personal";
+    config.accounts.claude[0]!.label = "Claude work";
+    config.alerts.paceForecasts = true;
+    expect(notificationAccountParams(config, "claude", "default")).toEqual({ provider: "Claude", account: "Claude work" });
+    expect(notificationAccountParams(config, "codex", "unknown")).toEqual({ provider: "Codex", account: "unknown" });
+    for (const variant of [window(), window({ rapidDropPercent: 50 }), window({ freshness: "stale" })]) {
+      const decisions = planTriggers([variant], [], config, 0, 2_000);
+      expect(decisions.length).toBeGreaterThan(0);
+      for (const decision of decisions) {
+        expect(decision.title).toStartWith("Codex · Personal ");
+        expect(decision.presentation!.title.params.account).toBe("Personal");
+      }
+    }
+    const before = planTriggers([window()], [], config, 0, 2_000);
+    config.accounts.codex[0]!.label = "Renamed";
+    const after = planTriggers([window()], [], config, 0, 2_000);
+    expect(after.map(d => d.key)).toEqual(before.map(d => d.key));
+    expect(after.every(d => d.title.includes("Renamed"))).toBeTrue();
+    config.accounts.codex[0]!.label = " ";
+    expect(notificationAccountParams(config, "codex", "default").account).toBe("default");
+  });
+
+  test("old credit rows cannot repeat confirmed billing wording through compatibility delivery", () => {
+    for (const locale of ["en", "ko"]) {
+      const config = structuredClone(DEFAULT_CONFIG);
+      config.profile.locale = locale;
+      const decision = planTriggers([], [{ provider: "codex", account: "default", bucket: "primary",
+        kind: "credit_topup", occurredAtMs: 1_000, severity: "warning", confidence: "medium",
+        displayText: "STALE_CONFIRMED_TOPUP", details: { balanceBefore: 0, balanceAfter: 62500 },
+      }], config, 0, 2_000)[0]!;
+      expect(decision.title).toContain("Codex · Main");
+      expect(decision.message).not.toContain("STALE_CONFIRMED_TOPUP");
+      expect(decision.message).toContain("0 → 62500");
+      expect(decision.message).toContain(locale === "ko" ? "미확인" : "unverified");
+    }
   });
 
   test("durably claims and coalesces event alerts by cooldown", () => {

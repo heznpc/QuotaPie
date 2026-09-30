@@ -49,6 +49,8 @@ export interface MessageParams {
   date?: string;
   paceRatio?: number;
   threshold?: number;
+  balanceBefore?: number;
+  balanceAfter?: number;
   detail?: string;
   path?: string;
   root?: string;
@@ -140,12 +142,12 @@ const CATALOG = {
     ko: (p) => `${p.label} 리셋 시각이 재조정됐습니다.`,
   },
   "event.paid_usage": {
-    en: (p) => `${p.provider} paid credits were used.`,
-    ko: (p) => `${p.provider} 유료 크레딧이 사용됐습니다.`,
+    en: (p) => `${p.provider} reported credits: ${p.balanceBefore ?? "?"} → ${p.balanceAfter ?? "?"}. Spending and billing balance changes are unverified.`,
+    ko: (p) => `${p.provider} 크레딧 조회값: ${p.balanceBefore ?? "?"} → ${p.balanceAfter ?? "?"}. 실제 사용·결제 잔액 변동은 미확인입니다.`,
   },
   "event.credit_topup": {
-    en: (p) => `${p.provider} credit balance increased.`,
-    ko: (p) => `${p.provider} 크레딧 잔액이 증가했습니다.`,
+    en: (p) => `${p.provider} reported credits: ${p.balanceBefore ?? "?"} → ${p.balanceAfter ?? "?"}. Top-ups and billing balance changes are unverified.`,
+    ko: (p) => `${p.provider} 크레딧 조회값: ${p.balanceBefore ?? "?"} → ${p.balanceAfter ?? "?"}. 실제 충전·결제 잔액 변동은 미확인입니다.`,
   },
   "event.banked_reset_consumed": {
     en: () => "A banked reset appears to have been used.",
@@ -178,8 +180,8 @@ const CATALOG = {
     ko: (p) => `${p.provider} ${windowName(p.windowKind, "ko", p.label)} ${Math.round(Number(p.percent))}% 남음`,
   },
   "alert.rapid.title": {
-    en: (p) => `${p.provider}/${p.account} quota dropping quickly`,
-    ko: (p) => `${p.provider}/${p.account} 한도 빠르게 소모 중`,
+    en: (p) => `${p.provider} · ${p.account} quota dropping quickly`,
+    ko: (p) => `${p.provider} · ${p.account} 한도 빠르게 소모 중`,
   },
   "alert.rapid.message": {
     en: (p) => `${p.label}: ${p.drop} percentage points used in ${p.minutes} minutes · ${p.percent}% left.`,
@@ -235,20 +237,20 @@ const CATALOG = {
 
   // Alerts.
   "alert.remaining.title": {
-    en: (p) => `${p.provider}/${p.account} limit running low`,
-    ko: (p) => `${p.provider}/${p.account} 잔여 한도 경고`,
+    en: (p) => `${p.provider} · ${p.account} limit running low`,
+    ko: (p) => `${p.provider} · ${p.account} 잔여 한도 경고`,
   },
   "alert.remaining.message": {
     en: (p) => `${p.label} has ${p.percent}% left (threshold ${p.threshold}%).`,
     ko: (p) => `${p.label} 잔여 ${p.percent}% (기준 ${p.threshold}%).`,
   },
   "alert.pace.title.measured": {
-    en: (p) => `${p.provider}/${p.account} burning too fast`,
-    ko: (p) => `${p.provider}/${p.account} 사용 속도 과열`,
+    en: (p) => `${p.provider} · ${p.account} burning too fast`,
+    ko: (p) => `${p.provider} · ${p.account} 사용 속도 과열`,
   },
   "alert.pace.title.projected": {
-    en: (p) => `${p.provider}/${p.account} pace forecast`,
-    ko: (p) => `${p.provider}/${p.account} 사용 패턴 전망`,
+    en: (p) => `${p.provider} · ${p.account} pace forecast`,
+    ko: (p) => `${p.provider} · ${p.account} 사용 패턴 전망`,
   },
   "alert.pace.message.measured": {
     en: (p) => `${p.label} is on course to exhaust its safety margin about ${p.detail} before the reset.`,
@@ -259,16 +261,16 @@ const CATALOG = {
     ko: (p) => `${p.label} 이 패턴이면 안전 여유가 리셋보다 약 ${p.detail} 먼저 소진될 전망입니다.`,
   },
   "alert.stale.title": {
-    en: (p) => `${p.provider}/${p.account} collection stalled`,
-    ko: (p) => `${p.provider}/${p.account} 수집 중단`,
+    en: (p) => `${p.provider} · ${p.account} collection stalled`,
+    ko: (p) => `${p.provider} · ${p.account} 수집 중단`,
   },
   "alert.stale.message": {
     en: (p) => `${p.label} has had no fresh value for a while.`,
     ko: (p) => `${p.label} 값이 한동안 갱신되지 않았습니다.`,
   },
   "alert.event.title.payment": {
-    en: (p) => `${p.provider}/${p.account} billable usage changed`,
-    ko: (p) => `${p.provider}/${p.account} 결제성 사용 변화`,
+    en: (p) => `${p.provider} · ${p.account} reported credits changed`,
+    ko: (p) => `${p.provider} · ${p.account} 크레딧 조회값 변경`,
   },
   "alert.event.title.window": {
     en: p => `Codex ${p.account} · limit display changed`,
@@ -277,8 +279,8 @@ const CATALOG = {
   "alert.event.title.account": { en: p => `Codex ${p.account} · login changed`, ko: p => `Codex ${p.account} · 로그인 계정 변경` },
   "alert.event.title.plan": { en: p => `Codex ${p.account} · plan changed`, ko: p => `Codex ${p.account} · 플랜 변경` },
   "alert.event.title.resync": {
-    en: (p) => `${p.provider}/${p.account} timer resynchronised`,
-    ko: (p) => `${p.provider}/${p.account} 타이머 재동기화`,
+    en: (p) => `${p.provider} · ${p.account} timer resynchronised`,
+    ko: (p) => `${p.provider} · ${p.account} 타이머 재동기화`,
   },
   "alert.test.title": { en: () => "QuotaPie test", ko: () => "QuotaPie 테스트" },
   "alert.test.message": {
@@ -286,8 +288,8 @@ const CATALOG = {
     ko: () => "알림 채널이 정상적으로 연결됐습니다.",
   },
   "alert.resume.ready.title": {
-    en: (p) => `${p.provider}/${p.account} task is ready`,
-    ko: (p) => `${p.provider}/${p.account} 작업 재개 가능`,
+    en: (p) => `${p.provider} · ${p.account} task is ready`,
+    ko: (p) => `${p.provider} · ${p.account} 작업 재개 가능`,
   },
   "alert.resume.ready.message": {
     en: (p) => `${p.label} has fresh quota again. Open QuotaPie to approve resuming it.`,

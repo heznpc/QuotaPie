@@ -136,27 +136,27 @@
 "event.allowance_relief" = "%@ 사용률이 크게 낮아졌습니다. 리셋·한도 증액·서버 보정 중 하나일 수 있습니다.";
 "event.meter_correction" = "%@ 사용률이 소폭 역행했습니다.";
 "event.schedule_rebased" = "%@ 리셋 시각이 재조정됐습니다.";
-"event.paid_usage" = "%@ 유료 크레딧이 사용됐습니다.";
-"event.credit_topup" = "%@ 크레딧 잔액이 증가했습니다.";
+"event.paid_usage" = "%@ 크레딧 조회값: %@ → %@. 실제 사용·결제 잔액 변동은 미확인입니다.";
+"event.credit_topup" = "%@ 크레딧 조회값: %@ → %@. 실제 충전·결제 잔액 변동은 미확인입니다.";
 "event.banked_reset_consumed" = "저장형 리셋이 사용된 것으로 보입니다.";
 "event.bucket_retired" = "%@ 항목이 공급자 전체 응답에서 사라져 추적을 종료했습니다.";
 "event.window_changed" = "한도 표시 변경: %@ → %@ · 계정·플랜 변경 여부 미확인";
 
 /* 로컬 서비스가 전달하는 의미 기반 알림 메시지 */
-"alert.remaining.title" = "%@/%@ 잔여 한도 경고";
+"alert.remaining.title" = "%@ · %@ 잔여 한도 경고";
 "alert.remaining.message" = "%@ 잔여 %@%% (기준 %@%%).";
-"alert.pace.title.measured" = "%@/%@ 사용 속도 과열";
-"alert.pace.title.projected" = "%@/%@ 사용 패턴 전망";
+"alert.pace.title.measured" = "%@ · %@ 사용 속도 과열";
+"alert.pace.title.projected" = "%@ · %@ 사용 패턴 전망";
 "alert.pace.message.measured" = "%@ 안전 여유가 리셋보다 약 %@ 먼저 소진될 전망입니다.";
 "alert.pace.message.projected" = "%@ 이 패턴이면 안전 여유가 리셋보다 약 %@ 먼저 소진될 전망입니다.";
-"alert.stale.title" = "%@/%@ 수집 중단";
+"alert.stale.title" = "%@ · %@ 수집 중단";
 "alert.stale.message" = "%@ 값이 한동안 갱신되지 않았습니다.";
-"alert.event.title.payment" = "%@/%@ 결제성 사용 변화";
+"alert.event.title.payment" = "%@ · %@ 크레딧 조회값 변경";
 "alert.event.title.window" = "Codex %@ · 한도 표시 변경";
-"alert.event.title.resync" = "%@/%@ 타이머 재동기화";
+"alert.event.title.resync" = "%@ · %@ 타이머 재동기화";
 "alert.test.title" = "QuotaPie 테스트";
 "alert.test.message" = "알림 채널이 정상적으로 연결됐습니다.";
-"alert.resume.ready.title" = "%@/%@ 작업 재개 가능";
+"alert.resume.ready.title" = "%@ · %@ 작업 재개 가능";
 "alert.resume.ready.message" = "%@ 한도가 다시 확인됐습니다. QuotaPie에서 재개를 승인해 주세요.";
 
 // Working-task power control
@@ -239,7 +239,7 @@
 
 /* Observed quota and notification status */
 "headline.remaining" = "%@ %@ %@%% 남음";
-"alert.rapid.title" = "%@/%@ 한도 빠르게 소모 중";
+"alert.rapid.title" = "%@ · %@ 한도 빠르게 소모 중";
 "alert.rapid.message" = "%@: 최근 %@분 동안 %@%%p 사용 · %@%% 남음.";
 "window.recentUsage" = "최근 %@분 · %@%%p 사용";
 "window.measuredRate" = "최근 소모 속도 · 시간당 %@%%p";
@@ -384,7 +384,7 @@
 "notification.topic.quotaWarnings" = "잔량 부족·빠른 소진 경고";
 "notification.topic.quotaRecovery" = "예상 밖 한도 회복 감지";
 "notification.topic.accountChanges" = "계정·플랜·한도 일정 변경";
-"notification.topic.payments" = "유료 사용·크레딧 충전";
+"notification.topic.payments" = "크레딧 조회값 변화";
 "notification.topic.resumeReady" = "중단된 작업 재개 가능";
 "notification.topic.collectionIssues" = "한도 정보 수집 지연";
 "notification.topic.resetPossible" = "근거가 있는 리셋 가능성";

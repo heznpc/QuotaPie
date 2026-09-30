@@ -89,4 +89,16 @@ describe("classifyDelta", () => {
     expect(kinds).toContain("banked_reset_consumed");
     expect(kinds).not.toContain("scheduled_reset");
   });
+
+  test.each([[0, 62500, "credit_topup"], [62500, 0, "paid_usage"]] as const)(
+    "credit report %s -> %s records evidence without confirming billing (%s)", (before, after, kind) => {
+      const value = classifyDelta(observation({ creditBalance: before }),
+        observation({ creditBalance: after, observedAtMs: HOUR }), DEFAULT_CONFIG).find(e => e.kind === kind)!;
+      expect(value.severity).toBe("info");
+      expect(value.details).toMatchObject({ balanceBefore: before, balanceAfter: after, billingVerified: false,
+        previousObservedAtMs: 0, nextObservedAtMs: HOUR, previousSource: "codex-app-server", nextSource: "codex-app-server" });
+      expect(value.displayText).toContain(`${before} → ${after}`);
+      expect(value.displayText).toContain("unverified");
+    },
+  );
 });
