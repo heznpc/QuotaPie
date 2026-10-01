@@ -21,6 +21,10 @@ export interface CompactionRequestEvent {
   errorCode?: string;
   transportCode?: string;
   retryCount?: number;
+  upstreamBodyPresent?: boolean;
+  upstreamContentLength?: number | null;
+  upstreamBytes?: number;
+  relayQueuedBytes?: number;
   savingsReason?: SavingsReason;
   responseModel?: string | null;
   usage?: { input: number; cachedInput: number; output: number } | null;
@@ -49,6 +53,11 @@ function project(value: any): CompactionRequestEvent | null {
     reasoningEffort: safeEffort(value.reasoningEffort),
     at: value.at, durationMs: value.durationMs,
     ...(Number.isInteger(value.retryCount) && value.retryCount >= 0 && value.retryCount <= 2 ? { retryCount: value.retryCount } : {}),
+    ...(typeof value.upstreamBodyPresent === "boolean" ? { upstreamBodyPresent: value.upstreamBodyPresent } : {}),
+    ...(value.upstreamContentLength === null || Number.isSafeInteger(value.upstreamContentLength) && value.upstreamContentLength >= 0
+      ? { upstreamContentLength: value.upstreamContentLength } : {}),
+    ...(Number.isSafeInteger(value.upstreamBytes) && value.upstreamBytes >= 0 ? { upstreamBytes: value.upstreamBytes } : {}),
+    ...(Number.isSafeInteger(value.relayQueuedBytes) && value.relayQueuedBytes >= 0 ? { relayQueuedBytes: value.relayQueuedBytes } : {}),
     ...(transportFailure({code: value.transportCode}).transportCode ? { transportCode: value.transportCode } : {}),
     ...(savingsReasons.has(value.savingsReason) ? { savingsReason: value.savingsReason } : {}),
     responseModel: typeof value.responseModel === "string" && label.test(value.responseModel) ? value.responseModel : null,

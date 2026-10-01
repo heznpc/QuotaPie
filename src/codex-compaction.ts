@@ -235,6 +235,9 @@ export function startCompactionProxy(options: {
       let retryCount = 0;
       let transportCode: string | undefined;
       let observer: ResponseCompletionObserver | undefined;
+      let upstreamBodyPresent: boolean | undefined;
+      let upstreamContentLength: number | null | undefined;
+      let upstreamBytes = 0, relayQueuedBytes = 0;
       const cancellation = new AbortController();
       if (event?.routed && event.kind === "compaction") attemptedCompactions++;
       const emit = (phase: CompactionRequestEvent["phase"], errorCode?: string) => {
@@ -242,6 +245,8 @@ export function startCompactionProxy(options: {
         const update: CompactionRequestEvent = { ...event, phase, status, at: new Date().toISOString(),
           durationMs: Math.round(performance.now() - started), retryCount,
           ...(transportCode ? { transportCode } : {}), ...(errorCode ? { errorCode } : {}),
+          ...(upstreamBodyPresent === undefined ? {} : { upstreamBodyPresent, upstreamContentLength,
+            upstreamBytes, relayQueuedBytes }),
           responseModel: observer?.responseModel ?? null, usage: observer?.usage ?? null };
         record(update);
       };
@@ -309,6 +314,10 @@ export function startCompactionProxy(options: {
           return new Response("Unexpected Codex upstream redirect", { status: 502 });
         }
         if (event) requests++;
+        upstreamBodyPresent = response.body != null;
+        const length = response.headers.get("content-length");
+        const parsedLength = length != null && /^\d+$/.test(length) ? Number(length) : null;
+        upstreamContentLength = Number.isSafeInteger(parsedLength) ? parsedLength : null;
         emit("response_headers");
         const responseHeaders = transportHeaders(response.headers);
         responseHeaders.delete("content-encoding");
@@ -330,8 +339,10 @@ export function startCompactionProxy(options: {
                 finish(response.ok ? result.phase : "failed", response.ok ? result.errorCode : "upstream_http_error");
                 controller.close();
               } else {
+                upstreamBytes += next.value.byteLength;
                 observer!.push(next.value);
                 controller.enqueue(next.value);
+                relayQueuedBytes += next.value.byteLength;
               }
             } catch (error) {
               transportCode = transportFailure(error).transportCode;
