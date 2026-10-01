@@ -19,4 +19,9 @@ test("event contract rejects coerced metadata and projects only declared fields"
   const projected = parseCompactionRequestEvent({ ...record, prompt: "private-fixture", authorization: "private-fixture", url: "https://private.invalid", threadId: { toString: () => record.requestId }, errorCode: 123, usage: { input: 2, cachedInput: 3, output: 1 } });
   expect(projected).toEqual({ ...record, responseModel: null, usage: null });
   expect(JSON.stringify(projected)).not.toContain("private-fixture");
+  expect(parseCompactionRequestEvent({ ...record, upstreamBodyPresent: true, upstreamContentLength: null,
+    upstreamBytes: 42, relayQueuedBytes: 42 })).toEqual({ ...record, responseModel: null, usage: null,
+    upstreamBodyPresent: true, upstreamContentLength: null, upstreamBytes: 42, relayQueuedBytes: 42 });
+  expect(parseCompactionRequestEvent({ ...record, upstreamBodyPresent: "true", upstreamContentLength: -1,
+    upstreamBytes: "42", relayQueuedBytes: Infinity })).toEqual({ ...record, responseModel: null, usage: null });
 });

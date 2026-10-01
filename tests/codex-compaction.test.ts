@@ -293,6 +293,33 @@ describe("Compaction policy and lifecycle", () => {
     } finally { finish?.(); proxy.stop(); }
   });
 
+  test("records only byte counts to locate an empty or truncated upstream stream", async () => {
+    const events: CompactionRequestEvent[] = [];
+    const incomplete = 'data: {"type":"response.created"}\n\n';
+    const responses = [
+      new Response(null, { status: 200, headers: { "content-length": "0" } }),
+      new Response(incomplete, { status: 200, headers: { "content-type": "text/event-stream" } }),
+    ];
+    const proxy = startCompactionProxy({ onRequest: event => events.push(event),
+      fetchUpstream: async () => responses.shift()! });
+    try {
+      for (let i = 0; i < 2; i++) await (await fetch(`${proxy.baseUrl}/responses`, {
+        method: "POST", body: JSON.stringify(ordinary),
+      })).text();
+      const failed = events.filter(event => event.phase === "failed");
+      expect(failed.map(event => ({ status: event.status, errorCode: event.errorCode,
+        upstreamBodyPresent: event.upstreamBodyPresent, upstreamContentLength: event.upstreamContentLength,
+        upstreamBytes: event.upstreamBytes, relayQueuedBytes: event.relayQueuedBytes }))).toEqual([
+        { status: 200, errorCode: "missing_completion_event", upstreamBodyPresent: false,
+          upstreamContentLength: 0, upstreamBytes: 0, relayQueuedBytes: 0 },
+        { status: 200, errorCode: "missing_completion_event", upstreamBodyPresent: true,
+          upstreamContentLength: null, upstreamBytes: new TextEncoder().encode(incomplete).byteLength,
+          relayQueuedBytes: new TextEncoder().encode(incomplete).byteLength },
+      ]);
+      expect(JSON.stringify(events)).not.toContain("response.created");
+    } finally { proxy.stop(); }
+  });
+
   test("rejections, protocol failures and truncated streams never count as success", async () => {
     const responses = [streamResponse("rejected", 400), streamResponse('data: {"type":"response.failed"}\n\n'), streamResponse('data: {"type":"response.created"}\n\n'), new Response("unrecognized", { headers: { "content-type": "application/octet-stream" } })];
     const proxy = startCompactionProxy({ fetchUpstream: async () => responses.shift()! });
