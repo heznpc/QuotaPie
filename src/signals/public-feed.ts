@@ -28,7 +28,7 @@ export function parsePublicFeed(body: any, nowMs: number): ResetSignal[] {
       text, contextText: typeof item.withdrawnReason === "string" ? item.withdrawnReason.slice(0, 1000) : null,
       publishedAtMs: at, state, provider: providerForAuthor(match[1]!), benefitKind: local?.benefitKind ?? "reset", resetKind: local?.resetKind ?? "unknown",
       timeHint: local?.timeHint ?? (item.topic === "schedule" ? text : null), scopeHint: null,
-      observedVia: "public-feed", targetAtMs: Number.isFinite(target) ? target : null });
+      observedVia: "public-feed", targetAtMs: local?.targetAtMs ?? (Number.isFinite(target) ? target : null) });
   }
   const rank = { possible: 0, announced: 1, reported: 2, updated: 3, withdrawn: 4 };
   const latest = new Map<string, ResetSignal>();

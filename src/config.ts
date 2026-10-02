@@ -90,7 +90,7 @@ export interface AppConfig {
 export const DEFAULT_CONFIG: AppConfig = {
   profile: {
     locale: "auto",
-    timeZone: "Asia/Seoul",
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     recentLookbackMinutes: 120,
     historyDays: 28,
     recentWeight: 0.7,

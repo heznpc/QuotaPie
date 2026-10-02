@@ -1,3 +1,4 @@
+import { withAnnouncementTime } from "../signals/time";
 import type { QuotaStorage } from "./database";
 import { supportsSignal, type ResetSignal } from "../signals/classify";
 
@@ -56,14 +57,14 @@ export class ResetSignalStore {
       (SELECT MAX(rowid) FROM reset_signals GROUP BY json_extract(payload, '$.id'))
       ORDER BY published_ms DESC, rowid DESC`).iterate()) {
       const signal: ResetSignal = JSON.parse(row.payload);
-      if (supportsSignal(signal)) records.push(signal);
+      if (supportsSignal(signal)) records.push(withAnnouncementTime(signal));
       if (records.length >= limit) break;
     }
     return records;
   }
   pending(nowMs: number): ResetSignal[] {
     const rows = this.storage.db.query<{payload: string}, [number]>("SELECT payload FROM reset_signals WHERE notified=0 AND COALESCE(json_extract(payload, '$.detectedAtMs'), published_ms) >= ? ORDER BY published_ms ASC")
-      .all(nowMs - 24 * 3600_000).map(row => JSON.parse(row.payload) as ResetSignal).filter(supportsSignal);
+      .all(nowMs - 24 * 3600_000).map(row => JSON.parse(row.payload) as ResetSignal).filter(supportsSignal).map(withAnnouncementTime);
     const latest = this.list(200);
     return rows.filter(s => (s.targetAtMs == null || s.targetAtMs > nowMs || s.state === "withdrawn") &&
       !latest.some(other => other.groupId === s.groupId && other.publishedAtMs > s.publishedAtMs)).slice(0, 20);

@@ -1284,7 +1284,7 @@ export class QuotaPieService {
       if (this.closing || !this.config.resetSignals.enabled) return;
       for (const signal of this.resetSignals.pending(Date.now())) {
         if (this.closing) break;
-        const decision = signalDecision(signal, this.locale);
+        const decision = signalDecision(signal, this.locale, this.config.profile.timeZone);
         const claim = this.alerts.claim(decision.key, Date.now(), 0);
         if (!claim) continue;
         try {

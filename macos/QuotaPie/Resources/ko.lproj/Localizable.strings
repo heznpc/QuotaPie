@@ -603,3 +603,5 @@
 "signal.kind.discounts" = "할인 소식";
 "signal.summary.events" = "참여형 이벤트";
 "signal.kind.events" = "참여형 이벤트";
+
+"signal.localTime" = "내 시간: %@";

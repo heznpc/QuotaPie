@@ -1,3 +1,4 @@
+import { parseAnnouncementTime } from "./time";
 import { createHash } from "node:crypto";
 import { isWatched, providerForAuthor, type PublicPost } from "./x-source";
 
@@ -87,7 +88,7 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>)
     state === "updated" || state === "withdrawn" || benefitKind !== "reset" ? normalized : null])).digest("hex").slice(0, 24);
   return { id: post.id, groupId, fingerprint, author: post.author,
     sourceUrl: `https://x.com/${post.author}/status/${post.id}`, text, contextText: parentText.slice(0, 3000) || null,
-    publishedAtMs: post.createdAtMs, state, resetKind, provider: providerForAuthor(post.author), benefitKind, timeHint, scopeHint, observedVia: "x-api", targetAtMs: null };
+    publishedAtMs: post.createdAtMs, state, resetKind, provider: providerForAuthor(post.author), benefitKind, timeHint, scopeHint, observedVia: "x-api", targetAtMs: parseAnnouncementTime(timeHint ?? text, post.createdAtMs)?.targetAtMs ?? null };
 }
 
 // Recheck saved local classifications as well. Keep the source record in the
