@@ -43,8 +43,39 @@ struct AccountPoolPayload: Decodable {
     let recent: [RoutedAccountRequest]
     var error: String? = nil
     var reservePercent: [String: Int]? = nil
+    var rejected: [PoolRequestRejection]? = nil
+    var unresolvedRejections: UnresolvedPoolRejections? = nil
 }
 struct AccountPoolResponse: Decodable { let pool: AccountPoolPayload }
+
+struct UnresolvedPoolRejections: Decodable {
+    let count: Int
+    let latestCode: String
+    let latestAtMs: Double
+}
+
+struct PoolRequestRejection: Decodable, Identifiable {
+    let requestId: String
+    let sourceAccount: String
+    let code: String
+    let atMs: Double
+    var recovered: Bool? = nil
+    var id: String { requestId }
+    var reasonKey: String {
+        switch code {
+        case "pool_lineage_unavailable", "pool_lineage_invalid": return "pool.history.lineage"
+        case "pool_thread_identity_required": return "pool.history.thread"
+        case "pool_source_quota_exhausted", "pool_account_cooldown": return "pool.history.quota"
+        case "pool_reserve_reached": return "pool.history.reserve"
+        case "pool_reserve_quota_unavailable": return "pool.history.quotaUnknown"
+        case "pool_source_auth_unavailable", "pool_target_auth_unavailable", "pool_auth_cooldown": return "pool.history.auth"
+        case "pool_source_identity_mismatch", "pool_bound_identity_changed", "pool_bound_account_removed": return "pool.history.identity"
+        case "pool_recovery_requires_full_history", "pool_attachment_account_unverified": return "pool.history.history"
+        case "pool_model_unavailable", "pool_quota_scope_unsupported": return "pool.history.model"
+        default: return "pool.history.other"
+        }
+    }
+}
 
 struct RoutedAccountRequest: Decodable {
     let sourceAccount: String

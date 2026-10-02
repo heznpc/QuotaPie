@@ -309,7 +309,7 @@ test("observed file credentials survive a rejected routing transaction and anoth
   } finally {restarted.close();}
 }));
 
-test("rejections retain their task context and only that task's successful response resolves the error",()=>fixture(({pool,path})=>{
+test("request rejection history is distinct from pool health and only the same task's success proves recovery",()=>fixture(({pool,path})=>{
   const rejectedThread=randomUUID(), rejectedRequest=randomUUID();
   pool.reject("pool_lineage_unavailable",{requestId:rejectedRequest,threadId:rejectedThread,status:409});
   const complete=(threadId:string)=>{
@@ -321,13 +321,38 @@ test("rejections retain their task context and only that task's successful respo
   };
   complete(randomUUID());
   const status=poolStatus(path,join(dirname(path),"missing.json"));
-  expect(status.error).toBe("pool_lineage_unavailable");
+  expect(status.error).toBeNull();
+  expect(status.unresolvedRejections).toEqual({count:1,latestCode:"pool_lineage_unavailable",latestAtMs:now});
   expect(status.rejected).toEqual([expect.objectContaining({requestId:rejectedRequest,threadId:rejectedThread,
-    sourceAccount:"a",code:"pool_lineage_unavailable",status:409})]);
+    sourceAccount:"a",code:"pool_lineage_unavailable",status:409,recovered:false})]);
   expect(status.recent).toHaveLength(1);
   expect(status.recent[0]).toMatchObject({account:"b",state:"completed"});
   complete(rejectedThread);
-  expect(poolStatus(path,join(dirname(path),"missing.json")).error).toBeNull();
+  const recovered=poolStatus(path,join(dirname(path),"missing.json"));
+  expect(recovered.error).toBeNull();
+  expect(recovered.unresolvedRejections).toBeNull();
+  expect(recovered.rejected[0]?.recovered).toBe(true);
+}));
+
+test("an old unresolved rejection stays visible after unrelated requests succeed and failed retries do not resolve it",()=>fixture(({pool,path,accounts,policy})=>{
+  const threadId=randomUUID();
+  pool.reject("pool_lineage_unavailable",{requestId:randomUUID(),threadId,status:409});
+  const later=new AccountPool({path,sourceAccount:"a",accounts:()=>accounts,policy:()=>policy,now:()=>now+86400_000});
+  // Keep synthetic credentials valid, without changing the rejection timestamp.
+  for (const a of accounts) { a.tokenExpiresAt=now+2*86400_000; a.validUntil=now+2*86400_000; }
+  try {
+    for (const [thread,status] of [[randomUUID(),200],[threadId,400]] as const) {
+      const requestId=randomUUID();
+      const selected=later.select({threadId:thread,requestId,body,model:body.model,
+        headers:new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"})})!;
+      later.response(requestId,selected.identity,status,null,selected.credentialDigest);
+      later.finish(requestId,"completed");
+    }
+    const status=poolStatus(path,join(dirname(path),"missing.json"));
+    expect(status.error).toBeNull();
+    expect(status.unresolvedRejections).toEqual({count:1,latestCode:"pool_lineage_unavailable",latestAtMs:now});
+    expect(status.rejected[0]?.recovered).toBe(false);
+  } finally {later.close();}
 }));
 
 test("legacy errors clear only after a later successful HTTP response completes",()=>fixture(({pool,path})=>{
@@ -418,3 +443,138 @@ test("an ephemeral fresh turn stays on its authenticated source and keeps quota 
     expect(()=>pool.select({...input,threadId:randomUUID(),requestId:randomUUID()})).toThrow("pool_lineage_invalid");
   } finally {pool.close();}
 }));
+
+test("an ephemeral source-only helper can continue portable history with account-bound replay caches removed",()=>fixture(({accounts,policy,path})=>{
+  accounts[0]!.remaining=90;
+  const pool=new AccountPool({path,sourceAccount:"a",accounts:()=>accounts,policy:()=>policy,now:()=>now,
+    forkParent:()=>({status:"unknown"})});
+  const threadId=randomUUID(), helperModel="gpt-6-luna";
+  const history={model:helperModel,input:[
+    {role:"user",content:"synthetic"},
+    {type:"reasoning",id:"old-reasoning",encrypted_content:"account-bound-cache"},
+    {type:"message",role:"assistant",id:"old-message",content:[{type:"output_text",text:"previous reply"}]},
+    {type:"function_call",id:"old-call",call_id:"call-1",name:"tool",arguments:"{}"},
+    {type:"function_call_output",id:"old-output",call_id:"call-1",output:"result"},
+    {role:"user",content:"continue"}
+  ]};
+  const input={threadId,requestId:randomUUID(),body:history,model:helperModel,
+    headers:new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"})};
+  try {
+    expect(isFreshTextTurn(history)).toBe(false);
+    const selected=pool.select(input)!;
+    const replay=selected.body as {input:any[]};
+    expect(selected.route).toMatchObject({account:"a",reason:"existing"});
+    expect(selected.headers.get("authorization")).toBe("Bearer a-token");
+    expect(replay.input).toHaveLength(history.input.length-1);
+    expect(replay.input.every((item:any)=>item.type!=="reasoning" && item.id==null)).toBe(true);
+    expect(replay.input.find((item:any)=>item.type==="function_call_output")?.output).toBe("result");
+    expect(pool.select({...input,requestId:randomUUID()})?.body).toEqual(selected.body);
+    expect(history.input[1]?.encrypted_content).toBe("account-bound-cache");
+  } finally {pool.close();}
+}));
+
+test("ephemeral portable history never bypasses source quota, reserve, or authentication guards",()=>fixture(({accounts,policy,path})=>{
+  const protectedPolicy={...policy,reservePercent:{a:30}};
+  const pool=new AccountPool({path,sourceAccount:"a",accounts:()=>accounts,policy:()=>protectedPolicy,now:()=>now,
+    forkParent:()=>({status:"unknown"})});
+  const input={threadId:randomUUID(),requestId:randomUUID(),body:{...body,input:[...body.input,{role:"assistant",content:"history"}]},model:body.model,
+    headers:new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"})};
+  try {
+    expect(()=>pool.select(input)).toThrow("pool_source_quota_exhausted");
+    accounts[0]!.remaining=20;
+    expect(()=>pool.select(input)).toThrow("pool_reserve_reached");
+    accounts[0]!.remaining=null;
+    expect(()=>pool.select(input)).toThrow("pool_reserve_quota_unavailable");
+    accounts[0]!.remaining=90;
+    expect(()=>pool.select({...input,headers:new Headers({authorization:"Bearer wrong","chatgpt-account-id":"a-remote"})}))
+      .toThrow("pool_source_identity_mismatch");
+    expect(pool.select(input)?.route.account).toBe("a");
+  } finally {pool.close();}
+}));
+
+test("unknown lineage still rejects opaque references and incomplete tool history",()=>fixture(({accounts,policy,path})=>{
+  accounts[0]!.remaining=90;
+  const pool=new AccountPool({path,sourceAccount:"a",accounts:()=>accounts,policy:()=>policy,now:()=>now,
+    forkParent:()=>({status:"unknown"})});
+  const histories=[
+    {...body,previous_response_id:"response"}, {...body,conversation:"conversation"},
+    {...body,input:[...body.input,{type:"compaction",encrypted_content:"opaque"}]},
+    {...body,input:[{role:"user",content:[{type:"input_file",file_id:"file"}]}]},
+    {...body,input:[...body.input,{type:"function_call",call_id:"call",name:"tool",arguments:"{}"}]},
+    {...body,input:[...body.input,{type:"function_call_output",call_id:"call",output:"result"}]},
+  ];
+  try {
+    for (const history of histories) expect(()=>pool.select({threadId:randomUUID(),requestId:randomUUID(),body:history,model:body.model,
+      headers:new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"})})).toThrow("pool_lineage_unavailable");
+  } finally {pool.close();}
+}));
+
+test("portable history cannot erase known fork ancestry when its parent metadata is unavailable",()=>fixture(({accounts,policy,path})=>{
+  accounts[0]!.remaining=90;
+  const child=randomUUID(), parent=randomUUID();
+  const pool=new AccountPool({path,sourceAccount:"a",accounts:()=>accounts,policy:()=>policy,now:()=>now,
+    forkParent:thread=>thread===child?{status:"known",parentId:parent}:{status:"unknown"}});
+  try {
+    expect(()=>pool.select({threadId:child,requestId:randomUUID(),body:{...body,input:[...body.input,{role:"assistant",content:"history"}]},model:body.model,
+      headers:new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"})})).toThrow("pool_lineage_unavailable");
+  } finally {pool.close();}
+}));
+
+test("an ephemeral helper fallback cannot redirect a known foreign-account fork to its source",()=>fixture(({accounts,policy,path,select})=>{
+  const parent=randomUUID(), child=randomUUID(), helperModel="gpt-6-luna";
+  expect(select(parent)?.route.account).toBe("b");
+  accounts[0]!.remaining=90;
+  accounts[1]!.models.push(helperModel);
+  const pool=new AccountPool({path,sourceAccount:"a",accounts:()=>accounts,policy:()=>policy,now:()=>now,
+    forkParent:thread=>thread===child?{status:"known",parentId:parent}:{status:"unknown"}});
+  try {
+    expect(()=>pool.select({threadId:child,requestId:randomUUID(),body:{model:helperModel,input:[...body.input,{role:"assistant",content:"history"}]},model:helperModel,
+      headers:new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"})})).toThrow("pool_quota_scope_unsupported");
+  } finally {pool.close();}
+}));
+
+for (const excluded of [false,true]) test(`ephemeral replay retains source authentication and cleanup when ${excluded?"the source leaves the pool":"new assignments are disabled"}`,()=>fixture(({accounts,policy,path,select})=>{
+  // Existing bindings require lineage checks even after policy membership changes.
+  select(randomUUID());
+  accounts[0]!.remaining=90;
+  if (excluded) policy.accounts=["b"];
+  else policy.enabled=false;
+  const pool=new AccountPool({path,sourceAccount:"a",accounts:()=>accounts,policy:()=>policy,now:()=>now,
+    forkParent:()=>({status:"unknown"})});
+  const input={threadId:randomUUID(),requestId:randomUUID(),body:{...body,input:[...body.input,
+    {type:"reasoning",encrypted_content:"foreign-cache"},{role:"assistant",id:"foreign-id",content:"history"}]},model:body.model,
+    headers:new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"})};
+  try {
+    expect(()=>pool.select({...input,headers:new Headers({authorization:"Bearer wrong","chatgpt-account-id":"a-remote"})}))
+      .toThrow("pool_source_identity_mismatch");
+    const selected=pool.select(input)!;
+    expect(selected.route).toMatchObject({account:"a",reason:"existing"});
+    expect(selected.body).toEqual({...body,input:[...body.input,{role:"assistant",content:"history"}]});
+  } finally {pool.close();}
+}));
+
+test("the relay forwards an ephemeral helper's complete history on its verified source",async()=>{
+  const accounts=[account("a",90),account("b",75)], helperModel="gpt-6-luna";
+  const pool=new AccountPool({path:":memory:",sourceAccount:"a",accounts:()=>accounts,
+    policy:()=>({enabled:true,accounts:["a","b"]}),now:()=>now,forkParent:()=>({status:"unknown"})});
+  let calls=0;
+  const proxy=startCompactionProxy({accountPool:pool,fetchUpstream:async(_,init)=>{
+    calls++;
+    expect(new Headers(init.headers).get("authorization")).toBe("Bearer a-token");
+    const forwarded=JSON.parse(typeof init.body==="string"?init.body:new TextDecoder().decode(init.body as Uint8Array));
+    expect(forwarded.model).toBe(helperModel);
+    expect(forwarded.input).toEqual([...body.input,{role:"assistant",content:"history"},{role:"user",content:"continue"}]);
+    return new Response('data: {"type":"response.completed","response":{"status":"completed"}}\n\n',
+      {headers:{"content-type":"text/event-stream"}});
+  }});
+  try {
+    const response=await fetch(proxy.baseUrl+"/responses",{method:"POST",
+      headers:{authorization:"Bearer a-token","chatgpt-account-id":"a-remote",session_id:randomUUID()},
+      body:JSON.stringify({model:helperModel,stream:true,input:[...body.input,
+        {type:"reasoning",encrypted_content:"foreign-cache"},{role:"assistant",id:"foreign-id",content:"history"},
+        {role:"user",content:"continue"}]})});
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(calls).toBe(1);
+  } finally {proxy.stop();pool.close();}
+});

@@ -36,6 +36,24 @@ struct AccountPoolSettingsView: View {
             } else {
                 Text(Strings.t("pool.settings.unavailable")).font(.callout).foregroundStyle(.secondary)
             }
+            if let pool = model.payload?.accountPool, let rejected = pool.rejected, !rejected.isEmpty {
+                Divider()
+                Text(Strings.t("pool.history.title")).font(.subheadline)
+                if let unresolved = pool.unresolvedRejections {
+                    Text(Strings.t("pool.history.unresolved", String(unresolved.count)))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(rejected) { request in
+                    let label = model.payload?.accounts.first { $0.provider == "codex" && $0.account == request.sourceAccount }?.accountLabel ?? request.sourceAccount
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(Strings.t("pool.history.request", label,
+                            Date(timeIntervalSince1970: request.atMs / 1000).formatted(date: .abbreviated, time: .standard)))
+                        Text(Strings.t(request.reasonKey))
+                        Text(Strings.t(request.recovered == true ? "pool.history.recovered" : "pool.history.unverified"))
+                            .foregroundStyle(.secondary)
+                    }.font(.caption).help(request.code)
+                }
+            }
             if let message = model.poolSaveMessage { Text(message).font(.caption).foregroundStyle(.secondary) }
         }
         .disabled(model.poolSaving || model.payload?.actionToken == nil || model.lastError != nil)

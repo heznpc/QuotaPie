@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import type { CollectionErrorCategory } from "../types";
 export { mapClaudeUsage } from "../../packages/quota-core/src/claude-usage.js";
 
@@ -24,14 +25,63 @@ export interface ClaudeCredentialLookup {
 }
 
 // Claude Code keeps the default profile under "Claude Code-credentials", and
-// profiles with their own config directory under a service name derived from
-// that directory. Falling back to the default item would attribute another
-// account's token to this one, so there is no fallback.
+// Claude Code 2.x hashes the NFC-normalized config directory into the service
+// name. Guessing directory basenames can miss the login or select another
+// profile with the same basename. Never fall back to the default account.
 export function keychainServiceCandidates(dir: string, configured?: string | null): string[] {
   if (configured) return [configured];
   const base = "Claude Code-credentials";
   if (resolve(dir) === join(homedir(), ".claude")) return [base];
-  return [`${base}-${resolve(dir)}`, `${base}-${basename(resolve(dir))}`];
+  const suffix = createHash("sha256").update(resolve(dir).normalize("NFC")).digest("hex").slice(0, 8);
+  return [`${base}-${suffix}`];
+}
+
+interface ClaudeKeychainResult {
+  exitCode: number | null;
+  stdout: Buffer;
+  stderr?: Buffer;
+  signalCode?: string | number | null;
+}
+
+interface ClaudeCredentialReadOptions {
+  platform?: NodeJS.Platform;
+  keychainLookup?: (service: string, includeData: boolean) => ClaudeKeychainResult;
+}
+
+interface ClaudeCredentialAsyncReadOptions {
+  platform?: NodeJS.Platform;
+  keychainLookup?: (service: string, includeData: boolean) => Promise<ClaudeKeychainResult>;
+  keychainCommand?: string;
+  timeoutMs?: number;
+}
+
+function keychainFailure(result: ClaudeKeychainResult): ClaudeCredentialLookup | null {
+  // `security` exposes OSStatus modulo 256. Only errSecItemNotFound (-25300)
+  // establishes that no login exists; access errors and timeouts do not.
+  if (result.exitCode === 44 && !result.signalCode) return null;
+  let reason: string;
+  if (result.signalCode || result.exitCode === null) {
+    reason = "keychain lookup did not finish before its timeout";
+  } else if (result.exitCode === 36) {
+    reason = "keychain is locked or requires user interaction";
+  } else if (result.exitCode === 35 || result.exitCode === 128) {
+    reason = "keychain access was denied";
+  } else {
+    reason = `keychain lookup failed (exit ${result.exitCode})`;
+  }
+  // Never include raw keychain output, which may contain credential data.
+  return { accessToken: null, error: reason, errorCategory: "provider-error" };
+}
+
+function keychainMetadataFailure(result: ClaudeKeychainResult): ClaudeCredentialLookup | null {
+  if (result.exitCode === 0) {
+    return {
+      accessToken: null,
+      error: "keychain item exists but its credentials could not be read",
+      errorCategory: "provider-error",
+    };
+  }
+  return keychainFailure(result);
 }
 
 function parseCredentialPayload(raw: string): ClaudeCredentialLookup {
@@ -49,7 +99,7 @@ function parseCredentialPayload(raw: string): ClaudeCredentialLookup {
   if (typeof token !== "string" || token.length === 0) {
     return {
       accessToken: null,
-      error: "no Claude login found — run `claude auth login` in a terminal",
+      error: "Claude credentials contain no access token — run `claude auth login` in a terminal",
       errorCategory: "auth-required",
     };
   }
@@ -67,18 +117,44 @@ function parseCredentialPayload(raw: string): ClaudeCredentialLookup {
 export function readClaudeCredentials(
   configDir = "~/.claude",
   keychainService?: string | null,
+  options: ClaudeCredentialReadOptions = {},
 ): ClaudeCredentialLookup {
   const dir = configDir.startsWith("~") ? join(homedir(), configDir.slice(1)) : resolve(configDir);
+  // Match Claude Code's source priority. A leftover plaintext fallback must
+  // not override the current keychain login (including an explicit logout).
+  if ((options.platform ?? process.platform) === "darwin") {
+    const deadlineMs = Date.now() + KEYCHAIN_TIMEOUT_MS;
+    const lookup = options.keychainLookup ?? ((service: string, includeData: boolean) => Bun.spawnSync(
+      ["security", "find-generic-password", "-s", service, ...(includeData ? ["-w"] : [])],
+      { timeout: Math.max(1, deadlineMs - Date.now()), stderr: "ignore" },
+    ));
+    for (const service of keychainServiceCandidates(dir, keychainService)) {
+      let result: ClaudeKeychainResult;
+      try { result = lookup(service, true); }
+      catch {
+        return { accessToken: null, error: "keychain lookup could not be started", errorCategory: "provider-error" };
+      }
+      if (result.exitCode === 0) return parseCredentialPayload(result.stdout.toString().trim());
+      const failure = keychainFailure(result);
+      if (failure) return failure;
+      // A protected item's data may be hidden as errSecItemNotFound. Its
+      // metadata remains readable without requesting a password or auth UI.
+      try {
+        const metadataFailure = keychainMetadataFailure(lookup(service, false));
+        if (metadataFailure) return metadataFailure;
+      } catch {
+        return { accessToken: null, error: "keychain metadata lookup could not be started", errorCategory: "provider-error" };
+      }
+    }
+  }
+  return readFileCredentials(dir);
+}
+
+function readFileCredentials(dir: string): ClaudeCredentialLookup {
   const file = join(dir, ".credentials.json");
-  // A failure reason found in the file (expiry, for instance) survives a
-  // failed keychain fallback. Losing it would turn "refresh your expired
-  // login" into "log in for the first time".
-  let lastFailure: ClaudeCredentialLookup | null = null;
   if (existsSync(file)) {
     try {
-      const fromFile = parseCredentialPayload(readFileSync(file, "utf8"));
-      if (fromFile.accessToken) return fromFile;
-      lastFailure = fromFile;
+      return parseCredentialPayload(readFileSync(file, "utf8"));
     } catch (error) {
       return {
         accessToken: null,
@@ -87,34 +163,51 @@ export function readClaudeCredentials(
       };
     }
   }
-  if (process.platform !== "darwin") {
-    return lastFailure
-      ?? { accessToken: null, error: `no credentials at ${file}`, errorCategory: "auth-required" };
-  }
-  for (const service of keychainServiceCandidates(dir, keychainService)) {
-    let result: { exitCode: number | null; stdout: Buffer };
-    try {
-      result = Bun.spawnSync(["security", "find-generic-password", "-s", service, "-w"], {
-        timeout: KEYCHAIN_TIMEOUT_MS,
-      });
-    } catch (error) {
-      lastFailure = {
-        accessToken: null,
-        error: `keychain lookup failed: ${String(error)}`,
-        errorCategory: "provider-error",
-      };
-      continue;
-    }
-    if (result.exitCode !== 0) continue;
-    const parsed = parseCredentialPayload(result.stdout.toString().trim());
-    if (parsed.accessToken) return parsed;
-    lastFailure = parsed;
-  }
-  return lastFailure ?? {
+  return {
     accessToken: null,
     error: "no Claude login found — run `claude auth login` in a terminal",
     errorCategory: "auth-required",
   };
+}
+
+/** The daemon must remain responsive to status/API requests during Keychain access. */
+export async function readClaudeCredentialsAsync(
+  configDir = "~/.claude",
+  keychainService?: string | null,
+  options: ClaudeCredentialAsyncReadOptions = {},
+): Promise<ClaudeCredentialLookup> {
+  const dir = configDir.startsWith("~") ? join(homedir(), configDir.slice(1)) : resolve(configDir);
+  if ((options.platform ?? process.platform) === "darwin") {
+    const deadlineMs = Date.now() + (options.timeoutMs ?? KEYCHAIN_TIMEOUT_MS);
+    const lookup = options.keychainLookup ?? (async (service: string, includeData: boolean): Promise<ClaudeKeychainResult> => {
+      const child = Bun.spawn(
+        [options.keychainCommand ?? "security", "find-generic-password", "-s", service, ...(includeData ? ["-w"] : [])],
+        { stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: Math.max(1, deadlineMs - Date.now()) },
+      );
+      const [exitCode, stdout] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).arrayBuffer(),
+      ]);
+      return { exitCode, stdout: Buffer.from(stdout), signalCode: child.signalCode };
+    });
+    for (const service of keychainServiceCandidates(dir, keychainService)) {
+      let result: ClaudeKeychainResult;
+      try { result = await lookup(service, true); }
+      catch {
+        return { accessToken: null, error: "keychain lookup could not be started", errorCategory: "provider-error" };
+      }
+      if (result.exitCode === 0) return parseCredentialPayload(result.stdout.toString().trim());
+      const failure = keychainFailure(result);
+      if (failure) return failure;
+      try {
+        const metadataFailure = keychainMetadataFailure(await lookup(service, false));
+        if (metadataFailure) return metadataFailure;
+      } catch {
+        return { accessToken: null, error: "keychain metadata lookup could not be started", errorCategory: "provider-error" };
+      }
+    }
+  }
+  return readFileCredentials(dir);
 }
 
 export class ClaudeUsageError extends Error {

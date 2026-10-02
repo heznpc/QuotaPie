@@ -570,6 +570,21 @@
 "pool.settings.unavailable" = "Register at least two Codex accounts in the account pool to set reserves.";
 "pool.settings.blocked" = "Requests paused to preserve your remaining quota. Review account reserves in Settings.";
 "pool.settings.stale" = "Requests paused until current quota can be checked.";
+"pool.history.title" = "Recent rejected requests";
+"pool.history.unresolved" = "%@ retained rejections have no later successful request from the same chat.";
+"pool.history.request" = "%@ · %@";
+"pool.history.unverified" = "Recovery of this chat has not been confirmed";
+"pool.history.recovered" = "A later request from this chat succeeded";
+"pool.history.lineage" = "The request was rejected because its original account could not be verified.";
+"pool.history.thread" = "The request was rejected because its chat identity was missing.";
+"pool.history.quota" = "The request paused because the account reached its usage limit.";
+"pool.history.reserve" = "The request paused to preserve the configured remaining quota.";
+"pool.history.quotaUnknown" = "The request paused because remaining quota could not be verified.";
+"pool.history.auth" = "The request was rejected because the account's authentication was unavailable.";
+"pool.history.identity" = "The request was rejected because its account identity changed.";
+"pool.history.history" = "The request paused because its chat history could not move to another account.";
+"pool.history.model" = "The request was rejected because the destination account could not use this model.";
+"pool.history.other" = "The request could not be forwarded.";
 
 "signal.credits" = "%@ credit news";
 "signal.limits" = "%@ usage allowance news";

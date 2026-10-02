@@ -39,11 +39,12 @@ export class ModelNotifications {
         if (previous && started < previous.started) continue;
         const route = `${event.to}:${event.reasoningEffort}:${event.routed}`;
         const changed = !previous || previous.route !== route;
+        const sameRequest = previous?.request === event.requestId;
         const failed = ["failed", "cancelled", "unverified"].includes(event.phase);
         const state: RouteState = {
           started, request: event.requestId, route, routed: event.routed, phase: event.phase,
           responseModel: event.responseModel ?? (changed ? null : previous?.responseModel ?? null),
-          failed: failed || (!changed && (previous?.failed ?? false)),
+          failed: failed || (sameRequest && !changed && (previous?.failed ?? false)),
         };
         let key: MessageKey | null = null;
         if (compact) {
@@ -52,7 +53,7 @@ export class ModelNotifications {
           }
         } else if (changed && (event.routed || previous?.routed)) {
           key = failed ? "model.notice.failed" : event.responseModel ? "model.notice.confirmed" : "model.notice.request";
-        } else if (event.routed && failed && !previous?.failed) {
+        } else if (event.routed && failed && (!sameRequest || !previous?.failed)) {
           key = "model.notice.failed";
         } else if (event.routed && event.responseModel && event.responseModel !== previous?.responseModel) {
           key = "model.notice.confirmed";
