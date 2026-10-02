@@ -4,6 +4,7 @@ import type { NotificationPresentation } from "./types";
 export const DEFAULT_NOTIFICATION_TOPICS = {
   modelChanges: true, quotaWarnings: true, collectionIssues: true, quotaRecovery: true,
   accountChanges: true, payments: true, resumeReady: true,
+  studentBenefits: false, discounts: false, rewardEvents: false, creditGrants: true, limitChanges: true,
   resetPossible: true, resetAnnounced: true, resetUpdates: true, resetReported: true,
 };
 export type NotificationTopic = keyof typeof DEFAULT_NOTIFICATION_TOPICS;
@@ -16,10 +17,15 @@ export interface NotificationPreferencesPatch { enabled?: boolean; topics?: Part
 export function notificationTopic(input: {
   key?: string; alertKey?: string; presentation?: NotificationPresentation | null;
 }): NotificationTopic | null {
-  const title = input.presentation?.title.key ?? "";
+  const title = (input.presentation?.title.key ?? "").replace("signal.claude.", "signal.");
   const message = input.presentation?.message.key ?? "";
   const key = input.key ?? input.alertKey ?? "";
   if (key.startsWith("model:") || title.startsWith("model.notice.")) return "modelChanges";
+  if (title === "signal.student") return "studentBenefits";
+  if (title === "signal.discounts") return "discounts";
+  if (title === "signal.events") return "rewardEvents";
+  if (title === "signal.credits") return "creditGrants";
+  if (title === "signal.limits") return "limitChanges";
   if (title === "signal.possible") return "resetPossible";
   if (title === "signal.announced") return "resetAnnounced";
   if (title === "signal.updated" || title === "signal.withdrawn") return "resetUpdates";

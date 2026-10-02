@@ -45,3 +45,57 @@ test("no-token collector imports Claude benefits silently then alerts once on ne
     store.delivered(signal.fingerprint);await collector.poll(true,now);expect(store.pending(now)).toHaveLength(0);
   } finally {db.close();}
 });
+
+
+test("benefit preferences separate audience restrictions from credit grants", async () => {
+  const { DEFAULT_CONFIG } = await import("../src/config");
+  const { notificationTopic, notificationAllowed } = await import("../src/notification-preferences");
+  const config = structuredClone(DEFAULT_CONFIG);
+  const cases = [
+    ["Students receive 1000 free credits every month.", "studentBenefits", false],
+    ["Get a 50% discount on your subscription.", "discounts", false],
+    ["Complete the challenge to receive free credits.", "rewardEvents", false],
+    ["Everyone receives 1000 free credits.", "creditGrants", true],
+    ["Usage limits increase today.", "limitChanges", true],
+  ] as const;
+  for (const [text, topic, allowed] of cases) {
+    const item = classifyPost(post(text), new Map())!;
+    expect(item).not.toBeNull();
+    const decision = signalDecision(item, "ko");
+    expect(notificationTopic(decision)).toBe(topic);
+    expect(notificationAllowed(decision, config.alerts)).toBe(allowed);
+    config.alerts.topics[topic] = !allowed;
+    expect(notificationAllowed(decision, config.alerts)).toBe(!allowed);
+    expect(decision.message).not.toContain("별도 확인");
+  }
+  const oldStudent = { ...classifyPost(post(cases[0][0]), new Map())!, benefitKind: "credits" as const };
+  expect(notificationTopic(signalDecision(oldStudent, "en"))).toBe("studentBenefits");
+  const claude = classifyPost(post("We have just reset weekly limits for everyone on Claude Max.", "ClaudeDevs"), new Map())!;
+  expect(notificationTopic(signalDecision(claude, "en"))).toBe("resetReported");
+});
+
+test("student opt-in suppresses delivery without replaying old benefits", async () => {
+  const { DEFAULT_CONFIG } = await import("../src/config");
+  const { QuotaDatabase } = await import("../src/db");
+  const { QuotaPieService } = await import("../src/service");
+  const config = structuredClone(DEFAULT_CONFIG);
+  config.resetSignals.enabled = true;
+  const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
+  service.setNativeNotificationTransportAvailable(true);
+  service.alerts.setNativeNotificationConsumer(true);
+  service.signalCollector.poll = async () => {};
+  const item = classifyPost(post("Students receive 1000 free credits every month."), new Map())!;
+  try {
+    service.resetSignals.save([item], Date.now());
+    await service.collectResetSignals();
+    expect(service.alerts.pendingAppNotifications()).toHaveLength(0);
+    service.applyNotificationPreferences({ topics: { studentBenefits: true } });
+    await service.collectResetSignals();
+    expect(service.alerts.pendingAppNotifications()).toHaveLength(0);
+    service.resetSignals.save([{ ...item, id: "new-student", fingerprint: "new-student" }], Date.now());
+    await service.collectResetSignals();
+    expect(service.alerts.pendingAppNotifications()).toHaveLength(1);
+    service.applyNotificationPreferences({ topics: { studentBenefits: false } });
+    expect(service.alerts.pendingAppNotifications()).toHaveLength(0);
+  } finally { await service.close(); }
+});

@@ -320,6 +320,9 @@ const CATALOG = {
   "signal.possible": { en: () => "Possible Codex reset", ko: () => "Codex 리셋 가능성 감지" },
   "signal.announced": { en: () => "Codex reset announced", ko: () => "Codex 리셋 예고" },
   "signal.credits": { en: p => `${p.provider} credit news`, ko: p => `${p.provider} 크레딧 소식` },
+  "signal.student": { en: p => `${p.provider} student benefits`, ko: p => `${p.provider} 학생 혜택` },
+  "signal.discounts": { en: p => `${p.provider} discounts`, ko: p => `${p.provider} 할인 소식` },
+  "signal.events": { en: p => `${p.provider} reward events`, ko: p => `${p.provider} 참여형 이벤트` },
   "signal.limits": { en: p => `${p.provider} usage allowance news`, ko: p => `${p.provider} 사용량 한도 소식` },
   "signal.claude.possible": { en: () => "Possible Claude reset", ko: () => "Claude 리셋 가능성" },
   "signal.claude.announced": { en: () => "Claude reset announced", ko: () => "Claude 리셋 예고" },
@@ -329,8 +332,8 @@ const CATALOG = {
   "signal.reported": { en: () => "Codex reset reported", ko: () => "Codex 리셋 시행 소식" },
   "signal.updated": { en: () => "Codex reset update", ko: () => "Codex 리셋 예고 변경" },
   "signal.withdrawn": { en: () => "Codex reset signal withdrawn", ko: () => "Codex 리셋 소식 정정·철회" },
-  "signal.message.relay": { en: p => `Public feed · ${p.source}: ${p.detail} — Check your account. ${p.url}`, ko: p => `공개 피드 경유 · ${p.source}: ${p.detail} — 내 계정 적용은 별도 확인. ${p.url}` },
-  "signal.message.direct": { en: p => `${p.source}: ${p.detail} — Check your account. ${p.url}`, ko: p => `${p.source}: ${p.detail} — 내 계정 적용은 별도 확인. ${p.url}` },
+  "signal.message.relay": { en: p => `Public feed · ${p.source}: ${p.detail} ${p.url}`, ko: p => `공개 피드 경유 · ${p.source}: ${p.detail} ${p.url}` },
+  "signal.message.direct": { en: p => `${p.source}: ${p.detail} ${p.url}`, ko: p => `${p.source}: ${p.detail} ${p.url}` },
   "cli.help": {
     en: () => `QuotaPie — provider clocks + personal burn-rate timer
 

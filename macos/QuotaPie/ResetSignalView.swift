@@ -7,7 +7,7 @@ extension ResetSignalPayload {
 extension ResetSignal {
     /// Describe this post's current meaning; never imply application to an account.
     func summaryKey(nowMs: Double) -> String {
-        if let benefitKind, ["credits", "limits"].contains(benefitKind) { return "signal.summary." + benefitKind }
+        if let benefitKind, ["credits", "limits", "student", "discounts", "events"].contains(benefitKind) { return "signal.summary." + benefitKind }
         switch state {
         case "withdrawn": return "signal.summary.withdrawn"
         case "updated": return "signal.summary.updated"
@@ -20,7 +20,7 @@ extension ResetSignal {
     }
 
     var classificationKey: String {
-        if let benefitKind, ["credits", "limits"].contains(benefitKind) { return "signal.summary." + benefitKind }
+        if let benefitKind, ["credits", "limits", "student", "discounts", "events"].contains(benefitKind) { return "signal.summary." + benefitKind }
         return (provider == "claude" ? "signal.claude." : "signal.") + state
     }
 
@@ -182,7 +182,7 @@ struct ResetSignalHistory: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }.font(.caption)
             }
-            Text(Strings.t(signal.classificationKey) + " · " + Strings.t("signal.kind." + (signal.benefitKind == "credits" || signal.benefitKind == "limits" ? signal.benefitKind! : signal.resetKind)))
+            Text(Strings.t(signal.classificationKey) + " · " + Strings.t("signal.kind." + (["credits", "limits", "student", "discounts", "events"].contains(signal.benefitKind ?? "") ? signal.benefitKind! : signal.resetKind)))
                 .font(.caption).foregroundStyle(.secondary)
             if let target = signal.targetAtMs {
                 Text(Strings.t(target < Date().timeIntervalSince1970 * 1000 ? "signal.elapsed" : "signal.feedTime", ResetSignal.stamp(target)))
