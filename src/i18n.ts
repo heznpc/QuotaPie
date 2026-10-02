@@ -319,6 +319,13 @@ const CATALOG = {
   // around them is selected by locale here.
   "signal.possible": { en: () => "Possible Codex reset", ko: () => "Codex 리셋 가능성 감지" },
   "signal.announced": { en: () => "Codex reset announced", ko: () => "Codex 리셋 예고" },
+  "signal.credits": { en: p => `${p.provider} credit news`, ko: p => `${p.provider} 크레딧 소식` },
+  "signal.limits": { en: p => `${p.provider} usage allowance news`, ko: p => `${p.provider} 사용량 한도 소식` },
+  "signal.claude.possible": { en: () => "Possible Claude reset", ko: () => "Claude 리셋 가능성" },
+  "signal.claude.announced": { en: () => "Claude reset announced", ko: () => "Claude 리셋 예고" },
+  "signal.claude.reported": { en: () => "Claude reset reported", ko: () => "Claude 리셋 시행 소식" },
+  "signal.claude.updated": { en: () => "Claude reset update", ko: () => "Claude 리셋 소식 변경" },
+  "signal.claude.withdrawn": { en: () => "Claude reset withdrawn", ko: () => "Claude 리셋 소식 철회" },
   "signal.reported": { en: () => "Codex reset reported", ko: () => "Codex 리셋 시행 소식" },
   "signal.updated": { en: () => "Codex reset update", ko: () => "Codex 리셋 예고 변경" },
   "signal.withdrawn": { en: () => "Codex reset signal withdrawn", ko: () => "Codex 리셋 소식 정정·철회" },

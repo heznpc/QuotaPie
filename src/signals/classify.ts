@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { isWatched, type PublicPost } from "./x-source";
+import { isWatched, providerForAuthor, type PublicPost } from "./x-source";
 
 export type SignalState = "possible" | "announced" | "reported" | "updated" | "withdrawn";
 export interface ResetSignal {
@@ -7,11 +7,13 @@ export interface ResetSignal {
   text: string; contextText: string | null; publishedAtMs: number;
   state: SignalState; resetKind: "banked" | "direct" | "unknown";
   timeHint: string | null; scopeHint: string | null;
-  observedVia: "x-api" | "public-feed" | "codexreset"; targetAtMs: number | null;
+  observedVia: "x-api" | "public-feed" | "codexreset" | "claudereset" | "resetradar"; targetAtMs: number | null;
   detectedAtMs?: number;
+  provider?: "codex" | "claude";
+  benefitKind?: "reset" | "credits" | "limits";
 }
 const reset = /\breset(?:s|ting|ted)?\b|\breseting\b/i;
-const subject = /\bcodex\b|chatgpt\s+work|\b(?:usage|rate|weekly)\s+limits?\b|banked\s+reset/i;
+const subject = /\bcodex\b|\bclaude\b|chatgpt\s+work|\b(?:usage|rate|weekly)\s+limits?\b|banked\s+reset/i;
 const correction = /\b(?:delay(?:ed)?|postpon(?:ed|e)|moved|instead|correction|meant|pushed back)\b/i;
 const withdrawal = /\b(?:no|not|won't|will not)\s+(?:be\s+)?(?:a\s+)?reset\b|\b(?:cancelled|canceled)\b/i;
 const done = /\b(?:have|has|just|now|already)\s+(?:been\s+)?reset\b|(?:^|[.!]\s+)all\s+reset\s+for\s+everyone(?:\.|$)|\breset\s+(?:(?:is|all)\s+)?(?:done|complete|completed|live|propagated)\b|\bit(?:'s| is) done\b|\bbutton\s+(?:was\s+)?pressed\b/i;
@@ -33,6 +35,12 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>)
   for (const ref of post.references) visit(ref.id, 0);
   if (post.conversationId !== post.id) visit(post.conversationId, 0);
   const text = post.text;
+  const creditGrant = /\bcredits?\b/i.test(text) && /\b(?:receiv\w*|grant\w*|giving|given|added|free|one.time|offered)\b/i.test(text)
+    && (!reset.test(text) || /\busage credits?\b|\badditional credits?\b|\b\d[\d,]* credits?\b/i.test(text));
+  const limitChange = /\b(?:limits?|allowance)\b.{0,60}\b(?:increase\w*|higher|doubl\w*|boost\w*)\b|\b(?:increase\w*|higher|doubl\w*|boost\w*)\b.{0,60}\b(?:limits?|allowance)\b/i.test(text);
+  const benefitKind = creditGrant ? "credits" : !reset.test(text) && limitChange ? "limits" : "reset";
+  const benefitEvidence = creditGrant || limitChange;
+
   const parentText = parents.map(p => p.text).join("\n");
   const contextRelevant = reset.test(parentText) && subject.test(parentText);
   const explicit = reset.test(text) && (subject.test(text) || contextRelevant || post.author.toLowerCase() === "thsottiaux");
@@ -54,14 +62,14 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>)
   // are not evidence of another reset. Raw monitored posts include both.
   const eventEvidence = done.test(text) || correction.test(text) || withdrawal.test(text) ||
     promised.test(text) || tentative.test(text) || hint.test(text) || issuance.test(text);
-  if (!(explicit && eventEvidence) && !followup && !implicit) return null;
+  if (!(explicit && eventEvidence) && !followup && !implicit && !benefitEvidence) return null;
   // Quoting a reset request alone is insufficient to declare a reset promised.
   const state: SignalState = withdrawal.test(text) && !/\?|\bwho\s+(?:says|said)\b/i.test(text) ? "withdrawn" : correction.test(text) ? "updated"
-    : done.test(text) ? "reported" : promisedFollowup || explicit && promised.test(text) && !/\?/.test(text) ? "announced" : "possible";
+    : done.test(text) ? "reported" : promisedFollowup || (explicit || benefitEvidence) && promised.test(text) && !/\?/.test(text) ? "announced" : benefitEvidence && !/\?|\b(?:maybe|might|could|possibly)\b/i.test(text) ? "reported" : "possible";
   const combined = `${text}\n${parentText}`;
-  const resetKind = /\bbanked\b|reset\s+(?:card|credit|token)/i.test(text) ? "banked"
+  const resetKind = /\bbanked\b|reset\s+(?:card|credit|token)|reset to use anytime/i.test(text) ? "banked"
     : /\b(?:direct|instant|automatic|system.wide|global)\b|\ball\s+reset\s+for\s+everyone\b/i.test(text) ? "direct"
-    : /\bbanked\b|reset\s+(?:card|credit|token)/i.test(parentText) ? "banked" : "unknown";
+    : /\bbanked\b|reset\s+(?:card|credit|token)|reset to use anytime/i.test(parentText) ? "banked" : "unknown";
   const timeHint = text.match(/[^.!?\n]*(?:\btomorrow\b|\btoday\b|\bmidnight\b|\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b|\b\d{1,2}(?::\d{2})?\s*(?:am|pm|PST|PDT|PT|UTC)\b|\bin\s+(?:~\s*)?(?:\d+|one|an?)\s+hours?\b)[^.!?\n]*/i)?.[0]?.trim().slice(0, 300) ?? null;
   const scopeHint = combined.match(/\ball\s+(?:paid\s+)?(?:users|accounts|plans|subscriptions)\b|\b(?:Plus|Pro|Business|Enterprise)\b(?:\s*[,/&]\s*(?:Plus|Pro|Business|Enterprise)\b)*/i)?.[0] ?? null;
   const primaryParent = parents.find(p => isWatched(p.author) && reset.test(p.text));
@@ -69,16 +77,16 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>)
   // Linked reposts without new conditions share the same notification identity.
   const normalized = text.replace(/https?:\/\/\S+/g, "").replace(/@\w+/g, "").trim();
   const fingerprint = createHash("sha256").update(JSON.stringify([groupId, state, resetKind, timeHint, scopeHint,
-    state === "updated" || state === "withdrawn" ? normalized : null])).digest("hex").slice(0, 24);
+    state === "updated" || state === "withdrawn" || benefitKind !== "reset" ? normalized : null])).digest("hex").slice(0, 24);
   return { id: post.id, groupId, fingerprint, author: post.author,
     sourceUrl: `https://x.com/${post.author}/status/${post.id}`, text, contextText: parentText.slice(0, 3000) || null,
-    publishedAtMs: post.createdAtMs, state, resetKind, timeHint, scopeHint, observedVia: "x-api", targetAtMs: null };
+    publishedAtMs: post.createdAtMs, state, resetKind, provider: providerForAuthor(post.author), benefitKind, timeHint, scopeHint, observedVia: "x-api", targetAtMs: null };
 }
 
 // Recheck saved local classifications as well. Keep the source record in the
 // database; improving a classifier must not fabricate a withdrawal or alert.
 export function supportsSignal(signal: ResetSignal): boolean {
-  if (signal.observedVia === "public-feed") return true;
+  if (["public-feed", "claudereset", "resetradar"].includes(signal.observedVia)) return true;
   const parentId = `context:${signal.id}`;
   const context = new Map<string, PublicPost>();
   if (signal.contextText) context.set(parentId, { id: parentId, author: "", text: signal.contextText,

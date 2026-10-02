@@ -199,14 +199,14 @@
 "signal.withdrawn" = "Codex 리셋 소식 정정·철회";
 "signal.message.relay" = "공개 피드 경유 · %@: %@ — 내 계정 적용은 별도 확인. %@";
 "signal.message.direct" = "%@: %@ — 내 계정 적용은 별도 확인. %@";
-"signal.coverage.direct" = "X 직접 수집 · Tibo, VB, Dominik, OpenAIDevs, OpenAI";
+"signal.coverage.direct" = "X 직접 수집 · OpenAI와 Claude 감시 계정";
 "signal.coverage.relay" = "Reset Beacon 경유 · 일부 소식만 수집, X 원문 미검증";
 "signal.health.waiting" = "첫 소식 수집 대기 중";
 "signal.health.error" = "수집 실패 · 저장된 소식 표시 중";
 "signal.health.stale" = "수집 지연 · 저장된 소식 표시 중";
 "signal.health.off" = "소식 수집 꺼짐";
 "signal.checked" = "마지막 수집 확인 %@";
-"signal.empty" = "아직 수집된 리셋 소식이 없습니다";
+"signal.empty" = "아직 수집된 사용량 혜택 소식이 없습니다";
 "signal.source" = "X에서 보기";
 "signal.kind.banked" = "저장형 리셋 지급";
 "signal.kind.direct" = "즉시 한도 리셋";
@@ -273,7 +273,7 @@
 "overview.awakeEnabled" = "잠자기 방지 켜짐";
 "overview.alertsOff" = "알림 꺼짐";
 "overview.activityDetail" = "활동 상세";
-"overview.resetNews" = "리셋 소식";
+"overview.resetNews" = "사용량 혜택 소식";
 "overview.history" = "기록 ›";
 "overview.original" = "원문 ↗";
 "signal.summary.withdrawn" = "리셋 소식 정정·철회됨";
@@ -570,3 +570,20 @@
 "pool.settings.unavailable" = "자동 배정에 사용할 Codex 계정을 두 개 이상 등록하면 설정할 수 있습니다.";
 "pool.settings.blocked" = "설정한 잔여량을 유지하기 위해 요청을 멈췄습니다. 설정에서 계정별 기준을 확인하세요.";
 "pool.settings.stale" = "잔여량을 확인할 수 없어 요청을 멈췄습니다. 새로고침해 주세요.";
+
+"signal.credits" = "%@ 크레딧 소식";
+"signal.limits" = "%@ 사용량 한도 소식";
+"signal.claude.possible" = "Claude 리셋 가능성";
+"signal.claude.announced" = "Claude 리셋 예고";
+"signal.claude.reported" = "Claude 리셋 시행 소식";
+"signal.claude.updated" = "Claude 리셋 소식 변경";
+"signal.claude.withdrawn" = "Claude 리셋 소식 철회";
+"signal.summary.credits" = "크레딧 지급 소식 · 계정 대상 여부 미확인";
+"signal.summary.limits" = "사용량 한도 변경 소식";
+"signal.kind.credits" = "크레딧 지급";
+"signal.kind.limits" = "사용량 한도";
+"signal.via.claudereset" = "Claude Reset Tracker 경유 · 원문 미검증";
+"signal.via.resetradar" = "Reset Radar 경유 · 원문 미검증";
+"signal.coverage.claude-linked-announcements" = "Claude 공식 게시물 링크가 있는 리셋 기록 · 중계 요약";
+"signal.coverage.claude-linked-benefits" = "Claude 공식 게시물 링크가 있는 크레딧·한도 기록 · 예측 제외";
+"signal.coverage.watched-accounts" = "X 직접 수집 · OpenAI와 Claude 감시 계정";

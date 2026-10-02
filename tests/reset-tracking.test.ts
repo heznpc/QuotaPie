@@ -108,6 +108,8 @@ describe("native recovery contract", () => {
       { targetAtMs: now + 86400000 }, { publishedAtMs: morning - 7 * 3600000 },
     ]) expect(recoveryEvidence(event, [{ ...report, ...change }], now).candidates).toEqual([]);
     expect(recoveryEvidence({ ...event, provider: "claude" }, [report], now).candidates).toEqual([]);
+    expect(recoveryEvidence(event, [{ ...report, provider: "claude" }], now).candidates).toEqual([]);
+    expect(recoveryEvidence(event, [{ ...report, benefitKind: "credits" }], now).candidates).toEqual([]);
     for (const details of [{}, { ...event.details, resetCreditDecreased: true }]) {
       expect(recoveryEvidence({ ...event, details }, [report], now).candidates).toEqual([]);
     }

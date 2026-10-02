@@ -7,6 +7,7 @@ extension ResetSignalPayload {
 extension ResetSignal {
     /// Describe this post's current meaning; never imply application to an account.
     func summaryKey(nowMs: Double) -> String {
+        if let benefitKind, ["credits", "limits"].contains(benefitKind) { return "signal.summary." + benefitKind }
         switch state {
         case "withdrawn": return "signal.summary.withdrawn"
         case "updated": return "signal.summary.updated"
@@ -18,10 +19,17 @@ extension ResetSignal {
         }
     }
 
+    var classificationKey: String {
+        if let benefitKind, ["credits", "limits"].contains(benefitKind) { return "signal.summary." + benefitKind }
+        return (provider == "claude" ? "signal.claude." : "signal.") + state
+    }
+
     var sourceStatusKey: String {
         switch observedVia {
         case "x-api": return "signal.via.x-api"
         case "codexreset": return "signal.via.codexreset"
+        case "claudereset": return "signal.via.claudereset"
+        case "resetradar": return "signal.via.resetradar"
         case "public-feed", "reset-beacon": return "signal.via.public-feed"
         default: return "signal.summary.unverified"
         }
@@ -37,7 +45,7 @@ extension ResetSignal {
     }
 
     var publicationText: String {
-        "@\(author) · " + Strings.t("signal.published", Self.stamp(publishedAtMs))
+        (provider == "claude" ? "Claude · " : "Codex · ") + "@\(author) · " + Strings.t("signal.published", Self.stamp(publishedAtMs))
     }
 
     static func stamp(_ ms: Double) -> String {
@@ -174,7 +182,7 @@ struct ResetSignalHistory: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }.font(.caption)
             }
-            Text(Strings.t("signal." + signal.state) + " · " + Strings.t("signal.kind." + signal.resetKind))
+            Text(Strings.t(signal.classificationKey) + " · " + Strings.t("signal.kind." + (signal.benefitKind == "credits" || signal.benefitKind == "limits" ? signal.benefitKind! : signal.resetKind)))
                 .font(.caption).foregroundStyle(.secondary)
             if let target = signal.targetAtMs {
                 Text(Strings.t(target < Date().timeIntervalSince1970 * 1000 ? "signal.elapsed" : "signal.feedTime", ResetSignal.stamp(target)))

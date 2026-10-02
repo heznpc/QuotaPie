@@ -36,7 +36,8 @@ export function recoveryEvidence(event: QuotaEvent, signals: ResetSignal[], nowM
     // A plan label does not establish announcement eligibility. Only an explicit universal
     // completion can be suggested; plan-specific and unknown scope stay news.
     const text = `${signal.text}\n${signal.contextText ?? ""}`;
-    if (signal.state !== "reported" || signal.resetKind !== "direct"
+    if ((signal.provider ?? "codex") !== event.provider || (signal.benefitKind ?? "reset") !== "reset"
+      || signal.state !== "reported" || signal.resetKind !== "direct"
       || !/\ball\s+(?:users|accounts|plans|subscriptions)\b|\beveryone\b/i.test(text)
       || /\b(?:paid|Plus|Pro|Business|Enterprise|Team|Free)\b/i.test(text)) return false;
     const duration = numeric(d.nextWindowSeconds);

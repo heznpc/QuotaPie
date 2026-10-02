@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { classifyPost, type ResetSignal, type SignalState } from "./classify";
-import { isWatched } from "./x-source";
+import { isWatched, providerForAuthor } from "./x-source";
 
 export function parsePublicFeed(body: any, nowMs: number): ResetSignal[] {
   if (body?.version !== 1 || !Array.isArray(body.items) || body.items.length > 200) throw new Error("feed-invalid-response");
@@ -26,7 +26,7 @@ export function parsePublicFeed(body: any, nowMs: number): ResetSignal[] {
     const target = Date.parse(item.targetAt);
     signals.push({ id: match[2]!, groupId, fingerprint, author: match[1]!, sourceUrl: `https://x.com/${match[1]}/status/${match[2]}`,
       text, contextText: typeof item.withdrawnReason === "string" ? item.withdrawnReason.slice(0, 1000) : null,
-      publishedAtMs: at, state, resetKind: local?.resetKind ?? "unknown",
+      publishedAtMs: at, state, provider: providerForAuthor(match[1]!), benefitKind: local?.benefitKind ?? "reset", resetKind: local?.resetKind ?? "unknown",
       timeHint: local?.timeHint ?? (item.topic === "schedule" ? text : null), scopeHint: null,
       observedVia: "public-feed", targetAtMs: Number.isFinite(target) ? target : null });
   }
