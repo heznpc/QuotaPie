@@ -196,12 +196,18 @@ export class AccountPool {
           .run(source.id, source.identity, credentialDigest(source.accessToken), source.tokenExpiresAt);
     }).immediate();
   }
-  private inheritedBinding(source: string, thread: string): Binding | null {
+  private inheritedBinding(source: string, thread: string, fresh: boolean): Binding | "source_only" | null {
     if (!this.options.forkParent) return null;
     const seen = new Set([thread]);
     for (let depth = 0; depth < 32; depth++) {
       const lineage = this.options.forkParent(thread);
-      if (lineage.status === "unknown") throw new PoolError("pool_lineage_unavailable", 409);
+      if (lineage.status === "unknown") {
+        // Ephemeral Codex threads have no rollout row. A self-contained first
+        // text request can start on its authenticated source, but missing
+        // ancestry is never permission to move it to another account.
+        if (depth === 0 && fresh) return "source_only";
+        throw new PoolError("pool_lineage_unavailable", 409);
+      }
       if (!lineage.parentId) return null;
       thread = lineage.parentId;
       if (seen.has(thread)) throw new PoolError("pool_lineage_invalid", 409);
@@ -220,11 +226,15 @@ export class AccountPool {
     this.rememberSource(source);
     const execute = this.db.transaction(() => {
       let saved = this.db.query<Binding, [string,string]>("SELECT * FROM bindings WHERE source=? AND thread=?").get(sourceID, thread);
+      let sourceOnly = false;
       // Resolve forks even with new assignment disabled: inherited remote state
       // must remain on the account that created it.
       if (!saved && this.options.forkParent && (policy.accounts.includes(sourceID) ||
-          this.db.query("SELECT 1 FROM bindings WHERE source=? LIMIT 1").get(sourceID)))
-        saved = this.inheritedBinding(sourceID, thread);
+          this.db.query("SELECT 1 FROM bindings WHERE source=? LIMIT 1").get(sourceID))) {
+        const inherited = this.inheritedBinding(sourceID, thread, isFreshTextTurn(input.body));
+        sourceOnly = inherited === "source_only";
+        saved = inherited === "source_only" ? null : inherited;
+      }
       if (!saved && (!policy.enabled || !policy.accounts.includes(sourceID))) return null;
       if (!source || source.tokenExpiresAt <= now + 30_000) throw new PoolError("pool_source_auth_unavailable", 401);
       // Accept only current or previously observed file credentials for this
@@ -285,7 +295,7 @@ export class AccountPool {
             }
           }
         }
-      } else if (!isFreshTextTurn(input.body) || !SHARED_QUOTA_MODELS.has(input.model)) { selected = source; reason = "existing"; }
+      } else if (sourceOnly || !isFreshTextTurn(input.body) || !SHARED_QUOTA_MODELS.has(input.model)) { selected = source; reason = "existing"; }
       else {
         // Unknown source quota is not permission to silently change the login.
         selected = !this.reserveBlock(source) && (source.remaining == null || source.remaining > 0) && cooldownUntil(source) <= now && !authCooldown(source)
