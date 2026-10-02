@@ -126,6 +126,7 @@ function hasUnverifiedAttachments(body: any): boolean {
 }
 
 type Binding = { account: string; identity: string; source_identity: string; label: string; foreignReasoning?: string[] };
+type SourceOnlyReplay = { sourceReplay: NonNullable<ReturnType<typeof portableReplay>> };
 export class AccountPool {
   private db: Database;
   constructor(private options: {
@@ -196,16 +197,19 @@ export class AccountPool {
           .run(source.id, source.identity, credentialDigest(source.accessToken), source.tokenExpiresAt);
     }).immediate();
   }
-  private inheritedBinding(source: string, thread: string, fresh: boolean): Binding | "source_only" | null {
+  private inheritedBinding(source: string, thread: string, body: unknown): Binding | SourceOnlyReplay | null {
     if (!this.options.forkParent) return null;
     const seen = new Set([thread]);
     for (let depth = 0; depth < 32; depth++) {
       const lineage = this.options.forkParent(thread);
       if (lineage.status === "unknown") {
-        // Ephemeral Codex threads have no rollout row. A self-contained first
-        // text request can start on its authenticated source, but missing
-        // ancestry is never permission to move it to another account.
-        if (depth === 0 && fresh) return "source_only";
+        // Ephemeral Codex helpers do not persist rollout metadata and can carry
+        // complete message/tool history. A verified portable request can run on
+        // its authenticated source after removing account-bound replay caches.
+        // Missing ancestry never permits choosing a different account, and a
+        // known fork with a missing ancestor must still retain that ancestry.
+        const replay = depth === 0 ? portableReplay(body) : null;
+        if (replay) return { sourceReplay: replay };
         throw new PoolError("pool_lineage_unavailable", 409);
       }
       if (!lineage.parentId) return null;
@@ -226,16 +230,19 @@ export class AccountPool {
     this.rememberSource(source);
     const execute = this.db.transaction(() => {
       let saved = this.db.query<Binding, [string,string]>("SELECT * FROM bindings WHERE source=? AND thread=?").get(sourceID, thread);
-      let sourceOnly = false;
+      let sourceReplay: SourceOnlyReplay["sourceReplay"] | undefined;
       // Resolve forks even with new assignment disabled: inherited remote state
       // must remain on the account that created it.
       if (!saved && this.options.forkParent && (policy.accounts.includes(sourceID) ||
           this.db.query("SELECT 1 FROM bindings WHERE source=? LIMIT 1").get(sourceID))) {
-        const inherited = this.inheritedBinding(sourceID, thread, isFreshTextTurn(input.body));
-        sourceOnly = inherited === "source_only";
-        saved = inherited === "source_only" ? null : inherited;
+        const inherited = this.inheritedBinding(sourceID, thread, input.body);
+        if (inherited && "sourceReplay" in inherited) sourceReplay = inherited.sourceReplay;
+        else saved = inherited;
       }
-      if (!saved && (!policy.enabled || !policy.accounts.includes(sourceID))) return null;
+      // A source-only replay has already removed foreign account caches. Keep
+      // that validated body and authenticate its source even when new pool
+      // assignment is disabled; returning null would forward the original body.
+      if (!saved && !sourceReplay && (!policy.enabled || !policy.accounts.includes(sourceID))) return null;
       if (!source || source.tokenExpiresAt <= now + 30_000) throw new PoolError("pool_source_auth_unavailable", 401);
       // Accept only current or previously observed file credentials for this
       // exact login identity. Do not trust unsigned JWT identity claims from a
@@ -251,8 +258,8 @@ export class AccountPool {
         "SELECT status,until_ms FROM auth_cooldowns WHERE identity=? AND digest=? AND until_ms>?")
         .get(a.identity, credentialDigest(a.accessToken), now);
       let selected: PoolAccount | undefined, reason: PoolRoute["reason"];
-      let foreignReasoning = saved?.foreignReasoning ?? this.foreignReasoning(sourceID, thread);
-      let replayBody = filterForeignReasoning(input.body, foreignReasoning);
+      let foreignReasoning = sourceReplay?.fingerprints ?? saved?.foreignReasoning ?? this.foreignReasoning(sourceID, thread);
+      let replayBody = sourceReplay?.body ?? filterForeignReasoning(input.body, foreignReasoning);
       let previousAccountLabel: string | undefined;
       if (saved && source.identity !== saved.source_identity) {
         // A login changed in the trusted local credential store. Honor that
@@ -295,7 +302,7 @@ export class AccountPool {
             }
           }
         }
-      } else if (sourceOnly || !isFreshTextTurn(input.body) || !SHARED_QUOTA_MODELS.has(input.model)) { selected = source; reason = "existing"; }
+      } else if (sourceReplay || !isFreshTextTurn(input.body) || !SHARED_QUOTA_MODELS.has(input.model)) { selected = source; reason = "existing"; }
       else {
         // Unknown source quota is not permission to silently change the login.
         selected = !this.reserveBlock(source) && (source.remaining == null || source.remaining > 0) && cooldownUntil(source) <= now && !authCooldown(source)
@@ -385,20 +392,26 @@ export class AccountPool {
 
 export function poolStatus(path = poolDatabasePath(), policyPath = poolPolicyPath()) {
   const policy = readPoolPolicy(policyPath);
-  if (!existsSync(path)) return { ...policy, recent: [], rejected: [], error: null };
+  if (!existsSync(path)) return { ...policy, recent: [], rejected: [], unresolvedRejections: null, error: null };
   const db = new Database(path, { readonly: true });
   try {
     const recent = db.query("SELECT source AS sourceAccount, account, label AS accountLabel, reason, state, status, at_ms AS atMs FROM requests WHERE account<>'' ORDER BY at_ms DESC,rowid DESC LIMIT 5").all();
-    const rejected = db.query(`SELECT id AS requestId,source AS sourceAccount,thread AS threadId,reason AS code,status,at_ms AS atMs
-      FROM requests WHERE state='rejected' ORDER BY at_ms DESC,rowid DESC LIMIT 5`).all();
-    // An unrelated task succeeding does not erase another task's rejection.
-    const unresolved = db.query<{code:string}, []>(`SELECT reason AS code FROM requests r WHERE state='rejected'
-      AND NOT EXISTS (SELECT 1 FROM requests done WHERE done.source=r.source AND done.thread=r.thread
+    const recovered = `EXISTS (SELECT 1 FROM requests done WHERE done.source=r.source AND done.thread=r.thread
         AND done.state='completed' AND done.status>=200 AND done.status<300
-        AND (done.at_ms>r.at_ms OR (done.at_ms=r.at_ms AND done.rowid>r.rowid)))
-      ORDER BY at_ms DESC,rowid DESC LIMIT 1`).get();
-    const error = unresolved?.code ?? db.query<{code:string}, []>("SELECT code FROM errors ORDER BY at_ms DESC LIMIT 1").get()?.code ?? null;
-    return { ...policy, recent, rejected, error };
+        AND (done.at_ms>r.at_ms OR (done.at_ms=r.at_ms AND done.rowid>r.rowid)))`;
+    const rejected = db.query<{requestId:string;sourceAccount:string;threadId:string;code:string;status:number;atMs:number;recovered:number}, []>(
+      `SELECT id AS requestId,source AS sourceAccount,thread AS threadId,reason AS code,status,at_ms AS atMs,
+        ${recovered} AS recovered FROM requests r WHERE state='rejected' ORDER BY at_ms DESC,rowid DESC LIMIT 5`)
+      .all().map(row => ({ ...row, recovered: Boolean(row.recovered) }));
+    // A rejection belongs to one request, not the whole pool's current health.
+    // Keep unresolved history explicitly: neither elapsed time nor a different
+    // task succeeding is evidence that the rejected task recovered.
+    const unresolvedRejections = db.query<{count:number;latestCode:string;latestAtMs:number}, []>(
+      `SELECT COUNT(*) OVER () AS count,reason AS latestCode,at_ms AS latestAtMs
+        FROM requests r WHERE state='rejected' AND NOT ${recovered}
+        ORDER BY at_ms DESC,rowid DESC LIMIT 1`).get() ?? null;
+    const error = db.query<{code:string}, []>("SELECT code FROM errors ORDER BY at_ms DESC LIMIT 1").get()?.code ?? null;
+    return { ...policy, recent, rejected, unresolvedRejections, error };
   } finally { db.close(); }
 }
 

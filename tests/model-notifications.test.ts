@@ -77,3 +77,17 @@ test("muted and historical observations never replay; failures never announce co
     expect(pending()).toHaveLength(0);
   } finally { await service.close(); }
 });
+
+test("a fresh request can report failure after an earlier request on the same route failed", async () => {
+  const { config, service, observer, pending } = setup();
+  try {
+    const first = base({kind: "response", to: "gpt-5.6-luna", savingsReason: "simple_text_edit"});
+    observer.observe([first, {...first, phase: "failed", at: new Date(now + 1000).toISOString(), durationMs: 1000}], config, "ko", now + 1000);
+    const second = {...first, requestId: randomUUID(), at: new Date(now + 2000).toISOString()};
+    observer.observe([second], config, "ko", now + 2000);
+    observer.observe([{...second, phase: "failed", at: new Date(now + 3000).toISOString(), durationMs: 1000}], config, "ko", now + 3000);
+    expect(pending().filter(n => n.severity === "warning")).toHaveLength(2);
+    observer.observe([{...second, phase: "failed", at: new Date(now + 3000).toISOString(), durationMs: 1000}], config, "ko", now + 3000);
+    expect(pending().filter(n => n.severity === "warning")).toHaveLength(2);
+  } finally { await service.close(); }
+});

@@ -113,3 +113,23 @@ test("two rejected accounts return the second 429 without looping", async () => 
     expect(response.status).toBe(429); await response.text(); expect(calls).toBe(2);
   } finally { proxy.stop(); c.pool.close(); }
 });
+
+test("a replacement account transport failure keeps its upstream cause instead of blaming relay response handling", async () => {
+  const c = setup(), events: CompactionRequestEvent[] = []; let calls = 0;
+  const proxy = startCompactionProxy({ accountPool: c.pool, onRequest: event => events.push(event), fetchUpstream: async () => {
+    if (++calls === 1) return new Response("rate limited", { status: 429 });
+    throw Object.assign(new Error("private upstream URL"), { code: "ETIMEDOUT" });
+  } });
+  try {
+    const headers = new Headers(c.headers); headers.set("session_id", randomUUID());
+    const response = await fetch(proxy.baseUrl + "/responses", { method: "POST", headers, body: JSON.stringify(firstBody) });
+    expect(response.status).toBe(502);
+    expect(await response.text()).toBe("QuotaPie relay: upstream_timeout");
+    expect(calls).toBe(2);
+    expect(events.at(-1)).toMatchObject({ phase: "failed", status: 0, errorCode: "upstream_timeout",
+      transportCode: "ETIMEDOUT", retryCount: 1, accountRouting: { reason: "recovered" } });
+    const health = await (await fetch(proxy.baseUrl + "/quotapie-health")).json();
+    expect(health.activeRequests).toBe(0); expect(health.active).toHaveLength(0);
+    expect(JSON.stringify(events)).not.toContain("private upstream URL");
+  } finally { proxy.stop(); c.pool.close(); }
+});

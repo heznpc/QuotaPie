@@ -369,6 +369,36 @@ describe("Compaction policy and lifecycle", () => {
     } finally { proxy.stop(); }
   });
 
+  for (const [wire, phase, errorCode] of [
+    [complete, "completed", undefined],
+    ['data: {"type":"response.failed"}\n\n', "failed", "provider_stream_error"],
+  ] as const) test(`a transport failure after a terminal ${phase} event preserves the provider result`, async () => {
+    const events: CompactionRequestEvent[] = [];
+    let fail!: () => void;
+    let calls = 0;
+    const proxy = startCompactionProxy({ onRequest: event => events.push(event), fetchUpstream: async () => {
+      calls++;
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(new TextEncoder().encode(wire));
+        fail = () => controller.error(Object.assign(new Error("private upstream URL"), { code: "ECONNRESET" }));
+      } }), { headers: { "content-type": "text/event-stream" } });
+    } });
+    try {
+      const response = await fetch(`${proxy.baseUrl}/responses`, { method: "POST", body: JSON.stringify(compact) });
+      const reader = response.body!.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toBe(wire);
+      fail();
+      expect((await reader.read()).done).toBe(true);
+      const health = await (await fetch(`${proxy.baseUrl}/quotapie-health`)).json();
+      expect(health.activeRequests).toBe(0);
+      expect(events.filter(event => ["completed", "failed", "cancelled"].includes(event.phase))).toHaveLength(1);
+      expect(events.at(-1)?.phase).toBe(phase);
+      expect(events.at(-1)?.errorCode).toBe(errorCode);
+      expect(calls).toBe(1);
+      expect(JSON.stringify(events)).not.toContain("private upstream URL");
+    } finally { proxy.stop(); }
+  });
+
   test("an HTTP rejection stays failed when the client closes its reader", async () => {
     const events: CompactionRequestEvent[] = [];
     const proxy = startCompactionProxy({ onRequest: event => events.push(event), fetchUpstream: async () =>

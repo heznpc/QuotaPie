@@ -96,3 +96,20 @@ test("runtime identity is captured once, without paths or configuration", async 
     expect((await fetch(url, { method: "POST" })).status).toBe(405);
   } finally { server.stop(true); service.close(); }
 });
+
+test("status projections share one analysis pass without caching across requests", async () => {
+  const config = structuredClone(DEFAULT_CONFIG);
+  config.dashboard.port = 0;
+  const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
+  const analyses = service.analyses.bind(service);
+  let passes = 0;
+  service.analyses = (...args) => { passes++; return analyses(...args); };
+  const server = startDashboard(service, config, {compactionRoot: new URL("fixtures/no-relays", import.meta.url).pathname});
+  try {
+    for (let i = 1; i <= 2; i++) {
+      const result = await (await fetch(`http://127.0.0.1:${server.port}/api/status`)).json() as any;
+      expect(result.accounts).toBeArray(); expect(result.statuses).toBeArray();
+      expect(passes).toBe(i);
+    }
+  } finally { server.stop(true); await service.close(); }
+});

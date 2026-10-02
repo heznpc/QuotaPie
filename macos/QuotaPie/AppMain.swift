@@ -63,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let menuLogger = Logger(subsystem: "local.quotapie.menubar", category: "MenuBar")
     private var isFetching = false
     private var failureIndex = 0
+    private var lastStatusDiagnostic: String?
     private let retrySeconds: [TimeInterval] = [2, 5, 15, 30]
     private let statusLogger = Logger(subsystem: "local.quotapie.menubar", category: "StatusSync")
 #if DEBUG
@@ -422,6 +423,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     self.popoverModel.lastSuccessAt = Date()
                     self.popoverModel.lastError = nil
                     self.popoverModel.statusFailure = nil
+                    self.lastStatusDiagnostic = nil
                     self.failureIndex = 0
                     if !self.isFixturePreview, let actionToken = payload.actionToken, !actionToken.isEmpty {
                         self.userNotificationCenter.getNotificationSettings { [weak self] settings in
@@ -437,8 +439,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     self.scheduleRefresh(after: payload.compaction?.active.isEmpty == false || self.popover.isShown ? 2 : 10)
                 case .failure(let error):
                     let failure = StatusFailure(error)
-                    if self.popoverModel.statusFailure != failure {
-                        self.statusLogger.error("Status fetch failed: kind=\(failure.rawValue, privacy: .public) code=\((error as NSError).code)")
+                    let diagnostic = StatusFailure.diagnostic(error)
+                    if self.lastStatusDiagnostic != diagnostic {
+                        self.statusLogger.error("Status fetch failed: \(diagnostic, privacy: .public)")
+                        self.lastStatusDiagnostic = diagnostic
                     }
                     self.popoverModel.statusFailure = failure
                     self.popoverModel.lastError = error.localizedDescription

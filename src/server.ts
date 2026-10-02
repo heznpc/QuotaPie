@@ -248,7 +248,8 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
       }
       if (url.pathname === "/api/status") {
         const nowMs = Date.now();
-        const accounts = service.accountStates(nowMs);
+        const analysed = service.analyses(nowMs);
+        const accounts = service.accountStates(nowMs, analysed);
         return json({
           nowMs,
           actionToken,
@@ -268,7 +269,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           accountPool: (() => { try { return poolStatus(options.poolDatabasePath, options.poolPolicyPath); } catch { return { enabled: false, accounts: [], recent: [], error: "pool_status_unavailable" }; } })(),
           // Kept for existing consumers. It only contains accounts that have
           // windows, so new consumers should read accounts instead.
-          statuses: service.statuses(nowMs),
+          statuses: service.statuses(nowMs, analysed),
           events: service.recentEvents(30).map(eventJson),
         });
       }

@@ -301,10 +301,11 @@ export function startCompactionProxy(options: {
             poolSelection = replacement; headers = replacement.headers;
             headers.delete("content-encoding"); body = JSON.stringify(replacement.body);
             event = { ...event, requestId: nextId, accountRouting: replacement.route };
-            retryCount++; status = 0; emit("started");
+            retryCount++; status = 0; receivedResponse = false; emit("started");
             response = await fetchCodexUpstream(upstreamFetch, `${UPSTREAM}${path}${url.search}`, {
               method: request.method, headers, body, redirect: "manual", signal: cancellation.signal,
             }, code => { retryCount++; transportCode = code; });
+            receivedResponse = true;
             status = response.status;
             try { options.accountPool!.response(event.requestId, replacement.identity, status, response.headers.get("retry-after"), replacement.credentialDigest); } catch { /* do not replay a dispatched request */ }
           }
@@ -347,8 +348,17 @@ export function startCompactionProxy(options: {
               }
             } catch (error) {
               transportCode = transportFailure(error).transportCode;
+              // A protocol terminal event is authoritative even if the socket
+              // closes with an error afterward, just as with client cancellation.
+              // Never replace an already forwarded provider result with a relay error.
+              const terminal = response.ok ? observer!.terminal() : null;
+              if (!cancellation.signal.aborted && terminal) {
+                finish(terminal.phase, terminal.errorCode);
+                controller.close();
+                return;
+              }
               if (cancellation.signal.aborted) clientClosed();
-              else finish("failed", "upstream_stream_interrupted");
+              else finish("failed", response.ok ? "upstream_stream_interrupted" : "upstream_http_error");
               controller.error(new Error("Codex upstream stream interrupted"));
             }
           },

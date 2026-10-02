@@ -20,7 +20,7 @@ import { CollectionStore } from "./storage/collection-store";
 import type { QuotaStorage } from "./storage/database";
 import { ResumeTaskStore, ResumeTaskStoreError } from "./storage/resume-task-store";
 import { CodexAppServerClient, CodexSnapshotUnavailableError } from "./providers/codex-appserver";
-import { ClaudeUsageError, fetchClaudeUsage, mapClaudeUsage, readClaudeCredentials } from "./providers/claude-oauth";
+import { ClaudeUsageError, fetchClaudeUsage, mapClaudeUsage, readClaudeCredentialsAsync } from "./providers/claude-oauth";
 import { claudeProfileEnvironment } from "./providers/claude-profile";
 import { resolveLocale, t } from "./i18n";
 import type { Locale } from "./i18n";
@@ -390,7 +390,7 @@ export class QuotaPieService {
       const lastPollMs = this.claudeOAuthLastPollMs.get(profile.id) ?? 0;
       if (!force && nowMs - lastPollMs < QuotaPieService.CLAUDE_OAUTH_MIN_INTERVAL_MS) continue;
       this.claudeOAuthLastPollMs.set(profile.id, nowMs);
-      const credentials = readClaudeCredentials(profile.configDir ?? "~/.claude", profile.keychainService);
+      const credentials = await readClaudeCredentialsAsync(profile.configDir ?? "~/.claude", profile.keychainService);
       if (!credentials.accessToken) {
         this.collection.recordAttempt(
           "claude",
@@ -501,9 +501,9 @@ export class QuotaPieService {
     });
   }
 
-  statuses(nowMs = Date.now()): ProviderStatus[] {
+  statuses(nowMs = Date.now(), analysed?: WindowAnalysis[]): ProviderStatus[] {
     return groupStatuses(
-      this.analyses(nowMs),
+      analysed ?? this.analyses(nowMs),
       (provider, account) => this.accountLabel(provider, account),
     ).sort((left, right) => {
       const providerDifference = (left.provider === "codex" ? 0 : 1) - (right.provider === "codex" ? 0 : 1);
