@@ -1,9 +1,9 @@
 import { t, type Locale, type MessageKey } from "../i18n";
 import type { TriggerDecision } from "../types";
-import type { ResetSignal } from "./classify";
+import { benefitCategory, type ResetSignal } from "./classify";
 
 export function signalDecision(signal: ResetSignal, locale: Locale): TriggerDecision {
-  const benefit = signal.benefitKind ?? "reset";
+  const benefit = benefitCategory(`${signal.text}\n${signal.contextText ?? ""}`, signal.benefitKind);
   const titleKey: MessageKey = benefit !== "reset" ? `signal.${benefit}`
     : signal.provider === "claude" ? `signal.claude.${signal.state}` : `signal.${signal.state}`;
   const titleParams = { provider: signal.provider === "claude" ? "Claude" : "Codex" };

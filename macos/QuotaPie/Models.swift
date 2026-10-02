@@ -243,7 +243,7 @@ struct LocalizedMessagePayload: Decodable {
             return [to, detail, label == "?" ? Strings.t("model.notice.unknown") : label]
         case "model.notice.failed":
             return required("toLabel", "detail")
-        case "signal.credits", "signal.limits":
+        case "signal.credits", "signal.limits", "signal.student", "signal.discounts", "signal.events":
             return required("provider")
         case "signal.claude.possible", "signal.claude.announced", "signal.claude.reported", "signal.claude.updated", "signal.claude.withdrawn",
              "signal.possible", "signal.announced", "signal.reported", "signal.updated", "signal.withdrawn":

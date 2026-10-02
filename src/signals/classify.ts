@@ -10,7 +10,14 @@ export interface ResetSignal {
   observedVia: "x-api" | "public-feed" | "codexreset" | "claudereset" | "resetradar"; targetAtMs: number | null;
   detectedAtMs?: number;
   provider?: "codex" | "claude";
-  benefitKind?: "reset" | "credits" | "limits";
+  benefitKind?: "reset" | "credits" | "limits" | "student" | "discounts" | "events";
+}
+// Audience restrictions take precedence over the reward, including saved older signals.
+export function benefitCategory(text: string, fallback: ResetSignal["benefitKind"] = "reset"): NonNullable<ResetSignal["benefitKind"]> {
+  if (/\bstudents?\b|\bcampus\b|\bsheerid\b|학생|재학생|대학생/i.test(text)) return "student";
+  if (/\bdiscount\w*\b|\b\d+%\s+off\b|할인/i.test(text)) return "discounts";
+  if (/\bhackathon\w*\b|\bchallenge\b|\breferral\b|\bcourse completion\b|\bcomplete.{0,30}course\b|해커톤|챌린지|추천인|수료/i.test(text)) return "events";
+  return fallback ?? "reset";
 }
 const reset = /\breset(?:s|ting|ted)?\b|\breseting\b/i;
 const subject = /\bcodex\b|\bclaude\b|chatgpt\s+work|\b(?:usage|rate|weekly)\s+limits?\b|banked\s+reset/i;
@@ -38,8 +45,8 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>)
   const creditGrant = /\bcredits?\b/i.test(text) && /\b(?:receiv\w*|grant\w*|giving|given|added|free|one.time|offered)\b/i.test(text)
     && (!reset.test(text) || /\busage credits?\b|\badditional credits?\b|\b\d[\d,]* credits?\b/i.test(text));
   const limitChange = /\b(?:limits?|allowance)\b.{0,60}\b(?:increase\w*|higher|doubl\w*|boost\w*)\b|\b(?:increase\w*|higher|doubl\w*|boost\w*)\b.{0,60}\b(?:limits?|allowance)\b/i.test(text);
-  const benefitKind = creditGrant ? "credits" : !reset.test(text) && limitChange ? "limits" : "reset";
-  const benefitEvidence = creditGrant || limitChange;
+  const benefitKind = benefitCategory(text, creditGrant ? "credits" : !reset.test(text) && limitChange ? "limits" : "reset");
+  const benefitEvidence = creditGrant || limitChange || benefitKind !== "reset" && /\b(?:free|offer\w*|discount\w*|credits?|access|off)\b|무료|할인|크레딧/i.test(text);
 
   const parentText = parents.map(p => p.text).join("\n");
   const contextRelevant = reset.test(parentText) && subject.test(parentText);

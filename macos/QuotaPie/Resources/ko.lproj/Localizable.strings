@@ -197,8 +197,8 @@
 "signal.reported" = "Codex 리셋 시행 소식";
 "signal.updated" = "Codex 리셋 예고 변경";
 "signal.withdrawn" = "Codex 리셋 소식 정정·철회";
-"signal.message.relay" = "공개 피드 경유 · %@: %@ — 내 계정 적용은 별도 확인. %@";
-"signal.message.direct" = "%@: %@ — 내 계정 적용은 별도 확인. %@";
+"signal.message.relay" = "공개 피드 경유 · %@: %@ %@";
+"signal.message.direct" = "%@: %@ %@";
 "signal.coverage.direct" = "X 직접 수집 · OpenAI와 Claude 감시 계정";
 "signal.coverage.relay" = "Reset Beacon 경유 · 일부 소식만 수집, X 원문 미검증";
 "signal.health.waiting" = "첫 소식 수집 대기 중";
@@ -379,7 +379,7 @@
 "notification.preferences.enabled" = "알림 받기";
 "notification.preferences.history" = "알림을 꺼도 수집과 기록은 유지됩니다. 꺼둔 동안의 소식은 나중에 몰아서 알리지 않습니다.";
 "notification.preferences.group.account" = "내 계정";
-"notification.preferences.group.news" = "공개 리셋 소식 · 내 계정 적용 여부와 별도";
+"notification.preferences.group.news" = "리셋 소식";
 "notification.preferences.group.operation" = "작업과 수집 상태";
 "notification.topic.quotaWarnings" = "잔량 부족·빠른 소진 경고";
 "notification.topic.quotaRecovery" = "예상 밖 한도 회복 감지";
@@ -578,7 +578,7 @@
 "signal.claude.reported" = "Claude 리셋 시행 소식";
 "signal.claude.updated" = "Claude 리셋 소식 변경";
 "signal.claude.withdrawn" = "Claude 리셋 소식 철회";
-"signal.summary.credits" = "크레딧 지급 소식 · 계정 대상 여부 미확인";
+"signal.summary.credits" = "크레딧 지급 소식";
 "signal.summary.limits" = "사용량 한도 변경 소식";
 "signal.kind.credits" = "크레딧 지급";
 "signal.kind.limits" = "사용량 한도";
@@ -587,3 +587,19 @@
 "signal.coverage.claude-linked-announcements" = "Claude 공식 게시물 링크가 있는 리셋 기록 · 중계 요약";
 "signal.coverage.claude-linked-benefits" = "Claude 공식 게시물 링크가 있는 크레딧·한도 기록 · 예측 제외";
 "signal.coverage.watched-accounts" = "X 직접 수집 · OpenAI와 Claude 감시 계정";
+
+"notification.preferences.group.benefits" = "혜택과 이벤트";
+"notification.topic.creditGrants" = "크레딧 지급";
+"notification.topic.limitChanges" = "사용량 한도 변경";
+"notification.topic.studentBenefits" = "학생·교육 혜택";
+"notification.topic.discounts" = "구독 할인·프로모션";
+"notification.topic.rewardEvents" = "참여·수료·추천 보상 이벤트";
+"signal.student" = "%@ 학생 혜택";
+"signal.discounts" = "%@ 할인 소식";
+"signal.events" = "%@ 참여형 이벤트";
+"signal.summary.student" = "학생 혜택";
+"signal.kind.student" = "학생 혜택";
+"signal.summary.discounts" = "할인 소식";
+"signal.kind.discounts" = "할인 소식";
+"signal.summary.events" = "참여형 이벤트";
+"signal.kind.events" = "참여형 이벤트";

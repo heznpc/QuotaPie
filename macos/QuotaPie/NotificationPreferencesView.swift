@@ -13,6 +13,7 @@ struct NotificationPreferencesView: View {
     let save: (String, Bool) -> Void
     private let groups: [(String, [String])] = [
         ("account", ["quotaWarnings", "quotaRecovery", "accountChanges", "payments"]),
+        ("benefits", ["creditGrants", "limitChanges", "studentBenefits", "discounts", "rewardEvents"]),
         ("news", ["resetPossible", "resetAnnounced", "resetUpdates", "resetReported"]),
         ("operation", ["resumeReady", "collectionIssues", "modelChanges"])
     ]
@@ -29,7 +30,7 @@ struct NotificationPreferencesView: View {
                         Text(Strings.t("notification.preferences.group." + group.0)).font(.subheadline).bold()
                         ForEach(group.1, id: \.self) { topic in
                             Toggle(Strings.t("notification.topic." + topic), isOn: Binding(
-                                get: { preferences.topics[topic] ?? true }, set: { save(topic, $0) }))
+                                get: { preferences.topics[topic] ?? !["studentBenefits", "discounts", "rewardEvents"].contains(topic) }, set: { save(topic, $0) }))
                         }
                     }.disabled(!preferences.enabled)
                 }

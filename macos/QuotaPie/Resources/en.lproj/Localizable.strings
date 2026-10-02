@@ -197,8 +197,8 @@
 "signal.reported" = "Codex reset reported";
 "signal.updated" = "Codex reset update";
 "signal.withdrawn" = "Codex reset signal withdrawn";
-"signal.message.relay" = "Public feed · %@: %@ — Check your account. %@";
-"signal.message.direct" = "%@: %@ — Check your account. %@";
+"signal.message.relay" = "Public feed · %@: %@ %@";
+"signal.message.direct" = "%@: %@ %@";
 "signal.coverage.direct" = "Direct X collection · OpenAI and Claude accounts";
 "signal.coverage.relay" = "Via Reset Beacon · partial coverage, X originals not verified";
 "signal.health.waiting" = "Waiting for first collection";
@@ -578,7 +578,7 @@
 "signal.claude.reported" = "Claude reset reported";
 "signal.claude.updated" = "Claude reset update";
 "signal.claude.withdrawn" = "Claude reset withdrawn";
-"signal.summary.credits" = "Credit grant news · account eligibility unverified";
+"signal.summary.credits" = "Credit grant news";
 "signal.summary.limits" = "Usage allowance change news";
 "signal.kind.credits" = "Credits";
 "signal.kind.limits" = "Usage allowance";
@@ -587,3 +587,19 @@
 "signal.coverage.claude-linked-announcements" = "Claude reset records with official post links · curated summaries";
 "signal.coverage.claude-linked-benefits" = "Claude credit and allowance records with official post links · forecasts excluded";
 "signal.coverage.watched-accounts" = "Direct X collection · OpenAI and Claude accounts";
+
+"notification.preferences.group.benefits" = "Benefits and events";
+"notification.topic.creditGrants" = "Credit grants";
+"notification.topic.limitChanges" = "Usage limit changes";
+"notification.topic.studentBenefits" = "Student and education benefits";
+"notification.topic.discounts" = "Subscription discounts and promotions";
+"notification.topic.rewardEvents" = "Participation, course and referral rewards";
+"signal.student" = "%@ student benefits";
+"signal.discounts" = "%@ discounts";
+"signal.events" = "%@ reward events";
+"signal.summary.student" = "Student benefits";
+"signal.kind.student" = "Student benefits";
+"signal.summary.discounts" = "Discounts";
+"signal.kind.discounts" = "Discounts";
+"signal.summary.events" = "Reward events";
+"signal.kind.events" = "Reward events";
