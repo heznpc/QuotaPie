@@ -76,6 +76,10 @@ struct ResetSignalSummary: View {
                         Link(Strings.t("overview.original"), destination: url)
                     }
                 }.font(.caption2)
+                if let localTime = signal.localTimeText {
+                    Text(Strings.t("signal.localTime", localTime)).font(.callout).bold()
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let hint = signal.summaryTimeHint {
                     Text(Strings.t("signal.originalTime", hint))
                         .font(.caption).lineLimit(2).help(signal.originalTimeHint ?? hint)
@@ -184,7 +188,9 @@ struct ResetSignalHistory: View {
             }
             Text(Strings.t(signal.classificationKey) + " · " + Strings.t("signal.kind." + (["credits", "limits", "student", "discounts", "events"].contains(signal.benefitKind ?? "") ? signal.benefitKind! : signal.resetKind)))
                 .font(.caption).foregroundStyle(.secondary)
-            if let target = signal.targetAtMs {
+            if let localTime = signal.localTimeText {
+                Text(Strings.t("signal.localTime", localTime)).font(.callout).bold()
+            } else if let target = signal.targetAtMs {
                 Text(Strings.t(target < Date().timeIntervalSince1970 * 1000 ? "signal.elapsed" : "signal.feedTime", ResetSignal.stamp(target)))
                     .font(.caption).foregroundStyle(.secondary)
             }

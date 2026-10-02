@@ -603,3 +603,5 @@
 "signal.kind.discounts" = "Discounts";
 "signal.summary.events" = "Reward events";
 "signal.kind.events" = "Reward events";
+
+"signal.localTime" = "Your time: %@";

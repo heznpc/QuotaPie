@@ -1,3 +1,4 @@
+import { localAnnouncementTime } from "./signals/time";
 import { connectProfileRelay } from "./profile-relay";
 import { connectCodexProfile } from "./profile-connection";
 import { ModelNotifications } from "./model-notifications";
@@ -256,7 +257,12 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           resumeTasks: service.resumeTaskSummaries(),
           jobs: service.jobs.summaries(),
           notificationPreferences: service.notificationPreferences(),
-          resetSignals: service.signalCollector.status(nowMs),
+          resetSignals: (() => {
+            const feed = service.signalCollector.status(nowMs);
+            return { ...feed, signals: feed.signals.map(signal => ({ ...signal,
+              localTimeText: localAnnouncementTime(signal, service.locale, service.config.profile.timeZone),
+            })) };
+          })(),
           resetTracking: service.resetTracking(nowMs, accounts),
           compaction: compaction.snapshot(nowMs),
           accountPool: (() => { try { return poolStatus(options.poolDatabasePath, options.poolPolicyPath); } catch { return { enabled: false, accounts: [], recent: [], error: "pool_status_unavailable" }; } })(),

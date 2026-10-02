@@ -771,6 +771,7 @@ struct ResetSignal: Decodable, Identifiable {
     var contextText: String? = nil
     var provider: String? = nil
     var benefitKind: String? = nil
+    var localTimeText: String? = nil
 
     var safeSourceURL: URL? {
         guard let url = URL(string: sourceUrl), url.scheme == "https", url.host == "x.com",
