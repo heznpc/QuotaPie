@@ -390,14 +390,31 @@ test("forks inherit the ancestor binding even after new selection is disabled", 
   } finally {pool.close();}
 }));
 
-test("unavailable or cyclic fork metadata cannot create a source binding", () => fixture(({accounts, policy, path}) => {
+test("unavailable history or cyclic fork metadata cannot create a source binding", () => fixture(({accounts, policy, path}) => {
   const thread=randomUUID(); let cycle=false;
   const pool=new AccountPool({path,sourceAccount:"a",accounts:()=>accounts,policy:()=>policy,now:()=>now,
     forkParent:()=>cycle?{status:"known",parentId:thread}:{status:"unknown"}});
-  const input={threadId:thread,requestId:randomUUID(),body,model:body.model,
+  const input={threadId:thread,requestId:randomUUID(),body:{...body,previous_response_id:"opaque"},model:body.model,
     headers:new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"})};
   try {
     expect(()=>pool.select(input)).toThrow("pool_lineage_unavailable"); cycle=true;
     expect(()=>pool.select(input)).toThrow("pool_lineage_invalid");
+  } finally {pool.close();}
+}));
+
+test("an ephemeral fresh turn stays on its authenticated source and keeps quota protection", () => fixture(({accounts, policy, path}) => {
+  let parent: string | null = null;
+  const pool=new AccountPool({path,sourceAccount:"a",accounts:()=>accounts,policy:()=>policy,now:()=>now,
+    forkParent:()=>parent?{status:"known",parentId:parent}:{status:"unknown"}});
+  const input={threadId:randomUUID(),requestId:randomUUID(),body,model:body.model,
+    headers:new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"})};
+  try {
+    expect(()=>pool.select(input)).toThrow("pool_source_quota_exhausted");
+    accounts[0]!.remaining=90;
+    expect(()=>pool.select({...input,headers:new Headers({authorization:"Bearer wrong","chatgpt-account-id":"a-remote"})})).toThrow("pool_source_identity_mismatch");
+    expect(pool.select(input)?.route).toMatchObject({account:"a",reason:"existing"});
+    expect(pool.select({...input,requestId:randomUUID(),body:{...body,previous_response_id:"own-response"}})?.route.account).toBe("a");
+    parent=randomUUID();
+    expect(()=>pool.select({...input,threadId:randomUUID(),requestId:randomUUID()})).toThrow("pool_lineage_invalid");
   } finally {pool.close();}
 }));
