@@ -5,6 +5,7 @@ import { readCodexForkParent } from "./account-pool-lineage";
 import { AccountPool, poolAccounts, readPoolPolicy } from "./account-pool";
 import { codexProfileRoot, loadConfig } from "./config";
 import { DEFAULT_TASK_SAVINGS, validateTaskSavings, type TaskSavingsPolicy } from "./task-savings";
+import { createSavingsModelSupport } from "./savings-model-support";
 import { startCompactionProxy, validateCompactionRoute, type CompactionRoute } from "./codex-compaction";
 
 if (process.argv[2] === "--check-policy") {
@@ -26,12 +27,7 @@ if (!Number.isInteger(settings.port) || settings.port < 1024 || settings.port > 
   throw new Error("Invalid relay port");
 }
 settings.taskSavings = validateTaskSavings(settings.taskSavings ?? DEFAULT_TASK_SAVINGS);
-const supportsSavings = () => {
-  try {
-    const catalog = JSON.parse(readFileSync(join(settings.codex_home ?? homedir() + "/.codex", "models_cache.json"), "utf8"));
-    return catalog.models?.some((m: any) => m.slug === "gpt-5.6-luna" && m.supported_reasoning_levels?.some((r: any) => r.effort === "low")) === true;
-  } catch { return false; }
-};
+const supportsSavings = createSavingsModelSupport(join(settings.codex_home ?? homedir() + "/.codex", "models_cache.json"));
 const config = () => loadConfig();
 const sourceAccount = config().accounts.codex.find(p => {
   try { return realpathSync(codexProfileRoot(p)) === realpathSync(settings.codex_home ?? homedir() + "/.codex"); } catch { return false; }

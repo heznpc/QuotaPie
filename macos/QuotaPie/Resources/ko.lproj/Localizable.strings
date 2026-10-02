@@ -571,6 +571,7 @@
 "pool.settings.blocked" = "설정한 잔여량을 유지하기 위해 요청을 멈췄습니다. 설정에서 계정별 기준을 확인하세요.";
 "pool.settings.stale" = "잔여량을 확인할 수 없어 요청을 멈췄습니다. 새로고침해 주세요.";
 "pool.history.title" = "최근 요청 거절 기록";
+"pool.history.busy" = "계정 연결 기록이 사용 중입니다. 요청을 다시 시도해 주세요.";
 "pool.history.unresolved" = "보관된 요청 거절 %@건은 같은 대화의 후속 성공이 확인되지 않았습니다.";
 "pool.history.request" = "%@ · %@";
 "pool.history.unverified" = "이후 같은 대화의 복구 미확인";

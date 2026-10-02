@@ -1,24 +1,25 @@
 import { relayHealth } from "./compaction-policy-settings";
 import { DEFAULT_TASK_SAVINGS, validateTaskSavings } from "./task-savings";
-import { inspectRelaySettings, replaceRelaySettings, withRelaySettingsLock } from "./relay-settings";
+import { inspectRelaySettings, projectRelaySettings, replaceRelaySettings, withRelaySettingsLock, type RelaySettingsEntry } from "./relay-settings";
 
 export class TaskSavingsSettings {
   private busy = false;
   constructor(private root: string, private fetcher: typeof fetch = fetch) {}
-  private async inspect(healthByPath?: Map<string, any>) {
-    return inspectRelaySettings(this.root, async ({ path, raw, settings, current }) => {
+  private async inspect(healthByPath?: Map<string, any>, validatedEntries?: RelaySettingsEntry[]) {
+    const project = async ({ path, raw, settings, current }: RelaySettingsEntry) => {
       const saved = validateTaskSavings(settings.taskSavings ?? DEFAULT_TASK_SAVINGS);
       let health: any = null;
-      try { health = healthByPath?.has(path) ? healthByPath.get(path) : await relayHealth(settings,this.fetcher); } catch { /* No endpoint details in status. */ }
+      try { health = healthByPath ? healthByPath.get(path) : await relayHealth(settings,this.fetcher); } catch { /* No endpoint details in status. */ }
       const configurable = health?.schemaVersion >= 3 && !!health.taskSavings;
       return {path,raw,settings,saved,current,configurable,
         supported:health?.savingsModelSupported === true,
         effective:configurable ? validateTaskSavings(health.taskSavings) : null};
-    });
+    };
+    return validatedEntries ? projectRelaySettings(validatedEntries, project) : inspectRelaySettings(this.root, project);
   }
-  async status(healthByPath?: Map<string, any>) {
+  async status(healthByPath?: Map<string, any>, validatedEntries?: RelaySettingsEntry[]) {
     try {
-      const entries = await this.inspect(healthByPath), current = entries[0]!;
+      const entries = await this.inspect(healthByPath, validatedEntries), current = entries[0]!;
       return {...current.saved,configurable:current.configurable,supported:current.supported,
         generations:entries.length,compatible:entries.filter(e=>e.configurable).length,
         applied:entries.filter(e=>e.effective && JSON.stringify(e.effective)===JSON.stringify(current.saved)).length};

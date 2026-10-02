@@ -4,6 +4,63 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CompactionStatusReader } from "../src/compaction-status";
 import { startCompactionProxy } from "../src/codex-compaction";
+import { DEFAULT_TASK_SAVINGS } from "../src/task-savings";
+
+test("observation reuses validated settings for both policies while still observing unlisted generations", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "quotapie-shared-settings-")));
+  const paths = [join(root, "releases", "1", "settings.json"), join(root, "releases", "2", "settings.json")];
+  const route = { from: "gpt-6-astra", to: "gpt-5.6-sol", effort: "low" };
+  let requests = 0;
+  try {
+    for (let i = 0; i < paths.length; i++) {
+      await mkdir(join(root, "releases", String(i + 1)), { recursive: true });
+      await writeFile(paths[i]!, JSON.stringify({ port: 45001 + i, token: "ab".repeat(24), route }));
+    }
+    await writeFile(join(root, "current.json"), JSON.stringify({ settings_path: paths[0] }));
+    const reader = new CompactionStatusReader(root, (async () => {
+      requests++;
+      // The observer already validated this version. A concurrent editor must
+      // not force more settings scans or leak a mixed policy snapshot.
+      await writeFile(paths[0]!, "{");
+      return Response.json({ service: "quotapie-compaction", schemaVersion: 3, route,
+        taskSavings: DEFAULT_TASK_SAVINGS, savingsModelSupported: true });
+    }) as unknown as typeof fetch);
+    const status = await reader.status();
+    expect(requests).toBe(2);
+    expect(status.generations).toBe(2);
+    expect(status.reachable).toBe(2);
+    expect(status.policy).toMatchObject({ model: "gpt-5.6-sol", configurable: true, generations: 1 });
+    expect(status.savings.policy).toMatchObject({ configurable: true, generations: 1 });
+    // Mutation does not reuse the observer's cached settings.
+    await expect(reader.policy.configure("gpt-5.6-luna")).rejects.toThrow("policy_update_failed");
+    await expect(reader.savingsPolicy.configure({ enabled: true })).rejects.toThrow("savings_update_failed");
+    const refreshed = await reader.status(status.checkedAtMs + 3000);
+    expect(refreshed.policy).toBeNull();
+    expect(refreshed.savings.policy).toBeNull();
+    expect(refreshed.generations).toBe(1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("shared settings retain required profile validation and ignore invalid retired policies independently", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "quotapie-retired-policy-")));
+  const current = join(root, "settings.json"), retired = join(root, "releases", "1", "settings.json");
+  const route = { from: "gpt-6-astra", to: "gpt-5.6-sol", effort: "low" };
+  try {
+    await mkdir(join(root, "releases", "1"), { recursive: true });
+    await writeFile(current, JSON.stringify({ port: 45001, token: "ab".repeat(24), route }));
+    await writeFile(retired, JSON.stringify({ port: 45002, token: "ab".repeat(24), route: {} }));
+    await writeFile(join(root, "current.json"), JSON.stringify({ settings_path: current, retired_settings: [retired] }));
+    const reader = new CompactionStatusReader(root, (async () => Response.json({ service: "quotapie-compaction", schemaVersion: 3,
+      route, taskSavings: DEFAULT_TASK_SAVINGS, savingsModelSupported: true })) as unknown as typeof fetch);
+    const status = await reader.status();
+    expect(status.policy).toMatchObject({ generations: 1, configurable: true });
+    expect(status.savings.policy).toMatchObject({ generations: 2, configurable: true });
+    await writeFile(join(root, "current.json"), JSON.stringify({ settings_path: current, profile_settings: { second: retired } }));
+    const required = await reader.status(status.checkedAtMs + 3000);
+    expect(required.policy).toBeNull();
+    expect(required.savings.policy).not.toBeNull();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test("reads retired generations, distinguishes HTTP headers, completion and lost live state without exposing credentials", async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "quotapie-observation-")));
@@ -26,7 +83,7 @@ test("reads retired generations, distinguishes HTTP headers, completion and lost
     const reader = new CompactionStatusReader(root, ((...args: Parameters<typeof fetch>) => {
       healthRequests++;
       return fetch(...args);
-    }) as typeof fetch);
+    }) as unknown as typeof fetch);
     const running = await reader.status();
     expect(healthRequests).toBe(1);
     expect(running.policy).not.toBeNull();

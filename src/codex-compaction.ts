@@ -65,6 +65,10 @@ function poolErrorMessage(error: PoolError): string {
     return "QuotaPie paused this request because remaining quota is not current enough to protect your reserve. Refresh quota in QuotaPie or lower the reserve.";
   if (error.code === "pool_recovery_requires_full_history")
     return "QuotaPie: another account has capacity, but this request contains account-bound history that cannot be transferred safely. Keep this task and retry after its account recovers.";
+  if (error.code === "pool_target_quota_exhausted")
+    return "QuotaPie paused this request because its bound account was observed with exhausted quota and continuing may spend paid credits. No request was sent. Retry after fresh quota recovery or use an eligible account.";
+  if (error.code === "pool_storage_busy")
+    return "QuotaPie account routing is busy. No request was sent to the provider. Retry shortly; the existing task and account protection are preserved.";
   if (error.code === "pool_source_quota_exhausted")
     return "QuotaPie paused this request because the original account's quota is exhausted and continuing may spend paid credits. No request was sent. Retry after quota recovers or use an eligible account in a new task.";
   if (error.code === "pool_account_cooldown")
@@ -196,8 +200,9 @@ export function startCompactionProxy(options: {
               };
               if (options.accountPool) {
                 selectingAccount = true;
-                poolSelection = options.accountPool.select({ threadId: event.threadId, requestId: event.requestId,
-                  body: outgoing, model: event.to, headers });
+                poolSelection = await options.accountPool.selectAsync({ threadId: event.threadId, requestId: event.requestId,
+                  body: outgoing, model: event.to, headers }, request.signal);
+                request.signal.throwIfAborted();
                 poolInput = { body: outgoing, headers: new Headers(headers) };
                 if (poolSelection) {
                   headers = poolSelection.headers; event.accountRouting = poolSelection.route;
@@ -217,13 +222,19 @@ export function startCompactionProxy(options: {
         }
       } catch (error) {
         activeRequests--;
+        if (request.signal.aborted) {
+          if (poolSelection && event) void options.accountPool!.finishAsync(event.requestId, "cancelled").catch(() => {});
+          if (event) record({ ...event, phase: "cancelled", status: 0, errorCode: "client_disconnected",
+            at: new Date().toISOString(), durationMs: Math.round(performance.now() - started), retryCount: 0 });
+          return new Response(null, { status: 499 });
+        }
         if (selectingAccount) {
           const code = error instanceof PoolError ? error.code : "pool_request_rejected";
           const status = error instanceof PoolError ? error.status : 503;
           rejectedRequests++;
           if (event) record({ ...event, phase: "failed", status, errorCode: code, at: new Date().toISOString(),
             durationMs: Math.round(performance.now() - started), retryCount: 0 });
-          try { options.accountPool!.reject(code, event ? { requestId: event.requestId, threadId: event.threadId, status } : undefined); } catch { /* Rejection telemetry must not retry or forward a request. */ }
+          void options.accountPool!.rejectAsync(code, event ? { requestId: event.requestId, threadId: event.threadId, status } : undefined).catch(() => {});
           const responseHeaders = new Headers();
           if (error instanceof PoolError && error.retryAfterSeconds != null)
             responseHeaders.set("retry-after", String(error.retryAfterSeconds));
@@ -264,7 +275,7 @@ export function startCompactionProxy(options: {
           if (phase === "unverified") unverifiedCompactions++;
         }
         emit(phase, errorCode);
-        if (poolSelection && event) { try { options.accountPool!.finish(event.requestId, phase); } catch { /* telemetry must not replay inference */ } }
+        if (poolSelection && event) void options.accountPool!.finishAsync(event.requestId, phase).catch(() => {});
       };
       const clientClosed = () => {
         // Codex closes its SSE reader immediately after response.completed;
@@ -278,26 +289,45 @@ export function startCompactionProxy(options: {
       request.signal.addEventListener("abort", onAbort, { once: true });
       if (request.signal.aborted) onAbort();
       try {
+        if (finished || cancellation.signal.aborted) return new Response(null, { status: 499 });
+        // Cooldowns are routing evidence and must be durable before failover.
+        // Success status is telemetry: enqueue it without delaying any bytes.
+        const recordPoolResponse = async (response: Response): Promise<boolean> => {
+          if (!poolSelection || !event) return true;
+          const write = options.accountPool!.responseAsync(event.requestId, poolSelection.identity,
+            response.status, response.headers.get("retry-after"), poolSelection.credentialDigest);
+          if (![401, 403, 429].includes(response.status)) { void write.catch(() => {}); return true; }
+          try { await write; return true; } catch { return false; }
+        };
         let response = await fetchCodexUpstream(upstreamFetch, `${UPSTREAM}${path}${url.search}`, {
           method: request.method, headers, body, redirect: "manual", signal: cancellation.signal,
         }, code => { retryCount++; transportCode = code; });
         receivedResponse = true;
         status = response.status;
-        if (poolSelection && event) { try { options.accountPool!.response(event.requestId, poolSelection.identity, status, response.headers.get("retry-after"), poolSelection.credentialDigest); } catch { /* do not replay a dispatched request */ } }
+        const cooldownRecorded = await recordPoolResponse(response);
         // A rejected HTTP request has produced no model output. Retry once with
         // complete portable history; never retry a 200 stream or partial output.
-        if (status === 429 && poolSelection && poolInput && event && !finished && !cancellation.signal.aborted) {
+        if (status === 429 && cooldownRecorded && poolSelection && poolInput && event && !finished && !cancellation.signal.aborted) {
           let replacement: ReturnType<AccountPool["select"]> = null;
           const nextId = randomUUID();
           try {
-            if (options.accountPool!.canRecover(poolSelection.route.account, event.to, poolInput.body))
-              replacement = options.accountPool!.select({ threadId: event.threadId, requestId: nextId,
-                body: poolInput.body, model: event.to, headers: poolInput.headers });
+            if (await options.accountPool!.canRecoverAsync(poolSelection.route.account, event.to, poolInput.body, cancellation.signal))
+              replacement = await options.accountPool!.selectAsync({ threadId: event.threadId, requestId: nextId,
+                body: poolInput.body, model: event.to, headers: poolInput.headers }, cancellation.signal);
           } catch { /* Preserve the original 429 when safe recovery is unavailable. */ }
+          if (finished || cancellation.signal.aborted) {
+            if (replacement) void options.accountPool!.finishAsync(nextId, "cancelled").catch(() => {});
+            await response.body?.cancel();
+            return new Response(null, { status: 499 });
+          }
           if (replacement?.route.reason === "recovered") {
             emit("failed", "account_rate_limited");
-            try { options.accountPool!.finish(event.requestId, "failed"); } catch { /* telemetry only */ }
+            void options.accountPool!.finishAsync(event.requestId, "failed").catch(() => {});
             await response.body?.cancel();
+            if (finished || cancellation.signal.aborted) {
+              void options.accountPool!.finishAsync(nextId, "cancelled").catch(() => {});
+              return new Response(null, { status: 499 });
+            }
             poolSelection = replacement; headers = replacement.headers;
             headers.delete("content-encoding"); body = JSON.stringify(replacement.body);
             event = { ...event, requestId: nextId, accountRouting: replacement.route };
@@ -307,7 +337,7 @@ export function startCompactionProxy(options: {
             }, code => { retryCount++; transportCode = code; });
             receivedResponse = true;
             status = response.status;
-            try { options.accountPool!.response(event.requestId, replacement.identity, status, response.headers.get("retry-after"), replacement.credentialDigest); } catch { /* do not replay a dispatched request */ }
+            await recordPoolResponse(response);
           }
         }
         if (finished) { await response.body?.cancel(); return new Response(null, { status: 499 }); }

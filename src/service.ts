@@ -326,9 +326,16 @@ export class QuotaPieService {
     }
     this.codexPollState.set(account, { count: observations.length, error: null });
     this.collection.recordAttempt("codex", account, CODEX_SOURCE, Date.now(), null, null);
+    const events = this.closing ? [] : this.ingestCodexSnapshot(observations);
+    if (!this.closing) {
+      // Routing protection needs each accepted account update immediately. Do
+      // not wait for another account, Claude, historical analysis or alerts.
+      const nowMs = Date.now();
+      this.publishWorkBoundary(nowMs, this.currentQuotaWindows(nowMs));
+    }
     return {
       ok: true as const,
-      events: this.closing ? [] : this.ingestCodexSnapshot(observations),
+      events,
     };
   }
 
@@ -475,9 +482,7 @@ export class QuotaPieService {
       .map((profile) => ({ account: profile.id, ...(this.codexPollState.get(profile.id) ?? { count: 0, error: null }) }));
   }
 
-  analyses(nowMs = Date.now(), provider?: Provider): WindowAnalysis[] {
-    const sinceMs = analysisHistoryStart(this.config, nowMs);
-    const recentRawSinceMs = nowMs - Math.max(this.config.profile.recentLookbackMinutes, this.config.alerts.rapidWindowMinutes) * 60_000;
+  private currentObservations(provider?: Provider): QuotaObservation[] {
     const latestWindows = this.db.latestAll();
     const codexEpochs = new Map<string, unknown>();
     for (const item of [...latestWindows].sort((a, b) => b.observedAtMs - a.observedAtMs)) {
@@ -489,7 +494,17 @@ export class QuotaPieService {
       (provider == null || latest.provider === provider) &&
       (latest.provider !== "codex" || latest.metadata?.collectorEpoch === codexEpochs.get(latest.account)) &&
       this.isEnabledAccount(latest.provider, latest.account)
-    )).map((latest) => {
+    ));
+  }
+
+  private currentQuotaWindows(nowMs: number): WindowAnalysis[] {
+    return this.currentObservations().map(latest => analyzeWindow(latest, [], this.config, nowMs));
+  }
+
+  analyses(nowMs = Date.now(), provider?: Provider): WindowAnalysis[] {
+    const sinceMs = analysisHistoryStart(this.config, nowMs);
+    const recentRawSinceMs = nowMs - Math.max(this.config.profile.recentLookbackMinutes, this.config.alerts.rapidWindowMinutes) * 60_000;
+    return this.currentObservations(provider).map((latest) => {
       const history = this.db.analysisHistory(
         latest.provider,
         latest.account,
@@ -1243,14 +1258,16 @@ export class QuotaPieService {
 
   publishWorkBoundary(nowMs = Date.now(), analysed?: WindowAnalysis[]): void {
     try {
-      writeWorkBoundary(buildWorkBoundary(this.accountStates(nowMs, analysed), this.resumeTasks.active(), this.config, nowMs));
+      writeWorkBoundary(buildWorkBoundary(this.accountStates(nowMs, analysed ?? this.currentQuotaWindows(nowMs)), this.resumeTasks.active(), this.config, nowMs));
     } catch (error) {
       console.error(`[quotapie] work-state.json publish failed: ${String(error)}`);
     }
   }
 
   async publishBoundary(nowMs = Date.now(), analysed?: WindowAnalysis[]): Promise<void> {
-    this.publishWorkBoundary(nowMs, analysed);
+    // A push can arrive while this tick awaits alerts/jobs. Never overwrite its
+    // routing protection with the older analysis captured at tick start.
+    this.publishWorkBoundary();
     try {
       const accounts = this.accountStates(nowMs, analysed);
       const document = buildQuotaBoundary(
