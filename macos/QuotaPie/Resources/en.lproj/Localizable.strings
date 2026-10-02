@@ -199,14 +199,14 @@
 "signal.withdrawn" = "Codex reset signal withdrawn";
 "signal.message.relay" = "Public feed · %@: %@ — Check your account. %@";
 "signal.message.direct" = "%@: %@ — Check your account. %@";
-"signal.coverage.direct" = "X · Tibo, VB, Dominik, OpenAIDevs, OpenAI";
+"signal.coverage.direct" = "Direct X collection · OpenAI and Claude accounts";
 "signal.coverage.relay" = "Via Reset Beacon · partial coverage, X originals not verified";
 "signal.health.waiting" = "Waiting for first collection";
 "signal.health.error" = "Collection failed · showing saved signals";
 "signal.health.stale" = "Collection is stale · showing saved signals";
 "signal.health.off" = "Signal collection off";
 "signal.checked" = "Last collection check %@";
-"signal.empty" = "No reset signals collected yet";
+"signal.empty" = "No usage news collected yet";
 "signal.source" = "View on X";
 "signal.kind.banked" = "Banked reset credit";
 "signal.kind.direct" = "Direct reset";
@@ -273,7 +273,7 @@
 "overview.awakeEnabled" = "Keep awake enabled";
 "overview.alertsOff" = "Alerts off";
 "overview.activityDetail" = "Activity details";
-"overview.resetNews" = "Reset news";
+"overview.resetNews" = "Usage news";
 "overview.history" = "History ›";
 "overview.original" = "Source ↗";
 "signal.summary.withdrawn" = "Reset news corrected or withdrawn";
@@ -570,3 +570,20 @@
 "pool.settings.unavailable" = "Register at least two Codex accounts in the account pool to set reserves.";
 "pool.settings.blocked" = "Requests paused to preserve your remaining quota. Review account reserves in Settings.";
 "pool.settings.stale" = "Requests paused until current quota can be checked.";
+
+"signal.credits" = "%@ credit news";
+"signal.limits" = "%@ usage allowance news";
+"signal.claude.possible" = "Possible Claude reset";
+"signal.claude.announced" = "Claude reset announced";
+"signal.claude.reported" = "Claude reset reported";
+"signal.claude.updated" = "Claude reset update";
+"signal.claude.withdrawn" = "Claude reset withdrawn";
+"signal.summary.credits" = "Credit grant news · account eligibility unverified";
+"signal.summary.limits" = "Usage allowance change news";
+"signal.kind.credits" = "Credits";
+"signal.kind.limits" = "Usage allowance";
+"signal.via.claudereset" = "Via Claude Reset Tracker · original unverified";
+"signal.via.resetradar" = "Via Reset Radar · original unverified";
+"signal.coverage.claude-linked-announcements" = "Claude reset records with official post links · curated summaries";
+"signal.coverage.claude-linked-benefits" = "Claude credit and allowance records with official post links · forecasts excluded";
+"signal.coverage.watched-accounts" = "Direct X collection · OpenAI and Claude accounts";

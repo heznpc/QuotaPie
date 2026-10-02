@@ -27,7 +27,7 @@ export class ResetSignalStore {
         const prior = this.list(200).find(other => other.id === s.id);
         const key = `${s.id}:${s.fingerprint}`;
         if (this.storage.db.query<{ id: string }, [string]>("SELECT id FROM reset_signals WHERE id=?").get(key)) {
-          const priority = { "public-feed": 1, "codexreset": 2, "x-api": 3 };
+          const priority = { "public-feed": 1, "resetradar": 1, "claudereset": 2, "codexreset": 2, "x-api": 3 };
           if (prior?.fingerprint === s.fingerprint && priority[s.observedVia] > (priority[prior.observedVia] ?? 0)) {
             this.storage.db.run("UPDATE reset_signals SET payload=? WHERE id=?",
               [JSON.stringify({ ...s, detectedAtMs: prior.detectedAtMs }), key]);

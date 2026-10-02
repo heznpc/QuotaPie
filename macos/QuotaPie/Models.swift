@@ -243,7 +243,10 @@ struct LocalizedMessagePayload: Decodable {
             return [to, detail, label == "?" ? Strings.t("model.notice.unknown") : label]
         case "model.notice.failed":
             return required("toLabel", "detail")
-        case "signal.possible", "signal.announced", "signal.reported", "signal.updated", "signal.withdrawn":
+        case "signal.credits", "signal.limits":
+            return required("provider")
+        case "signal.claude.possible", "signal.claude.announced", "signal.claude.reported", "signal.claude.updated", "signal.claude.withdrawn",
+             "signal.possible", "signal.announced", "signal.reported", "signal.updated", "signal.withdrawn":
             return []
         case "signal.message.relay", "signal.message.direct":
             return required("source", "detail", "url")
@@ -678,7 +681,7 @@ struct ResetSourceHealth: Decodable, Identifiable {
     let error: String?
     let examinedPosts: Int?
     let latestPostAtMs: Double?
-    var title: String { id == "public-feed" ? "Reset Beacon" : id == "codexreset" ? "Codex Reset Monitor" : "X API" }
+    var title: String { id == "public-feed" ? "Reset Beacon" : id == "codexreset" ? "Codex Reset Monitor" : id == "claudereset" ? "Claude Reset Tracker" : id == "resetradar" ? "Reset Radar" : "X API" }
 }
 
 struct CompactionPayload: Decodable {
@@ -766,12 +769,14 @@ struct ResetSignal: Decodable, Identifiable {
     let targetAtMs: Double?
     var detectedAtMs: Double? = nil
     var contextText: String? = nil
+    var provider: String? = nil
+    var benefitKind: String? = nil
 
     var safeSourceURL: URL? {
         guard let url = URL(string: sourceUrl), url.scheme == "https", url.host == "x.com",
               url.user == nil, url.password == nil, url.port == nil,
               url.path == "/\(author)/status/\(id)", id.allSatisfy({ $0.isNumber }), !id.isEmpty,
-              ["thsottiaux", "reach_vb", "dkundel", "openaidevs", "openai"].contains(author.lowercased())
+              ["thsottiaux", "reach_vb", "dkundel", "openaidevs", "openai", "claudedevs", "claudeai", "anthropicai", "lydiahallie"].contains(author.lowercased())
         else { return nil }
         return url
     }

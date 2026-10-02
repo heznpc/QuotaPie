@@ -154,7 +154,7 @@ final class OverviewTests: XCTestCase {
         XCTAssertEqual(post.detectedAtMs, detected)
         XCTAssertEqual(post.contextText, "you owe us a banked reset")
         XCTAssertEqual(post.publishedAtMs, published)
-        XCTAssertEqual(post.publicationText, "@openai · " + Strings.t("signal.published", ResetSignal.stamp(published)))
+        XCTAssertEqual(post.publicationText, "Codex · @openai · " + Strings.t("signal.published", ResetSignal.stamp(published)))
         XCTAssertFalse(post.publicationText.contains(ResetSignal.stamp(detected)))
         let legacy = payload.replacingOccurrences(of: ",\"detectedAtMs\":\(detected),\"contextText\":\"you owe us a banked reset\"", with: "")
         let oldPost = try decoder.decode(ResetSignal.self, from: Data(legacy.utf8))
@@ -251,4 +251,18 @@ extension OverviewTests {
         model.reconcileRunningCodexAccounts(frontmost: nil, running: [], profiles: profiles)
         XCTAssertEqual(model.selectedAccount?.id, "codex/default")
     }
+    func testClaudeCreditNewsKeepsProviderTypeAndPrimaryLink() throws {
+        let raw = """
+        {"id":"125","fingerprint":"credit","author":"ClaudeDevs","sourceUrl":"https://x.com/ClaudeDevs/status/125",
+         "text":"One-time cloud-session credit","publishedAtMs":1000,"state":"reported","resetKind":"unknown",
+         "observedVia":"resetradar","provider":"claude","benefitKind":"credits"}
+        """
+        let signal = try JSONDecoder().decode(ResetSignal.self, from: Data(raw.utf8))
+        XCTAssertNotNil(signal.safeSourceURL)
+        XCTAssertEqual(signal.summaryKey(nowMs: 2000), "signal.summary.credits")
+        XCTAssertEqual(signal.classificationKey, "signal.summary.credits")
+        XCTAssertTrue(signal.publicationText.hasPrefix("Claude · @ClaudeDevs"))
+        XCTAssertEqual(signal.sourceStatusKey, "signal.via.resetradar")
+    }
+
 }

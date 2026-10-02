@@ -101,7 +101,7 @@ describe("public feed", () => {
     const collector = new ResetSignalCollector(store,{...DEFAULT_CONFIG.resetSignals,enabled:true},mock);
     try {
       await collector.poll(true,now); expect(collector.status(now).state).toBe("partial");
-      await collector.poll(false,now+1000); expect(calls).toBe(2);
+      await collector.poll(false,now+1000); expect(calls).toBe(4);
       await collector.poll(true,now+300000);
       expect(store.health().cursorMs).toBe(now);
       expect(collector.status(now+300000).state).toBe("error");
@@ -111,7 +111,7 @@ describe("public feed", () => {
   });
 });
 
-test("X source includes all five accounts, replies, pagination and reference lookup", async () => {
+test("X source includes OpenAI and Claude accounts, replies, pagination and reference lookup", async () => {
   const urls: URL[]=[];
   const user={id:"1",username:"thsottiaux"};
   const tweet=(id:string,text:string,refs:unknown[]=[])=>({id,text,author_id:"1",created_at:new Date(now).toISOString(),conversation_id:"100",referenced_tweets:refs});

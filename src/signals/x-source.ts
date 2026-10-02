@@ -1,13 +1,15 @@
 import { readFileSync, statSync } from "node:fs";
 import { resolveUserPath } from "../config";
 
-export const WATCHED_ACCOUNTS = ["thsottiaux", "reach_vb", "dkundel", "OpenAIDevs", "OpenAI"] as const;
+export const WATCHED_ACCOUNTS = ["thsottiaux", "reach_vb", "dkundel", "OpenAIDevs", "OpenAI", "ClaudeDevs", "claudeai", "AnthropicAI", "lydiahallie"] as const;
 export interface PublicPost {
   id: string; author: string; text: string; createdAtMs: number;
   conversationId: string; references: { id: string; type: string }[];
 }
 export interface SourceBatch { posts: PublicPost[]; context: PublicPost[] }
 const watched = new Set(WATCHED_ACCOUNTS.map(s => s.toLowerCase()));
+export const providerForAuthor = (author: string): "codex" | "claude" =>
+  ["claudedevs", "claudeai", "anthropicai", "lydiahallie"].includes(author.toLowerCase()) ? "claude" : "codex";
 export const isWatched = (author: string) => watched.has(author.toLowerCase());
 
 export function readXToken(file: string): string {

@@ -3,6 +3,7 @@ import { ResetSignalStore, type SourceHealth } from "../storage/reset-signal-sto
 import { classifyPost, type ResetSignal } from "./classify";
 import { fetchXPosts, readXToken, WATCHED_ACCOUNTS } from "./x-source";
 import { fetchPublicFeed } from "./public-feed";
+import { fetchClaudeNews } from "./claude-source";
 import { fetchCodexReset } from "./codexreset-source";
 
 export class ResetSignalCollector {
@@ -37,7 +38,9 @@ export class ResetSignalCollector {
     return [
       { id: "public-feed", coverage: "reset-beacon-selection" },
       { id: "codexreset", coverage: "codexreset-quoted-posts" },
-      ...(this.config.tokenFile ? [{ id: "x-api", coverage: "five-accounts" }] : []),
+      { id: "claudereset", coverage: "claude-linked-announcements" },
+      { id: "resetradar", coverage: "claude-linked-benefits" },
+      ...(this.config.tokenFile ? [{ id: "x-api", coverage: "watched-accounts" }] : []),
     ];
   }
   private async collect(nowMs: number) {
@@ -60,6 +63,8 @@ export class ResetSignalCollector {
           latestPostAtMs = batch.posts.length ? Math.max(...batch.posts.map(p => p.createdAtMs)) : null;
         } else if (def.id === "codexreset") {
           ({ signals, coverage, examinedPosts, latestPostAtMs } = await fetchCodexReset(nowMs, this.fetcher));
+        } else if (def.id === "claudereset" || def.id === "resetradar") {
+          signals = await fetchClaudeNews(def.id, nowMs, this.fetcher);
         } else signals = await fetchPublicFeed(nowMs, this.fetcher);
         const fresh = signals.filter(s => !saved.fingerprints.includes(s.fingerprint));
         const next: SourceHealth = { ...saved, coverage, examinedPosts, latestPostAtMs,
@@ -75,7 +80,7 @@ export class ResetSignalCollector {
       }
     }));
     // Deterministic selection avoids racing two relays into different revisions.
-    const priority = { "public-feed": 1, "codexreset": 2, "x-api": 3 };
+    const priority = { "public-feed": 1, "resetradar": 1, "claudereset": 2, "codexreset": 2, "x-api": 3 };
     const chosen = new Map<string, ResetSignal>();
     for (const signal of results.flatMap(r => r.signals).sort((a, b) => priority[a.observedVia] - priority[b.observedVia])) {
       chosen.set(signal.id, signal);

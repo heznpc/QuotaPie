@@ -34,7 +34,9 @@ test("captures the September 12 midnight announcement without inferring timezone
 test("request success, partial coverage and new evidence are separate; silence alone is not failure", async () => {
   const storage=new QuotaStorage(":memory:"); const store=new ResetSignalStore(storage); const now=Date.now();
   let failed=false;
-  const fetcher=(async(input:any)=> String(input).includes("resetbeacon") ? Response.json(emptyFeed(now))
+  const fetcher=(async(input:any)=> String(input).includes("claudereset.org") ? Response.json({schema_version:1,events:[]})
+    : String(input).includes("resetradar.com") ? Response.json({version:"1.0.0",events:[]})
+    : String(input).includes("resetbeacon") ? Response.json(emptyFeed(now))
     : failed ? new Response("private error",{status:503}) : new Response(monitoredPage([
       monitoredPost("Codex reset tomorrow",now-4*86400000), monitoredPost("Unrelated new post",now,"101")
     ]))) as typeof fetch;
