@@ -2,11 +2,21 @@ import { readFile, realpath, rename, unlink, writeFile } from "node:fs/promises"
 import { randomUUID } from "node:crypto";
 import { join, relative, resolve } from "node:path";
 
-interface RelaySettingsEntry {
+export interface RelaySettingsEntry {
   path: string;
   raw: string;
   settings: Record<string, any>;
   current: boolean;
+  required: boolean;
+}
+
+/** Reuse a validated scan without making broken historical settings fatal. */
+export async function projectRelaySettings<T>(entries: RelaySettingsEntry[], inspect: (entry: RelaySettingsEntry) => Promise<T>): Promise<T[]> {
+  const results: Array<T | undefined> = await Promise.all(entries.map(async entry => {
+    try { return await inspect(entry); }
+    catch (error) { if (entry.required) throw error; return undefined; }
+  }));
+  return results.filter((entry): entry is T => entry !== undefined);
 }
 
 /** Current/profile settings are required; unreadable retired generations are optional. */
@@ -30,7 +40,7 @@ export async function inspectRelaySettings<T>(root: string, inspect: (entry: Rel
         const raw = await readFile(path, "utf8");
         const settings = JSON.parse(raw);
         if (!settings || typeof settings !== "object" || Array.isArray(settings)) throw new Error("invalid_installation");
-        results[index] = await inspect({ path, raw, settings, current: index === 0 });
+        results[index] = await inspect({ path, raw, settings, current: index === 0, required: index < active.length });
       } catch (error) {
         if (index < active.length) throw error;
         // Missing/corrupt historical files must not disable the active installation.

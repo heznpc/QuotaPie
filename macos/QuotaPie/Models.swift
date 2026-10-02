@@ -65,7 +65,8 @@ struct PoolRequestRejection: Decodable, Identifiable {
         switch code {
         case "pool_lineage_unavailable", "pool_lineage_invalid": return "pool.history.lineage"
         case "pool_thread_identity_required": return "pool.history.thread"
-        case "pool_source_quota_exhausted", "pool_account_cooldown": return "pool.history.quota"
+        case "pool_source_quota_exhausted", "pool_target_quota_exhausted", "pool_account_cooldown": return "pool.history.quota"
+        case "pool_storage_busy": return "pool.history.busy"
         case "pool_reserve_reached": return "pool.history.reserve"
         case "pool_reserve_quota_unavailable": return "pool.history.quotaUnknown"
         case "pool_source_auth_unavailable", "pool_target_auth_unavailable", "pool_auth_cooldown": return "pool.history.auth"

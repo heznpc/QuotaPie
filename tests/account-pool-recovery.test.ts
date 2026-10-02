@@ -47,6 +47,7 @@ test("an exhausted binding moves full history to an account with capacity", asyn
   await (await c.request(thread)).text();
   c.accounts[1]!.remaining = 0;
   c.accounts[0]!.remaining = 95;
+  c.advance(1);
   const resumed = await c.request(thread);
   expect(resumed.status).toBe(200); await resumed.text();
   await (await c.request(randomUUID())).text();
@@ -87,6 +88,10 @@ test("real rate limits retain their account and expose bounded cooldown rejectio
   expect(JSON.stringify(c.events)).not.toContain("other-token");
   c.advance(60_001);
   c.accounts[1]!.remaining = 0;
+  const exhausted = await c.request(thread); expect(exhausted.status).toBe(409);
+  expect((await exhausted.json() as any).error.code).toBe("pool_target_quota_exhausted");
+  expect(calls).toBe(1);
+  c.advance(1); c.accounts[1]!.remaining = 35;
   const recovered = await c.request(thread); expect(recovered.status).toBe(200); await recovered.text();
   expect(calls).toBe(2);
   expect(c.events.at(-1)?.accountRouting?.account).toBe("other");

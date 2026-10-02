@@ -10,7 +10,7 @@ import { portableReplay, filterForeignReasoning } from "./account-replay";
 export interface PoolPolicy { enabled: boolean; accounts: string[]; reservePercent?: Record<string, number> }
 export interface PoolAccount {
   id: string; label: string; identity: string; accessToken: string; upstreamAccount: string;
-  tokenExpiresAt: number; models: string[]; remaining: number | null; validUntil: number;
+  tokenExpiresAt: number; models: string[]; remaining: number | null; validUntil: number; observedAtMs?: number;
 }
 export interface PoolRoute { sourceAccount: string; account: string; accountLabel: string; reason: "new" | "pinned" | "existing" | "source_fallback" | "recovered" | "reserve"; previousAccountLabel?: string }
 export class PoolError extends Error {
@@ -89,9 +89,15 @@ export function poolAccounts(config: AppConfig, boundaryPath = defaultWorkBounda
         w.freshness === "fresh" && Number.isFinite(w.remainingPercent) && w.remainingPercent >= 0 && w.remainingPercent <= 100 &&
         Number.isFinite(w.observedAtMs) && w.observedAtMs >= stamp.mtimeMs && w.observedAtMs <= now + 5000 &&
         Number.isFinite(w.validUntilMs) && w.validUntilMs > now && (w.resetsAtMs == null || w.resetsAtMs > now));
+      const remaining = fresh ? Math.min(...windows.map((w: any) => w.remainingPercent)) : null;
+      // Remember the newest exhausted window; recovery needs positive evidence
+      // strictly newer for every window so old relay snapshots cannot reset it.
+      const observedAtMs = fresh ? remaining === 0
+        ? Math.max(...windows.filter((w: any) => w.remainingPercent === 0).map((w: any) => w.observedAtMs))
+        : Math.min(...windows.map((w: any) => w.observedAtMs)) : undefined;
       return [{ id: profile.id, label: profile.label, identity, accessToken: token, upstreamAccount,
-        tokenExpiresAt: claims.exp * 1000, models, remaining: fresh ? Math.min(...windows.map((w: any) => w.remainingPercent)) : null,
-        validUntil: fresh ? Math.min(...windows.map((w: any) => w.validUntilMs)) : 0 }];
+        tokenExpiresAt: claims.exp * 1000, models, remaining,
+        validUntil: fresh ? Math.min(...windows.map((w: any) => w.validUntilMs)) : 0, observedAtMs }];
     } catch { return []; }
   });
 }
@@ -126,11 +132,14 @@ function hasUnverifiedAttachments(body: any): boolean {
 }
 
 type Binding = { account: string; identity: string; source_identity: string; label: string; foreignReasoning?: string[] };
+type PoolSelectInput = { threadId: string | null; requestId: string; body: unknown; model: string; headers: Headers };
 type SourceOnlyReplay = { sourceReplay: NonNullable<ReturnType<typeof portableReplay>> };
 export class AccountPool {
   private db: Database;
+  private closed = false;
+  private readonly pendingWrites = new Map<string, Promise<void>>();
   constructor(private options: {
-    path?: string; sourceAccount: string; accounts: () => PoolAccount[]; policy: () => PoolPolicy; now?: () => number; forkParent?: (threadId: string) => CodexForkParentResult;
+    path?: string; sourceAccount: string; accounts: () => PoolAccount[]; policy: () => PoolPolicy; now?: () => number; contentionWaitMs?: number; forkParent?: (threadId: string) => CodexForkParentResult;
   }) {
     const path = options.path ?? poolDatabasePath();
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -151,12 +160,75 @@ export class AccountPool {
     this.db.run("CREATE INDEX IF NOT EXISTS requests_thread_at_ms ON requests(source,thread,at_ms)");
     this.db.run("CREATE INDEX IF NOT EXISTS requests_rejected_at_ms ON requests(at_ms) WHERE state='rejected'");
     this.db.run("CREATE TABLE IF NOT EXISTS errors (source TEXT PRIMARY KEY, code TEXT NOT NULL, at_ms INTEGER NOT NULL)");
+    this.db.run(`CREATE TABLE IF NOT EXISTS quota_observations (identity TEXT PRIMARY KEY, observed_ms INTEGER NOT NULL, exhausted INTEGER NOT NULL)`);
     this.db.run(`CREATE TABLE IF NOT EXISTS source_credentials (source TEXT NOT NULL, identity TEXT NOT NULL,
       digest TEXT NOT NULL, expires_ms INTEGER NOT NULL, PRIMARY KEY(source,identity,digest))`);
-    this.rememberSource(this.options.accounts().find(a => a.id === this.options.sourceAccount));
+    const initialAccounts = this.options.accounts();
+    this.rememberSource(initialAccounts.find(a => a.id === this.options.sourceAccount), initialAccounts);
     if (path !== ":memory:") for (const p of [path, path + "-wal", path + "-shm"]) if (existsSync(p)) chmodSync(p, 0o600);
   }
-  close() { this.db.close(); }
+  close() {
+    if (this.closed) return;
+    // Shutdown does not wait for best-effort telemetry. Pending async operations
+    // reject on their next attempt, without accessing a closed connection.
+    this.closed = true;
+    this.db.close();
+  }
+  // SQLite's native busy timeout blocks Bun's entire event loop, including
+  // unrelated response streams. Retry only transactions that never dispatched
+  // inference, restoring the connection setting before yielding to other work.
+  private async withContentionRetry<T>(operation: () => T, signal?: AbortSignal): Promise<T> {
+    const deadline = performance.now() + (this.options.contentionWaitMs ?? 3000);
+    let delay = 5;
+    while (true) {
+      signal?.throwIfAborted();
+      if (this.closed) throw new PoolError("pool_closed");
+      const timeout = this.db.query<{ timeout: number }, []>("PRAGMA busy_timeout").get()!.timeout;
+      try {
+        this.db.run("PRAGMA busy_timeout=0");
+        return operation();
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        if (!code?.startsWith("SQLITE_BUSY") && !code?.startsWith("SQLITE_LOCKED")) throw error;
+        if (performance.now() >= deadline) throw new PoolError("pool_storage_busy", 503, 1);
+      } finally {
+        this.db.run(`PRAGMA busy_timeout=${timeout}`);
+      }
+      const pause = Math.min(delay, Math.max(0, deadline - performance.now()));
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = () => { clearTimeout(timer); reject(signal!.reason); };
+        const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(); }, pause);
+        signal?.addEventListener("abort", onAbort, { once: true });
+      });
+      delay = Math.min(delay * 2, 50);
+    }
+  }
+  // Status and terminal writes for one request retain their order without
+  // making the response stream wait for telemetry or unrelated requests.
+  private enqueueWrite(requestId: string, operation: () => void): Promise<void> {
+    const pending = (this.pendingWrites.get(requestId) ?? Promise.resolve())
+      .catch(() => {}).then(() => this.withContentionRetry(operation));
+    this.pendingWrites.set(requestId, pending);
+    void pending.finally(() => {
+      if (this.pendingWrites.get(requestId) === pending) this.pendingWrites.delete(requestId);
+    }).catch(() => {});
+    return pending;
+  }
+  selectAsync(input: PoolSelectInput, signal?: AbortSignal): Promise<ReturnType<AccountPool["select"]>> {
+    return this.withContentionRetry(() => this.select(input), signal);
+  }
+  canRecoverAsync(account: string, model: string, body: unknown, signal?: AbortSignal): Promise<boolean> {
+    return this.withContentionRetry(() => this.canRecover(account, model, body), signal);
+  }
+  responseAsync(requestId: string, identity: string, status: number, retryAfter: string | null, digest?: string): Promise<void> {
+    return this.enqueueWrite(requestId, () => this.response(requestId, identity, status, retryAfter, digest));
+  }
+  finishAsync(requestId: string, state: string): Promise<void> {
+    return this.enqueueWrite(requestId, () => this.finish(requestId, state));
+  }
+  rejectAsync(code: string, context?: { requestId: string; threadId: string | null; status: number }): Promise<void> {
+    return this.enqueueWrite(context?.requestId ?? "rejection", () => this.reject(code, context));
+  }
   private now() { return this.options.now?.() ?? Date.now(); }
   private reserve(account: PoolAccount): number {
     const policy = this.options.policy();
@@ -180,18 +252,33 @@ export class AccountPool {
       // Leave a small margin before entering a protected account, avoiding
       // repeated transfers when quota observations hover around its threshold.
       (this.reserve(a) === 0 || a.remaining >= Math.min(100, this.reserve(a) + 5)) &&
+      !this.db.query("SELECT 1 FROM quota_observations WHERE identity=? AND exhausted=1").get(a.identity) &&
       !this.db.query("SELECT 1 FROM cooldowns WHERE identity=? AND until_ms>?").get(a.identity, now) &&
       !this.db.query("SELECT 1 FROM auth_cooldowns WHERE identity=? AND digest=? AND until_ms>?").get(a.identity, credentialDigest(a.accessToken), now))
       .sort((a,b) => Number(b.id === this.options.sourceAccount) - Number(a.id === this.options.sourceAccount) || b.remaining! - a.remaining! || a.id.localeCompare(b.id));
   }
   canRecover(account: string, model: string, body: unknown): boolean {
-    return this.options.policy().enabled && SHARED_QUOTA_MODELS.has(model) && !!portableReplay(body) &&
-      this.eligible(this.options.accounts(), model, account).length > 0;
+    if (!this.options.policy().enabled || !SHARED_QUOTA_MODELS.has(model) || !portableReplay(body)) return false;
+    const accounts = this.options.accounts();
+    this.rememberSource(accounts.find(a => a.id === this.options.sourceAccount), accounts);
+    return this.eligible(accounts, model, account).length > 0;
   }
-  private rememberSource(source: PoolAccount | undefined) {
+  private rememberSource(source: PoolAccount | undefined, accounts: PoolAccount[]) {
     const now = this.now();
     this.db.transaction(() => {
       this.db.query("DELETE FROM source_credentials WHERE expires_ms <= ?").run(now + 30_000);
+      // Losing fresh telemetry is not evidence that spent quota recovered.
+      // Identity survives token refresh; a new login has its own protection.
+      for (const account of accounts) if (account.validUntil > now && account.remaining != null) {
+        const observedAt = account.observedAtMs ?? now;
+        // Conflicting observations with the same timestamp retain exhaustion.
+        // Only a strictly newer positive observation can permit spending again.
+        if (account.remaining >= 0)
+          this.db.query(`INSERT INTO quota_observations VALUES (?,?,?) ON CONFLICT(identity)
+            DO UPDATE SET observed_ms=excluded.observed_ms,exhausted=excluded.exhausted
+            WHERE excluded.observed_ms>observed_ms OR (excluded.observed_ms=observed_ms AND excluded.exhausted>exhausted)`)
+            .run(account.identity, observedAt, Number(account.remaining === 0));
+      }
       if (source && source.tokenExpiresAt > now + 30_000)
         this.db.query("INSERT OR REPLACE INTO source_credentials VALUES (?,?,?,?)")
           .run(source.id, source.identity, credentialDigest(source.accessToken), source.tokenExpiresAt);
@@ -221,13 +308,13 @@ export class AccountPool {
     }
     throw new PoolError("pool_lineage_invalid", 409);
   }
-  select(input: { threadId: string | null; requestId: string; body: unknown; model: string; headers: Headers }): { route: PoolRoute; headers: Headers; identity: string; credentialDigest: string; body: unknown } | null {
+  select(input: PoolSelectInput): { route: PoolRoute; headers: Headers; identity: string; credentialDigest: string; body: unknown } | null {
     const policy = this.options.policy(), sourceID = this.options.sourceAccount, thread = input.threadId;
     if (!thread) { if (policy.enabled && policy.accounts.includes(sourceID)) throw new PoolError("pool_thread_identity_required", 409); return null; }
     const now = this.now(), accounts = this.options.accounts(), source = accounts.find(a => a.id === sourceID);
     // File observations must survive a later routing rejection. Caller-supplied
     // credentials are never added to this trusted history.
-    this.rememberSource(source);
+    this.rememberSource(source, accounts);
     const execute = this.db.transaction(() => {
       let saved = this.db.query<Binding, [string,string]>("SELECT * FROM bindings WHERE source=? AND thread=?").get(sourceID, thread);
       let sourceReplay: SourceOnlyReplay["sourceReplay"] | undefined;
@@ -253,6 +340,7 @@ export class AccountPool {
         .get(sourceID, source.identity, digest, now + 30_000);
       if (input.headers.get("chatgpt-account-id") !== source.upstreamAccount || !known)
         throw new PoolError("pool_source_identity_mismatch", 401);
+      const isExhausted = (a: PoolAccount) => !!this.db.query("SELECT 1 FROM quota_observations WHERE identity=? AND exhausted=1").get(a.identity);
       const cooldownUntil = (a: PoolAccount) => this.db.query<{until_ms:number}, [string]>("SELECT until_ms FROM cooldowns WHERE identity=?").get(a.identity)?.until_ms ?? 0;
       const authCooldown = (a: PoolAccount) => this.db.query<{status:number;until_ms:number}, [string,string,number]>(
         "SELECT status,until_ms FROM auth_cooldowns WHERE identity=? AND digest=? AND until_ms>?")
@@ -288,7 +376,7 @@ export class AccountPool {
           }
         }
         if (reason === "pinned" && policy.enabled && SHARED_QUOTA_MODELS.has(input.model) &&
-            (cooldownUntil(selected) > now || selected.remaining === 0 && selected.validUntil > now || this.reserveBlock(selected))) {
+            (cooldownUntil(selected) > now || isExhausted(selected) || this.reserveBlock(selected))) {
           const replacement = this.eligible(accounts, input.model, selected.id)[0];
           if (replacement) {
             const replay = portableReplay(replayBody);
@@ -297,7 +385,7 @@ export class AccountPool {
               reason = this.reserveBlock(selected) && cooldownUntil(selected) <= now ? "reserve" : "recovered";
               selected = replacement; replayBody = replay.body;
               foreignReasoning = [...new Set([...(foreignReasoning ?? []), ...replay.fingerprints])];
-            } else if (cooldownUntil(selected) > now || selected.remaining === 0 || this.reserveBlock(selected)) {
+            } else if (cooldownUntil(selected) > now || isExhausted(selected) || this.reserveBlock(selected)) {
               throw new PoolError("pool_recovery_requires_full_history", 409);
             }
           }
@@ -305,18 +393,18 @@ export class AccountPool {
       } else if (sourceReplay || !isFreshTextTurn(input.body) || !SHARED_QUOTA_MODELS.has(input.model)) { selected = source; reason = "existing"; }
       else {
         // Unknown source quota is not permission to silently change the login.
-        selected = !this.reserveBlock(source) && (source.remaining == null || source.remaining > 0) && cooldownUntil(source) <= now && !authCooldown(source)
+        selected = !isExhausted(source) && !this.reserveBlock(source) && (source.remaining == null || source.remaining > 0) && cooldownUntil(source) <= now && !authCooldown(source)
           ? source : this.eligible(accounts, input.model)[0];
-        // Unknown or zero local quota must not disable the caller's own login.
-        // Only cross-account assignment requires fresh positive quota evidence.
+        // Never-observed quota retains the caller's login. Confirmed exhaustion
+        // remains protected, and a different account needs fresh positive quota.
         reason = selected ? (this.reserveBlock(source) && selected.id !== source.id ? "reserve" : "new") : "source_fallback";
         selected ??= source;
       }
       if (selected.tokenExpiresAt <= now + 30_000) throw new PoolError("pool_target_auth_unavailable", 401);
-      // A confirmed exhausted source must not silently spend paid credits when
+      // A confirmed exhausted identity must not silently spend paid credits when
       // this request cannot be moved to a registered account with quota.
-      if (policy.enabled && selected.id === sourceID && selected.remaining === 0 && selected.validUntil > now)
-        throw new PoolError("pool_source_quota_exhausted", 409);
+      if (policy.enabled && isExhausted(selected))
+        throw new PoolError(selected.id === sourceID ? "pool_source_quota_exhausted" : "pool_target_quota_exhausted", 409);
       const reserveBlock = this.reserveBlock(selected);
       if (reserveBlock) throw new PoolError(reserveBlock, 409);
       const until = cooldownUntil(selected);
@@ -345,21 +433,23 @@ export class AccountPool {
     return execute.immediate();
   }
   response(requestId: string, identity: string, status: number, retryAfter: string | null, digest?: string) {
-    this.db.query("UPDATE requests SET status=? WHERE id=?").run(status, requestId);
-    if ([401,403].includes(status) && digest) {
-      this.db.query(`INSERT INTO auth_cooldowns VALUES (?,?,?,?) ON CONFLICT(identity,digest)
-        DO UPDATE SET status=excluded.status,until_ms=MAX(until_ms,excluded.until_ms)`)
-        .run(identity, digest, status, this.now() + 60_000);
-    } else if ([401,403,429].includes(status)) {
-      // Missing digests retain legacy behavior for older callers. New relays
-      // quarantine authentication failures by token so refresh can recover.
-      const seconds = Number(retryAfter);
-      const until = status === 429 && retryAfter != null
-        ? Number.isFinite(seconds) ? this.now() + Math.max(1, Math.min(seconds, 86400)) * 1000 : Date.parse(retryAfter)
-        : NaN;
-      this.db.query("INSERT INTO cooldowns VALUES (?,?) ON CONFLICT(identity) DO UPDATE SET until_ms=MAX(until_ms,excluded.until_ms)")
-        .run(identity, Number.isFinite(until) && until > this.now() ? Math.min(until, this.now()+86400_000) : this.now() + 60_000);
-    }
+    this.db.transaction(() => {
+      this.db.query("UPDATE requests SET status=? WHERE id=?").run(status, requestId);
+      if ([401,403].includes(status) && digest) {
+        this.db.query(`INSERT INTO auth_cooldowns VALUES (?,?,?,?) ON CONFLICT(identity,digest)
+          DO UPDATE SET status=excluded.status,until_ms=MAX(until_ms,excluded.until_ms)`)
+          .run(identity, digest, status, this.now() + 60_000);
+      } else if ([401,403,429].includes(status)) {
+        // Missing digests retain legacy behavior for older callers. New relays
+        // quarantine authentication failures by token so refresh can recover.
+        const seconds = Number(retryAfter);
+        const until = status === 429 && retryAfter != null
+          ? Number.isFinite(seconds) ? this.now() + Math.max(1, Math.min(seconds, 86400)) * 1000 : Date.parse(retryAfter)
+          : NaN;
+        this.db.query("INSERT INTO cooldowns VALUES (?,?) ON CONFLICT(identity) DO UPDATE SET until_ms=MAX(until_ms,excluded.until_ms)")
+          .run(identity, Number.isFinite(until) && until > this.now() ? Math.min(until, this.now()+86400_000) : this.now() + 60_000);
+      }
+    }).immediate();
   }
   finish(requestId: string, state: string) {
     this.db.transaction(() => {

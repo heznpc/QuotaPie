@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { CompactionRequestEvent } from "./codex-compaction";
 import { CompactionPolicySettings, relayHealth } from "./compaction-policy-settings";
 import { TaskSavingsSettings } from "./task-savings-settings";
+import { inspectRelaySettings, type RelaySettingsEntry } from "./relay-settings";
 
 import { parseCompactionRequestEvent as event } from "../packages/quota-core/src/events.js";
 import { summarizeRequestEvents } from "../packages/quota-core/src/observations.js";
@@ -53,6 +54,12 @@ export class CompactionStatusReader {
         }
       } catch { /* First run or unreadable evidence is not proof of resumption. */ }
     }
+    // Validate the managed settings once for both policy projections. Configure
+    // operations still re-read them while holding the management lock.
+    let validatedEntries: RelaySettingsEntry[] | null = null;
+    try { validatedEntries = await inspectRelaySettings(this.root, async entry => entry); }
+    catch { /* Invalid current installation cannot expose configurable policies. */ }
+    const settingsByPath = new Map(validatedEntries?.map(entry => [entry.path, entry.settings]));
     // Older desktop tasks still use retired endpoints. Read every generation without restarting any.
     const directories = [this.root];
     try {
@@ -63,7 +70,7 @@ export class CompactionStatusReader {
     this.logs.retain(new Set(directories.map(directory => join(directory, "relay.log"))));
     const generations = await Promise.all(directories.map(async directory => {
       let settings: any;
-      try { settings = JSON.parse(await readFile(join(directory, "settings.json"), "utf8")); }
+      try { settings = settingsByPath.get(join(directory, "settings.json")) ?? JSON.parse(await readFile(join(directory, "settings.json"), "utf8")); }
       catch { return null; }
       const records = new Map<string, CompactionRequestEvent>();
       try {
@@ -104,9 +111,10 @@ export class CompactionStatusReader {
       } catch { /* Keep memory evidence if persistence is unavailable. */ }
       finally { await unlink(temp).catch(() => {}); }
     }
+    const healthByPath = new Map(installed.map(g => [g.path, g.health]));
     return { checkedAtMs: nowMs, generations: installed.length, reachable: installed.filter(g => g.reachable).length,
-      policy: await this.policy.status(new Map(installed.map(g => [g.path, g.health]))),
-      savings: {policy: await this.savingsPolicy.status(new Map(installed.map(g => [g.path, g.health]))), active: savingsRecords.filter(r=>r.active), recent: savingsRecords.filter(r=>!r.active)},
+      policy: validatedEntries ? await this.policy.status(healthByPath, validatedEntries) : null,
+      savings: {policy: validatedEntries ? await this.savingsPolicy.status(healthByPath, validatedEntries) : null, active: savingsRecords.filter(r=>r.active), recent: savingsRecords.filter(r=>!r.active)},
       active: records.filter(r => r.active), recent: records.filter(r => !r.active) };
   }
 }

@@ -2,6 +2,7 @@ import { localAnnouncementTime } from "./signals/time";
 import { connectProfileRelay } from "./profile-relay";
 import { connectCodexProfile } from "./profile-connection";
 import { ModelNotifications } from "./model-notifications";
+import { startSerialObserver } from "./serial-observer";
 import { poolStatus, configurePoolPolicy, PoolError } from "./account-pool";
 import { buildHeadline } from "./analytics";
 import { captureRuntimeIdentity } from "./runtime-identity";
@@ -315,12 +316,10 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
   const modelNotifications = new ModelNotifications(service.storage, service.alerts);
   const observeModels = () => compaction.status().then(() =>
     modelNotifications.observe(compaction.notificationEvents(), config, service.locale));
-  void observeModels().catch(() => {});
-  const observationTimer = setInterval(() => { void observeModels().catch(() => {}); }, 2000);
-  observationTimer.unref();
+  const stopObserving = startSerialObserver(observeModels);
   const stop = server.stop.bind(server);
   server.stop = ((closeActiveConnections?: boolean) => {
-    clearInterval(observationTimer);
+    stopObserving();
     return stop(closeActiveConnections);
   }) as typeof server.stop;
   return server;

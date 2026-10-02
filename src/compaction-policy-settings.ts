@@ -1,5 +1,5 @@
 import { validateCompactionRoute, type CompactionRoute } from "./codex-compaction-policy";
-import { inspectRelaySettings, replaceRelaySettings, withRelaySettingsLock } from "./relay-settings";
+import { inspectRelaySettings, projectRelaySettings, replaceRelaySettings, withRelaySettingsLock, type RelaySettingsEntry } from "./relay-settings";
 
 import { COMPACTION_MODELS } from "../packages/quota-core/src/codex-compaction-policy.js";
 export { COMPACTION_MODELS } from "../packages/quota-core/src/codex-compaction-policy.js";
@@ -27,8 +27,8 @@ export class CompactionPolicySettings {
   private busy = false;
   constructor(private root: string, private fetcher: typeof fetch = fetch) {}
 
-  private async inspect(healthByPath?: Map<string, any>) {
-    return inspectRelaySettings(this.root, async ({ path, raw, settings, current }) => {
+  private async inspect(healthByPath?: Map<string, any>, validatedEntries?: RelaySettingsEntry[]) {
+    const project = async ({ path, raw, settings, current }: RelaySettingsEntry) => {
       const saved = validateCompactionRoute(settings.route);
       let effective: CompactionRoute | null = null;
       let configurable = false;
@@ -38,12 +38,13 @@ export class CompactionPolicySettings {
         if (configurable) effective = validateCompactionRoute(health.route);
       } catch { /* Transport details can contain a capability. Never return them. */ }
       return { path, raw, settings, saved, effective, configurable, current };
-    });
+    };
+    return validatedEntries ? projectRelaySettings(validatedEntries, project) : inspectRelaySettings(this.root, project);
   }
 
-  async status(healthByPath?: Map<string, any>) {
+  async status(healthByPath?: Map<string, any>, validatedEntries?: RelaySettingsEntry[]) {
     try {
-      const entries = await this.inspect(healthByPath);
+      const entries = await this.inspect(healthByPath, validatedEntries);
       const current = entries[0]!;
       return { model: current.saved.to, effort: "low", models: COMPACTION_MODELS,
         configurable: current.configurable, generations: entries.length,

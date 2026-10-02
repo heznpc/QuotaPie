@@ -302,14 +302,13 @@ export class QuotaDatabase {
                s.used_percent, s.resets_at_ms, s.observed_at_ms, s.source,
                s.quality, s.credit_balance, s.reset_credits_available,
                s.metadata_json
-        FROM snapshots s
-        INNER JOIN bucket_state b
-          ON b.provider = s.provider AND b.account = s.account AND b.bucket = s.bucket
-        WHERE b.active = 1 AND s.id = (
+        FROM bucket_state b
+        JOIN snapshots s ON s.id = (
           SELECT s2.id FROM snapshots s2
-          WHERE s2.provider = s.provider AND s2.account = s.account AND s2.bucket = s.bucket
+          WHERE s2.provider = b.provider AND s2.account = b.account AND s2.bucket = b.bucket
           ORDER BY s2.observed_at_ms DESC, s2.id DESC LIMIT 1
         )
+        WHERE b.active = 1
         ORDER BY s.provider, s.window_seconds, s.bucket
       `)
       .all();

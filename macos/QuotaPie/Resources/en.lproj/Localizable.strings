@@ -571,6 +571,7 @@
 "pool.settings.blocked" = "Requests paused to preserve your remaining quota. Review account reserves in Settings.";
 "pool.settings.stale" = "Requests paused until current quota can be checked.";
 "pool.history.title" = "Recent rejected requests";
+"pool.history.busy" = "Account routing records are busy. Please retry this request.";
 "pool.history.unresolved" = "%@ retained rejections have no later successful request from the same chat.";
 "pool.history.request" = "%@ · %@";
 "pool.history.unverified" = "Recovery of this chat has not been confirmed";
