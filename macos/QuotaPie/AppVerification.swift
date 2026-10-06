@@ -68,7 +68,8 @@ struct AppVerification: Decodable {
                 let focused = window.makeFirstResponder(selector)
                 accountSelectorVerified = focused && selector.focusRingType == .none
                     && selector.title == model.selectedAccount?.accountLabel
-                    && selector.menu?.items.dropFirst().count == model.payload?.accounts.filter(\.enabled).count
+                    && selector.menu?.items.first?.isHidden == true
+                    && selector.menu?.items.filter { !$0.isHidden }.count == model.payload?.accounts.filter(\.enabled).count
             }
             if let bitmap = content.view.bitmapImageRepForCachingDisplay(in: content.view.bounds) {
                 content.view.cacheDisplay(in: content.view.bounds, to: bitmap)

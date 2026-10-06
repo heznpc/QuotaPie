@@ -26,7 +26,10 @@ struct AccountSelector: NSViewRepresentable {
         context.coordinator.onSelect = onSelect
         let selected = accounts.first { $0.id == selectedID }
         let menu = NSMenu()
-        menu.addItem(withTitle: selected?.accountLabel ?? "QuotaPie", action: nil, keyEquivalent: "")
+        // Pull-down buttons use the first item as their closed-state title.
+        // It must not also appear as a disabled row in the opened menu.
+        let titleItem = menu.addItem(withTitle: selected?.accountLabel ?? "QuotaPie", action: nil, keyEquivalent: "")
+        titleItem.isHidden = true
         for (index, account) in accounts.enumerated() {
             let item = NSMenuItem(title: "\(account.providerTitle) · \(account.accountLabel)",
                                   action: #selector(Coordinator.choose(_:)), keyEquivalent: "")
