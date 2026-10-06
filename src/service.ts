@@ -1,4 +1,5 @@
 import { AccountBindingStore } from "./storage/account-binding-store";
+import { codexAccountDisplay } from "./account-display";
 import { notificationAllowed, type NotificationPreferencesPatch } from "./notification-preferences";
 import { buildWorkBoundary, writeWorkBoundary } from "./work-boundary";
 import { JobStore } from "./storage/job-store";
@@ -107,6 +108,7 @@ export class QuotaPieService {
   private signalTimer: ReturnType<typeof setInterval> | null = null;
   private signalWork: Promise<void> | null = null;
   private codexClients = new Map<string, CodexAppServerClient>();
+  private codexAccountNames = new Map<string, string>();
   private stopped = false;
   private closing = false;
   private nativeNotificationTransportAvailable = false;
@@ -378,6 +380,10 @@ export class QuotaPieService {
       }
       try {
         const observations = await client.readRateLimits();
+        if (observations.length) {
+          if (client.accountEmail) this.codexAccountNames.set(profile.id, client.accountEmail);
+          else this.codexAccountNames.delete(profile.id);
+        }
         return this.recordCodexRead(profile.id, observations);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -603,7 +609,7 @@ export class QuotaPieService {
       return {
         provider: profile.provider,
         account: profile.id,
-        accountLabel: profile.label,
+        accountLabel: this.accountLabel(profile.provider, profile.id),
         enabled: profile.enabled,
         collection: {
           health: best?.health ?? "never-attempted",
@@ -638,7 +644,13 @@ export class QuotaPieService {
 
   private accountLabel(provider: Provider, account: string): string {
     const profiles = provider === "codex" ? this.config.accounts.codex : this.config.accounts.claude;
-    return profiles.find((profile) => profile.id === account)?.label ?? account;
+    const label = profiles.find((profile) => profile.id === account)?.label;
+    return provider === "codex" ? codexAccountDisplay(label, account, this.codexAccountNames.get(account)) : label ?? account;
+  }
+
+  private notificationConfig(): AppConfig {
+    return { ...this.config, accounts: { ...this.config.accounts,
+      codex: this.config.accounts.codex.map(profile => ({ ...profile, label: this.accountLabel("codex", profile.id) })) } };
   }
 
   private accountOrder(provider: Provider, account: string): number {
@@ -977,7 +989,7 @@ export class QuotaPieService {
     const suppressed = new Set(this.alerts.suppressedThresholdKeys());
     if (!suppressed.size) return;
     const windows = this.analyses(nowMs);
-    const active = planTriggers(windows, [], this.config, nowMs, nowMs);
+    const active = planTriggers(windows, [], this.notificationConfig(), nowMs, nowMs);
     let retry = false;
     for (const decision of active) {
       const state = this.alerts.state(decision.key);
@@ -1043,7 +1055,7 @@ export class QuotaPieService {
     ) || Boolean(this.config.alerts.command?.length);
     if (!hasChannel) return;
     for (const task of this.resumeTasks.active().filter((item) => item.state === "ready")) {
-      const titleParams = notificationAccountParams(this.config, task.provider, task.account);
+      const titleParams = notificationAccountParams(this.notificationConfig(), task.provider, task.account);
       const messageParams = { label: task.projectLabel };
       const decision: TriggerDecision = {
         key: `resume:${task.id}:ready`,
@@ -1182,7 +1194,7 @@ export class QuotaPieService {
     const decisions = planTriggers(
       windows,
       this.alerts.pendingEvents().filter((event) => this.isEnabledAccount(event.provider, event.account)),
-      this.config,
+      this.notificationConfig(),
       0,
       nowMs,
     );

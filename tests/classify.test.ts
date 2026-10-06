@@ -67,6 +67,18 @@ describe("classifyDelta", () => {
     expect(classifyDelta(previous, next, DEFAULT_CONFIG)[0]?.kind).toBe("schedule_rebased");
   });
 
+  test("an unused window moving with observation time is not a schedule change", () => {
+    for (const hours of [5, 168]) {
+      const previous = observation({ usedPercent: 0, resetsAtMs: hours * HOUR });
+      const next = observation({ usedPercent: 0, observedAtMs: 17 * 60_000,
+        resetsAtMs: hours * HOUR + 17 * 60_000 });
+      expect(classifyDelta(previous, next, DEFAULT_CONFIG)).toEqual([]);
+      // A fixed provider-clock change is still retained as an observation.
+      expect(classifyDelta(previous, { ...next, resetsAtMs: hours * HOUR + HOUR }, DEFAULT_CONFIG)
+        .some(event => event.kind === "schedule_rebased")).toBeTrue();
+    }
+  });
+
   test("marks missing provider fields as unknown, never as a reset", () => {
     const events = classifyDelta(
       observation(),
