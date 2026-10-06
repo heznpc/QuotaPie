@@ -24,7 +24,7 @@ final class QuotaPresentationTests: XCTestCase {
         XCTAssertEqual(normal.size, low.size)
         XCTAssertNil(AccountBadgeImageView(frame: NSRect(x: 0, y: 0, width: 18, height: 18)).hitTest(NSPoint(x: 9, y: 9)))
         XCTAssertFalse(badge.image().isTemplate)
-        XCTAssertEqual(badge.image().size, NSSize(width: 18, height: 18))
+        XCTAssertEqual(badge.image().size, NSSize(width: AccountBadge.menuSize, height: AccountBadge.menuSize))
         XCTAssertEqual(badge.image().size, renamed.image().size)
         XCTAssertEqual(MenuBarQuotaIndicator.image(label: "Codex", remainingPercent: 100, leadingSpace: 23).size.width, normal.size.width + 23)
         XCTAssertNotNil(badge.image().tiffRepresentation)

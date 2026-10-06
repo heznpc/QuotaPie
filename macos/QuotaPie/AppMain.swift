@@ -493,14 +493,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 NSLayoutConstraint.activate([
                     accountBadgeView.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 6),
                     accountBadgeView.centerYAnchor.constraint(equalTo: button.centerYAnchor),
-                    accountBadgeView.widthAnchor.constraint(equalToConstant: 18),
-                    accountBadgeView.heightAnchor.constraint(equalToConstant: 18),
+                    accountBadgeView.widthAnchor.constraint(equalToConstant: AccountBadge.menuSize),
+                    accountBadgeView.heightAnchor.constraint(equalToConstant: AccountBadge.menuSize),
                 ])
             }
             accountBadgeView.image = badge?.image()
             accountBadgeView.isHidden = badge == nil
             button.attributedTitle = NSAttributedString(string: "")
-            button.image = MenuBarQuotaIndicator.image(label: label, remainingPercent: remaining, leadingSpace: badge == nil ? 0 : 23)
+            button.image = MenuBarQuotaIndicator.image(label: label, remainingPercent: remaining, leadingSpace: badge == nil ? 0 : AccountBadge.menuSize + AccountBadge.menuSpacing)
             button.imagePosition = .imageOnly
             button.imageScaling = .scaleNone
             button.setAccessibilityLabel([headline.accountLabel, headline.localizedTitle].compactMap { $0 }.joined(separator: " · "))

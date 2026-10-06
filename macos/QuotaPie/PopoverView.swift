@@ -84,7 +84,7 @@ struct PopoverView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .firstTextBaseline) {
                 if let account = model.selectedAccount {
-                    Image(nsImage: AccountBadge(accountID: account.id, name: account.accountLabel).image(size: 22))
+                    Image(nsImage: AccountBadge(accountID: account.id, name: account.accountLabel).image(size: 20))
                         .accessibilityHidden(true)
                 }
                 accountPicker
