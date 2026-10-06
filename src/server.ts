@@ -1,4 +1,5 @@
 import { localAnnouncementTime } from "./signals/time";
+import { benefitChangeText, signalDecision } from "./signals/presentation";
 import { connectProfileRelay } from "./profile-relay";
 import { connectCodexProfile } from "./profile-connection";
 import { ModelNotifications } from "./model-notifications";
@@ -263,6 +264,8 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
             const feed = service.signalCollector.status(nowMs);
             return { ...feed, signals: feed.signals.map(signal => ({ ...signal,
               localTimeText: localAnnouncementTime(signal, service.locale, service.config.profile.timeZone),
+              benefitText: benefitChangeText(signal, service.locale),
+              newsTitle: signalDecision(signal, service.locale, service.config.profile.timeZone).title,
             })) };
           })(),
           resetTracking: service.resetTracking(nowMs, accounts),

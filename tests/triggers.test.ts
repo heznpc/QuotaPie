@@ -124,8 +124,7 @@ describe("trigger planning and claims", () => {
           expect(decisions[index]!.title).not.toContain(profile.id);
           expect(decisions[index]!.presentation!.title.params).toEqual({ provider: "Codex", account: profile.label });
         }
-        if (kind === "credit_topup") expect(decisions[0]!.title).toBe(locale === "ko"
-          ? "Codex · Personal 크레딧 조회값 변경" : "Codex · Personal reported credits changed");
+        if (kind === "credit_topup") expect(decisions[0]!.presentation?.title.key).toBe("alert.event.title.creditAdded");
       }
     }
   });
@@ -162,10 +161,11 @@ describe("trigger planning and claims", () => {
         kind: "credit_topup", occurredAtMs: 1_000, severity: "warning", confidence: "medium",
         displayText: "STALE_CONFIRMED_TOPUP", details: { balanceBefore: 0, balanceAfter: 62500 },
       }], config, 0, 2_000)[0]!;
-      expect(decision.title).toContain("Codex · Main");
+      expect(decision.title).toContain("Codex");
+      expect(decision.title).toContain("Main");
       expect(decision.message).not.toContain("STALE_CONFIRMED_TOPUP");
       expect(decision.message).toContain("0 → 62500");
-      expect(decision.message).toContain(locale === "ko" ? "미확인" : "unverified");
+      expect(decision.message).not.toMatch(/purchased|charged|payment confirmed|구매|결제 완료/i);
     }
   });
 

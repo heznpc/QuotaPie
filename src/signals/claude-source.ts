@@ -28,7 +28,8 @@ export function parseClaudeNews(body: any, source: "claudereset" | "resetradar",
     const signal = classifyPost({ ...link, text, createdAtMs: at, conversationId: link.id, references: [] }, new Map());
     if (!signal) return [];
     return [{ ...signal, observedVia: source,
-      ...(source === "claudereset" && row.kind === "banked" ? { resetKind: "banked" as const, benefitKind: "reset" as const } : {}),
+      ...(source === "claudereset" && row.kind === "banked" ? { resetKind: "banked" as const,
+        ...(signal.benefitKind === "reset" ? { benefitKind: "resetCredits" as const } : {}) } : {}),
       scopeHint: typeof row.scope === "string" ? row.scope : signal.scopeHint }];
   });
 }

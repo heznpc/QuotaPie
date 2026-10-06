@@ -14,6 +14,7 @@ export type EventKind =
   | "source_changed"
   | "paid_usage"
   | "credit_topup"
+  | "banked_reset_added"
   | "banked_reset_consumed"
   | "bucket_retired"
   | "window_changed"
@@ -28,6 +29,9 @@ export type Severity = "info" | "warning" | "critical";
 // window_changed was added to the planner and not to the query, so the event was
 // recorded and then never delivered.
 export const ALERTABLE_EVENT_KINDS = [
+  "scheduled_reset",
+  "banked_reset_added",
+  "banked_reset_consumed",
   "external_relief",
   "allowance_relief",
   "schedule_rebased",

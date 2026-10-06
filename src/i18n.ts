@@ -51,8 +51,12 @@ export interface MessageParams {
   threshold?: number;
   balanceBefore?: number;
   balanceAfter?: number;
+  balanceAdded?: number;
   countBefore?: number;
   countAfter?: number;
+  countAdded?: number;
+  countUsed?: number;
+  quotaRecovered?: boolean;
   detail?: string;
   path?: string;
   root?: string;
@@ -148,12 +152,16 @@ const CATALOG = {
     ko: (p) => `${p.provider} 크레딧 조회값: ${p.balanceBefore ?? "?"} → ${p.balanceAfter ?? "?"}. 실제 사용·결제 잔액 변동은 미확인입니다.`,
   },
   "event.credit_topup": {
-    en: (p) => `${p.provider} reported credits: ${p.balanceBefore ?? "?"} → ${p.balanceAfter ?? "?"}. Top-ups and billing balance changes are unverified.`,
-    ko: (p) => `${p.provider} 크레딧 조회값: ${p.balanceBefore ?? "?"} → ${p.balanceAfter ?? "?"}. 실제 충전·결제 잔액 변동은 미확인입니다.`,
+    en: (p) => `${p.provider} credits increased: ${p.balanceBefore ?? "?"} → ${p.balanceAfter ?? "?"}${p.balanceAdded != null ? ` (+${p.balanceAdded})` : ""}.`,
+    ko: (p) => `${p.provider} 크레딧 증가: ${p.balanceBefore ?? "?"} → ${p.balanceAfter ?? "?"}${p.balanceAdded != null ? ` (+${p.balanceAdded})` : ""}.`,
+  },
+  "event.banked_reset_added": {
+    en: (p) => `Reset tickets added: ${p.countBefore ?? "?"} → ${p.countAfter ?? "?"} (+${p.countAdded ?? "?"}).`,
+    ko: (p) => `리셋권 추가: ${p.countBefore ?? "?"}개 → ${p.countAfter ?? "?"}개 (+${p.countAdded ?? "?"}개).`,
   },
   "event.banked_reset_consumed": {
-    en: (p) => `Banked reset tickets: ${p.countBefore ?? "?"} → ${p.countAfter ?? "?"}. A ticket appears to have been used.`,
-    ko: (p) => `저장형 리셋권 ${p.countBefore ?? "?"}개 → ${p.countAfter ?? "?"}개. 리셋권이 사용된 것으로 보입니다.`,
+    en: (p) => `Reset tickets: ${p.countBefore ?? "?"} → ${p.countAfter ?? "?"} (${p.countUsed ?? "?"} fewer).${p.quotaRecovered ? " Quota recovery was also observed." : ""}`,
+    ko: (p) => `리셋권 ${p.countBefore ?? "?"}개 → ${p.countAfter ?? "?"}개 (${p.countUsed ?? "?"}개 감소).${p.quotaRecovered ? " 한도 회복도 확인됐습니다." : ""}`,
   },
   "event.bucket_retired": {
     en: (p) => `${p.label} disappeared from the provider's full response; tracking stopped.`,
@@ -274,6 +282,14 @@ const CATALOG = {
     en: (p) => `${p.provider} · ${p.account} reported credits changed`,
     ko: (p) => `${p.provider} · ${p.account} 크레딧 조회값 변경`,
   },
+  "alert.event.title.creditAdded": {
+    en: (p) => `${p.provider}/${p.account} credits increased`,
+    ko: (p) => `${p.provider}/${p.account} 크레딧 증가`,
+  },
+  "alert.event.title.resetCredits": {
+    en: (p) => `${p.provider}/${p.account} reset tickets changed`,
+    ko: (p) => `${p.provider}/${p.account} 리셋권 변화`,
+  },
   "alert.event.title.window": {
     en: p => `Codex ${p.account} · limit display changed`,
     ko: p => `Codex ${p.account} · 한도 표시 변경`,
@@ -319,7 +335,8 @@ const CATALOG = {
   // around them is selected by locale here.
   "signal.possible": { en: () => "Possible Codex reset", ko: () => "Codex 리셋 가능성 감지" },
   "signal.announced": { en: () => "Codex reset announced", ko: () => "Codex 리셋 예고" },
-  "signal.credits": { en: p => `${p.provider} credit news`, ko: p => `${p.provider} 크레딧 소식` },
+  "signal.resetCredits": { en: p => `${p.provider} reset ticket news`, ko: p => `${p.provider} 리셋권 추가 소식` },
+  "signal.credits": { en: p => `${p.provider} token and credit news`, ko: p => `${p.provider} 토큰·크레딧 추가 소식` },
   "signal.student": { en: p => `${p.provider} student benefits`, ko: p => `${p.provider} 학생 혜택` },
   "signal.discounts": { en: p => `${p.provider} discounts`, ko: p => `${p.provider} 할인 소식` },
   "signal.events": { en: p => `${p.provider} reward events`, ko: p => `${p.provider} 참여형 이벤트` },

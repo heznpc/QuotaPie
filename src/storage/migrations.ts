@@ -198,6 +198,20 @@ export function migrate(db: Database): void {
         .query("INSERT INTO schema_migrations(name, applied_at_ms) VALUES (?, ?)")
         .run("event_delivery_v1", Date.now());
     });
+    // These reset events used to be history-only. Enabling their delivery
+    // must not page the user for every reset retained before this upgrade.
+    inTransaction(db, () => {
+      const name = "observed_reset_notifications_v1";
+      if (db.query("SELECT name FROM schema_migrations WHERE name = ?").get(name)) return;
+      db.run(`
+        INSERT OR IGNORE INTO event_delivery(
+          event_id, claimed_at_ms, claimed_token, delivered_at_ms, disposition, attempts
+        )
+        SELECT id, NULL, NULL, occurred_at_ms, 'preexisting', 0 FROM events
+        WHERE kind IN ('scheduled_reset', 'banked_reset_consumed')
+      `);
+      db.query("INSERT INTO schema_migrations(name, applied_at_ms) VALUES (?, ?)").run(name, Date.now());
+    });
     db.run(`
       CREATE TABLE IF NOT EXISTS alert_channel_delivery (
         delivery_key TEXT NOT NULL,

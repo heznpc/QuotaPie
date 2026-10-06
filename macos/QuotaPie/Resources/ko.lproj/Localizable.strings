@@ -137,8 +137,8 @@
 "event.meter_correction" = "%@ 사용률이 소폭 역행했습니다.";
 "event.schedule_rebased" = "%@ 리셋 시각이 재조정됐습니다.";
 "event.paid_usage" = "%@ 크레딧 조회값: %@ → %@. 실제 사용·결제 잔액 변동은 미확인입니다.";
-"event.credit_topup" = "%@ 크레딧 조회값: %@ → %@. 실제 충전·결제 잔액 변동은 미확인입니다.";
-"event.banked_reset_consumed" = "저장형 리셋이 사용된 것으로 보입니다.";
+"event.credit_topup" = "%@ 크레딧 증가: %@ → %@ (+%@).";
+"event.banked_reset_consumed" = "리셋권 %@개 → %@개 (%@개 감소).%@";
 "event.bucket_retired" = "%@ 항목이 공급자 전체 응답에서 사라져 추적을 종료했습니다.";
 "event.window_changed" = "한도 표시 변경: %@ → %@ · 계정·플랜 변경 여부 미확인";
 
@@ -382,9 +382,9 @@
 "notification.preferences.group.news" = "리셋 소식";
 "notification.preferences.group.operation" = "작업과 수집 상태";
 "notification.topic.quotaWarnings" = "잔량 부족·빠른 소진 경고";
-"notification.topic.quotaRecovery" = "예상 밖 한도 회복 감지";
+"notification.topic.quotaRecovery" = "실제 한도 리셋·회복·리셋권 사용";
 "notification.topic.accountChanges" = "계정·플랜·한도 일정 변경";
-"notification.topic.payments" = "크레딧 조회값 변화";
+"notification.topic.payments" = "크레딧 감소";
 "notification.topic.resumeReady" = "중단된 작업 재개 가능";
 "notification.topic.collectionIssues" = "한도 정보 수집 지연";
 "notification.topic.resetPossible" = "근거가 있는 리셋 가능성";
@@ -587,16 +587,16 @@
 "pool.history.model" = "해당 모델을 전환할 계정에서 사용할 수 없어 요청을 거절했습니다.";
 "pool.history.other" = "요청을 전달하지 못했습니다.";
 
-"signal.credits" = "%@ 크레딧 소식";
+"signal.credits" = "%@ 토큰·크레딧 추가 소식";
 "signal.limits" = "%@ 사용량 한도 소식";
 "signal.claude.possible" = "Claude 리셋 가능성";
 "signal.claude.announced" = "Claude 리셋 예고";
 "signal.claude.reported" = "Claude 리셋 시행 소식";
 "signal.claude.updated" = "Claude 리셋 소식 변경";
 "signal.claude.withdrawn" = "Claude 리셋 소식 철회";
-"signal.summary.credits" = "크레딧 지급 소식";
-"signal.summary.limits" = "사용량 한도 변경 소식";
-"signal.kind.credits" = "크레딧 지급";
+"signal.summary.credits" = "토큰·크레딧 추가 소식";
+"signal.summary.limits" = "기본 사용 가능량 변경 소식";
+"signal.kind.credits" = "토큰·크레딧 지급";
 "signal.kind.limits" = "사용량 한도";
 "signal.via.claudereset" = "Claude Reset Tracker 경유 · 원문 미검증";
 "signal.via.resetradar" = "Reset Radar 경유 · 원문 미검증";
@@ -605,8 +605,8 @@
 "signal.coverage.watched-accounts" = "X 직접 수집 · OpenAI와 Claude 감시 계정";
 
 "notification.preferences.group.benefits" = "혜택과 이벤트";
-"notification.topic.creditGrants" = "크레딧 지급";
-"notification.topic.limitChanges" = "사용량 한도 변경";
+"notification.topic.creditGrants" = "토큰·크레딧 추가 및 지급 소식";
+"notification.topic.limitChanges" = "기본 사용 가능량 변경 소식";
 "notification.topic.studentBenefits" = "학생·교육 혜택";
 "notification.topic.discounts" = "구독 할인·프로모션";
 "notification.topic.rewardEvents" = "참여·수료·추천 보상 이벤트";
@@ -621,3 +621,20 @@
 "signal.kind.events" = "참여형 이벤트";
 
 "signal.localTime" = "내 시간: %@";
+"event.banked_reset_added" = "리셋권 추가: %@개 → %@개 (+%@개).";
+"alert.event.title.creditAdded" = "%@ · %@ 크레딧 증가";
+"alert.event.title.resetCredits" = "%@ · %@ 리셋권 변화";
+"notification.topic.resetCredits" = "리셋권 추가·지급 소식";
+"signal.resetCredits" = "%@ 리셋권 추가 소식";
+"signal.summary.resetCredits" = "리셋권 추가 소식";
+"signal.kind.resetCredits" = "리셋권 지급";
+"signal.summary.benefitWithdrawn" = "혜택 소식 철회됨";
+"signal.summary.benefitUpdated" = "혜택 소식 변경됨";
+"resetTickets.recovered" = " 한도 회복도 확인됐습니다.";
+"signal.change.prefix" = "발표 수치: ";
+"signal.change.percent" = "기존 대비 %@%% (기존의 %@배)";
+"signal.unit.tokens" = "토큰";
+"signal.unit.credits" = "크레딧";
+"signal.unit.resets" = "개";
+"signal.unit.messages" = "메시지";
+"signal.unit.requests" = "회";

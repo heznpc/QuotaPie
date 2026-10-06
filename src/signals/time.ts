@@ -10,6 +10,13 @@ const zones: Record<string, number | string> = {
 };
 const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 const weekdays = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+export function announcementTimeHint(text: string): string | null {
+  return text.match(/[^.!?\n]*(?:\btomorrow\b|\btoday\b|\bmidnight\b|\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b|\b\d{1,2}(?::\d{2})?\s*(?:am|pm|PST|PDT|PT|UTC)\b|\bin\s+(?:~\s*)?(?:\d+|one|an?)\s+hours?\b)[^.!?\n]*/i)?.[0]?.trim().slice(0, 300) ?? null;
+}
+
+function signalTimeText(signal: ResetSignal): string {
+  return signal.sourcePostId ? signal.change?.evidence ?? "" : signal.timeHint ?? signal.text;
+}
 function parts(ms: number, zone: number | string) {
   if (typeof zone === "number") {
     const d = new Date(ms + zone * 60_000);
@@ -73,13 +80,13 @@ export function parseAnnouncementTime(text: string, publishedAtMs: number): Sche
 }
 
 export function withAnnouncementTime(signal: ResetSignal): ResetSignal {
-  const schedule = parseAnnouncementTime(signal.timeHint ?? signal.text, signal.publishedAtMs);
-  return schedule ? { ...signal, targetAtMs: schedule.targetAtMs } : signal;
+  const schedule = parseAnnouncementTime(signalTimeText(signal), signal.publishedAtMs);
+  return schedule ? { ...signal, targetAtMs: schedule.targetAtMs } : signal.sourcePostId ? { ...signal, targetAtMs: null } : signal;
 }
 
 export function localAnnouncementTime(signal: ResetSignal, locale: Locale, timeZone: string): string | null {
-  const schedule = parseAnnouncementTime(signal.timeHint ?? signal.text, signal.publishedAtMs);
-  const target = schedule?.targetAtMs ?? signal.targetAtMs;
+  const schedule = parseAnnouncementTime(signalTimeText(signal), signal.publishedAtMs);
+  const target = schedule?.targetAtMs ?? (signal.sourcePostId ? null : signal.targetAtMs);
   if (target == null || !Number.isFinite(target)) return null;
   const dateFormatter = new Intl.DateTimeFormat(locale === "ko" ? "ko-KR" : "en-US", {
     timeZone, year: "numeric", month: "short", day: "numeric", weekday: "short", hour: "numeric", minute: "2-digit", timeZoneName: "short",

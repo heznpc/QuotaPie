@@ -100,7 +100,7 @@ async function render(language: string, payload = statusPayload()) {
 }
 
 describe("dashboard localization", () => {
-  test("stored credit messages render reported values and billing uncertainty in both locales", async () => {
+  test("stored credit additions render observed values and delta in both locales", async () => {
     const payload = statusPayload();
     const initial = payload.events[0]!;
     const creditPayload = { ...payload, events: [{ ...initial, kind: "credit_topup",
@@ -110,7 +110,8 @@ describe("dashboard localization", () => {
       const page = await render(language, creditPayload);
       const html = page.element("events").innerHTML;
       expect(html).toContain("0 → 62500");
-      expect(html).toContain(language === "ko-KR" ? "미확인" : "unverified");
+      expect(html).toContain("+62500");
+      expect(html).not.toContain(language === "ko-KR" ? "결제 완료" : "payment confirmed");
       expect(html).not.toContain("STORED_DAEMON_LANGUAGE_TEXT");
     }
   });

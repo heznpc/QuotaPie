@@ -171,14 +171,6 @@ export class QuotaPieService {
       const previousLaneWindows = this.db.latestAll().filter((item) =>
         item.provider === "codex" && item.account === account
       );
-      const result = this.db.ingestFullSnapshot(
-        "codex",
-        account,
-        accountObservations,
-        this.config,
-      );
-      emitted.push(...result.events);
-      if (!result.accepted) continue;
       const orderedPrevious = [...previousLaneWindows].sort((a, b) => b.observedAtMs - a.observedAtMs);
       // Retained buckets from an older full response belong to its old context.
       const previousSnapshot = orderedPrevious.filter(item => item.observedAtMs === orderedPrevious[0]?.observedAtMs);
@@ -189,6 +181,31 @@ export class QuotaPieService {
       const nextEpoch = nextContext.metadata?.collectorEpoch;
       const newCollection = nextEpoch != null && nextEpoch !== previousEpoch;
       const contextChange = codexContextChange(previousContext, nextContext);
+      // Reset tickets belong to the account. Their canonical observation may
+      // be the five-hour window while the weekly window is the one recovered.
+      // Share that snapshot evidence without copying the balance itself, so a
+      // single ticket change produces one event and is never called an external grant.
+      const previousTickets = previousSnapshot.find(item => item.resetCreditsAvailable != null);
+      const nextTickets = currentSnapshot.find(item => item.resetCreditsAvailable != null);
+      const comparable = !newCollection && !contextChange && previousTickets != null && nextTickets != null &&
+        previousTickets.source === nextTickets.source && previousTickets.quality === "authoritative" &&
+        nextTickets.quality === "authoritative" && observedAtMs > previousTickets.observedAtMs;
+      const accountResetCreditDecreased = comparable && nextTickets.resetCreditsAvailable! < previousTickets.resetCreditsAvailable!;
+      const accountQuotaRecovered = accountResetCreditDecreased && currentSnapshot.some(next => {
+        const previous = previousSnapshot.find(item => item.bucket === next.bucket);
+        return previous?.usedPercent != null && next.usedPercent != null && next.usedPercent < previous.usedPercent;
+      });
+      const contextualObservations = accountObservations.map(item => ({ ...item,
+        metadata: { ...item.metadata, accountResetCreditDecreased, accountQuotaRecovered },
+      }));
+      const result = this.db.ingestFullSnapshot(
+        "codex",
+        account,
+        contextualObservations,
+        this.config,
+      );
+      emitted.push(...result.events);
+      if (!result.accepted) continue;
       if (contextChange) {
         const details: QuotaEvent["details"] = contextChange === "plan_changed" ? {
           fromPlan: String(previousContext!.metadata!.planType), toPlan: String(nextContext.metadata!.planType),

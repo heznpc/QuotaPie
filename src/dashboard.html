@@ -183,8 +183,9 @@
           "event.meter_correction": "{label} usage moved slightly backwards.",
           "event.schedule_rebased": "{label} reset time was rescheduled.",
           "event.paid_usage": "{provider} reported credits: {balanceBefore} → {balanceAfter}. Spending and billing balance changes are unverified.",
-          "event.credit_topup": "{provider} reported credits: {balanceBefore} → {balanceAfter}. Top-ups and billing balance changes are unverified.",
-          "event.banked_reset_consumed": "A banked reset appears to have been used.",
+          "event.credit_topup": "{provider} credits increased: {balanceBefore} → {balanceAfter} (+{balanceAdded}).",
+          "event.banked_reset_added": "Reset tickets added: {countBefore} → {countAfter} (+{countAdded}).",
+          "event.banked_reset_consumed": "Reset tickets: {countBefore} → {countAfter} ({countUsed} fewer).{quotaRecoveryText}",
           "event.bucket_retired": "{label} disappeared from the provider's full response; tracking stopped.",
           "event.window_changed": "Displayed limit changed: {fromLabel} → {toLabel}. Account or plan change unverified.",
           "event.account_changed": "A different Codex login was observed. Tracking quota from the new account separately.",
@@ -282,8 +283,9 @@
           "event.meter_correction": "{label} 사용률이 소폭 역행했습니다.",
           "event.schedule_rebased": "{label} 리셋 시각이 재조정됐습니다.",
           "event.paid_usage": "{provider} 크레딧 조회값: {balanceBefore} → {balanceAfter}. 실제 사용·결제 잔액 변동은 미확인입니다.",
-          "event.credit_topup": "{provider} 크레딧 조회값: {balanceBefore} → {balanceAfter}. 실제 충전·결제 잔액 변동은 미확인입니다.",
-          "event.banked_reset_consumed": "저장형 리셋이 사용된 것으로 보입니다.",
+          "event.credit_topup": "{provider} 크레딧 증가: {balanceBefore} → {balanceAfter} (+{balanceAdded}).",
+          "event.banked_reset_added": "리셋권 추가: {countBefore}개 → {countAfter}개 (+{countAdded}개).",
+          "event.banked_reset_consumed": "리셋권 {countBefore}개 → {countAfter}개 ({countUsed}개 감소).{quotaRecoveryText}",
           "event.bucket_retired": "{label} 항목이 공급자 전체 응답에서 사라져 추적을 종료했습니다.",
           "event.window_changed": "한도 표시 변경: {fromLabel} → {toLabel} · 계정·플랜 변경 여부 미확인",
           "event.account_changed": "다른 Codex 계정으로 로그인한 것을 확인했습니다. 새 계정의 잔량을 별도로 추적합니다.",
@@ -372,7 +374,13 @@
       const eventMessage = (event) => {
         const required = EVENT_MESSAGE_PARAMS[event.kind];
         if (required == null) return event.displayText ?? event.kind;
-        const params = { balanceBefore: "?", balanceAfter: "?", provider: event.provider, account: event.account, ...(event.details ?? {}) };
+        const params = { balanceBefore: "?", balanceAfter: "?", balanceAdded: "?", countBefore: "?", countAfter: "?", countAdded: "?", countUsed: "?", provider: event.provider, account: event.account, ...(event.details ?? {}) };
+        params.quotaRecoveryText = params.quotaRecovered === true ? (LOCALE === "ko" ? " 한도 회복도 확인됐습니다." : " Quota recovery was also observed.") : "";
+        if (Number.isFinite(params.balanceBefore) && Number.isFinite(params.balanceAfter) && params.balanceAdded === "?") params.balanceAdded = params.balanceAfter - params.balanceBefore;
+        if (Number.isFinite(params.countBefore) && Number.isFinite(params.countAfter)) {
+          if (params.countAdded === "?") params.countAdded = params.countAfter - params.countBefore;
+          if (params.countUsed === "?") params.countUsed = params.countBefore - params.countAfter;
+        }
         if (required.some((name) => params[name] == null)) return event.displayText ?? event.kind;
         return t(`event.${event.kind}`, params);
       };
@@ -399,11 +407,11 @@
           // was correctly showing why it was empty.
           const feed = data.resetSignals;
           const words = LOCALE === "ko"
-            ? { title: "Codex 리셋 소식", relay: "Reset Beacon 경유 · 일부 소식만 수집, X 원문 미검증", direct: "X 직접 수집 · 다섯 계정", source: "원문 보기", empty: "아직 수집된 소식이 없습니다", possible: "가능성", announced: "예고", reported: "시행 소식", updated: "변경", withdrawn: "철회", ready: "수집 정상", waiting: "첫 수집 대기", error: "수집 실패 · 저장된 소식", stale: "수집 지연 · 저장된 소식", note: "공개 소식과 내 계정 한도는 별개입니다." }
-            : { title: "Codex reset signals", relay: "Via Reset Beacon · partial coverage, X originals not verified", direct: "X direct · five accounts", source: "Original post", empty: "No signals collected", possible: "Possible", announced: "Announced", reported: "Reported", updated: "Updated", withdrawn: "Withdrawn", ready: "Collection healthy", waiting: "Waiting", error: "Collection failed · saved signals", stale: "Stale · saved signals", note: "Public signals are separate from your account quota." };
-          document.getElementById("resetSignals").innerHTML = feed?.enabled ? `<article class="provider"><h2>${words.title}</h2><p class="notice">${feed.source === "x-api" ? words.direct : words.relay} · ${escapeHtml(words[feed.state] ?? feed.state)}</p>${(feed.signals ?? []).slice(0,5).map(signal => {
-            const safe = /^https:\/\/x\.com\/(thsottiaux|reach_vb|dkundel|OpenAIDevs|OpenAI)\/status\/\d+$/.test(signal.sourceUrl);
-            return `<div class="event"><strong>${escapeHtml(words[signal.state] ?? signal.state)}</strong><span>@${escapeHtml(signal.author)} · ${escapeHtml(exactTime(signal.publishedAtMs))}</span><span>${escapeHtml(signal.localTimeText ?? "")}</span><span>${escapeHtml(signal.text)} ${safe ? `<a href="${escapeHtml(signal.sourceUrl)}" target="_blank" rel="noopener noreferrer">${words.source}</a>` : ""}</span></div>`;
+            ? { title: "사용량 혜택 소식", relay: "공개 피드 수집", direct: "X 직접 수집·공개 피드", source: "원문 보기", empty: "아직 수집된 소식이 없습니다", possible: "가능성", announced: "예고", reported: "시행 소식", updated: "변경", withdrawn: "철회", ready: "수집 정상", waiting: "첫 수집 대기", error: "수집 실패 · 저장된 소식", stale: "수집 지연 · 저장된 소식", note: "공개 소식과 내 계정 관측을 구분해 표시합니다." }
+            : { title: "Usage benefit news", relay: "Public feeds", direct: "X and public feeds", source: "Original post", empty: "No news collected", possible: "Possible", announced: "Announced", reported: "Reported", updated: "Updated", withdrawn: "Withdrawn", ready: "Collection healthy", waiting: "Waiting", error: "Collection failed · saved news", stale: "Stale · saved news", note: "Public announcements and account observations are shown separately." };
+          document.getElementById("resetSignals").innerHTML = feed?.enabled ? `<article class="provider"><h2>${words.title}</h2><p class="notice">${feed.coverage === "direct-and-relays" ? words.direct : words.relay} · ${escapeHtml(words[feed.state] ?? feed.state)}</p>${(feed.signals ?? []).slice(0,5).map(signal => {
+            const safe = /^https:\/\/x\.com\/(thsottiaux|reach_vb|dkundel|openaidevs|openai|claudedevs|claudeai|anthropicai|lydiahallie)\/status\/\d+$/i.test(signal.sourceUrl);
+            return `<div class="event"><strong>${escapeHtml(signal.newsTitle ?? words[signal.state] ?? signal.state)}</strong><span>${escapeHtml(words[signal.state] ?? signal.state)} · @${escapeHtml(signal.author)} · ${escapeHtml(exactTime(signal.publishedAtMs))}</span><strong>${escapeHtml(signal.benefitText ?? "")}</strong><span>${escapeHtml(signal.localTimeText ?? "")}</span><span>${escapeHtml(signal.text)} ${safe ? `<a href="${escapeHtml(signal.sourceUrl)}" target="_blank" rel="noopener noreferrer">${words.source}</a>` : ""}</span></div>`;
           }).join("") || words.empty}<p class="notice">${words.note}</p></article>` : "";
           const accounts = Array.isArray(data.accounts) && data.accounts.length ? data.accounts : (data.statuses ?? []);
           document.getElementById("providers").innerHTML = accounts.length

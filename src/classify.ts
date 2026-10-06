@@ -64,14 +64,75 @@ export function classifyDelta(
     nextWindowSeconds: next.windowSeconds,
     previousQuality: previous.quality,
     nextQuality: next.quality,
-    resetCreditDecreased: previous.resetCreditsAvailable != null && next.resetCreditsAvailable != null
-      && next.resetCreditsAvailable < previous.resetCreditsAvailable,
+    resetCreditDecreased: (previous.resetCreditsAvailable != null && next.resetCreditsAvailable != null
+      && next.resetCreditsAvailable < previous.resetCreditsAvailable) || next.metadata?.accountResetCreditDecreased === true,
   };
   if (next.source !== previous.source) {
     events.push(
       event(next, "source_changed", "info", "high", config, {
         from: previous.source,
         to: next.source,
+      }),
+    );
+  }
+
+  // Historical event IDs describe a provider-reported numeric delta only.
+  // A balance snapshot does not establish a purchase, charge or billing-page change.
+  if (
+    previous.creditBalance != null &&
+    next.creditBalance != null &&
+    next.creditBalance < previous.creditBalance - 0.000_001
+  ) {
+    events.push(
+      event(next, "paid_usage", "info", "medium", config, {
+        ...evidence,
+        balanceBefore: previous.creditBalance,
+        balanceAfter: next.creditBalance,
+        billingVerified: false,
+      }),
+    );
+  } else if (
+    previous.creditBalance != null &&
+    next.creditBalance != null &&
+    next.creditBalance > previous.creditBalance + 0.000_001
+  ) {
+    events.push(
+      event(next, "credit_topup", "info", "medium", config, {
+        ...evidence,
+        balanceBefore: previous.creditBalance,
+        balanceAfter: next.creditBalance,
+        balanceAdded: next.creditBalance - previous.creditBalance,
+        billingVerified: false,
+      }),
+    );
+  }
+
+  if (
+    previous.resetCreditsAvailable != null &&
+    next.resetCreditsAvailable != null &&
+    next.resetCreditsAvailable < previous.resetCreditsAvailable
+  ) {
+    events.push(
+      event(next, "banked_reset_consumed", "info", "high", config, {
+        ...evidence,
+        countBefore: previous.resetCreditsAvailable,
+        countAfter: next.resetCreditsAvailable,
+        countUsed: previous.resetCreditsAvailable - next.resetCreditsAvailable,
+        quotaRecovered: (previous.usedPercent != null && next.usedPercent != null && next.usedPercent < previous.usedPercent)
+          || next.metadata?.accountQuotaRecovered === true,
+      }),
+    );
+  } else if (
+    previous.resetCreditsAvailable != null &&
+    next.resetCreditsAvailable != null &&
+    next.resetCreditsAvailable > previous.resetCreditsAvailable
+  ) {
+    events.push(
+      event(next, "banked_reset_added", "info", "high", config, {
+        ...evidence,
+        countBefore: previous.resetCreditsAvailable,
+        countAfter: next.resetCreditsAvailable,
+        countAdded: next.resetCreditsAvailable - previous.resetCreditsAvailable,
       }),
     );
   }
@@ -104,8 +165,8 @@ export function classifyDelta(
     // A provider clock advancing to a new window is a stronger reset signal than
     // the absolute drop. Low-use windows commonly reset from only 2–10% to 0%.
     if (evidence.resetCreditDecreased && meaningfulDrop) {
-      // The provider also reports an earned reset being spent. Do not present
-      // the resulting recovery as a provider-granted or scheduled reset.
+      // The provider also reports fewer banked tickets. Preserve that context
+      // without presenting this recovery as a separate provider-granted reset.
     } else if (resetChanged && meaningfulDrop && nearScheduledReset) {
       events.push(
         event(
@@ -179,48 +240,6 @@ export function classifyDelta(
     }
   }
 
-  // Historical event IDs describe a provider-reported numeric delta only.
-  // A balance snapshot does not establish a purchase, charge or billing-page change.
-  if (
-    previous.creditBalance != null &&
-    next.creditBalance != null &&
-    next.creditBalance < previous.creditBalance - 0.000_001
-  ) {
-    events.push(
-      event(next, "paid_usage", "info", "medium", config, {
-        ...evidence,
-        balanceBefore: previous.creditBalance,
-        balanceAfter: next.creditBalance,
-        billingVerified: false,
-      }),
-    );
-  } else if (
-    previous.creditBalance != null &&
-    next.creditBalance != null &&
-    next.creditBalance > previous.creditBalance + 0.000_001
-  ) {
-    events.push(
-      event(next, "credit_topup", "info", "medium", config, {
-        ...evidence,
-        balanceBefore: previous.creditBalance,
-        balanceAfter: next.creditBalance,
-        billingVerified: false,
-      }),
-    );
-  }
-
-  if (
-    previous.resetCreditsAvailable != null &&
-    next.resetCreditsAvailable != null &&
-    next.resetCreditsAvailable < previous.resetCreditsAvailable
-  ) {
-    events.push(
-      event(next, "banked_reset_consumed", "info", "high", config, {
-        countBefore: previous.resetCreditsAvailable,
-        countAfter: next.resetCreditsAvailable,
-      }),
-    );
-  }
 
   return events;
 }
@@ -250,6 +269,8 @@ export function classifyResetAcrossCollectorEpoch(
   return event(next, "banked_reset_consumed", "info", "medium", config, {
     countBefore: previous.resetCreditsAvailable,
     countAfter: next.resetCreditsAvailable,
+    countUsed: previous.resetCreditsAvailable - next.resetCreditsAvailable,
+    quotaRecovered: true,
     usedPercentBefore: previous.usedPercent,
     usedPercentAfter: next.usedPercent,
     previousObservedAtMs: previous.observedAtMs,

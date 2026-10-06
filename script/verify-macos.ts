@@ -67,7 +67,12 @@ async function run() {
         sourceUrl: "https://x.com/thsottiaux/status/100", text: "We are almost Tuesday and I promised a reset for Tuesday.",
         publishedAtMs: Date.now() - 86_400_000, detectedAtMs: Date.now() - 60_000,
         state: "announced", resetKind: "unknown", observedVia: "codexreset", targetAtMs: null,
-        timeHint: "We are almost Tuesday and I promised a reset for Tuesday" }] },
+        timeHint: "We are almost Tuesday and I promised a reset for Tuesday" },
+        { id: "101:limits", sourcePostId: "101", fingerprint: "fixture-allowance", author: "thsottiaux",
+          sourceUrl: "https://x.com/thsottiaux/status/101", text: "Synthetic: 50% more usage for everyone.",
+          publishedAtMs: Date.now(), state: "reported", resetKind: "unknown", observedVia: "codexreset",
+          benefitKind: "limits", change: { percent: 50, evidence: "Synthetic: 50% more usage for everyone." },
+          benefitText: "Announced: +50% (1.5× previous allowance)", targetAtMs: null }] },
     accountPool: {enabled:true, accounts:["default","second"], recent:[{sourceAccount:"default",account:"second",accountLabel:"Second",state:"completed",status:200,atMs:Date.now()}]} };
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: request => {
     if (request.method !== "GET" || new URL(request.url).pathname !== "/api/status") return new Response("Unexpected request", { status: 400 });

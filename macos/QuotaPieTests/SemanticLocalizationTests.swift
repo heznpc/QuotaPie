@@ -5,7 +5,7 @@ import XCTest
 final class SemanticLocalizationTests: XCTestCase {
     func testAccountNotificationsRetainTheConfiguredAccountLabel() {
         for key in ["alert.event.title.account", "alert.event.title.plan", "alert.event.title.window",
-                    "alert.event.title.payment", "alert.event.title.resync", "alert.remaining.title",
+                    "alert.event.title.payment", "alert.event.title.creditAdded", "alert.event.title.resetCredits", "alert.event.title.resync", "alert.remaining.title",
                     "alert.stale.title", "alert.rapid.title", "alert.pace.title.measured",
                     "alert.pace.title.projected", "alert.resume.ready.title"] {
             let personal = LocalizedMessagePayload(key: key, params: ["provider": .string("Codex"), "account": .string("개인 검증용")])
@@ -64,13 +64,33 @@ final class SemanticLocalizationTests: XCTestCase {
             let rendered = LocalizedMessagePayload(key: key, params: [
                 "provider": .string("Codex"), "balanceBefore": .number(0), "balanceAfter": .number(62500)
             ]).rendered(fallback: "STALE_CONFIRMED_BILLING")
-            XCTAssertEqual(rendered, Strings.t(key, "Codex", "0", "62500"))
+            if key == "event.credit_topup" {
+                XCTAssertEqual(rendered, Strings.t(key, "Codex", "0", "62500", 62500.formatted(.number)))
+            } else {
+                XCTAssertEqual(rendered, Strings.t(key, "Codex", "0", "62500"))
+            }
             XCTAssertTrue(rendered.contains("0 → 62500"))
             let legacy = LocalizedMessagePayload(key: key, params: ["provider": .string("Codex")])
                 .rendered(fallback: "STALE_CONFIRMED_BILLING")
             XCTAssertTrue(legacy.contains("? → ?"))
             XCTAssertFalse(legacy.contains("STALE_CONFIRMED_BILLING"))
         }
+    }
+
+    func testResetTicketNotificationsKeepCountsAndDoNotCallTheGrantAQuotaReset() {
+        let added = LocalizedMessagePayload(key: "event.banked_reset_added", params: [
+            "countBefore": .number(2), "countAfter": .number(3), "countAdded": .number(1)
+        ]).rendered(fallback: "UNSUPPORTED")
+        XCTAssertEqual(added, Strings.t("event.banked_reset_added", "2", "3", "1"))
+        let consumed = LocalizedMessagePayload(key: "event.banked_reset_consumed", params: [
+            "countBefore": .number(3), "countAfter": .number(2), "countUsed": .number(1)
+        ]).rendered(fallback: "UNSUPPORTED")
+        XCTAssertEqual(consumed, Strings.t("event.banked_reset_consumed", "3", "2", "1", ""))
+        XCTAssertNotEqual(added, consumed)
+        let recovered = LocalizedMessagePayload(key: "event.banked_reset_consumed", params: [
+            "countBefore": .number(3), "countAfter": .number(2), "countUsed": .number(1), "quotaRecovered": .bool(true)
+        ]).rendered(fallback: "UNSUPPORTED")
+        XCTAssertEqual(recovered, consumed + Strings.t("resetTickets.recovered"))
     }
 
     func testEventRendersFromKindAndDetailsInsteadOfDaemonProse() throws {

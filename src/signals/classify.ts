@@ -1,6 +1,8 @@
-import { parseAnnouncementTime } from "./time";
+import { announcementTimeHint, parseAnnouncementTime } from "./time";
 import { createHash } from "node:crypto";
 import { isWatched, providerForAuthor, type PublicPost } from "./x-source";
+import { bankedReset, detectBenefits, type BenefitChange, type BenefitKind, type SignalBenefit } from "./benefit-details";
+export type { BenefitChange, BenefitKind, SignalBenefit } from "./benefit-details";
 
 export type SignalState = "possible" | "announced" | "reported" | "updated" | "withdrawn";
 export interface ResetSignal {
@@ -10,8 +12,11 @@ export interface ResetSignal {
   timeHint: string | null; scopeHint: string | null;
   observedVia: "x-api" | "public-feed" | "codexreset" | "claudereset" | "resetradar"; targetAtMs: number | null;
   detectedAtMs?: number;
+  sourcePostId?: string;
   provider?: "codex" | "claude";
-  benefitKind?: "reset" | "credits" | "limits" | "student" | "discounts" | "events";
+  benefitKind?: BenefitKind;
+  change?: BenefitChange;
+  benefits?: SignalBenefit[];
 }
 // Audience restrictions take precedence over the reward, including saved older signals.
 export function benefitCategory(text: string, fallback: ResetSignal["benefitKind"] = "reset"): NonNullable<ResetSignal["benefitKind"]> {
@@ -20,7 +25,16 @@ export function benefitCategory(text: string, fallback: ResetSignal["benefitKind
   if (/\bhackathon\w*\b|\bchallenge\b|\breferral\b|\bcourse completion\b|\bcomplete.{0,30}course\b|해커톤|챌린지|추천인|수료/i.test(text)) return "events";
   return fallback ?? "reset";
 }
-const reset = /\breset(?:s|ting|ted)?\b|\breseting\b/i;
+function audienceBenefit(benefit: SignalBenefit, context: string): SignalBenefit {
+  const evidence = benefit.change?.evidence;
+  const local = evidence ? benefitCategory(evidence, benefit.kind) : benefit.kind;
+  if (["student", "discounts", "events"].includes(local)) return { ...benefit, kind: local };
+  // A universal benefit in its own clause is independent of a student offer
+  // elsewhere. Otherwise keep the post/parent's restriction for short followups.
+  const universal = evidence && /\beveryone\b|\bevery\s+(?:user|account|subscriber|plan)\b|\ball\s+(?:users|accounts|subscribers|plans)\b|\bfor\s+all\b|모든\s*(?:사용자|계정|구독자)|전체\s*(?:사용자|계정|구독자)/i.test(evidence);
+  return { ...benefit, kind: universal ? local : benefitCategory(context, local) };
+}
+const reset = /\breset(?:s|ting|ted)?\b|\breseting\b|리셋|초기화/i;
 const subject = /\bcodex\b|\bclaude\b|chatgpt\s+work|\b(?:usage|rate|weekly)\s+limits?\b|banked\s+reset/i;
 const correction = /\b(?:delay(?:ed)?|postpon(?:ed|e)|moved|instead|correction|meant|pushed back)\b/i;
 const withdrawal = /\b(?:no|not|won't|will not)\s+(?:be\s+)?(?:a\s+)?reset\b|\b(?:cancelled|canceled)\b/i;
@@ -43,11 +57,10 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>)
   for (const ref of post.references) visit(ref.id, 0);
   if (post.conversationId !== post.id) visit(post.conversationId, 0);
   const text = post.text;
-  const creditGrant = /\bcredits?\b/i.test(text) && /\b(?:receiv\w*|grant\w*|giving|given|added|free|one.time|offered)\b/i.test(text)
-    && (!reset.test(text) || /\busage credits?\b|\badditional credits?\b|\b\d[\d,]* credits?\b/i.test(text));
-  const limitChange = /\b(?:limits?|allowance)\b.{0,60}\b(?:increase\w*|higher|doubl\w*|boost\w*)\b|\b(?:increase\w*|higher|doubl\w*|boost\w*)\b.{0,60}\b(?:limits?|allowance)\b/i.test(text);
-  const benefitKind = benefitCategory(text, creditGrant ? "credits" : !reset.test(text) && limitChange ? "limits" : "reset");
-  const benefitEvidence = creditGrant || limitChange || benefitKind !== "reset" && /\b(?:free|offer\w*|discount\w*|credits?|access|off)\b|무료|할인|크레딧/i.test(text);
+  const detectedBenefits = detectBenefits(text);
+  let benefitKind = benefitCategory(text, detectedBenefits[0]?.kind ?? "reset");
+  const restricted = ["student", "discounts", "events"].includes(benefitKind);
+  const benefitEvidence = detectedBenefits.length > 0 || restricted && /\b(?:free|offer\w*|discount\w*|credits?|tokens?|access|off)\b|무료|할인|크레딧|토큰/i.test(text);
 
   const parentText = parents.map(p => p.text).join("\n");
   const contextRelevant = reset.test(parentText) && subject.test(parentText);
@@ -75,20 +88,51 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>)
   const state: SignalState = withdrawal.test(text) && !/\?|\bwho\s+(?:says|said)\b/i.test(text) ? "withdrawn" : correction.test(text) ? "updated"
     : done.test(text) ? "reported" : promisedFollowup || (explicit || benefitEvidence) && promised.test(text) && !/\?/.test(text) ? "announced" : benefitEvidence && !/\?|\b(?:maybe|might|could|possibly)\b/i.test(text) ? "reported" : "possible";
   const combined = `${text}\n${parentText}`;
-  const resetKind = /\bbanked\b|reset\s+(?:card|credit|token)|reset to use anytime/i.test(text) ? "banked"
+  const resetKind = bankedReset.test(text) ? "banked"
     : /\b(?:direct|instant|automatic|system.wide|global)\b|\ball\s+reset\s+for\s+everyone\b/i.test(text) ? "direct"
-    : /\bbanked\b|reset\s+(?:card|credit|token)|reset to use anytime/i.test(parentText) ? "banked" : "unknown";
-  const timeHint = text.match(/[^.!?\n]*(?:\btomorrow\b|\btoday\b|\bmidnight\b|\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b|\b\d{1,2}(?::\d{2})?\s*(?:am|pm|PST|PDT|PT|UTC)\b|\bin\s+(?:~\s*)?(?:\d+|one|an?)\s+hours?\b)[^.!?\n]*/i)?.[0]?.trim().slice(0, 300) ?? null;
+    : bankedReset.test(parentText) ? "banked" : "unknown";
+  const benefits = [...detectedBenefits];
+  if ((explicit && eventEvidence || followup || implicit) && !benefits.some(b => b.kind === "reset" || b.kind === "resetCredits")) {
+    const evidence = text.split(/(?<=[.!?])\s+|[;\n]+/).find(clause => reset.test(clause)) ?? text;
+    benefits.unshift({ kind: resetKind === "banked" ? "resetCredits" : "reset", change: { evidence: evidence.trim().slice(0, 800) } });
+  }
+  const audienceBenefits = benefits.map(benefit => audienceBenefit(benefit, combined));
+  const visibleBenefits = [...new Map(audienceBenefits.map(benefit => [benefit.kind, benefit])).values()];
+  benefitKind = visibleBenefits[0]?.kind ?? (resetKind === "banked" && !restricted ? "resetCredits" : benefitKind);
+  const change = visibleBenefits.find(b => b.kind === benefitKind)?.change;
+  const timeHint = announcementTimeHint(text);
   const scopeHint = combined.match(/\ball\s+(?:paid\s+)?(?:users|accounts|plans|subscriptions)\b|\b(?:Plus|Pro|Business|Enterprise)\b(?:\s*[,/&]\s*(?:Plus|Pro|Business|Enterprise)\b)*/i)?.[0] ?? null;
   const primaryParent = parents.find(p => isWatched(p.author) && reset.test(p.text));
   const groupId = primaryParent?.conversationId ?? (contextRelevant ? post.conversationId : post.id);
   // Linked reposts without new conditions share the same notification identity.
   const normalized = text.replace(/https?:\/\/\S+/g, "").replace(/@\w+/g, "").trim();
   const fingerprint = createHash("sha256").update(JSON.stringify([groupId, state, resetKind, timeHint, scopeHint,
-    state === "updated" || state === "withdrawn" || benefitKind !== "reset" ? normalized : null])).digest("hex").slice(0, 24);
+    state === "updated" || state === "withdrawn" || !["reset", "resetCredits"].includes(benefitKind) ? normalized : null])).digest("hex").slice(0, 24);
   return { id: post.id, groupId, fingerprint, author: post.author,
     sourceUrl: `https://x.com/${post.author}/status/${post.id}`, text, contextText: parentText.slice(0, 3000) || null,
-    publishedAtMs: post.createdAtMs, state, resetKind, provider: providerForAuthor(post.author), benefitKind, timeHint, scopeHint, observedVia: "x-api", targetAtMs: parseAnnouncementTime(timeHint ?? text, post.createdAtMs)?.targetAtMs ?? null };
+    publishedAtMs: post.createdAtMs, state, resetKind, provider: providerForAuthor(post.author), benefitKind,
+    ...(change ? { change } : {}), ...(visibleBenefits.length > 1 ? { benefits: visibleBenefits } : {}),
+    timeHint, scopeHint, observedVia: "x-api", targetAtMs: parseAnnouncementTime(timeHint ?? text, post.createdAtMs)?.targetAtMs ?? null };
+}
+
+// A source post can announce several independent changes. Stable per-benefit
+// identities prevent a reset-credit notification from swallowing a limit boost.
+// Leave single-benefit IDs unchanged for existing storage and deduplication.
+export function expandBenefitSignals(signal: ResetSignal): ResetSignal[] {
+  const context = `${signal.text}\n${signal.contextText ?? ""}`;
+  const audienceBenefits = (signal.benefits ?? [{ kind: signal.benefitKind ?? "reset", change: signal.change }])
+    .map(benefit => audienceBenefit(benefit, context));
+  const benefits = [...new Map(audienceBenefits.map(benefit => [benefit.kind, benefit])).values()];
+  if (benefits.length < 2) return [{ ...signal, benefitKind: benefits[0]?.kind ?? signal.benefitKind, benefits: undefined }];
+  return benefits.map(benefit => ({ ...signal, sourcePostId: signal.sourcePostId ?? signal.id,
+    id: `${signal.id}:${benefit.kind}`, groupId: `${signal.groupId}:${benefit.kind}`,
+    fingerprint: createHash("sha256").update(`${signal.fingerprint}:${benefit.kind}`).digest("hex").slice(0, 24),
+    benefitKind: benefit.kind, change: benefit.change, benefits: undefined,
+    state: ["updated", "withdrawn"].includes(signal.state) ? signal.state : benefit.state ?? signal.state,
+    timeHint: benefit.change ? announcementTimeHint(benefit.change.evidence) : null,
+    targetAtMs: benefit.change ? parseAnnouncementTime(benefit.change.evidence, signal.publishedAtMs)?.targetAtMs ?? null : null,
+    resetKind: benefit.kind === "resetCredits" ? "banked" : benefit.kind === "reset" ? signal.resetKind === "banked" ? "direct" : signal.resetKind : "unknown",
+  }));
 }
 
 // Recheck saved local classifications as well. Keep the source record in the

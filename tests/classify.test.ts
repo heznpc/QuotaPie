@@ -106,7 +106,10 @@ describe("classifyDelta", () => {
       expect(value.details).toMatchObject({ balanceBefore: before, balanceAfter: after, billingVerified: false,
         previousObservedAtMs: 0, nextObservedAtMs: HOUR, previousSource: "codex-app-server", nextSource: "codex-app-server" });
       expect(value.displayText).toContain(`${before} → ${after}`);
-      expect(value.displayText).toContain("unverified");
+      if (kind === "credit_topup") {
+        expect(value.details.balanceAdded).toBe(after - before);
+        expect(value.displayText).not.toMatch(/purchased|charged|payment confirmed/i);
+      } else expect(value.displayText).toContain("unverified");
     },
   );
 });
