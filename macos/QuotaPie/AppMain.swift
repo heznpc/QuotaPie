@@ -51,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var selectionSubscription: AnyCancellable?
     private var activationObserver: NSObjectProtocol?
     private var lifecycleObservers: [NSObjectProtocol] = []
+    private let profileUpdateMonitor = CodexProfileUpdateMonitor(profiles: { CodexProfilesModel.shared.profiles })
     private let verification = AppVerification.current
     private var isFixturePreview: Bool {
 #if DEBUG
@@ -101,7 +102,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.animates = false
         popover.delegate = self
 
-        if !isFixturePreview { AwakeController.shared.start() }
+        if !isFixturePreview {
+            AwakeController.shared.start()
+            profileUpdateMonitor.start()
+        }
         installPopoverContent()
         installKeyboardShortcuts()
         selectionSubscription = popoverModel.$selectedAccountID
@@ -173,6 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        profileUpdateMonitor.stop()
         refreshTimer?.invalidate()
         notificationTimer?.invalidate()
         if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
