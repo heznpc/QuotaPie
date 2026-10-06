@@ -1,6 +1,7 @@
 import { localAnnouncementTime } from "./signals/time";
 import { benefitChangeText, signalDecision } from "./signals/presentation";
 import { connectProfileRelay } from "./profile-relay";
+import { saveAccountNickname } from "./account-nickname";
 import { connectCodexProfile } from "./profile-connection";
 import { ModelNotifications } from "./model-notifications";
 import { startSerialObserver } from "./serial-observer";
@@ -65,6 +66,18 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
       const url = new URL(request.url);
       if (url.pathname === "/api/runtime") {
         return request.method === "GET" ? json(runtime) : json({ error: "method_not_allowed" }, 405);
+      }
+      if (url.pathname === "/api/accounts/nickname") {
+        if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+        if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token"))) return json({ error: "forbidden" }, 403);
+        try {
+          const body = await request.text();
+          if (body.length > 2048) return json({ error: "invalid_nickname" }, 400);
+          return json(saveAccountNickname(config, JSON.parse(body), options.preferencesPath));
+        } catch (error) {
+          const code = error instanceof Error ? error.message : "invalid_nickname";
+          return json({ error: ["settings_changed", "account_not_found"].includes(code) ? code : "invalid_nickname" }, code === "settings_changed" ? 409 : 400);
+        }
       }
       if (url.pathname === "/api/account-pool/policy") {
         if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
@@ -270,7 +283,14 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           })(),
           resetTracking: service.resetTracking(nowMs, accounts),
           compaction: compaction.snapshot(nowMs),
-          accountPool: (() => { try { return poolStatus(options.poolDatabasePath, options.poolPolicyPath); } catch { return { enabled: false, accounts: [], recent: [], error: "pool_status_unavailable" }; } })(),
+          accountPool: (() => { try {
+            const pool = poolStatus(options.poolDatabasePath, options.poolPolicyPath);
+            return { ...pool, recent: pool.recent.map(item => {
+              const row = item as { account: string; accountLabel: string };
+              const account = accounts.find(account => account.provider === "codex" && account.account === row.account);
+              return { ...row, ...(account ? { accountLabel: account.accountLabel } : {}) };
+            }) };
+          } catch { return { enabled: false, accounts: [], recent: [], error: "pool_status_unavailable" }; } })(),
           // Kept for existing consumers. It only contains accounts that have
           // windows, so new consumers should read accounts instead.
           statuses: service.statuses(nowMs, analysed),

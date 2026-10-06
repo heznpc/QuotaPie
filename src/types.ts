@@ -229,6 +229,7 @@ export interface AccountCollectionState {
 // A configured account never disappears just because it has no snapshots.
 // The native UI needs to be able to render an honest empty or error state.
 export interface AccountState {
+  nickname?: string;
   provider: Provider;
   account: string;
   accountLabel: string;

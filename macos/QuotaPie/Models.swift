@@ -500,6 +500,7 @@ struct Headline: Decodable {
 }
 
 struct AccountState: Decodable, Identifiable {
+    var nickname: String? = nil
     let provider: String
     let account: String
     let accountLabel: String

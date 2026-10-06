@@ -638,3 +638,9 @@
 "signal.unit.resets" = "개";
 "signal.unit.messages" = "메시지";
 "signal.unit.requests" = "회";
+"accounts.nicknames.title" = "계정 별명";
+"accounts.nicknames.hint" = "선택 메뉴와 알림에 사용할 이름입니다. 비우면 기본 계정 이름으로 표시됩니다.";
+"accounts.nicknames.field" = "별명";
+"accounts.nicknames.save" = "저장";
+"accounts.nicknames.saved" = "별명을 저장했습니다.";
+"accounts.nicknames.error" = "별명을 저장하지 못했습니다. 다시 시도해 주세요.";

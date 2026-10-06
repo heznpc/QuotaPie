@@ -80,6 +80,22 @@ final class StatusClient {
         }
     }
 
+    func saveNickname(provider: String, account: String, nickname: String, actionToken: String,
+                      completion: @escaping (Result<Void, Error>) -> Void) {
+        do {
+            var request = try authenticatedPOST(pathComponents: ["api", "accounts", "nickname"], actionToken: actionToken)
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["provider": provider, "account": account, "nickname": nickname])
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            session.dataTask(with: request) { _, response, error in
+                if let error { completion(.failure(error)); return }
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                    completion(.failure(StatusClientError.invalidResponse)); return
+                }
+                completion(.success(()))
+            }.resume()
+        } catch { completion(.failure(error)) }
+    }
+
     func connectProfile(_ profile: CodexDesktopProfile, actionToken: String,
                         completion: @escaping (Result<ProfileConnectionReply, Error>) -> Void) {
         do {

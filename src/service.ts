@@ -610,6 +610,7 @@ export class QuotaPieService {
         provider: profile.provider,
         account: profile.id,
         accountLabel: this.accountLabel(profile.provider, profile.id),
+        nickname: this.config.accounts[profile.provider].find(item => item.id === profile.id)?.nickname,
         enabled: profile.enabled,
         collection: {
           health: best?.health ?? "never-attempted",
@@ -644,7 +645,11 @@ export class QuotaPieService {
 
   private accountLabel(provider: Provider, account: string): string {
     const profiles = provider === "codex" ? this.config.accounts.codex : this.config.accounts.claude;
-    const label = profiles.find((profile) => profile.id === account)?.label;
+    const profile = profiles.find((profile) => profile.id === account);
+    const label = profile?.label;
+    if (profile?.nickname !== undefined) {
+      return profile.nickname.trim() || (provider === "codex" ? this.codexAccountNames.get(account) : undefined) || label || account;
+    }
     return provider === "codex" ? codexAccountDisplay(label, account, this.codexAccountNames.get(account)) : label ?? account;
   }
 
