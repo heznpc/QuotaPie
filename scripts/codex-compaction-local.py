@@ -318,11 +318,16 @@ class LocalRelay:
             raise
         return self.status()
 
-    def disable(self):
+    def disable(self, args=None):
         if not self.settings_path.exists():
             return self.status()
         configs = {}
         entries = self.registered_entries()
+        target = Path(args.codex_home).expanduser().resolve() if args and args.codex_home else None
+        if target is not None:
+            entries = [entry for entry in entries if Path(entry[2]["codex_home"]).resolve() == target]
+            if not entries:
+                raise ValueError("No registered relay for this profile")
         for _, _, settings in entries:
             config_path = Path(settings["codex_home"]) / "config.toml"
             configs.setdefault(config_path, set()).add(self.endpoint(settings))
@@ -348,7 +353,7 @@ class LocalRelay:
             if isinstance(legacy.get("taskSavings"), dict):
                 legacy["taskSavings"]["enabled"] = False
             atomic_write(file, json.dumps(legacy, indent=2) + "\n", expected=raw)
-        settings = self.settings()
+        settings = entries[-1][2] if target is not None else self.settings()
         for _ in range(20):
             try:
                 self.health(settings)
@@ -356,7 +361,10 @@ class LocalRelay:
             except (OSError, ValueError, RuntimeError):
                 time.sleep(0.1)
         return {"configured": False, "restart_required": True,
-                "next": "Quit and reopen Codex, then run quotapie-compaction stop. The relay remains available to currently loaded tasks until then."}
+                **({"codex_home": str(target)} if target is not None else {}),
+                "next": ("Restart only this Codex profile. Its relay stays available for already-loaded tasks."
+                         if target is not None else
+                         "Quit and reopen Codex, then run quotapie-compaction stop. The relay remains available to currently loaded tasks until then.")}
 
     def stop(self):
         entries = self.registered_entries()
@@ -414,7 +422,7 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX)
         # Another manager may have activated a generation while we waited.
         relay = LocalRelay()
-        if args.action in ["install", "configure", "ensure-profile"]:
+        if args.action in ["install", "configure", "ensure-profile", "disable"]:
             result = getattr(relay, args.action.replace("-", "_"))(args)
         else:
             result = getattr(relay, args.action)()
