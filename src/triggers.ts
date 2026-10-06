@@ -149,8 +149,11 @@ export function planTriggers(
     if (plannedEventKeys.has(key)) continue;
     plannedEventKeys.add(key);
     const creditEvent = event.kind === "paid_usage" || event.kind === "credit_topup";
-    const titleKey = creditEvent
-      ? "alert.event.title.payment"
+    const resetCreditEvent = event.kind === "banked_reset_added" || event.kind === "banked_reset_consumed";
+    const titleKey = resetCreditEvent
+      ? "alert.event.title.resetCredits"
+      : event.kind === "credit_topup" ? "alert.event.title.creditAdded"
+      : creditEvent ? "alert.event.title.payment"
       : event.kind === "account_changed" ? "alert.event.title.account"
       : event.kind === "plan_changed" ? "alert.event.title.plan"
       : event.kind === "window_changed"

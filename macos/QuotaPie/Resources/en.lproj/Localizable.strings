@@ -137,8 +137,8 @@
 "event.meter_correction" = "%@ usage moved slightly backwards.";
 "event.schedule_rebased" = "%@ reset time was rescheduled.";
 "event.paid_usage" = "%@ reported credits: %@ → %@. Spending and billing balance changes are unverified.";
-"event.credit_topup" = "%@ reported credits: %@ → %@. Top-ups and billing balance changes are unverified.";
-"event.banked_reset_consumed" = "A banked reset appears to have been used.";
+"event.credit_topup" = "%@ credits increased: %@ → %@ (+%@).";
+"event.banked_reset_consumed" = "Reset tickets: %@ → %@ (%@ fewer).%@";
 "event.bucket_retired" = "%@ disappeared from the provider's full response; tracking stopped.";
 "event.window_changed" = "Displayed limit changed: %@ → %@. Account or plan change unverified.";
 
@@ -382,9 +382,9 @@
 "notification.preferences.group.news" = "Public reset news · separate from my account";
 "notification.preferences.group.operation" = "Work and collection";
 "notification.topic.quotaWarnings" = "Low quota and fast consumption";
-"notification.topic.quotaRecovery" = "Unexpected quota recovery detected";
+"notification.topic.quotaRecovery" = "Actual quota resets, recovery and reset ticket use";
 "notification.topic.accountChanges" = "Account, plan, and quota schedule changes";
-"notification.topic.payments" = "Reported credit changes";
+"notification.topic.payments" = "Credit decreases";
 "notification.topic.resumeReady" = "Paused work ready to resume";
 "notification.topic.collectionIssues" = "Quota collection delays";
 "notification.topic.resetPossible" = "Evidence of a possible reset";
@@ -587,16 +587,16 @@
 "pool.history.model" = "The request was rejected because the destination account could not use this model.";
 "pool.history.other" = "The request could not be forwarded.";
 
-"signal.credits" = "%@ credit news";
+"signal.credits" = "%@ token and credit news";
 "signal.limits" = "%@ usage allowance news";
 "signal.claude.possible" = "Possible Claude reset";
 "signal.claude.announced" = "Claude reset announced";
 "signal.claude.reported" = "Claude reset reported";
 "signal.claude.updated" = "Claude reset update";
 "signal.claude.withdrawn" = "Claude reset withdrawn";
-"signal.summary.credits" = "Credit grant news";
-"signal.summary.limits" = "Usage allowance change news";
-"signal.kind.credits" = "Credits";
+"signal.summary.credits" = "Token and credit grant news";
+"signal.summary.limits" = "Base usage allowance change news";
+"signal.kind.credits" = "Tokens and credits";
 "signal.kind.limits" = "Usage allowance";
 "signal.via.claudereset" = "Via Claude Reset Tracker · original unverified";
 "signal.via.resetradar" = "Via Reset Radar · original unverified";
@@ -605,8 +605,8 @@
 "signal.coverage.watched-accounts" = "Direct X collection · OpenAI and Claude accounts";
 
 "notification.preferences.group.benefits" = "Benefits and events";
-"notification.topic.creditGrants" = "Credit grants";
-"notification.topic.limitChanges" = "Usage limit changes";
+"notification.topic.creditGrants" = "Token and credit additions and grants";
+"notification.topic.limitChanges" = "Base usage allowance changes";
 "notification.topic.studentBenefits" = "Student and education benefits";
 "notification.topic.discounts" = "Subscription discounts and promotions";
 "notification.topic.rewardEvents" = "Participation, course and referral rewards";
@@ -621,3 +621,20 @@
 "signal.kind.events" = "Reward events";
 
 "signal.localTime" = "Your time: %@";
+"event.banked_reset_added" = "Reset tickets added: %@ → %@ (+%@).";
+"alert.event.title.creditAdded" = "%@ · %@ credits increased";
+"alert.event.title.resetCredits" = "%@ · %@ reset tickets changed";
+"notification.topic.resetCredits" = "Reset ticket additions and grants";
+"signal.resetCredits" = "%@ reset ticket news";
+"signal.summary.resetCredits" = "Reset ticket grant news";
+"signal.kind.resetCredits" = "Reset ticket grant";
+"signal.summary.benefitWithdrawn" = "Benefit announcement withdrawn";
+"signal.summary.benefitUpdated" = "Benefit announcement updated";
+"resetTickets.recovered" = " Quota recovery was also observed.";
+"signal.change.prefix" = "Announced: ";
+"signal.change.percent" = "%@%% (%@× previous allowance)";
+"signal.unit.tokens" = "tokens";
+"signal.unit.credits" = "credits";
+"signal.unit.resets" = "tickets";
+"signal.unit.messages" = "messages";
+"signal.unit.requests" = "requests";

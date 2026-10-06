@@ -275,7 +275,7 @@ struct LocalizedMessagePayload: Decodable {
             return [to, detail, label == "?" ? Strings.t("model.notice.unknown") : label]
         case "model.notice.failed":
             return required("toLabel", "detail")
-        case "signal.credits", "signal.limits", "signal.student", "signal.discounts", "signal.events":
+        case "signal.resetCredits", "signal.credits", "signal.limits", "signal.student", "signal.discounts", "signal.events":
             return required("provider")
         case "signal.claude.possible", "signal.claude.announced", "signal.claude.reported", "signal.claude.updated", "signal.claude.withdrawn",
              "signal.possible", "signal.announced", "signal.reported", "signal.updated", "signal.withdrawn":
@@ -285,6 +285,7 @@ struct LocalizedMessagePayload: Decodable {
         case "alert.remaining.title", "alert.stale.title",
              "alert.rapid.title",
              "alert.event.title.payment",
+             "alert.event.title.creditAdded", "alert.event.title.resetCredits",
              "alert.event.title.resync", "alert.pace.title.measured",
              "alert.pace.title.projected", "alert.resume.ready.title":
             return required("provider", "account")
@@ -308,11 +309,21 @@ struct LocalizedMessagePayload: Decodable {
             return [label, gap]
         case "alert.event.title.window", "alert.event.title.account", "alert.event.title.plan":
             return required("account")
-        case "alert.test.title", "alert.test.message", "event.banked_reset_consumed", "event.account_changed":
+        case "alert.test.title", "alert.test.message", "event.account_changed":
             return []
-        case "event.paid_usage", "event.credit_topup":
+        case "event.paid_usage":
             guard let provider = text("provider") else { return nil }
             return [provider, text("balanceBefore") ?? "?", text("balanceAfter") ?? "?"]
+        case "event.credit_topup":
+            guard let provider = text("provider") else { return nil }
+            let delta = params["balanceAdded"]?.number ?? params["balanceAfter"]?.number.flatMap { after in params["balanceBefore"]?.number.map { after - $0 } }
+            return [provider, text("balanceBefore") ?? "?", text("balanceAfter") ?? "?", delta?.formatted(.number.precision(.fractionLength(0...2))) ?? "?"]
+        case "event.banked_reset_added", "event.banked_reset_consumed":
+            let added = key == "event.banked_reset_added"
+            let delta = params[added ? "countAdded" : "countUsed"]?.number ?? params["countAfter"]?.number.flatMap { after in params["countBefore"]?.number.map { abs(after - $0) } }
+            var values: [CVarArg] = [text("countBefore") ?? "?", text("countAfter") ?? "?", delta?.formatted(.number.precision(.fractionLength(0...2))) ?? "?"]
+            if !added { values.append(text("quotaRecovered") == "true" ? Strings.t("resetTickets.recovered") : "") }
+            return values
         case "event.window_changed":
             return required("fromLabel", "toLabel")
         case "event.plan_changed":
@@ -786,6 +797,14 @@ struct CompactionRecord: Decodable, Identifiable {
     }
 }
 
+struct BenefitChange: Decodable {
+    var before: Double?
+    var after: Double?
+    var percent: Double?
+    var amount: Double?
+    var unit: String?
+}
+
 struct ResetSignal: Decodable, Identifiable {
     let id: String
     let fingerprint: String
@@ -804,11 +823,16 @@ struct ResetSignal: Decodable, Identifiable {
     var provider: String? = nil
     var benefitKind: String? = nil
     var localTimeText: String? = nil
+    var benefitText: String? = nil
+    var newsTitle: String? = nil
+    var sourcePostId: String? = nil
+    var change: BenefitChange? = nil
 
     var safeSourceURL: URL? {
+        let postID = sourcePostId ?? id
         guard let url = URL(string: sourceUrl), url.scheme == "https", url.host == "x.com",
               url.user == nil, url.password == nil, url.port == nil,
-              url.path == "/\(author)/status/\(id)", id.allSatisfy({ $0.isNumber }), !id.isEmpty,
+              url.path == "/\(author)/status/\(postID)", postID.allSatisfy({ $0.isNumber }), !postID.isEmpty,
               ["thsottiaux", "reach_vb", "dkundel", "openaidevs", "openai", "claudedevs", "claudeai", "anthropicai", "lydiahallie"].contains(author.lowercased())
         else { return nil }
         return url

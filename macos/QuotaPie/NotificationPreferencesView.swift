@@ -13,7 +13,7 @@ struct NotificationPreferencesView: View {
     let save: (String, Bool) -> Void
     private let groups: [(String, [String])] = [
         ("account", ["quotaWarnings", "quotaRecovery", "accountChanges", "payments"]),
-        ("benefits", ["creditGrants", "limitChanges", "studentBenefits", "discounts", "rewardEvents"]),
+        ("benefits", ["resetCredits", "creditGrants", "limitChanges", "studentBenefits", "discounts", "rewardEvents"]),
         ("news", ["resetPossible", "resetAnnounced", "resetUpdates", "resetReported"]),
         ("operation", ["resumeReady", "collectionIssues", "modelChanges"])
     ]

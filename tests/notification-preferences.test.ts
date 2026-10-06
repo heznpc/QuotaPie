@@ -27,7 +27,7 @@ describe("notification topic preferences", () => {
       service.setNativeNotificationTransportAvailable(true);
       service.alerts.setNativeNotificationConsumer(true);
       const toggle = (enabled: boolean) => service.applyNotificationPreferences(
-        mute === "topic" ? { topics: { payments: enabled } } : { enabled });
+        mute === "topic" ? { topics: { creditGrants: enabled } } : { enabled });
       const add = (offset: number) => {
         const event: QuotaEvent = { provider: "codex", account: "default", bucket: "primary", kind: "credit_topup",
           severity: "info", occurredAtMs: Date.now() + offset, confidence: "high", displayText: "Synthetic top-up", details: { offset } };
@@ -64,7 +64,7 @@ describe("notification topic preferences", () => {
       kind, severity: "info" as const, occurredAtMs: Date.now(), confidence: "high" as const, displayText: "", details: {} }));
     const decisions = planTriggers([], events, config, 0);
     expect(decisions.map(notificationTopic)).toEqual([
-      "quotaRecovery", "quotaRecovery", "accountChanges", "payments", "payments", "accountChanges", "accountChanges", "accountChanges",
+      "quotaRecovery", "resetCredits", "quotaRecovery", "quotaRecovery", "quotaRecovery", "accountChanges", "payments", "creditGrants", "accountChanges", "accountChanges", "accountChanges",
     ]);
     for (const [state, topic] of Object.entries({ possible: "resetPossible", announced: "resetAnnounced", updated: "resetUpdates", withdrawn: "resetUpdates", reported: "resetReported" } as const)) {
       expect(notificationTopic(signalDecision(signal(state as SignalState), "ko"))).toBe(topic);

@@ -4,7 +4,7 @@ import type { NotificationPresentation } from "./types";
 export const DEFAULT_NOTIFICATION_TOPICS = {
   modelChanges: true, quotaWarnings: true, collectionIssues: true, quotaRecovery: true,
   accountChanges: true, payments: true, resumeReady: true,
-  studentBenefits: false, discounts: false, rewardEvents: false, creditGrants: true, limitChanges: true,
+  studentBenefits: false, discounts: false, rewardEvents: false, resetCredits: true, creditGrants: true, limitChanges: true,
   resetPossible: true, resetAnnounced: true, resetUpdates: true, resetReported: true,
 };
 export type NotificationTopic = keyof typeof DEFAULT_NOTIFICATION_TOPICS;
@@ -24,6 +24,7 @@ export function notificationTopic(input: {
   if (title === "signal.student") return "studentBenefits";
   if (title === "signal.discounts") return "discounts";
   if (title === "signal.events") return "rewardEvents";
+  if (title === "signal.resetCredits") return "resetCredits";
   if (title === "signal.credits") return "creditGrants";
   if (title === "signal.limits") return "limitChanges";
   if (title === "signal.possible") return "resetPossible";
@@ -36,8 +37,10 @@ export function notificationTopic(input: {
   if (title.startsWith("alert.remaining.") || title.startsWith("alert.rapid.") || title.startsWith("alert.pace.")
     || /:(remaining:\d+|rapid|pace)$/.test(key)) return "quotaWarnings";
   const event = message.startsWith("event.") ? message.slice(6) : key.startsWith("event:") ? key.split(":").at(-1) : "";
-  if (["external_relief", "allowance_relief", "scheduled_reset"].includes(event ?? "")) return "quotaRecovery";
-  if (["paid_usage", "credit_topup"].includes(event ?? "")) return "payments";
+  if (["external_relief", "allowance_relief", "scheduled_reset", "banked_reset_consumed"].includes(event ?? "")) return "quotaRecovery";
+  if (event === "banked_reset_added") return "resetCredits";
+  if (event === "credit_topup") return "creditGrants";
+  if (event === "paid_usage") return "payments";
   if (["schedule_rebased", "window_changed", "account_changed", "plan_changed"].includes(event ?? "")) return "accountChanges";
   return null; // Explicit test alerts and third-party integrations have no topic.
 }

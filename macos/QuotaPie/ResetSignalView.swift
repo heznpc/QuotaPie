@@ -5,9 +5,37 @@ extension ResetSignalPayload {
 }
 
 extension ResetSignal {
+    var renderedBenefitText: String? {
+        guard let change else { return benefitText }
+        func number(_ value: Double) -> String { value.formatted(.number.precision(.fractionLength(0...2))) }
+        let knownUnits = ["tokens", "credits", "resets", "messages", "requests"]
+        let unit = change.unit.flatMap { value -> String? in
+            guard value != "%" else { return nil }
+            return " " + (knownUnits.contains(value) ? Strings.t("signal.unit." + value) : value)
+        } ?? ""
+        var parts: [String] = []
+        if let before = change.before, let after = change.after, before.isFinite, after.isFinite {
+            parts.append("\(number(before)) → \(number(after))\(unit)")
+        } else if let amount = change.amount, amount.isFinite {
+            parts.append("+\(number(amount))\(unit)")
+        }
+        if let percent = change.percent, percent.isFinite {
+            parts.append(Strings.t("signal.change.percent", (percent >= 0 ? "+" : "") + number(percent), number(1 + percent / 100)))
+        }
+        return parts.isEmpty ? benefitText : Strings.t("signal.change.prefix") + parts.joined(separator: " · ")
+    }
+
+    var displayedBenefitKind: String? {
+        if (benefitKind == nil || benefitKind == "reset") && resetKind == "banked" { return "resetCredits" }
+        return benefitKind
+    }
     /// Describe this post's current meaning; never imply application to an account.
     func summaryKey(nowMs: Double) -> String {
-        if let benefitKind, ["credits", "limits", "student", "discounts", "events"].contains(benefitKind) { return "signal.summary." + benefitKind }
+        if let kind = displayedBenefitKind, ["resetCredits", "credits", "limits", "student", "discounts", "events"].contains(kind) {
+            if state == "withdrawn" { return "signal.summary.benefitWithdrawn" }
+            if state == "updated" { return "signal.summary.benefitUpdated" }
+            return "signal.summary." + kind
+        }
         switch state {
         case "withdrawn": return "signal.summary.withdrawn"
         case "updated": return "signal.summary.updated"
@@ -20,7 +48,7 @@ extension ResetSignal {
     }
 
     var classificationKey: String {
-        if let benefitKind, ["credits", "limits", "student", "discounts", "events"].contains(benefitKind) { return "signal.summary." + benefitKind }
+        if let kind = displayedBenefitKind, ["resetCredits", "credits", "limits", "student", "discounts", "events"].contains(kind) { return "signal.summary." + kind }
         return (provider == "claude" ? "signal.claude." : "signal.") + state
     }
 
@@ -68,6 +96,9 @@ struct ResetSignalSummary: View {
             if let signal = feed.latestSignal {
                 Text(Strings.t(signal.summaryKey(nowMs: Date().timeIntervalSince1970 * 1000)))
                     .font(.callout).fixedSize(horizontal: false, vertical: true)
+                if let benefit = signal.renderedBenefitText {
+                    Text(benefit).font(.callout).bold().fixedSize(horizontal: false, vertical: true)
+                }
                 HStack(alignment: .firstTextBaseline) {
                     Text(signal.publicationText)
                         .foregroundStyle(.secondary)
@@ -84,7 +115,7 @@ struct ResetSignalSummary: View {
                     Text(Strings.t("signal.originalTime", hint))
                         .font(.caption).lineLimit(2).help(signal.originalTimeHint ?? hint)
                 }
-                Text(Strings.t(signal.sourceStatusKey) + " · " + Strings.t("signal.summary.accountUnknown"))
+                Text(Strings.t(signal.sourceStatusKey))
                     .font(.caption2).foregroundStyle(.secondary)
             } else {
                 Text(Strings.t(feed.state == "ready" ? "signal.empty" : "signal.health." + feed.state))
@@ -171,7 +202,7 @@ struct ResetSignalHistory: View {
                     Link(Strings.t("signal.source"), destination: url).font(.caption)
                 }
             }
-            Text(Strings.t(signal.sourceStatusKey) + " · " + Strings.t("signal.summary.accountUnknown"))
+            Text(Strings.t(signal.sourceStatusKey))
                 .font(.caption).foregroundStyle(.secondary)
             Text(signal.publicationText)
                 .font(.caption).foregroundStyle(.secondary)
@@ -180,13 +211,16 @@ struct ResetSignalHistory: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             TranslatedPostText(text: signal.text)
+            if let benefit = signal.renderedBenefitText {
+                Text(benefit).font(.callout).bold().textSelection(.enabled)
+            }
             if let context = signal.contextText, !context.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 DisclosureGroup(Strings.t("signal.replyContext")) {
                     Text(context).font(.caption).textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }.font(.caption)
             }
-            Text(Strings.t(signal.classificationKey) + " · " + Strings.t("signal.kind." + (["credits", "limits", "student", "discounts", "events"].contains(signal.benefitKind ?? "") ? signal.benefitKind! : signal.resetKind)))
+            Text(Strings.t(signal.classificationKey) + " · " + Strings.t("signal.kind." + (["resetCredits", "credits", "limits", "student", "discounts", "events"].contains(signal.displayedBenefitKind ?? "") ? signal.displayedBenefitKind! : signal.resetKind)))
                 .font(.caption).foregroundStyle(.secondary)
             if let localTime = signal.localTimeText {
                 Text(Strings.t("signal.localTime", localTime)).font(.callout).bold()

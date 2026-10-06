@@ -49,7 +49,7 @@ export function recoveryEvidence(event: QuotaEvent, signals: ResetSignal[], nowM
       || signal.targetAtMs < start! - RESET_MATCH_WINDOW_MS)) return false;
     return !signals.some(other => other.groupId === signal.groupId && other.publishedAtMs >= signal.publishedAtMs
       && other.publishedAtMs <= nowMs && (other.state === "withdrawn" || other.state === "updated"));
-  }).map(signal => ({ signalId: signal.id, author: signal.author, sourceUrl: signal.sourceUrl,
+  }).map(signal => ({ signalId: signal.sourcePostId ?? signal.id, author: signal.author, sourceUrl: signal.sourceUrl,
     publishedAtMs: signal.publishedAtMs, observedVia: signal.observedVia })) : [];
   if (candidates.length) reason = "time-proximity-only";
   return { eventId: event.id, observedAfterMs: start, observedByMs: event.occurredAtMs,

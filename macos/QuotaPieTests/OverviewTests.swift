@@ -265,4 +265,30 @@ extension OverviewTests {
         XCTAssertEqual(signal.sourceStatusKey, "signal.via.resetradar")
     }
 
+    func testSplitBenefitKeepsOriginalLinkAndAnnouncedQuantity() throws {
+        let raw = """
+        {"id":"125:limits","sourcePostId":"125","fingerprint":"limit","author":"ClaudeDevs",
+         "sourceUrl":"https://x.com/ClaudeDevs/status/125","text":"Everyone gets 50% more usage.",
+         "publishedAtMs":1000,"state":"reported","resetKind":"unknown","observedVia":"resetradar",
+         "provider":"claude","benefitKind":"limits","change":{"percent":50},"benefitText":"SERVER_LANGUAGE_FALLBACK"}
+        """
+        let signal = try JSONDecoder().decode(ResetSignal.self, from: Data(raw.utf8))
+        XCTAssertNotNil(signal.safeSourceURL)
+        XCTAssertEqual(signal.summaryKey(nowMs: 2000), "signal.summary.limits")
+        XCTAssertEqual(signal.renderedBenefitText, Strings.t("signal.change.prefix") + Strings.t("signal.change.percent", "+50", "1.5"))
+        XCTAssertFalse(signal.renderedBenefitText!.contains("SERVER_LANGUAGE_FALLBACK"))
+        var forged = signal
+        forged.sourcePostId = "999"
+        XCTAssertNil(forged.safeSourceURL)
+    }
+
+    func testLegacyBankedResetIsShownAsTicketGrant() throws {
+        let raw = """
+        {"id":"126","fingerprint":"ticket","author":"openai","sourceUrl":"https://x.com/openai/status/126",
+         "text":"A banked reset","publishedAtMs":1000,"state":"reported","resetKind":"banked","observedVia":"public-feed"}
+        """
+        let signal = try JSONDecoder().decode(ResetSignal.self, from: Data(raw.utf8))
+        XCTAssertEqual(signal.summaryKey(nowMs: 2000), "signal.summary.resetCredits")
+    }
+
 }
