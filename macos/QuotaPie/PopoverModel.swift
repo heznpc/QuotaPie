@@ -34,6 +34,7 @@ final class PopoverModel: ObservableObject {
     @Published var lastSuccessAt: Date?
     @Published var notificationsAllowed: Bool?
     @Published var resumeActivities: [String: ResumeTaskActivity] = [:]
+    @Published var recentWorkActivities: [String: ResumeTaskActivity] = [:]
     @Published var openingAccount = false
     @Published var accountOpenError: String?
     @Published var selectedAccountID: String?
@@ -158,7 +159,7 @@ final class PopoverModel: ObservableObject {
 }
 
 enum DetailSection: String, CaseIterable, Identifiable {
-    case quota, activity, resets, settings
+    case quota, work, activity, resets, settings
     var id: String { rawValue }
     var title: String { Strings.t("detail." + rawValue) }
 }
@@ -179,6 +180,7 @@ struct PopoverActions {
     var configureSavings: (Bool?, String?) -> Void = { _, _ in }
     var configurePool: (Bool?, String?, Int?) -> Void = { _, _, _ in }
     var configureNotifications: (String, Bool) -> Void = { _, _ in }
+    var openRecentWork: (RecentWork) -> Void = { _ in }
 }
 
 extension AccountState {

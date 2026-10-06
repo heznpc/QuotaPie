@@ -644,3 +644,17 @@
 "accounts.nicknames.save" = "Save";
 "accounts.nicknames.saved" = "Nickname saved.";
 "accounts.nicknames.error" = "Could not save the nickname. Please try again.";
+
+/* Recent local work */
+"detail.work" = "Work";
+"work.title" = "Recent local work";
+"work.explanation" = "Sessions active in the last 7 days, newest first. Use the project and recorded usage to choose a session to reopen.";
+"work.serviceUnavailable" = "This local service does not provide recent work yet. Update it to see sessions here.";
+"work.empty" = "No local sessions with activity in the last 7 days were found.";
+"work.loading" = "Collecting recent local activity…";
+"work.collectFailed" = "Recent activity could not be collected. Refresh to try again.";
+"work.lastActive" = "Last activity: %@";
+"work.tokens" = "Observed tokens in the last 7 days: %@";
+"work.openInTerminal" = "Open in Terminal";
+"work.error.unavailable" = "This session is no longer available. Refresh the work list.";
+"work.error.openFailed" = "Could not prepare this session. Refresh and try again.";

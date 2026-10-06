@@ -264,6 +264,7 @@ struct PopoverView: View {
                 Label(Strings.t("action.refresh"), systemImage: "arrow.clockwise")
             }.help(Strings.t("action.refreshHelp"))
             Spacer(minLength: 0)
+            Button(Strings.t("detail.work")) { showDetails(.work) }
             Button(Strings.t("overview.activityDetail")) { showDetails(.activity) }
             Button(Strings.t("detail.settings")) { showDetails(.settings) }
         }

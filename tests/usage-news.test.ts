@@ -84,7 +84,9 @@ test("student opt-in suppresses delivery without replaying old benefits", async 
   service.setNativeNotificationTransportAvailable(true);
   service.alerts.setNativeNotificationConsumer(true);
   service.signalCollector.poll = async () => {};
-  const item = classifyPost(post("Students receive 1000 free credits every month."), new Map())!;
+  // This exercises a fresh announcement; a fixed past date becomes a silent
+  // historical import after 24 hours and no longer tests the opt-in policy.
+  const item = classifyPost({ ...post("Students receive 1000 free credits every month."), createdAtMs: Date.now() }, new Map())!;
   try {
     service.resetSignals.save([item], Date.now());
     await service.collectResetSignals();
