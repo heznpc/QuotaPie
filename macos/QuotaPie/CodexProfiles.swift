@@ -70,7 +70,7 @@ struct CodexProcessIdentity {
     let codexHome: String
     let appData: String
 
-    static func parse(_ bytes: [UInt8], primary: CodexDesktopProfile = .primary) -> Self? {
+    static func parse(_ bytes: [UInt8], primary: CodexDesktopProfile = .primary, environmentOnly: Bool = false) -> Self? {
         guard bytes.count > MemoryLayout<Int32>.size else { return nil }
         let argc = bytes.prefix(4).enumerated().reduce(UInt32(0)) { $0 | UInt32($1.element) << ($1.offset * 8) }
         guard argc > 0, argc < 10000 else { return nil }
@@ -91,7 +91,7 @@ struct CodexProcessIdentity {
             if item.hasPrefix("CODEX_HOME=") { home = String(item.dropFirst(11)) }
             if item.hasPrefix("CODEX_ELECTRON_USER_DATA_PATH=") { data = String(item.dropFirst(30)) }
         }
-        for (index, arg) in args.enumerated() {
+        for (index, arg) in args.enumerated() where !environmentOnly {
             if arg.hasPrefix("--user-data-dir=") { data = String(arg.dropFirst(16)) }
             if arg == "--user-data-dir", index + 1 < args.count { data = args[index + 1] }
         }
@@ -99,13 +99,15 @@ struct CodexProcessIdentity {
                     appData: CodexDesktopProfile.canonical(data?.isEmpty == false ? data! : primary.appData))
     }
 
-    static func read(pid: pid_t) -> Self? {
+    // The installed desktop app sets both homes from its environment at startup.
+    // An updater may preserve argv while dropping the isolation environment.
+    static func read(pid: pid_t, environmentOnly: Bool = true) -> Self? {
         var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
         var size = 0
         guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0, size < 4 * 1024 * 1024 else { return nil }
         var bytes = [UInt8](repeating: 0, count: size)
         guard sysctl(&mib, 3, &bytes, &size, nil, 0) == 0 else { return nil }
-        return parse(Array(bytes.prefix(size)))
+        return parse(Array(bytes.prefix(size)), environmentOnly: environmentOnly)
     }
 
     func matches(_ profile: CodexDesktopProfile) -> Bool {

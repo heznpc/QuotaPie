@@ -3,6 +3,70 @@ import AppKit
 @testable import QuotaPie
 
 final class CodexProfilesTests: XCTestCase {
+    func testUpdateMonitorRestoresSecondProfileWithoutStoppingPrimary() throws {
+        guard let path = ProcessInfo.processInfo.environment["QUOTAPIE_TEST_PROFILE_APP"] else {
+            throw XCTSkip("Dedicated app fixture required")
+        }
+        let url = URL(fileURLWithPath: path)
+        let fixtureID = try XCTUnwrap(Bundle(url: url)?.bundleIdentifier)
+        guard fixtureID.hasPrefix("local.quotapie.profile-fixture.") else { throw ProfileError.appMissing }
+        let executable = try XCTUnwrap(Bundle(url: url)?.executableURL)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("quotapie-update-" + UUID().uuidString)
+        let profiles = ["primary", "second"].map {
+            CodexDesktopProfile(id: $0, name: $0, codexHome: root.appendingPathComponent($0 + "-home").path,
+                                appData: root.appendingPathComponent($0 + "-data").path)
+        }
+        func instances() -> [NSRunningApplication] {
+            NSWorkspace.shared.runningApplications.filter { $0.bundleIdentifier == fixtureID }
+        }
+        func settle(_ seconds: Double) {
+            let done = expectation(description: "settle fixture")
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { done.fulfill() }
+            wait(for: [done], timeout: seconds + 5)
+        }
+        XCTAssertTrue(instances().isEmpty)
+        guard instances().isEmpty else { return }
+        let monitor = CodexProfileUpdateMonitor(profiles: { profiles }, appURL: { url })
+        defer {
+            monitor.stop()
+            instances().forEach { $0.terminate() }
+            settle(2)
+        }
+        let launcher = CodexProfileLauncher()
+        for profile in profiles {
+            let done = expectation(description: "launch profile")
+            launcher.open(profile, appURL: url) { result in
+                if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 15)
+        }
+        let main = try XCTUnwrap(instances().first { CodexProcessIdentity.read(pid: $0.processIdentifier)?.matches(profiles[0]) == true })
+        let second = try XCTUnwrap(instances().first { CodexProcessIdentity.read(pid: $0.processIdentifier)?.matches(profiles[1]) == true })
+        monitor.start()
+        // Simulate replacement on disk, then the updater reopening the second
+        // process with primary-profile settings. Only this dedicated fixture is touched.
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(10)], ofItemAtPath: executable.path)
+        settle(0.5)
+        XCTAssertTrue(second.terminate())
+        settle(0.3)
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        config.environment = profiles[0].environment
+        config.arguments = profiles[0].arguments
+        let launched = expectation(description: "updater misconfigured launch")
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, error in
+            if let error { XCTFail(error.localizedDescription) }
+            launched.fulfill()
+        }
+        wait(for: [launched], timeout: 15)
+        settle(8)
+        XCTAssertFalse(main.isTerminated)
+        XCTAssertEqual(instances().filter { CodexProcessIdentity.read(pid: $0.processIdentifier)?.matches(profiles[0]) == true }.count, 1)
+        XCTAssertEqual(instances().filter { CodexProcessIdentity.read(pid: $0.processIdentifier)?.matches(profiles[1]) == true }.count, 1)
+        XCTAssertEqual(instances().count, 2)
+    }
+
     func testAccountOpeningUsesUniqueCollectorBinding() {
         var main = CodexDesktopProfile.primary
         main.collectionAccount = "default"
@@ -42,6 +106,14 @@ final class CodexProfilesTests: XCTestCase {
             environment: primary.environment.map { "\($0.key)=\($0.value)" })))
         XCTAssertTrue(explicit.matches(primary))
         XCTAssertNil(CodexProcessIdentity.parse([0, 0, 0, 0]))
+    }
+    func testRetainedArgumentsDoNotHideLostIsolationEnvironment() throws {
+        let profile = CodexDesktopProfile(id: "second", name: "Second", codexHome: "/tmp/second-home", appData: "/tmp/second-data")
+        let raw = bytes(args: ["app"] + profile.arguments, environment: ["CODEX_HOME=" + profile.codexHome])
+        XCTAssertTrue(try XCTUnwrap(CodexProcessIdentity.parse(raw)).matches(profile))
+        let actual = try XCTUnwrap(CodexProcessIdentity.parse(raw, environmentOnly: true))
+        XCTAssertFalse(actual.matches(profile))
+        XCTAssertEqual(actual.appData, CodexDesktopProfile.canonical(CodexDesktopProfile.primary.appData))
     }
     func testRejectsSharedOrNestedFoldersIncludingAliases() throws {
         let first = CodexDesktopProfile(id: "one", name: "One", codexHome: "/tmp/a", appData: "/tmp/b")
