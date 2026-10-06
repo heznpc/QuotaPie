@@ -11,6 +11,8 @@ interface Observation {
   menuHasImage: boolean;
   menuAccessibleLabel: string;
   viewRendered: boolean;
+  detailSection?: string;
+  recentWorkIDs?: string[];
   accountSelectorVerified?: boolean;
   statusFailure: string | null;
 }
@@ -64,6 +66,10 @@ async function run() {
   // Independent expected values: no production account-selection or headline code.
   const payload = { actionToken: "isolated-fixture", headline: { kind: "normal", provider: "codex", account: "second", remainingPercent: 100 },
     accounts: [account("default", "Main", 18), account("second", "Second", 100)], events: [], resumeTasks: [],
+    recentWorkState: "ready", recentWork: [
+      { id: "a".repeat(64), provider: "codex", account: "default", accountLabel: "Main", projectLabel: "Example project", tokenCount: 12400, lastActiveAtMs: Date.now() - 60_000 },
+      { id: "b".repeat(64), provider: "claude", account: "default", accountLabel: "Main", projectLabel: "Another project", tokenCount: 8300, lastActiveAtMs: Date.now() - 3_600_000 },
+    ],
     resetSignals: { enabled: true, source: "multiple", state: "ready", lastSuccessMs: Date.now(),
       coverage: "partial-relays", signals: [{ id: "100", fingerprint: "fixture-reset", author: "thsottiaux",
         sourceUrl: "https://x.com/thsottiaux/status/100", text: "We are almost Tuesday and I promised a reset for Tuesday.",
@@ -96,6 +102,7 @@ async function run() {
       { name: "no-running-account", running: [], frontmost: null, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "invalid-response", running: ["main"], frontmost: null, expected: null },
       { name: "nickname-settings", running: ["main"], frontmost: null, initialSection: "settings", expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "recent-work", running: ["main"], frontmost: null, initialSection: "work", expected: { account: "codex/default", remaining: 18, label: "Main" } },
     ]) {
       malformed = scenario.expected == null;
       const reportPath = join(stage, scenario.name + ".json");
@@ -104,7 +111,12 @@ async function run() {
         runningProfileIDs: scenario.running, frontmostProfileID: scenario.frontmost,
         initialSection: "initialSection" in scenario ? scenario.initialSection : undefined }));
       await exec(["/usr/bin/open", "-W", "-n", "-g", app, "--args", "--verification", request], 20_000);
-      const failures = smokeFailures(JSON.parse(await readFile(reportPath, "utf8")), scenario.expected);
+      const observed = JSON.parse(await readFile(reportPath, "utf8")) as Observation;
+      const failures = smokeFailures(observed, scenario.expected);
+      if (scenario.name === "recent-work" && (observed.detailSection !== "work" ||
+          observed.recentWorkIDs?.join(",") !== payload.recentWork.map(item => item.id).join(","))) {
+        failures.push("recent_work_not_rendered");
+      }
       console.log(JSON.stringify({ check: scenario.name, result: failures.length ? "fail" : "pass", failures }));
       if (failures.length) throw new Error(`Native verification failed: ${scenario.name}`);
     }

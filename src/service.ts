@@ -1,4 +1,5 @@
 import { AccountBindingStore } from "./storage/account-binding-store";
+import { RecentWorkIndex, type RecentWorkSummary } from "./recent-work";
 import { codexAccountDisplay } from "./account-display";
 import { notificationAllowed, type NotificationPreferencesPatch } from "./notification-preferences";
 import { buildWorkBoundary, writeWorkBoundary } from "./work-boundary";
@@ -93,6 +94,11 @@ const SOURCE_AUTHORITY: Record<string, number> = {
 };
 
 export class QuotaPieService {
+  readonly recentWork = new RecentWorkIndex();
+  private recentWorkSnapshot: RecentWorkSummary[] = [];
+  private recentWorkRefresh: Promise<void> | null = null;
+  private recentWorkUpdatedAtMs = -Infinity;
+  private recentWorkState: "loading" | "ready" | "error" = "loading";
   readonly db: QuotaDatabase;
   readonly storage: QuotaStorage;
   readonly alerts: AlertStore;
@@ -824,7 +830,30 @@ export class QuotaPieService {
     }));
   }
 
-  private async buildResumePlan(task: ResumeTask): Promise<ResumePlan> {
+  recentWorkStatus(nowMs = Date.now(), refresh = true): { recentWork: RecentWorkSummary[]; recentWorkState: "loading" | "ready" | "error" } {
+    if (refresh && !this.closing && !this.recentWorkRefresh && nowMs - this.recentWorkUpdatedAtMs >= 30_000) {
+      this.recentWorkState = "loading";
+      this.recentWorkRefresh = this.recentWork.summaries(this.config, nowMs).then(items => {
+        this.recentWorkSnapshot = items;
+        this.recentWorkState = "ready";
+      }).catch(() => {
+        this.recentWorkState = "error";
+      }).finally(() => {
+        this.recentWorkUpdatedAtMs = nowMs;
+        this.recentWorkRefresh = null;
+      });
+    }
+    // Keep normal quota polling responsive even during the first inventory scan.
+    return { recentWork: this.recentWorkSnapshot, recentWorkState: this.recentWorkState };
+  }
+
+  async recentWorkOpenPlan(id: string, nowMs = Date.now()): Promise<ResumePlan> {
+    const target = await this.recentWork.target(id, this.config, nowMs);
+    if (!target) throw new ResumeTargetError("the session is no longer available in recent work");
+    return this.buildResumePlan(target);
+  }
+
+  private async buildResumePlan(task: Pick<ResumeTask, "provider" | "account" | "taskKey">): Promise<ResumePlan> {
     let target;
     if (task.provider === "codex") {
       const profile = this.config.accounts.codex.find((item) => item.id === task.account && item.enabled);
@@ -1404,6 +1433,7 @@ export class QuotaPieService {
     await this.jobRunner.close();
     await this.jobNotifications;
     await this.signalWork;
+    await this.recentWorkRefresh;
     await this.signalCollector.settle();
     await Promise.all([...this.codexClients.values()].map((client) => client.close().catch(() => undefined)));
     this.codexClients.clear();

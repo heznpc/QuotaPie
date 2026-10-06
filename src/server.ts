@@ -67,6 +67,23 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
       if (url.pathname === "/api/runtime") {
         return request.method === "GET" ? json(runtime) : json({ error: "method_not_allowed" }, 405);
       }
+      if (url.pathname.startsWith("/api/recent-work/")) {
+        if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+        if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token"))) {
+          return json({ error: "forbidden" }, 403);
+        }
+        const action = url.pathname.match(/^\/api\/recent-work\/([0-9a-f]{64})\/open$/);
+        if (!action) return json({ error: "invalid_recent_work_action" }, 400);
+        try {
+          return json({ plan: await service.recentWorkOpenPlan(action[1]!) });
+        } catch (error) {
+          if (error instanceof ResumeTargetError) {
+            return json({ error: "recent_work_unavailable", detail: error.message }, 409);
+          }
+          console.error(`[quotapie] recent work open failed: ${String(error)}`);
+          return json({ error: "recent_work_open_failed" }, 500);
+        }
+      }
       if (url.pathname === "/api/accounts/nickname") {
         if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
         if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token"))) return json({ error: "forbidden" }, 403);
@@ -270,6 +287,8 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           actionToken,
           headline: headlineJson(buildHeadline(accounts, nowMs, service.locale)),
           accounts,
+          // File inventory is opt-in; quota-only clients do not start a scan.
+          ...service.recentWorkStatus(nowMs, request.headers.get("x-quotapie-recent-work") === "1"),
           resumeTasks: service.resumeTaskSummaries(),
           jobs: service.jobs.summaries(),
           notificationPreferences: service.notificationPreferences(),

@@ -71,6 +71,7 @@ final class StatusClient {
         let url = baseURL.appendingPathComponent("api/status")
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("1", forHTTPHeaderField: "x-quotapie-recent-work")
         perform(request) { result in
             do {
                 completion(.success(try JSONDecoder().decode(StatusPayload.self, from: result.get())))
@@ -92,6 +93,30 @@ final class StatusClient {
                     completion(.failure(StatusClientError.invalidResponse)); return
                 }
                 completion(.success(()))
+            }.resume()
+        } catch { completion(.failure(error)) }
+    }
+
+    func openRecentWork(id: String, actionToken: String,
+                        completion: @escaping (Result<RecentWorkOpenResponse, Error>) -> Void) {
+        guard RecentWork.isValidID(id) else {
+            completion(.failure(StatusClientError.invalidTaskID))
+            return
+        }
+        do {
+            let request = try authenticatedPOST(pathComponents: ["api", "recent-work", id, "open"], actionToken: actionToken)
+            session.dataTask(with: request) { data, response, error in
+                if let error { completion(.failure(error)); return }
+                guard let http = response as? HTTPURLResponse, let data else {
+                    completion(.failure(StatusClientError.invalidResponse)); return
+                }
+                guard http.statusCode == 200 else {
+                    struct Failure: Decodable { let error: String }
+                    let code = (try? JSONDecoder().decode(Failure.self, from: data))?.error ?? "recent_work_open_failed"
+                    completion(.failure(RecentWorkOpenError(code: code)))
+                    return
+                }
+                completion(Result { try JSONDecoder().decode(RecentWorkOpenResponse.self, from: data) })
             }.resume()
         } catch { completion(.failure(error)) }
     }
@@ -415,5 +440,16 @@ struct ProfileConnectionError: LocalizedError {
     var errorDescription: String? {
         let known = ["isolation_required", "settings_changed", "account_disabled", "profile_overlap", "profile_relay_failed"]
         return Strings.t(known.contains(code) ? "profiles." + code : "profiles.connectFailed")
+    }
+}
+
+struct RecentWorkOpenError: LocalizedError {
+    let code: String
+    var errorDescription: String? {
+        switch code {
+        case "recent_work_unavailable": return Strings.t("work.error.unavailable")
+        case "forbidden": return Strings.t("client.missingActionToken")
+        default: return Strings.t("work.error.openFailed")
+        }
     }
 }

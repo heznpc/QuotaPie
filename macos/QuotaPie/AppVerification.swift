@@ -100,6 +100,8 @@ struct AppVerification: Decodable {
             "menuHasImage": item.button?.image != nil,
             "menuVisible": item.isVisible,
             "viewRendered": rendered,
+            "detailSection": model.detailSection?.rawValue as Any? ?? NSNull(),
+            "recentWorkIDs": model.payload?.recentWork.map(\.id) ?? [],
             "accountSelectorVerified": !expectsSelector || accountSelectorVerified,
             "statusFailure": model.statusFailure?.rawValue as Any? ?? NSNull(),
         ]

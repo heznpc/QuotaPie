@@ -10,6 +10,9 @@ struct StatusPayload: Decodable {
     let actionToken: String?
     let resumeTasks: [ResumeTask]
     let jobs: [ManagedJobSummary]
+    let recentWork: [RecentWork]
+    let supportsRecentWork: Bool
+    let recentWorkState: String
     let resetSignals: ResetSignalPayload?
     let resetTracking: ResetTracking?
     let compaction: CompactionPayload?
@@ -25,6 +28,9 @@ struct StatusPayload: Decodable {
         actionToken = try values.decodeIfPresent(String.self, forKey: .actionToken)
         resumeTasks = try values.decodeIfPresent([ResumeTask].self, forKey: .resumeTasks) ?? []
         jobs = try values.decodeIfPresent([ManagedJobSummary].self, forKey: .jobs) ?? []
+        recentWork = try values.decodeIfPresent([RecentWork].self, forKey: .recentWork) ?? []
+        supportsRecentWork = try values.contains(.recentWork) && !values.decodeNil(forKey: .recentWork)
+        recentWorkState = try values.decodeIfPresent(String.self, forKey: .recentWorkState) ?? "ready"
         resetSignals = try values.decodeIfPresent(ResetSignalPayload.self, forKey: .resetSignals)
         resetTracking = try values.decodeIfPresent(ResetTracking.self, forKey: .resetTracking)
         compaction = try values.decodeIfPresent(CompactionPayload.self, forKey: .compaction)
@@ -33,9 +39,54 @@ struct StatusPayload: Decodable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case nowMs, headline, accounts, events, actionToken, resumeTasks, jobs, resetSignals, resetTracking, compaction, notificationPreferences, accountPool
+        case nowMs, headline, accounts, events, actionToken, resumeTasks, jobs, recentWork, recentWorkState, resetSignals, resetTracking, compaction, notificationPreferences, accountPool
     }
 }
+
+/// Recent local activity is evidence for choosing a session to open; it does
+/// not imply that the work is unfinished or that observed tokens were wasted.
+struct RecentWork: Decodable, Identifiable {
+    let id: String
+    let provider: String
+    let account: String
+    let accountLabel: String
+    let projectLabel: String
+    let tokenCount: Double
+    let lastActiveAtMs: Double
+
+    var providerTitle: String { provider == "codex" ? "Codex" : "Claude" }
+    var accountTitle: String { accountLabel.isEmpty ? account : accountLabel }
+    var tokenText: String {
+        tokenCount.formatted(.number.precision(.fractionLength(0)).locale(Locale(identifier: Strings.localeIdentifier())))
+    }
+
+    static func isValidID(_ id: String) -> Bool {
+        id.utf8.count == 64 && id.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        provider = try values.decode(String.self, forKey: .provider)
+        account = try values.decode(String.self, forKey: .account)
+        accountLabel = try values.decode(String.self, forKey: .accountLabel)
+        projectLabel = try values.decode(String.self, forKey: .projectLabel)
+        tokenCount = try values.decode(Double.self, forKey: .tokenCount)
+        lastActiveAtMs = try values.decode(Double.self, forKey: .lastActiveAtMs)
+        guard Self.isValidID(id), ["codex", "claude"].contains(provider),
+              tokenCount.isFinite, tokenCount >= 0,
+              lastActiveAtMs.isFinite, lastActiveAtMs > 0 else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                debugDescription: "Invalid recent-work metadata"))
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, provider, account, accountLabel, projectLabel, tokenCount, lastActiveAtMs
+    }
+}
+
+struct RecentWorkOpenResponse: Decodable { let plan: ResumePlan }
 
 struct AccountPoolPayload: Decodable {
     let enabled: Bool

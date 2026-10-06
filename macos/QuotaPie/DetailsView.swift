@@ -72,6 +72,13 @@ struct DetailsView: View {
                 Text(Strings.t("popover.noAccountsDetail")).foregroundStyle(.secondary)
                 Button(Strings.t("action.openSettings"), action: actions.openConfig)
             }
+        case .work:
+            RecentWorkSection(items: model.payload?.recentWork ?? [],
+                              supportsRecentWork: model.payload?.supportsRecentWork ?? true,
+                              state: model.payload?.recentWorkState ?? "loading",
+                              canOpen: model.canActOnTasks,
+                              activities: model.recentWorkActivities,
+                              onOpen: actions.openRecentWork)
         case .activity:
             if let savings = model.payload?.compaction?.savings {
                 TaskSavingsHistory(payload: savings, busy: model.savingsSaving, undo: { actions.configureSavings(nil, $0) })

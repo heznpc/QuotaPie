@@ -240,7 +240,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             configureCompaction: { [weak self] model in self?.configureCompaction(model) },
             configureSavings: { [weak self] enabled, thread in self?.configureSavings(enabled, thread) },
             configurePool: { [weak self] enabled, account, reserve in self?.configurePool(enabled, account, reserve) },
-            configureNotifications: { [weak self] key, enabled in self?.configureNotifications(key, enabled: enabled) }
+            configureNotifications: { [weak self] key, enabled in self?.configureNotifications(key, enabled: enabled) },
+            openRecentWork: { [weak self] item in self?.openRecentWork(item) }
         )
     }
 
@@ -553,6 +554,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let accountTitle = displayedAccount.map { $0.providerTitle + " · " + $0.accountLabel }
         button.setAccessibilityLabel([accountTitle, title].compactMap { $0 }.joined(separator: " · "))
         button.toolTip = [accountTitle, toolTip].compactMap { $0 }.joined(separator: "\n")
+    }
+
+    private func openRecentWork(_ item: RecentWork) {
+        guard popoverModel.recentWorkActivities[item.id]?.isBusy != true else { return }
+        guard let actionToken = currentActionToken else {
+            popoverModel.recentWorkActivities[item.id] = .failed(Strings.t("client.missingActionToken"))
+            return
+        }
+        guard let client else { return }
+        popoverModel.recentWorkActivities[item.id] = .approving
+        client.openRecentWork(id: item.id, actionToken: actionToken) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .failure(let error):
+                    self.popoverModel.recentWorkActivities[item.id] = .failed(error.localizedDescription)
+                case .success(let response):
+                    self.popoverModel.recentWorkActivities[item.id] = .opening
+                    self.resumeLauncher.openInTerminal(plan: response.plan, expectedProvider: item.provider) { [weak self] result in
+                        DispatchQueue.main.async {
+                            switch result {
+                            case .success:
+                                self?.popoverModel.recentWorkActivities.removeValue(forKey: item.id)
+                            case .failure(let error):
+                                self?.popoverModel.recentWorkActivities[item.id] = .failed(error.localizedDescription)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private func resume(_ task: ResumeTask) {
