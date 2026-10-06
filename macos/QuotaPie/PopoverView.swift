@@ -82,7 +82,7 @@ struct PopoverView: View {
 
     private var quotaOverview: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .firstTextBaseline) {
+            HStack(alignment: .center, spacing: 8) {
                 if let account = model.selectedAccount {
                     Image(nsImage: AccountBadge(accountID: account.id, name: account.accountLabel).image(size: 20))
                         .accessibilityHidden(true)
@@ -163,18 +163,22 @@ struct PopoverView: View {
                 }
             }
         } label: {
-            Text(model.selectedAccount.map { "\($0.providerTitle) · \($0.accountLabel)" } ?? "QuotaPie")
-                .font(.system(size: 14, weight: .semibold))
-                .lineLimit(1).truncationMode(.middle)
+            accountIdentity
         }
         .menuStyle(.borderlessButton)
+        .quietMenuFocus()
         .frame(maxWidth: 230, alignment: .leading)
         .accessibilityLabel(Strings.t("overview.chooseAccount"))
         } else {
-            Text(model.selectedAccount.map { "\($0.providerTitle) · \($0.accountLabel)" } ?? "QuotaPie")
-                .font(.system(size: 14, weight: .semibold))
-                .lineLimit(1).truncationMode(.middle)
+            accountIdentity
         }
+    }
+
+    private var accountIdentity: some View {
+        Text(model.selectedAccount?.accountLabel ?? "QuotaPie")
+            .font(.system(size: 13, weight: .medium))
+            .lineLimit(1).truncationMode(.middle)
+            .help(model.selectedAccount.map { "\($0.providerTitle) · \($0.accountLabel)" } ?? "QuotaPie")
     }
 
     private func quotaReading(account: AccountState, window: QuotaWindow) -> some View {
@@ -287,5 +291,15 @@ struct PopoverView: View {
                 Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
             }
         }.font(.caption).buttonStyle(.borderless)
+    }
+}
+
+private extension View {
+    @ViewBuilder func quietMenuFocus() -> some View {
+        if #available(macOS 14, *) {
+            focusEffectDisabled()
+        } else {
+            self
+        }
     }
 }
