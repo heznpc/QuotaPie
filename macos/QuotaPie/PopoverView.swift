@@ -150,25 +150,11 @@ struct PopoverView: View {
 
     @ViewBuilder private var accountPicker: some View {
         if (model.payload?.accounts.filter(\.enabled).count ?? 0) > 1 {
-        Menu {
-            ForEach(model.payload?.accounts.filter(\.enabled) ?? []) { account in
-                Button {
-                    model.selectAccount(account)
-                } label: {
-                    if model.selectedAccount?.id == account.id {
-                        Label("\(account.providerTitle) · \(account.accountLabel)", systemImage: "checkmark")
-                    } else {
-                        Text("\(account.providerTitle) · \(account.accountLabel)")
-                    }
-                }
-            }
-        } label: {
-            accountIdentity
-        }
-        .menuStyle(.borderlessButton)
-        .quietMenuFocus()
-        .frame(maxWidth: 230, alignment: .leading)
-        .accessibilityLabel(Strings.t("overview.chooseAccount"))
+            AccountSelector(accounts: model.payload?.accounts.filter(\.enabled) ?? [],
+                            selectedID: model.selectedAccount?.id,
+                            onSelect: { model.selectAccount($0) })
+                .frame(maxWidth: 230, alignment: .leading)
+                .frame(height: 24)
         } else {
             accountIdentity
         }
@@ -291,15 +277,5 @@ struct PopoverView: View {
                 Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
             }
         }.font(.caption).buttonStyle(.borderless)
-    }
-}
-
-private extension View {
-    @ViewBuilder func quietMenuFocus() -> some View {
-        if #available(macOS 14, *) {
-            focusEffectDisabled()
-        } else {
-            self
-        }
     }
 }

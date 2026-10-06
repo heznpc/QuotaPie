@@ -11,11 +11,13 @@ interface Observation {
   menuHasImage: boolean;
   menuAccessibleLabel: string;
   viewRendered: boolean;
+  accountSelectorVerified?: boolean;
   statusFailure: string | null;
 }
 export function smokeFailures(observed: Observation, expected: { account: string; remaining: number; label: string } | null): string[] {
   const failures: string[] = [];
   if (observed.menuVisible) failures.push("fixture_created_menu_bar");
+  if (observed.accountSelectorVerified === false) failures.push("account_selector_focus_or_identity");
   if (!observed.viewRendered) failures.push("view_not_rendered");
   if (expected) {
     if (!observed.connected || observed.statusFailure) failures.push("not_connected");
