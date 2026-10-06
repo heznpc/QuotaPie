@@ -47,6 +47,13 @@ struct AppVerification: Decodable {
 
     func record(model: PopoverModel, item: NSStatusItem, content: NSViewController?) {
         var rendered = false
+        if let button = item.button,
+           let bitmap = button.bitmapImageRepForCachingDisplay(in: button.bounds) {
+            button.cacheDisplay(in: button.bounds, to: bitmap)
+            if let png = bitmap.representation(using: .png, properties: [:]) {
+                try? png.write(to: URL(fileURLWithPath: reportPath + ".menu.png"), options: .atomic)
+            }
+        }
         if let content {
             let window = NSWindow(contentViewController: content)
             window.setContentSize(NSSize(width: model.detailSection == nil ? 380 : 460, height: 560))

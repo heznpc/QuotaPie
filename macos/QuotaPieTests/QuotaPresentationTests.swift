@@ -3,6 +3,33 @@ import XCTest
 @testable import QuotaPie
 
 final class QuotaPresentationTests: XCTestCase {
+    func testAccountBadgeFollowsNicknameAndKeepsStableIdentityColour() {
+        let original = AccountBadge(accountID: "codex/default", name: "want@example.invalid")
+        let renamed = AccountBadge(accountID: "codex/default", name: "  완두콩즈 ")
+        let other = AccountBadge(accountID: "codex/second", name: "heznpc@example.invalid")
+        XCTAssertEqual(original.initial, "W")
+        XCTAssertEqual(renamed.initial, "완")
+        XCTAssertEqual(original.color, renamed.color)
+        XCTAssertNotEqual(original.color, other.color)
+        XCTAssertEqual(AccountBadge(accountID: "unknown", name: " ").initial, "?")
+    }
+
+    func testBadgeKeepsColourWhileQuotaUsesSystemMenuContrast() throws {
+        let badge = AccountBadge(accountID: "codex/default", name: "Main")
+        let renamed = AccountBadge(accountID: badge.accountID, name: "Long account nickname")
+        let normal = MenuBarQuotaIndicator.image(label: "Codex", remainingPercent: 100)
+        let low = MenuBarQuotaIndicator.image(label: "Codex", remainingPercent: 1)
+        XCTAssertTrue(normal.isTemplate)
+        XCTAssertFalse(low.isTemplate)
+        XCTAssertEqual(normal.size, low.size)
+        XCTAssertNil(AccountBadgeImageView(frame: NSRect(x: 0, y: 0, width: 18, height: 18)).hitTest(NSPoint(x: 9, y: 9)))
+        XCTAssertFalse(badge.image().isTemplate)
+        XCTAssertEqual(badge.image().size, NSSize(width: 18, height: 18))
+        XCTAssertEqual(badge.image().size, renamed.image().size)
+        XCTAssertEqual(MenuBarQuotaIndicator.image(label: "Codex", remainingPercent: 100, leadingSpace: 23).size.width, normal.size.width + 23)
+        XCTAssertNotNil(badge.image().tiffRepresentation)
+    }
+
     func testLowQuotaUsesStrictTwentyPercentBoundaryAndRetainsItsColorInMenuBar() {
         XCTAssertTrue(QuotaPresentation.isLow(19))
         XCTAssertTrue(QuotaPresentation.isLow(0))

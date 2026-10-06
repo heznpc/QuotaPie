@@ -83,6 +83,10 @@ struct PopoverView: View {
     private var quotaOverview: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .firstTextBaseline) {
+                if let account = model.selectedAccount {
+                    Image(nsImage: AccountBadge(accountID: account.id, name: account.accountLabel).image(size: 22))
+                        .accessibilityHidden(true)
+                }
                 accountPicker
                 if let account = model.selectedAccount, account.provider == "codex" {
                     Button { actions.openAccount(account) } label: {

@@ -464,9 +464,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     /// Show measured quota as a horizontal bar. Recovery actions and collection errors
     /// keep their text labels; cached quota must not look like a fresh reading.
+    private let accountBadgeView: NSImageView = {
+        let view = AccountBadgeImageView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.imageScaling = .scaleNone
+        view.setAccessibilityElement(false)
+        return view
+    }()
+
     private func render() {
         guard let button = statusItem.button else { return }
         let headline = popoverModel.selectedHeadline
+        let selected = popoverModel.selectedAccount
+        let badge = selected.map { AccountBadge(accountID: $0.id, name: $0.accountLabel) }
         let readyTasks = popoverModel.lastError == nil
             ? (popoverModel.payload?.resumeTasks.filter(\.isReady) ?? [])
             : []
@@ -477,12 +487,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let providerName = provider == "codex" ? "Codex" : provider == "claude" ? "Claude" : provider
             let windowName = headline.windowKind.flatMap(Headline.windowName) ?? headline.windowLabel ?? ""
             let label = [providerName, windowName].filter { !$0.isEmpty }.joined(separator: " ")
+            // The separate badge keeps its colour while macOS tints the quota image.
+            if accountBadgeView.superview == nil {
+                button.addSubview(accountBadgeView)
+                NSLayoutConstraint.activate([
+                    accountBadgeView.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 6),
+                    accountBadgeView.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+                    accountBadgeView.widthAnchor.constraint(equalToConstant: 18),
+                    accountBadgeView.heightAnchor.constraint(equalToConstant: 18),
+                ])
+            }
+            accountBadgeView.image = badge?.image()
+            accountBadgeView.isHidden = badge == nil
             button.attributedTitle = NSAttributedString(string: "")
-            button.image = MenuBarQuotaIndicator.image(label: label, remainingPercent: remaining)
+            button.image = MenuBarQuotaIndicator.image(label: label, remainingPercent: remaining, leadingSpace: badge == nil ? 0 : 23)
             button.imagePosition = .imageOnly
             button.imageScaling = .scaleNone
             button.setAccessibilityLabel([headline.accountLabel, headline.localizedTitle].compactMap { $0 }.joined(separator: " · "))
-            button.toolTip = [headline.localizedTitle, headline.localizedDetail].compactMap { $0 }.joined(separator: "\n")
+            button.toolTip = [selected.map { $0.providerTitle + " · " + $0.accountLabel }, headline.localizedTitle, headline.localizedDetail].compactMap { $0 }.joined(separator: "\n")
             if renderedAccountID != popoverModel.selectedAccount?.id {
                 renderedAccountID = popoverModel.selectedAccount?.id
                 let index = popoverModel.payload?.accounts.firstIndex { $0.id == renderedAccountID } ?? -1
@@ -490,8 +512,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
             return
         }
-        button.image = nil
-        button.imagePosition = .noImage
+        accountBadgeView.isHidden = true
+        let displayedAccount = readyTasks.first.flatMap { task in
+            popoverModel.payload?.accounts.first { $0.provider == task.provider && $0.account == task.account }
+        } ?? selected
+        let fallbackBadge = displayedAccount.map { AccountBadge(accountID: $0.id, name: $0.accountLabel) }
+        button.image = fallbackBadge?.image()
+        button.imagePosition = fallbackBadge == nil ? .noImage : .imageLeading
         let title: String
         let color: NSColor
         let toolTip: String
@@ -523,8 +550,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
             ]
         )
-        button.setAccessibilityLabel(title)
-        button.toolTip = toolTip
+        let accountTitle = displayedAccount.map { $0.providerTitle + " · " + $0.accountLabel }
+        button.setAccessibilityLabel([accountTitle, title].compactMap { $0 }.joined(separator: " · "))
+        button.toolTip = [accountTitle, toolTip].compactMap { $0 }.joined(separator: "\n")
     }
 
     private func resume(_ task: ResumeTask) {
