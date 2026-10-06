@@ -135,6 +135,8 @@ struct DetailsView: View {
 
     private var settingsContent: some View {
         VStack(alignment: .leading, spacing: 20) {
+            AccountNicknamesView(model: model, refresh: actions.refresh)
+            Divider()
             VStack(alignment: .leading, spacing: 8) {
                 NotificationPreferencesView(model: model, save: actions.configureNotifications)
                 Text(Strings.t(model.notificationsAllowed == false ? "notification.disabled" :

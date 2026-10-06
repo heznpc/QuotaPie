@@ -638,3 +638,9 @@
 "signal.unit.resets" = "tickets";
 "signal.unit.messages" = "messages";
 "signal.unit.requests" = "requests";
+"accounts.nicknames.title" = "Account nicknames";
+"accounts.nicknames.hint" = "Used in the account menu and notifications. Leave blank to use the default account name.";
+"accounts.nicknames.field" = "Nickname";
+"accounts.nicknames.save" = "Save";
+"accounts.nicknames.saved" = "Nickname saved.";
+"accounts.nicknames.error" = "Could not save the nickname. Please try again.";

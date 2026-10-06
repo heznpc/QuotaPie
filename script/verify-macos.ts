@@ -60,7 +60,7 @@ async function run() {
       resetsAtMs: Date.now() + 3_600_000, observedAtMs: Date.now(), riskLevel: "none" }],
     collection: { health: "recent-success", sources: [] } });
   // Independent expected values: no production account-selection or headline code.
-  const payload = { headline: { kind: "normal", provider: "codex", account: "second", remainingPercent: 100 },
+  const payload = { actionToken: "isolated-fixture", headline: { kind: "normal", provider: "codex", account: "second", remainingPercent: 100 },
     accounts: [account("default", "Main", 18), account("second", "Second", 100)], events: [], resumeTasks: [],
     resetSignals: { enabled: true, source: "multiple", state: "ready", lastSuccessMs: Date.now(),
       coverage: "partial-relays", signals: [{ id: "100", fingerprint: "fixture-reset", author: "thsottiaux",
@@ -93,12 +93,14 @@ async function run() {
       { name: "both-main-frontmost", running: ["second", "main"], frontmost: "main", expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "no-running-account", running: [], frontmost: null, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "invalid-response", running: ["main"], frontmost: null, expected: null },
+      { name: "nickname-settings", running: ["main"], frontmost: null, initialSection: "settings", expected: { account: "codex/default", remaining: 18, label: "Main" } },
     ]) {
       malformed = scenario.expected == null;
       const reportPath = join(stage, scenario.name + ".json");
       const request = join(stage, "request.json");
       await writeFile(request, JSON.stringify({ endpoint: `http://127.0.0.1:${server.port}`, reportPath, profiles,
-        runningProfileIDs: scenario.running, frontmostProfileID: scenario.frontmost }));
+        runningProfileIDs: scenario.running, frontmostProfileID: scenario.frontmost,
+        initialSection: "initialSection" in scenario ? scenario.initialSection : undefined }));
       await exec(["/usr/bin/open", "-W", "-n", "-g", app, "--args", "--verification", request], 20_000);
       const failures = smokeFailures(JSON.parse(await readFile(reportPath, "utf8")), scenario.expected);
       console.log(JSON.stringify({ check: scenario.name, result: failures.length ? "fail" : "pass", failures }));

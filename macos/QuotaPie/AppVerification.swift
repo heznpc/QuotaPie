@@ -9,6 +9,7 @@ struct AppVerification: Decodable {
     let profiles: [CodexDesktopProfile]
     let runningProfileIDs: [String]
     let frontmostProfileID: String?
+    let initialSection: String?
 
     static let current: AppVerification? = {
 #if DEBUG
@@ -37,6 +38,7 @@ struct AppVerification: Decodable {
     func selectInitialAccount(in model: PopoverModel) {
         model.selectInitialCodexAccount(frontmost: frontmostProfileID.flatMap(identity),
                                         running: runningProfileIDs.compactMap(identity), profiles: profiles)
+        if let initialSection, let section = DetailSection(rawValue: initialSection) { model.showDetails(section) }
     }
 
     func armTimeout() {
@@ -47,7 +49,7 @@ struct AppVerification: Decodable {
         var rendered = false
         if let content {
             let window = NSWindow(contentViewController: content)
-            window.setContentSize(NSSize(width: 380, height: 560))
+            window.setContentSize(NSSize(width: model.detailSection == nil ? 380 : 460, height: 560))
             content.view.layoutSubtreeIfNeeded()
             if let bitmap = content.view.bitmapImageRepForCachingDisplay(in: content.view.bounds) {
                 content.view.cacheDisplay(in: content.view.bounds, to: bitmap)

@@ -14,6 +14,7 @@ export interface TimeRange {
 
 export interface CodexAccountConfig {
   id: string;
+  nickname?: string;
   label: string;
   codexHome: string | null;
   enabled: boolean;
@@ -21,6 +22,7 @@ export interface CodexAccountConfig {
 
 export interface ClaudeAccountConfig {
   id: string;
+  nickname?: string;
   label: string;
   configDir: string;
   enabled: boolean;
@@ -232,6 +234,9 @@ function validateAccounts(config: AppConfig): void {
       ids.add(id);
       if (typeof profile.label !== "string" || profile.label.trim() === "") {
         throw new Error(`${provider} account ${id} requires a non-empty label`);
+      }
+      if (profile.nickname !== undefined && (typeof profile.nickname !== "string" || profile.nickname.length > 80 || /[\x00-\x1f\x7f]/.test(profile.nickname))) {
+        throw new Error(`${provider} account ${id} has an invalid nickname`);
       }
       if (typeof profile.enabled !== "boolean") {
         throw new Error(`${provider} account ${id} requires a boolean enabled value`);

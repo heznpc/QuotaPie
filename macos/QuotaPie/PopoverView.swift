@@ -72,7 +72,7 @@ struct PopoverView: View {
             Divider()
             footer.padding(.horizontal, 16).padding(.vertical, 12)
         }
-        .frame(width: 380)
+        .frame(width: model.detailSection == nil ? 380 : 460)
         .fixedSize(horizontal: false, vertical: true)
     }
 
