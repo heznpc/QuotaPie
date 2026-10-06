@@ -47,6 +47,12 @@ struct AppVerification: Decodable {
 
     func record(model: PopoverModel, item: NSStatusItem, content: NSViewController?) {
         var rendered = false
+        var accountSelectorVerified = false
+        let expectsSelector = model.detailSection == nil && (model.payload?.accounts.filter(\.enabled).count ?? 0) > 1
+        func findSelector(_ view: NSView) -> NSPopUpButton? {
+            if let button = view as? NSPopUpButton, button.identifier?.rawValue == "account-selector" { return button }
+            return view.subviews.lazy.compactMap { findSelector($0) }.first
+        }
         if let button = item.button,
            let bitmap = button.bitmapImageRepForCachingDisplay(in: button.bounds) {
             button.cacheDisplay(in: button.bounds, to: bitmap)
@@ -58,6 +64,12 @@ struct AppVerification: Decodable {
             let window = NSWindow(contentViewController: content)
             window.setContentSize(NSSize(width: model.detailSection == nil ? 380 : 460, height: 560))
             content.view.layoutSubtreeIfNeeded()
+            if let selector = findSelector(content.view) {
+                let focused = window.makeFirstResponder(selector)
+                accountSelectorVerified = focused && selector.focusRingType == .none
+                    && selector.title == model.selectedAccount?.accountLabel
+                    && selector.menu?.items.dropFirst().count == model.payload?.accounts.filter(\.enabled).count
+            }
             if let bitmap = content.view.bitmapImageRepForCachingDisplay(in: content.view.bounds) {
                 content.view.cacheDisplay(in: content.view.bounds, to: bitmap)
                 if let png = bitmap.representation(using: .png, properties: [:]) {
@@ -87,6 +99,7 @@ struct AppVerification: Decodable {
             "menuHasImage": item.button?.image != nil,
             "menuVisible": item.isVisible,
             "viewRendered": rendered,
+            "accountSelectorVerified": !expectsSelector || accountSelectorVerified,
             "statusFailure": model.statusFailure?.rawValue as Any? ?? NSNull(),
         ]
         do {
