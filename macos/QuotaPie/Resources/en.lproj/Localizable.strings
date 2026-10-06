@@ -149,7 +149,7 @@
 "alert.pace.title.projected" = "%@ · %@ pace forecast";
 "alert.pace.message.measured" = "%@ is on course to exhaust its safety margin about %@ before the reset.";
 "alert.pace.message.projected" = "%@: on this pattern the safety margin runs out about %@ before the reset.";
-"alert.stale.title" = "%@ · %@ collection stalled";
+"alert.stale.title" = "%@ · %@ usage update delayed";
 "alert.stale.message" = "%@ has had no fresh value for a while.";
 "alert.event.title.payment" = "%@ · %@ reported credits changed";
 "alert.event.title.window" = "Codex %@ · limit display changed";

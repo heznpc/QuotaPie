@@ -271,8 +271,8 @@ const CATALOG = {
     ko: (p) => `${p.label} 이 패턴이면 안전 여유가 리셋보다 약 ${p.detail} 먼저 소진될 전망입니다.`,
   },
   "alert.stale.title": {
-    en: (p) => `${p.provider} · ${p.account} collection stalled`,
-    ko: (p) => `${p.provider} · ${p.account} 수집 중단`,
+    en: (p) => `${p.provider} · ${p.account} usage update delayed`,
+    ko: (p) => `${p.provider} · ${p.account} 사용량 갱신 지연`,
   },
   "alert.stale.message": {
     en: (p) => `${p.label} has had no fresh value for a while.`,

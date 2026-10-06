@@ -195,6 +195,9 @@ export class CodexAppServerClient {
     }));
   }
 
+  /** Last quota-verified login, for local account presentation only. */
+  get accountEmail(): string | undefined { return this.remoteAccount; }
+
   private async readAccountIdentity(): Promise<string | undefined> {
     try {
       const result = await this.request("account/read", { refreshToken: false }) as any;

@@ -229,7 +229,8 @@ export function classifyDelta(
           usedPercentAfter: next.usedPercent,
         }),
       );
-    } else if (resetChanged) {
+    } else if (resetChanged && !(previousUsed === 0 && next.usedPercent === 0 && resetShiftMs > 0 &&
+      Math.abs(resetShiftMs - (next.observedAtMs - previous.observedAtMs)) <= rebaseToleranceMs)) {
       events.push(
         event(next, "schedule_rebased", "info", "high", config, {
           shiftMinutes: Math.round(resetShiftMs / 60_000),
