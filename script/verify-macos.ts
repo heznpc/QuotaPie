@@ -137,7 +137,9 @@ async function run() {
         await exec(["/usr/bin/open", "-W", "-n", "-g", app, "--args", "--verification", requestPath], 20_000);
         const observed: Observation = JSON.parse(await readFile(reportPath, "utf8"));
         const selected = payload.accounts.find((a:any)=>a.account==="a");
-        const failures = smokeFailures(observed,{account:"codex/a",remaining:selected.windows[0].remainingPercent,label:"Fixture A"});
+        const remaining = selected?.windows[0]?.remainingPercent;
+        if (remaining == null) throw new Error("Routing evidence lacks selected account quota");
+        const failures = smokeFailures(observed,{account:"codex/a",remaining,label:"Fixture A"});
         if (observed.routedAccount !== snapshot.expected.account || observed.routedRemainingPercent !== snapshot.expected.remaining)
           failures.push("route_account_or_quota_mismatch");
         if (observed.poolError !== snapshot.expected.error) failures.push("routing_failure_or_recovery_hidden");
