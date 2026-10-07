@@ -90,7 +90,7 @@ describe("public feed", () => {
       store.delivered(s.fingerprint); store.save([s],now); expect(store.pending(now)).toHaveLength(0);
       const updated = {...s,id:"101",fingerprint:"new",state:"updated" as const,publishedAtMs:now+1000};
       store.save([updated],now+1000); expect(store.pending(now+1000)).toHaveLength(1);
-      store.save([{...updated,id:"102",fingerprint:"past",publishedAtMs:now+2000,targetAtMs:now-1}],now+2000);
+      store.save([{...updated,id:"102",fingerprint:"past",publishedAtMs:now+2000,text:"Global reset today 10am UTC",timeHint:"Global reset today 10am UTC",targetAtMs:now-1}],now+2000);
       expect(store.pending(now+2000)).toHaveLength(0);
     } finally { storage.close(); }
   });

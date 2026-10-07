@@ -660,3 +660,5 @@
 "work.error.openFailed" = "Could not prepare this session. Refresh and try again.";
 
 "pool.requestFailed" = "A recent request failed or its completion could not be verified.";
+
+"signal.timingUnknownAction" = "Timing unknown · A reset may happen without further notice. Review work you want to finish before it.";

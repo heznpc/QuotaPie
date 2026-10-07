@@ -1364,7 +1364,11 @@ export class QuotaPieService {
       if (this.closing || !this.config.resetSignals.enabled) return;
       for (const signal of this.resetSignals.pending(Date.now())) {
         if (this.closing) break;
-        const decision = signalDecision(signal, this.locale, this.config.profile.timeZone);
+        const remaining = this.accountStates(Date.now(), this.currentQuotaWindows(Date.now()))
+          .filter(account => account.provider === (signal.provider ?? "codex"))
+          .flatMap(account => account.windows.filter(window => window.freshness === "fresh" && window.remainingPercent != null)
+            .map(window => `${account.accountLabel} · ${window.label}: ${Math.round(window.remainingPercent!)}% ${this.locale === "ko" ? "남음" : "remaining"}`));
+        const decision = signalDecision(signal, this.locale, this.config.profile.timeZone, remaining);
         const claim = this.alerts.claim(decision.key, Date.now(), 0);
         if (!claim) continue;
         try {

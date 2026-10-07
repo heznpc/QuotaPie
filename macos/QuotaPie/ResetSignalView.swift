@@ -96,6 +96,12 @@ struct ResetSignalSummary: View {
             if let signal = feed.latestSignal {
                 Text(Strings.t(signal.summaryKey(nowMs: Date().timeIntervalSince1970 * 1000)))
                     .font(.callout).fixedSize(horizontal: false, vertical: true)
+                if (signal.displayedBenefitKind == nil || signal.displayedBenefitKind == "reset"),
+                   signal.resetKind != "banked", ["possible", "announced", "updated"].contains(signal.state),
+                   signal.targetAtMs == nil {
+                    Text(Strings.t("signal.timingUnknownAction"))
+                        .font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                }
                 if let benefit = signal.renderedBenefitText {
                     Text(benefit).font(.callout).bold().fixedSize(horizontal: false, vertical: true)
                 }

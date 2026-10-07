@@ -38,7 +38,7 @@ const reset = /\breset(?:s|ting|ted)?\b|\breseting\b|리셋|초기화/i;
 const subject = /\bcodex\b|\bclaude\b|chatgpt\s+work|\b(?:usage|rate|weekly)\s+limits?\b|banked\s+reset/i;
 const correction = /\b(?:delay(?:ed)?|postpon(?:ed|e)|moved|instead|correction|meant|pushed back)\b/i;
 const withdrawal = /\b(?:no|not|won't|will not)\s+(?:be\s+)?(?:a\s+)?reset\b|\b(?:cancelled|canceled)\b/i;
-const done = /\b(?:have|has|just|now|already)\s+(?:been\s+)?reset\b|(?:^|[.!]\s+)all\s+reset\s+for\s+everyone(?:\.|$)|\breset\s+(?:(?:is|all)\s+)?(?:done|complete|completed|live|propagated)\b|\bit(?:'s| is) done\b|\bbutton\s+(?:was\s+)?pressed\b/i;
+const done = /\breset\s+(?:has|have)\s+been\s+(?:processed|applied)\b|\b(?:have|has|just|now|already)\s+(?:been\s+)?reset\b|(?:^|[.!]\s+)all\s+reset\s+for\s+everyone(?:\.|$)|\breset\s+(?:(?:is|all)\s+)?(?:done|complete|completed|live|propagated)\b|\bit(?:'s| is) done\b|\bbutton\s+(?:was\s+)?pressed\b/i;
 const promised = /\b(?:will|we'll|i'll|going to|scheduled|landing|lands?|arriv(?:e|es)|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
 const hint = /\b(?:button|celebrat\w*|rejoice|you know what comes next|good news|stay tuned)\b/i;
 const tentative = /\b(?:maybe|might|could|possibly|perhaps|soon|in a while|stay tuned)\b/i;
@@ -76,7 +76,10 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>)
   const timedFollowup = contextRelevant && reply.length <= 200 &&
     /^(?:(?:ok(?:ay)?(?:,?\s+fine)?|yes)[.!]\s*)?(?:but\s+)?it(?:['’]s|\s+is|\s+will\s+be)\s+(?:(?:also|still)\s+){0,2}(?:coming|landing|arriving)\s+(?:(?:on|by|in)\s+)?(?:today|tomorrow|midnight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b(?=$|[.!?,])/i.test(reply);
   const promisedFollowup = timedFollowup && !tentative.test(text) && !/\?|\b(?:not|never|won't|will not)\b/i.test(text);
-  const followup = contextRelevant && (done.test(text) || correction.test(text) || withdrawal.test(text) ||
+  const acceptedVote = (contextRelevant || post.author.toLowerCase() === "thsottiaux" && reset.test(parentText)) && /^i accept your vote[.!]?$/i.test(reply);
+  const resetChoice = post.author.toLowerCase() === "thsottiaux" && /\bor (?:a )?reset\b/i.test(text)
+    && /\b(?:updates?|ship|both)\b/i.test(text);
+  const followup = acceptedVote || resetChoice || contextRelevant && (done.test(text) || correction.test(text) || withdrawal.test(text) ||
     reply.length <= 200 && (shortAnswer || timeAnswer)) || timedFollowup;
   const implicit = post.author.toLowerCase() === "thsottiaux" && hint.test(text) && (subject.test(text) || contextRelevant);
   // General explanations of how resets work, and mentions of prior resets,
@@ -93,7 +96,8 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>)
     : bankedReset.test(parentText) ? "banked" : "unknown";
   const benefits = [...detectedBenefits];
   if ((explicit && eventEvidence || followup || implicit) && !benefits.some(b => b.kind === "reset" || b.kind === "resetCredits")) {
-    const evidence = text.split(/(?<=[.!?])\s+|[;\n]+/).find(clause => reset.test(clause)) ?? text;
+    const clauses = text.split(/(?<=[.!?])\s+|[;\n]+/);
+    const evidence = clauses.find(clause => done.test(clause)) ?? clauses.find(clause => reset.test(clause)) ?? text;
     benefits.unshift({ kind: resetKind === "banked" ? "resetCredits" : "reset", change: { evidence: evidence.trim().slice(0, 800) } });
   }
   const audienceBenefits = benefits.map(benefit => audienceBenefit(benefit, combined));
