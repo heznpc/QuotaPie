@@ -66,7 +66,7 @@ describe("Codex compaction request routing", () => {
       onRequest: (event) => events.push(event),
       fetchUpstream: (async (url: string | URL | Request, init?: RequestInit) => {
         seen.push({ url: String(url), body: await new Response(init?.body).text(), headers: new Headers(init?.headers) });
-        return new Response("data: OK\n\n", { headers: { "content-type": "text/event-stream" } });
+        return new Response("data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\n", { headers: { "content-type": "text/event-stream" } });
       }),
     });
     try {
@@ -76,7 +76,7 @@ describe("Codex compaction request routing", () => {
         headers: { authorization: "Bearer synthetic-secret", "chatgpt-account-id": "synthetic-account", "content-type": "application/json" },
         body: JSON.stringify(body),
       })));
-      expect(await Promise.all(responses.map((response) => response.text()))).toEqual(Array(3).fill("data: OK\n\n"));
+      expect(await Promise.all(responses.map((response) => response.text()))).toEqual(Array(3).fill("data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\n"));
       expect(seen.map((request) => JSON.parse(request.body).model).sort()).toEqual([route.to, route.from, route.from].sort());
       for (const request of seen) {
         expect(request.url).toBe("https://chatgpt.com/backend-api/codex/responses?test=1");
@@ -139,7 +139,7 @@ describe("Codex compaction request routing", () => {
     const proxy = startCompactionProxy({
       fetchUpstream: (async () => new Response(new ReadableStream({
         start(controller) {
-          controller.enqueue(new TextEncoder().encode("data: first\n\n"));
+          controller.enqueue(new TextEncoder().encode("data: {\"type\":\"response.output_text.delta\",\"delta\":\"first\"}\n\n"));
           finish = () => controller.close();
         },
       }), { headers: { "content-type": "text/event-stream" } })),
@@ -147,7 +147,7 @@ describe("Codex compaction request routing", () => {
     try {
       const response = await fetch(`${proxy.baseUrl}/responses`, { method: "POST", body: JSON.stringify(compact) });
       const reader = response.body!.getReader();
-      expect(new TextDecoder().decode((await reader.read()).value)).toBe("data: first\n\n");
+      expect(new TextDecoder().decode((await reader.read()).value)).toBe("data: {\"type\":\"response.output_text.delta\",\"delta\":\"first\"}\n\n");
       finish();
       finish = () => {};
       expect((await reader.read()).done).toBe(true);
@@ -192,7 +192,7 @@ describe("Codex compaction request routing", () => {
     const proxy = startCompactionProxy({ fetchUpstream: async (_url, init) => {
       init.signal!.addEventListener("abort", aborted, { once: true });
       return new Response(new ReadableStream({
-        start(controller) { controller.enqueue(new TextEncoder().encode("data: first\n\n")); },
+        start(controller) { controller.enqueue(new TextEncoder().encode("data: {\"type\":\"response.output_text.delta\",\"delta\":\"first\"}\n\n")); },
       }), { headers: { "content-type": "text/event-stream" } });
     } });
     let timeout: ReturnType<typeof setTimeout> | undefined;

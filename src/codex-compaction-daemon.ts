@@ -37,6 +37,7 @@ const accountPool = sourceAccount ? new AccountPool({ sourceAccount, accounts: (
 const proxy = startCompactionProxy({
   ...settings,
   accountPool,
+  onProvenance: event => console.log(JSON.stringify({ kind: "response_provenance", ...event })),
   savingsModelSupported: supportsSavings,
   onRequest: (event) => {
     if (event.kind === "compaction" || event.kind === "response") {
