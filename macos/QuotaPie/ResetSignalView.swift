@@ -84,6 +84,7 @@ extension ResetSignal {
 struct ResetSignalSummary: View {
     let feed: ResetSignalPayload
     let openHistory: () -> Void
+    let openWork: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -92,6 +93,27 @@ struct ResetSignalSummary: View {
                 Spacer()
                 Button(Strings.t("overview.history"), action: openHistory)
                     .font(.caption).buttonStyle(.borderless)
+            }
+            let pending = feed.pendingResets(nowMs: Date().timeIntervalSince1970 * 1000)
+            if !pending.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(Strings.t("signal.pending.title")).font(.callout.weight(.semibold))
+                    ForEach(pending) { signal in
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text((signal.provider == "claude" ? "Claude" : "Codex") + " · " + Strings.t(signal.summaryKey(nowMs: Date().timeIntervalSince1970 * 1000)))
+                                    .font(.caption.weight(.medium))
+                                Text(signal.localTimeText ?? signal.summaryTimeHint ?? Strings.t("signal.pending.unknownTime"))
+                                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                            Spacer(minLength: 4)
+                            if let url = signal.safeSourceURL { Link(Strings.t("overview.original"), destination: url).font(.caption) }
+                        }
+                    }
+                    Text(Strings.t("signal.pending.notice")).font(.caption2).foregroundStyle(.secondary)
+                    Button(Strings.t("signal.pending.openWork"), action: openWork).font(.caption)
+                }
+                .padding(10).background(Color.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
             }
             if let signal = feed.latestSignal {
                 Text(Strings.t(signal.summaryKey(nowMs: Date().timeIntervalSince1970 * 1000)))

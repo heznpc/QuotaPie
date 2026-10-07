@@ -24,7 +24,7 @@ export class ResetSignalCollector {
       coverage: this.config.tokenFile ? "direct-and-relays" : "partial-relays", sources,
       state: !this.config.enabled ? "off" : ready === sources.length ? "ready" : ready ? "partial"
         : sources.every(s => s.state === "waiting") ? "waiting" : "error",
-      signals: this.store.list() };
+      signals: this.store.list(200) };
   }
   poll(force = false, nowMs = Date.now()): Promise<void> {
     if (this.inFlight) return this.inFlight;
