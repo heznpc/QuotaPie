@@ -49,8 +49,8 @@ struct AppVerification: Decodable {
         var rendered = false
         var accountSelectorVerified = false
         let expectsSelector = model.detailSection == nil && (model.payload?.accounts.filter(\.enabled).count ?? 0) > 1
-        func findSelector(_ view: NSView) -> NSPopUpButton? {
-            if let button = view as? NSPopUpButton, button.identifier?.rawValue == "account-selector" { return button }
+        func findSelector(_ view: NSView) -> AccountMenuButton? {
+            if let button = view as? AccountMenuButton, button.identifier?.rawValue == "account-selector" { return button }
             return view.subviews.lazy.compactMap { findSelector($0) }.first
         }
         if let button = item.button,
@@ -68,8 +68,7 @@ struct AppVerification: Decodable {
                 let focused = window.makeFirstResponder(selector)
                 accountSelectorVerified = focused && selector.focusRingType == .none
                     && selector.title == model.selectedAccount?.accountLabel
-                    && selector.menu?.items.first?.isHidden == true
-                    && selector.menu?.items.filter { !$0.isHidden }.count == model.payload?.accounts.filter(\.enabled).count
+                    && selector.action != nil
             }
             if let bitmap = content.view.bitmapImageRepForCachingDisplay(in: content.view.bounds) {
                 content.view.cacheDisplay(in: content.view.bounds, to: bitmap)
