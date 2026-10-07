@@ -1,8 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// SwiftUI's Menu does not forward focusEffectDisabled to its AppKit cell.
-/// Keep selection in SwiftUI and configure only the native menu presentation here.
+/// The button title is independent of the menu: every menu row is an account.
 struct AccountSelector: NSViewRepresentable {
     let accounts: [AccountState]
     let selectedID: String?
@@ -10,45 +9,65 @@ struct AccountSelector: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> NSPopUpButton {
-        let button = NSPopUpButton(frame: .zero, pullsDown: true)
+    func makeNSView(context: Context) -> AccountMenuButton {
+        let button = AccountMenuButton(frame: .zero)
         button.identifier = NSUserInterfaceItemIdentifier("account-selector")
         button.isBordered = false
         button.focusRingType = .none
         button.font = .systemFont(ofSize: 13, weight: .medium)
+        button.alignment = .left
         button.cell?.lineBreakMode = .byTruncatingMiddle
+        button.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)
+        button.imagePosition = .imageTrailing
         button.setAccessibilityLabel(Strings.t("overview.chooseAccount"))
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.open(_:))
         return button
     }
 
-    func updateNSView(_ button: NSPopUpButton, context: Context) {
+    func updateNSView(_ button: AccountMenuButton, context: Context) {
         context.coordinator.accounts = accounts
+        context.coordinator.selectedID = selectedID
         context.coordinator.onSelect = onSelect
         let selected = accounts.first { $0.id == selectedID }
-        let menu = NSMenu()
-        // Pull-down buttons use the first item as their closed-state title.
-        // It must not also appear as a disabled row in the opened menu.
-        let titleItem = menu.addItem(withTitle: selected?.accountLabel ?? "QuotaPie", action: nil, keyEquivalent: "")
-        titleItem.isHidden = true
-        for (index, account) in accounts.enumerated() {
-            let item = NSMenuItem(title: "\(account.providerTitle) · \(account.accountLabel)",
-                                  action: #selector(Coordinator.choose(_:)), keyEquivalent: "")
-            item.target = context.coordinator
-            item.tag = index
-            item.state = account.id == selectedID ? .on : .off
-            menu.addItem(item)
-        }
-        button.menu = menu
+        button.title = selected?.accountLabel ?? "QuotaPie"
         button.toolTip = selected.map { "\($0.providerTitle) · \($0.accountLabel)" }
         button.setAccessibilityValue(selected?.accountLabel)
+        // Do not replace a menu while AppKit is tracking a user's selection.
+        // Build a fresh snapshot only when the button is activated.
     }
 
     final class Coordinator: NSObject {
         var accounts: [AccountState] = []
+        var selectedID: String?
         var onSelect: ((AccountState) -> Void)?
+
+        func makeMenu() -> NSMenu {
+            let menu = NSMenu()
+            for account in accounts {
+                let item = NSMenuItem(title: "\(account.providerTitle) · \(account.accountLabel)",
+                                      action: #selector(choose(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = account.id
+                item.state = account.id == selectedID ? .on : .off
+                menu.addItem(item)
+            }
+            return menu
+        }
+
+        @objc func open(_ sender: NSButton) {
+            makeMenu().popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.minY), in: sender)
+        }
+
         @objc func choose(_ sender: NSMenuItem) {
-            guard accounts.indices.contains(sender.tag) else { return }
-            onSelect?(accounts[sender.tag])
+            guard let id = sender.representedObject as? String,
+                  let account = accounts.first(where: { $0.id == id }) else { return }
+            onSelect?(account)
         }
     }
+}
+
+final class AccountMenuButton: NSButton {
+    // A menu-bar popover need not be the key window when first clicked.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
