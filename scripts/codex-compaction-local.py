@@ -231,10 +231,67 @@ class LocalRelay:
                             lambda: self.wait_healthy(settings), stop_candidate)
         self.manifest = manifest
         self.settings_path = Path(manifest["settings_path"])
+        try:
+            retirement = self.retire()
+        except (OSError, ValueError, RuntimeError, TypeError) as error:
+            # Activation already succeeded. Retirement must not invalidate it.
+            retirement = {"error": str(error), "loaded_listeners_untouched": True}
         if str(config_path.parent) in manifest["profile_settings"]:
             return {"installed": True, "configured": True, "running": True, "restart_required": True,
-                    "settings_path": str(candidate_path), "relay": self.health(settings)}
-        return self.status()
+                    "settings_path": str(candidate_path), "relay": self.health(settings), "retirement": retirement}
+        return {**self.status(), "retirement": retirement}
+
+    def retire(self):
+        """Retire login persistence, never a listener loaded by an existing task.
+
+        launchd retains the loaded job (including crash recovery) for this login.
+        After logout/reboot no old clients survive and only current agents reload.
+        Idleness alone cannot prove a loaded conversation has released its endpoint.
+        """
+        active = {self.manifest["settings_path"], *self.manifest.get("profile_settings", {}).values()}
+        entries = self.registered_entries()
+        replacements = {}
+        for path, _, settings in entries:
+            if str(path) not in active:
+                continue
+            try:
+                config = tomllib.loads((Path(settings["codex_home"]) / "config.toml").read_text())
+                if config.get("openai_base_url") == self.endpoint(settings):
+                    self.health(settings)
+                    replacements[str(Path(settings["codex_home"]).resolve())] = settings
+            except (OSError, ValueError, RuntimeError):
+                pass
+        archived, retained = [], []
+        for path, _, settings in entries:
+            if str(path) in active:
+                continue
+            agent = self.agent_path(settings)
+            if not agent.exists():
+                continue
+            try:
+                home = str(Path(settings["codex_home"]).resolve())
+                if home not in replacements:
+                    raise ValueError("No healthy configured replacement")
+                raw = agent.read_bytes()
+                job = plistlib.loads(raw)
+                args = job.get("ProgramArguments", [])
+                if (job.get("Label") != settings.get("label", LABEL) or len(args) != 3
+                        or args[1:] != [str(path.parent / "relay.js"), str(path)]):
+                    raise ValueError("Launch agent ownership could not be verified")
+                archive = path.parent / "retired-launch-agent.plist"
+                if archive.exists():
+                    raise ValueError("An archived launch agent already exists")
+                config = tomllib.loads((Path(home) / "config.toml").read_text())
+                if config.get("openai_base_url") != self.endpoint(replacements[home]):
+                    raise ValueError("Configuration changed during retirement")
+                # A rename preserves the exact job for recovery, without bootout,
+                # drain, config changes, or replacing the running relay binary.
+                agent.rename(archive)
+                archived.append(str(path))
+            except (OSError, ValueError, TypeError, plistlib.InvalidFileException) as error:
+                retained.append({"settings_path": str(path), "reason": str(error)})
+        return {"retired_after_logout": archived, "retained": retained,
+                "loaded_listeners_untouched": True}
 
     def ensure_profile(self, args):
         if not args.codex_home:
@@ -409,7 +466,7 @@ class LocalRelay:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["install", "ensure-profile", "status", "configure", "disable", "stop"])
+    parser.add_argument("action", choices=["install", "ensure-profile", "status", "configure", "disable", "stop", "retire"])
     parser.add_argument("--source")
     parser.add_argument("--bun")
     parser.add_argument("--codex-home")

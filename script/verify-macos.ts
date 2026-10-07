@@ -15,6 +15,9 @@ interface Observation {
   recentWorkIDs?: string[];
   accountSelectorVerified?: boolean;
   statusFailure: string | null;
+  routedAccount?: string | null;
+  routedRemainingPercent?: number | null;
+  poolError?: string | null;
 }
 export function smokeFailures(observed: Observation, expected: { account: string; remaining: number; label: string } | null): string[] {
   const failures: string[] = [];
@@ -64,7 +67,7 @@ async function run() {
       resetsAtMs: Date.now() + 3_600_000, observedAtMs: Date.now(), riskLevel: "none" }],
     collection: { health: "recent-success", sources: [] } });
   // Independent expected values: no production account-selection or headline code.
-  const payload = { actionToken: "isolated-fixture", headline: { kind: "normal", provider: "codex", account: "second", remainingPercent: 100 },
+  let payload: any = { actionToken: "isolated-fixture", headline: { kind: "normal", provider: "codex", account: "second", remainingPercent: 100 },
     accounts: [account("default", "Main", 18), account("second", "Second", 100)], events: [], resumeTasks: [],
     recentWorkState: "ready", recentWork: [
       { id: "a".repeat(64), provider: "codex", account: "default", accountLabel: "Main", projectLabel: "Example project", tokenCount: 12400, lastActiveAtMs: Date.now() - 60_000 },
@@ -119,6 +122,28 @@ async function run() {
       }
       console.log(JSON.stringify({ check: scenario.name, result: failures.length ? "fail" : "pass", failures }));
       if (failures.length) throw new Error(`Native verification failed: ${scenario.name}`);
+    }
+    // Reuse independently observed relay/backend snapshots, not fabricated UI routes.
+    const routingEvidence = process.argv[2];
+    if (routingEvidence) {
+      const evidence = JSON.parse(await readFile(routingEvidence, "utf8"));
+      if (evidence.result !== "pass" || evidence.kind !== "isolated-loopback-http") throw new Error("Invalid routing evidence");
+      for (const snapshot of evidence.uiSnapshots) {
+        malformed = false; payload = snapshot.payload;
+        const reportPath = join(stage, snapshot.name + ".json");
+        const requestPath = join(stage, "request.json");
+        await writeFile(requestPath, JSON.stringify({ endpoint: `http://127.0.0.1:${server.port}`, reportPath,
+          profiles: profiles.map((p,i)=>({...p,collectionAccount:i ? "b" : "a"})), runningProfileIDs:["main"], frontmostProfileID:"main" }));
+        await exec(["/usr/bin/open", "-W", "-n", "-g", app, "--args", "--verification", requestPath], 20_000);
+        const observed: Observation = JSON.parse(await readFile(reportPath, "utf8"));
+        const selected = payload.accounts.find((a:any)=>a.account==="a");
+        const failures = smokeFailures(observed,{account:"codex/a",remaining:selected.windows[0].remainingPercent,label:"Fixture A"});
+        if (observed.routedAccount !== snapshot.expected.account || observed.routedRemainingPercent !== snapshot.expected.remaining)
+          failures.push("route_account_or_quota_mismatch");
+        if (observed.poolError !== snapshot.expected.error) failures.push("routing_failure_or_recovery_hidden");
+        console.log(JSON.stringify({check:snapshot.name,result:failures.length ? "fail":"pass",failures}));
+        if (failures.length) throw new Error(`Routing UI verification failed: ${snapshot.name}`);
+      }
     }
     if (hash !== await sourceHash(root)) throw new Error("Sources changed during native verification; rerun required");
     console.log(JSON.stringify({ result: "pass", sourceHash: hash, evidence: stage }));

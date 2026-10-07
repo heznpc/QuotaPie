@@ -113,3 +113,20 @@ test("status projections share one analysis pass without caching across requests
     }
   } finally { server.stop(true); await service.close(); }
 });
+
+test("one status response reads each quota history once and shares it with compatibility consumers", async () => {
+  const config=structuredClone(DEFAULT_CONFIG);config.dashboard.port=0;
+  const db=new QuotaDatabase(":memory:"),service=new QuotaPieService(config,db);
+  service.ingest([{provider:"codex",account:"default",bucket:"codex:primary:300",label:"5h",windowSeconds:18000,
+    usedPercent:25,resetsAtMs:Date.now()+3600_000,observedAtMs:Date.now(),source:"codex-app-server",quality:"authoritative"}]);
+  let reads=0;const history=db.analysisHistory.bind(db);
+  db.analysisHistory=(...args)=>{reads++;return history(...args);};
+  const server=startDashboard(service,config);
+  try {
+    const status:any=await(await fetch(`http://127.0.0.1:${server.port}/api/status`)).json();
+    const current=status.accounts.find((a:any)=>a.provider==="codex"&&a.account==="default");
+    expect(current.windows[0].remainingPercent).toBe(75);
+    expect(status.statuses[0].windows).toEqual(current.windows);
+    expect(reads).toBe(1);
+  } finally {server.stop(true);service.close();}
+});

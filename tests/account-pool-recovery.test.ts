@@ -105,12 +105,14 @@ test("credential refresh recovers authentication rejection without quota misclas
   });
   const thread = randomUUID();
   const first = await c.request(thread); expect(first.status).toBe(401); await first.text();
+  expect(poolStatus(c.dbPath, c.policyPath).error).toBe("pool_auth_cooldown");
   const second = await c.request(thread); expect(second.status).toBe(401);
   expect((await second.json() as any).error.code).toBe("pool_auth_cooldown");
   expect(calls).toBe(1);
   c.accounts[1]!.accessToken = "other-refreshed-token";
   const recovered = await c.request(thread); expect(recovered.status).toBe(200); await recovered.text();
   expect(calls).toBe(2);
+  expect(poolStatus(c.dbPath, c.policyPath).error).toBeNull();
 }));
 
 test("invalid request JSON stays a client error with an enabled account pool", async () => fixture(async c => {

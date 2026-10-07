@@ -548,7 +548,7 @@
 "pool.enabled" = "Automatic account selection for new tasks";
 "pool.lastCompleted" = "Last response served by: %@";
 "pool.lastRouted" = "Last request assigned to: %@";
-"pool.loginUnchanged" = "Quota above belongs to the selected account.";
+"pool.loginUnchanged" = "Menu bar and top quota follow your selected account.";
 "pool.waiting" = "An account will be selected for a new task.";
 "pool.disabled" = "New routing off · existing bindings retained";
 "pool.blocked" = "Account routing is blocked. Check accounts, sign-in and quota.";
@@ -658,3 +658,5 @@
 "work.openInTerminal" = "Open in Terminal";
 "work.error.unavailable" = "This session is no longer available. Refresh the work list.";
 "work.error.openFailed" = "Could not prepare this session. Refresh and try again.";
+
+"pool.requestFailed" = "A recent request failed or its completion could not be verified.";

@@ -2,6 +2,7 @@
 import importlib.util
 import io
 import json
+import plistlib
 from pathlib import Path
 import subprocess
 import sys
@@ -181,6 +182,41 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue(result["running"])
         self.assertEqual(len(result["retained"]), 3)
         self.assertTrue(all(self.relay.agent_path(s).exists() for s in self.settings))
+
+    def write_owned_agents(self):
+        for path, settings in zip(self.paths, self.settings):
+            self.relay.agent_path(settings).write_bytes(plistlib.dumps({
+                "Label": settings["label"], "KeepAlive": True, "RunAtLoad": True,
+                "ProgramArguments": [settings["bun"], str(path.parent / "relay.js"), str(path)]}))
+
+    def test_retirement_archives_login_job_without_draining_loaded_sessions(self):
+        self.write_owned_agents()
+        before = self.relay.agent_path(self.settings[2]).read_bytes()
+        self.relay.health = lambda settings: {**self.healthy(settings), "activeRequests": 7}
+        with patch.object(manager.subprocess, "run") as run:
+            result = self.relay.retire()
+        run.assert_not_called()
+        self.assertEqual(result["retired_after_logout"], [str(self.paths[2])])
+        self.assertTrue(result["loaded_listeners_untouched"])
+        self.assertEqual((self.paths[2].parent / "retired-launch-agent.plist").read_bytes(), before)
+        self.assertFalse(self.relay.agent_path(self.settings[2]).exists())
+        self.assertTrue(all(self.relay.agent_path(s).exists() for s in self.settings[:2]))
+        self.assertEqual(self.relay.retire()["retired_after_logout"], [])
+
+    def test_retirement_requires_healthy_current_replacement_and_owned_job(self):
+        self.write_owned_agents()
+        self.relay.health = lambda settings: (_ for _ in ()).throw(OSError("offline"))
+        self.assertEqual(len(self.relay.retire()["retained"]), 1)
+        self.relay.health = self.healthy
+        (Path(self.settings[0]["codex_home"]) / "config.toml").write_text(
+            manager.enabled_config("", self.relay.endpoint(self.settings[2])))
+        self.assertEqual(len(self.relay.retire()["retained"]), 1)
+        (Path(self.settings[0]["codex_home"]) / "config.toml").write_text(
+            manager.enabled_config("", self.relay.endpoint(self.settings[0])))
+        self.relay.agent_path(self.settings[2]).write_bytes(plistlib.dumps({
+            "Label": self.settings[2]["label"], "ProgramArguments": ["bun", "/unrelated", str(self.paths[2])]}))
+        self.assertEqual(len(self.relay.retire()["retained"]), 1)
+        self.assertTrue(self.relay.agent_path(self.settings[2]).exists())
 
 
 if __name__ == "__main__":
