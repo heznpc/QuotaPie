@@ -1,4 +1,5 @@
-import { classifyPost, type ResetSignal } from "./classify";
+import { reviewPost } from "./post-review";
+import { type ResetSignal } from "./classify";
 import { isWatched, type PublicPost } from "./x-source";
 import { hydrationArrays } from "./hydration-data";
 
@@ -33,6 +34,10 @@ export function parseCodexResetSnapshot(html: string, nowMs: number) {
         !Number.isFinite(at) || at > nowMs + 300_000 || text.length > 12000) continue;
     const post: PublicPost = { id, author, text, createdAtMs: at, conversationId: id, references: [] };
     const parent = row.replyTo;
+    if (typeof parent?.id === "string" && /^\d{1,30}$/.test(parent.id)) {
+      post.references = [{ id: parent.id, type: "replied_to" }];
+      post.conversationId = parent.id;
+    }
     if (parent?.status === "complete" && typeof parent.id === "string" && /^\d{1,30}$/.test(parent.id) &&
         typeof parent.handle === "string" && /^@[a-zA-Z0-9_]+$/.test(parent.handle) &&
         [ `https://x.com/i/web/status/${parent.id}`, `https://x.com/${parent.handle.slice(1)}/status/${parent.id}` ].includes(parent.sourceUrl) &&
@@ -59,11 +64,11 @@ export function parseCodexResetSnapshot(html: string, nowMs: number) {
     child.conversationId = parentId;
   }
   for (const post of posts.values()) context.set(post.id, post);
-  const signals = [...posts.values()].flatMap(post => {
-    const signal = classifyPost(post, context);
+  const reviewed = [...posts.values()].map(post => reviewPost(post, context, "codexreset"));
+  const signals = reviewed.flatMap(({ signal }) => {
     return signal ? [{ ...signal, observedVia: "codexreset" as const }] : [];
   });
-  return { signals, coverage: monitored ? "codexreset-monitored-posts" : "codexreset-quoted-posts",
+  return { signals, reviews: reviewed.map(row => row.review), coverage: monitored ? "codexreset-monitored-posts" : "codexreset-quoted-posts",
     examinedPosts: posts.size, latestPostAtMs: posts.size ? Math.max(...[...posts.values()].map(p => p.createdAtMs)) : null };
 }
 

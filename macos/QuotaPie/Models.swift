@@ -757,6 +757,7 @@ struct ResetSignalPayload: Decodable {
     let lastSuccessMs: Double?
     let error: String?
     let signals: [ResetSignal]
+    var excludedPosts: [ExcludedResetPost]? = nil
     var sources: [ResetSourceHealth]? = nil
     var coverage: String? = nil
     var coverageKey: String {

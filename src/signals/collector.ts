@@ -1,6 +1,7 @@
+import { reviewPost, type PostReview } from "./post-review";
 import type { AppConfig } from "../config";
 import { ResetSignalStore, type SourceHealth } from "../storage/reset-signal-store";
-import { classifyPost, type ResetSignal } from "./classify";
+import { type ResetSignal } from "./classify";
 import { fetchXPosts, readXToken, WATCHED_ACCOUNTS } from "./x-source";
 import { fetchPublicFeed } from "./public-feed";
 import { fetchClaudeNews } from "./claude-source";
@@ -24,7 +25,7 @@ export class ResetSignalCollector {
       coverage: this.config.tokenFile ? "direct-and-relays" : "partial-relays", sources,
       state: !this.config.enabled ? "off" : ready === sources.length ? "ready" : ready ? "partial"
         : sources.every(s => s.state === "waiting") ? "waiting" : "error",
-      signals: this.store.list(200) };
+      signals: this.store.list(200), excludedPosts: this.store.excludedPosts(nowMs) };
   }
   poll(force = false, nowMs = Date.now()): Promise<void> {
     if (this.inFlight) return this.inFlight;
@@ -52,17 +53,20 @@ export class ResetSignalCollector {
         error: null, cursorMs: null, latestPublishedAtMs: null, lastEvidenceMs: null, newEvidenceCount: 0, fingerprints: [] };
       try {
         let signals: ResetSignal[];
+        let reviews: PostReview[] = [];
         let coverage = def.coverage;
         let examinedPosts: number | undefined, latestPostAtMs: number | null | undefined;
         if (def.id === "x-api") {
           const batch = await fetchXPosts(readXToken(this.config.tokenFile!),
             Math.max(nowMs - 6 * 86400_000, saved.cursorMs ?? nowMs - 24 * 3600_000) - 60_000, this.fetcher);
           const context = new Map(batch.context.map(p => [p.id, p]));
-          signals = batch.posts.flatMap(p => { const s = classifyPost(p, context); return s ? [s] : []; });
+          const reviewed = batch.posts.map(p => reviewPost(p, context, "x-api"));
+          reviews = reviewed.map(row => row.review);
+          signals = reviewed.flatMap(({signal}) => signal ? [signal] : []);
           examinedPosts = batch.posts.length;
           latestPostAtMs = batch.posts.length ? Math.max(...batch.posts.map(p => p.createdAtMs)) : null;
         } else if (def.id === "codexreset") {
-          ({ signals, coverage, examinedPosts, latestPostAtMs } = await fetchCodexReset(nowMs, this.fetcher));
+          ({ signals, reviews, coverage, examinedPosts, latestPostAtMs } = await fetchCodexReset(nowMs, this.fetcher));
         } else if (def.id === "claudereset" || def.id === "resetradar") {
           signals = await fetchClaudeNews(def.id, nowMs, this.fetcher);
         } else signals = await fetchPublicFeed(nowMs, this.fetcher);
@@ -72,11 +76,11 @@ export class ResetSignalCollector {
           latestPublishedAtMs: signals.length ? Math.max(...signals.map(s => s.publishedAtMs)) : saved.latestPublishedAtMs,
           lastEvidenceMs: fresh.length ? nowMs : saved.lastEvidenceMs, newEvidenceCount: fresh.length,
           fingerprints: [...new Set([...saved.fingerprints, ...signals.map(s => s.fingerprint)])].slice(-2000) };
-        return { health: next, signals };
+        return { health: next, signals, reviews };
       } catch (error) {
         const message = error instanceof Error ? error.message : "collection-failed";
         const code = /^(x-|feed-|monitor-|token-file-permissions|invalid-token-file)[a-z0-9-]*$/.test(message) ? message : "collection-failed";
-        return { health: { ...saved, lastAttemptMs: nowMs, newEvidenceCount: 0, error: code }, signals: [] as ResetSignal[] };
+        return { health: { ...saved, lastAttemptMs: nowMs, newEvidenceCount: 0, error: code }, signals: [] as ResetSignal[], reviews: [] as PostReview[] };
       }
     }));
     // Deterministic selection avoids racing two relays into different revisions.
@@ -86,6 +90,7 @@ export class ResetSignalCollector {
       chosen.set(signal.id, signal);
     }
     this.store.save([...chosen.values()], nowMs);
+    this.store.saveReviews(results.flatMap(r => r.reviews), nowMs);
     const sources = results.map(r => r.health);
     const success = sources.some(s => s.error === null);
     this.store.setHealth({ lastAttemptMs: nowMs, lastSuccessMs: success ? nowMs : health.lastSuccessMs,

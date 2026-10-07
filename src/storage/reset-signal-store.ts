@@ -1,4 +1,5 @@
 import { withAnnouncementTime } from "../signals/time";
+import type { PostReview } from "../signals/post-review";
 import type { QuotaStorage } from "./database";
 import { expandBenefitSignals, supportsSignal, type ResetSignal } from "../signals/classify";
 
@@ -15,6 +16,26 @@ export interface SourceHealth {
 }
 export class ResetSignalStore {
   constructor(private storage: QuotaStorage) {}
+  saveReviews(reviews: PostReview[], nowMs: number) {
+    this.storage.transaction(() => {
+      for (const review of reviews) {
+        this.storage.db.run(`INSERT INTO reset_post_reviews(source,post_id,payload,first_seen_ms,last_seen_ms)
+          VALUES(?,?,?,?,?) ON CONFLICT(source,post_id) DO UPDATE SET payload=excluded.payload,last_seen_ms=excluded.last_seen_ms`,
+          [review.source, review.id, JSON.stringify(review), nowMs, nowMs]);
+      }
+      this.storage.db.run("DELETE FROM reset_post_reviews WHERE last_seen_ms < ?", [nowMs - 30 * 86400_000]);
+      this.storage.db.run(`DELETE FROM reset_post_reviews WHERE rowid NOT IN
+        (SELECT rowid FROM reset_post_reviews ORDER BY last_seen_ms DESC,rowid DESC LIMIT 1000)`);
+    });
+  }
+  excludedPosts(nowMs = Date.now()) {
+    return this.storage.db.query<{payload: string; first_seen_ms: number; last_seen_ms: number}, [number]>(`
+      SELECT payload,first_seen_ms,last_seen_ms FROM reset_post_reviews
+      WHERE json_extract(payload,'$.reason') IS NOT NULL AND last_seen_ms >= ?
+      ORDER BY json_extract(payload,'$.publishedAtMs') DESC,source,post_id LIMIT 50`)
+      .all(nowMs - 30 * 86400_000).map(row => ({ ...JSON.parse(row.payload) as PostReview,
+        firstSeenAtMs: row.first_seen_ms, lastSeenAtMs: row.last_seen_ms }));
+  }
   health(): SignalHealth {
     const row = this.storage.db.query<{ payload: string }, []>("SELECT payload FROM reset_signal_source WHERE id=1").get();
     return row ? JSON.parse(row.payload) : { lastAttemptMs: null, lastSuccessMs: null, error: null, cursorMs: null, source: "none" };

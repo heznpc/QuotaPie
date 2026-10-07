@@ -676,3 +676,11 @@
 "signal.pending.unknownTime" = "Time not confirmed";
 "signal.pending.notice" = "Announcements do not confirm account recovery. Untimed notices stay here for 48 hours; timed notices until 24 hours after the stated time. History remains available.";
 "signal.pending.openWork" = "Review waiting work";
+"signal.excluded.title" = "Posts excluded by classification (%@)";
+"signal.excluded.coverage" = "Excluded originals read through the X API or Codex Reset Monitor. Coverage is partial; classification exclusion is not a notification delivery result. Shows up to 50 posts checked in the last 30 days.";
+"signal.excluded.empty" = "No excluded originals saved. This does not establish complete coverage.";
+"signal.excluded.unwatched-author" = "Author is not monitored";
+"signal.excluded.no-event-evidence" = "Reset mentioned, but no new announcement, change or completion evidence found";
+"signal.excluded.no-reset-or-benefit-evidence" = "No reset or usage-benefit event evidence found in the post and available context";
+"signal.excluded.unknown" = "Classification reason not recognized by this version";
+"signal.excluded.missingContext" = "Referenced reply context was unavailable and may have affected classification.";
