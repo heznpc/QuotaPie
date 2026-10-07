@@ -672,3 +672,7 @@
 "profiles.iconApplyFailed" = "Could not apply the icon. Check the account connection and installed app.";
 
 "profiles.iconDefault" = "App default";
+"signal.pending.title" = "Pending reset announcements";
+"signal.pending.unknownTime" = "Time not confirmed";
+"signal.pending.notice" = "Announcements do not confirm account recovery. Untimed notices stay here for 48 hours; timed notices until 24 hours after the stated time. History remains available.";
+"signal.pending.openWork" = "Review waiting work";

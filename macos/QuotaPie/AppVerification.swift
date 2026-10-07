@@ -106,6 +106,7 @@ struct AppVerification: Decodable {
             "viewRendered": rendered,
             "detailSection": model.detailSection?.rawValue as Any? ?? NSNull(),
             "recentWorkIDs": model.payload?.recentWork.map(\.id) ?? [],
+            "pendingResetIDs": model.payload?.resetSignals?.pendingResets(nowMs: Date().timeIntervalSince1970 * 1000).map(\.id) ?? [],
             "profileDockIcons": CodexProfilesModel.shared.profiles.compactMap { $0.dockIcon?.rawValue },
             "accountSelectorVerified": !expectsSelector || accountSelectorVerified,
             "statusFailure": model.statusFailure?.rawValue as Any? ?? NSNull(),

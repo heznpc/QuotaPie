@@ -66,7 +66,7 @@ struct PopoverView: View {
             }
             if let feed = model.payload?.resetSignals, feed.enabled {
                 Divider().padding(.horizontal, 20)
-                ResetSignalSummary(feed: feed, openHistory: { showDetails(.resets) })
+                ResetSignalSummary(feed: feed, openHistory: { showDetails(.resets) }, openWork: { showDetails(.activity) })
                     .padding(.horizontal, 20).padding(.vertical, 16)
             }
             if awake.enabled || model.notificationsAllowed == false {

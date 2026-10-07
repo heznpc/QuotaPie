@@ -14,6 +14,7 @@ interface Observation {
   detailSection?: string;
   recentWorkIDs?: string[];
   profileDockIcons?: string[];
+  pendingResetIDs?: string[];
   accountSelectorVerified?: boolean;
   statusFailure: string | null;
   routedAccount?: string | null;
@@ -125,6 +126,7 @@ async function run() {
       await exec(["/usr/bin/open", "-W", "-n", "-g", app, "--args", "--verification", request], 20_000);
       const observed = JSON.parse(await readFile(reportPath, "utf8")) as Observation;
       const failures = smokeFailures(observed, scenario.expected);
+      if (scenario.expected && observed.pendingResetIDs?.join(",") !== "100") failures.push("pending_reset_displaced_by_newer_news");
       if (scenario.name === "dock-icons" && observed.profileDockIcons?.join(",") !== "codex-system,chatgpt") failures.push("profile_icons_not_preserved");
       if (scenario.name === "recent-work" && (observed.detailSection !== "work" ||
           observed.recentWorkIDs?.join(",") !== payload.recentWork.map(item => item.id).join(","))) {
