@@ -11,6 +11,7 @@ import type { QuotaObservation } from "../src/types";
 
 function fixture() {
   const config = structuredClone(DEFAULT_CONFIG);
+  config.alerts.macOSNotifications = false;
   config.collection.staleAfterSeconds = 60;
   const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
   const directory = mkdtempSync(join(tmpdir(), "quotapie-push-boundary-"));
