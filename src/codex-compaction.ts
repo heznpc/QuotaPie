@@ -1,3 +1,4 @@
+import { ResponseOwnershipGuard, ResponseOwnershipError, type OwnershipProvenance } from "./codex-response-ownership";
 import { fetchCodexUpstream, transportFailure } from "./codex-transport";
 import { randomBytes, randomUUID } from "node:crypto";
 import { gunzipSync, inflateSync } from "node:zlib";
@@ -88,6 +89,7 @@ export function startCompactionProxy(options: {
   port?: number;
   token?: string;
   onRequest?: (event: CompactionRequestEvent) => void;
+  onProvenance?: (event: OwnershipProvenance & { requestId: string }) => void;
   taskSavings?: TaskSavingsPolicy;
   savingsModelSupported?: () => boolean;
   fetchUpstream?: (url: string, init: RequestInit) => Promise<Response>;
@@ -134,7 +136,7 @@ export function startCompactionProxy(options: {
       }
       const path = url.pathname.slice(prefix.length);
       if (path === "/quotapie-health" && request.method === "GET") {
-        return Response.json({ service: "quotapie-compaction", schemaVersion: 3, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolReserveVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 3 : 0, accountPoolRecoveryVersion: options.accountPool ? 2 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
+        return Response.json({ service: "quotapie-compaction", schemaVersion: 3, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolReserveVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 3 : 0, accountPoolRecoveryVersion: options.accountPool ? 2 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, responseOwnershipVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
           accountPoolLineageVersion: options.accountPool ? 2 : 0,
           route: validateCompactionRoute(route), requests, rejectedRequests, compactions, attemptedCompactions,
           failedCompactions, cancelledCompactions, unverifiedCompactions, activeRequests, draining,
@@ -356,6 +358,10 @@ export function startCompactionProxy(options: {
         // The native Responses Lite transport omits Content-Type even for SSE.
         // Use the request's stream control as a fallback, never conversation text.
         observer = new ResponseCompletionObserver(response.headers.get("content-type") || (expectsSse ? "text/event-stream" : ""), event?.kind === "compaction");
+        const ownership = response.ok && (response.headers.get("content-type") || (expectsSse ? "text/event-stream" : "")).includes("text/event-stream")
+          ? new ResponseOwnershipGuard(requestIdentity(request.headers), entry => {
+            options.onProvenance?.({ requestId: event?.requestId ?? "untracked", ...entry });
+          }) : undefined;
         const reader = response.body?.getReader();
         if (!reader) {
           const result = observer.finish();
@@ -365,18 +371,48 @@ export function startCompactionProxy(options: {
         const stream = new ReadableStream<Uint8Array>({
           async pull(controller) {
             try {
-              const next = await reader.read();
-              if (next.done) {
-                const result = observer!.finish();
-                finish(response.ok ? result.phase : "failed", response.ok ? result.errorCode : "upstream_http_error");
-                controller.close();
-              } else {
-                upstreamBytes += next.value.byteLength;
-                observer!.push(next.value);
-                controller.enqueue(next.value);
-                relayQueuedBytes += next.value.byteLength;
+              // A fragmented event can require several upstream reads before
+              // producing a downstream chunk. Keep satisfying this pull until
+              // a checked frame is available (Bun need not re-pull on silence).
+              while (true) {
+                const next = await reader.read();
+                let delivered = false;
+                const deliver = (bytes: Uint8Array) => {
+                  delivered = true;
+                  observer!.push(bytes);
+                  controller.enqueue(bytes);
+                  relayQueuedBytes += bytes.byteLength;
+                };
+                if (next.done) {
+                  ownership?.finish(deliver);
+                  const result = observer!.finish();
+                  finish(response.ok ? result.phase : "failed", response.ok ? result.errorCode : "upstream_http_error");
+                  controller.close();
+                  return;
+                } else {
+                  upstreamBytes += next.value.byteLength;
+                  if (ownership) ownership.push(next.value, deliver);
+                  else deliver(next.value);
+                  if (delivered) return;
+                }
               }
             } catch (error) {
+              if (error instanceof ResponseOwnershipError) {
+                // Ownership failure overrides even a prior completion. Stop this
+                // reader only; never retry a stream that may have produced tools.
+                finish("failed", error.code);
+                cancellation.abort();
+                void reader.cancel().catch(() => {});
+                // HTTP headers may already be sent. Emit a content-free protocol
+                // error rather than relying on a TCP close the client can miss.
+                const failure = new TextEncoder().encode(`data: ${JSON.stringify({ type: "response.failed",
+                  response: { status: "failed", error: { type: "quotapie_response_ownership", code: error.code,
+                    message: "QuotaPie blocked an invalid or foreign response event before delivery." } } })}\n\n`);
+                controller.enqueue(failure);
+                relayQueuedBytes += failure.byteLength;
+                controller.close();
+                return;
+              }
               transportCode = transportFailure(error).transportCode;
               // A protocol terminal event is authoritative even if the socket
               // closes with an error afterward, just as with client cancellation.
@@ -449,6 +485,7 @@ export async function runCompactionCodex(args: string[], defaultCommand: string)
   }
   const proxy = startCompactionProxy({
     route,
+    onProvenance: event => console.error(JSON.stringify({ service: "quotapie-compaction", kind: "response_provenance", ...event })),
     onRequest: (event) => {
       console.error(JSON.stringify({ service: "quotapie-compaction", ...event }));
     },
