@@ -578,3 +578,16 @@ test("the relay forwards an ephemeral helper's complete history on its verified 
     expect(calls).toBe(1);
   } finally {proxy.stop();pool.close();}
 });
+
+test("anonymous routing rejection resolves when the same source later routes a complete response",()=>fixture(({pool,path})=>{
+  const requestId=randomUUID(), headers=new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"});
+  pool.reject("pool_thread_identity_required",{requestId:randomUUID(),threadId:null,status:409});
+  const status=()=>poolStatus(path,join(dirname(path),"missing.json"));
+  expect(status().unresolvedRejections?.latestCode).toBe("pool_thread_identity_required");
+  const route=pool.select({threadId:randomUUID(),requestId,body,model:body.model,headers})!;
+  pool.response(requestId,route.identity,200,null,route.credentialDigest);
+  expect(status().unresolvedRejections?.latestCode).toBe("pool_thread_identity_required");
+  pool.finish(requestId,"completed");
+  expect(status().error).toBeNull();
+  expect(status().rejected).toHaveLength(1);
+}));

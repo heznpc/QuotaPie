@@ -159,6 +159,7 @@ export class AccountPool {
     this.db.run("CREATE INDEX IF NOT EXISTS requests_at_ms ON requests(at_ms)");
     this.db.run("CREATE INDEX IF NOT EXISTS requests_thread_at_ms ON requests(source,thread,at_ms)");
     this.db.run("CREATE INDEX IF NOT EXISTS requests_rejected_at_ms ON requests(at_ms) WHERE state='rejected'");
+    this.db.run("CREATE INDEX IF NOT EXISTS requests_failures_at_ms ON requests(at_ms) WHERE state IN ('rejected','failed','unverified')");
     this.db.run("CREATE TABLE IF NOT EXISTS errors (source TEXT PRIMARY KEY, code TEXT NOT NULL, at_ms INTEGER NOT NULL)");
     this.db.run(`CREATE TABLE IF NOT EXISTS quota_observations (identity TEXT PRIMARY KEY, observed_ms INTEGER NOT NULL, exhausted INTEGER NOT NULL)`);
     this.db.run(`CREATE TABLE IF NOT EXISTS source_credentials (source TEXT NOT NULL, identity TEXT NOT NULL,
@@ -486,9 +487,11 @@ export function poolStatus(path = poolDatabasePath(), policyPath = poolPolicyPat
   const db = new Database(path, { readonly: true });
   try {
     const recent = db.query("SELECT source AS sourceAccount, account, label AS accountLabel, reason, state, status, at_ms AS atMs FROM requests WHERE account<>'' ORDER BY at_ms DESC,rowid DESC LIMIT 5").all();
-    const recovered = `EXISTS (SELECT 1 FROM requests done WHERE done.source=r.source AND done.thread=r.thread
+    const laterSuccess = (sameThread: boolean) => `EXISTS (SELECT 1 FROM requests done
+      WHERE done.source=r.source ${sameThread ? "AND done.thread=r.thread" : ""}
         AND done.state='completed' AND done.status>=200 AND done.status<300
         AND (done.at_ms>r.at_ms OR (done.at_ms=r.at_ms AND done.rowid>r.rowid)))`;
+    const recovered = `(CASE WHEN r.thread='' THEN ${laterSuccess(false)} ELSE ${laterSuccess(true)} END)`;
     const rejected = db.query<{requestId:string;sourceAccount:string;threadId:string;code:string;status:number;atMs:number;recovered:number}, []>(
       `SELECT id AS requestId,source AS sourceAccount,thread AS threadId,reason AS code,status,at_ms AS atMs,
         ${recovered} AS recovered FROM requests r WHERE state='rejected' ORDER BY at_ms DESC,rowid DESC LIMIT 5`)
@@ -500,7 +503,14 @@ export function poolStatus(path = poolDatabasePath(), policyPath = poolPolicyPat
       `SELECT COUNT(*) OVER () AS count,reason AS latestCode,at_ms AS latestAtMs
         FROM requests r WHERE state='rejected' AND NOT ${recovered}
         ORDER BY at_ms DESC,rowid DESC LIMIT 1`).get() ?? null;
-    const error = db.query<{code:string}, []>("SELECT code FROM errors ORDER BY at_ms DESC LIMIT 1").get()?.code ?? null;
+    const failed = db.query<{code:string}, []>(`SELECT CASE
+        WHEN status IN (401,403) THEN 'pool_auth_cooldown'
+        WHEN status=429 THEN 'pool_account_cooldown'
+        WHEN state='unverified' THEN 'pool_response_unverified'
+        ELSE 'pool_request_failed' END AS code
+      FROM requests r WHERE state IN ('failed','unverified') AND NOT ${recovered}
+      ORDER BY at_ms DESC,rowid DESC LIMIT 1`).get();
+    const error = failed?.code ?? db.query<{code:string}, []>("SELECT code FROM errors ORDER BY at_ms DESC LIMIT 1").get()?.code ?? null;
     return { ...policy, recent, rejected, unresolvedRejections, error };
   } finally { db.close(); }
 }

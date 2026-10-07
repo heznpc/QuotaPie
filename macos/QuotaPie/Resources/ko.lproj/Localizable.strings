@@ -548,7 +548,7 @@
 "pool.enabled" = "새 작업 계정 자동 배정";
 "pool.lastCompleted" = "최근 응답 처리: %@";
 "pool.lastRouted" = "최근 요청 배정: %@";
-"pool.loginUnchanged" = "위 잔여량은 선택한 계정 기준입니다.";
+"pool.loginUnchanged" = "메뉴 막대와 상단 잔여량은 선택한 계정 기준입니다.";
 "pool.waiting" = "새 작업에서 사용할 계정을 배정합니다.";
 "pool.disabled" = "새 계정 배정 꺼짐 · 기존 연결 유지";
 "pool.blocked" = "계정 라우팅이 중단됐습니다. 계정·인증·잔여량을 확인하세요.";
@@ -658,3 +658,5 @@
 "work.openInTerminal" = "터미널에서 열기";
 "work.error.unavailable" = "이 세션을 더 이상 사용할 수 없습니다. 작업 목록을 새로고침하세요.";
 "work.error.openFailed" = "세션을 준비하지 못했습니다. 새로고침 후 다시 시도하세요.";
+
+"pool.requestFailed" = "최근 요청이 실패했거나 완료를 확인하지 못했습니다.";
