@@ -61,9 +61,8 @@ export function readCodexForkParent(codexHome: string, threadId: string): CodexF
     }
     if (typeof parent !== "string" || !UUID.test(parent) || parent.toLowerCase() === threadId.toLowerCase())
       return { status: "unknown" };
-    const base = meta.history_base?.thread_id;
-    if (base != null && (typeof base !== "string" || base.toLowerCase() !== parent.toLowerCase()))
-      return { status: "unknown" };
+    // history_base identifies a pagination shard, which can differ from the
+    // logical parent thread. Only forked_from_id defines account ancestry.
     return { status: "known", parentId: parent.toLowerCase() };
   } catch {
     return { status: "unknown" };
