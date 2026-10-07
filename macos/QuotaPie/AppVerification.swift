@@ -10,6 +10,7 @@ struct AppVerification: Decodable {
     let runningProfileIDs: [String]
     let frontmostProfileID: String?
     let initialSection: String?
+    let contentHeight: Double?
 
     static let current: AppVerification? = {
 #if DEBUG
@@ -62,7 +63,7 @@ struct AppVerification: Decodable {
         }
         if let content {
             let window = NSWindow(contentViewController: content)
-            window.setContentSize(NSSize(width: model.detailSection == nil ? 380 : 460, height: 560))
+            window.setContentSize(NSSize(width: model.detailSection == nil ? 380 : 460, height: min(1200, max(560, contentHeight ?? 560))))
             content.view.layoutSubtreeIfNeeded()
             if let selector = findSelector(content.view) {
                 let focused = window.makeFirstResponder(selector)
@@ -105,6 +106,7 @@ struct AppVerification: Decodable {
             "viewRendered": rendered,
             "detailSection": model.detailSection?.rawValue as Any? ?? NSNull(),
             "recentWorkIDs": model.payload?.recentWork.map(\.id) ?? [],
+            "profileDockIcons": CodexProfilesModel.shared.profiles.compactMap { $0.dockIcon?.rawValue },
             "accountSelectorVerified": !expectsSelector || accountSelectorVerified,
             "statusFailure": model.statusFailure?.rawValue as Any? ?? NSNull(),
         ]

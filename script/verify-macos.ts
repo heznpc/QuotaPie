@@ -13,6 +13,7 @@ interface Observation {
   viewRendered: boolean;
   detailSection?: string;
   recentWorkIDs?: string[];
+  profileDockIcons?: string[];
   accountSelectorVerified?: boolean;
   statusFailure: string | null;
   routedAccount?: string | null;
@@ -85,12 +86,17 @@ async function run() {
           benefitKind: "limits", change: { percent: 50, evidence: "Synthetic: 50% more usage for everyone." },
           benefitText: "Announced: +50% (1.5× previous allowance)", targetAtMs: null }] },
     accountPool: {enabled:true, accounts:["default","second"], recent:[{sourceAccount:"default",account:"second",accountLabel:"Second",state:"completed",status:200,atMs:Date.now()}]} };
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: request => {
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async request => {
+    if (request.method === "POST" && new URL(request.url).pathname === "/api/profiles/dock-icon") {
+      const body = await request.json() as {account?: string; icon?: string};
+      if (body.icon !== undefined || !["default", "second"].includes(body.account ?? "")) return new Response("Read-only fixture", {status: 400});
+      return Response.json({icon: body.account === "default" ? "codex-system" : "app-default", changed: false});
+    }
     if (request.method !== "GET" || new URL(request.url).pathname !== "/api/status") return new Response("Unexpected request", { status: 400 });
     return malformed ? new Response("{invalid", { headers: { "content-type": "application/json" } }) : Response.json(payload);
   } });
   const profiles = ["main", "second"].map((id, index) => ({ id, name: id, codexHome: join(stage, id, "home"),
-    appData: join(stage, id, "data"), collectionAccount: index ? "second" : "default" }));
+    appData: join(stage, id, "data"), collectionAccount: index ? "second" : "default", dockIcon: index ? "chatgpt" : "codex-system" }));
   try {
     await exec(["bash", "script/build_and_run.sh", "bundle", stage]);
     const plist = join(app, "Contents/Info.plist");
@@ -98,6 +104,7 @@ async function run() {
     await exec(["/usr/libexec/PlistBuddy", "-c", "Delete :CFBundleURLTypes", plist]);
     await exec(["codesign", "--force", "--sign", "-", "--timestamp=none", join(app, "Contents/Helpers/QuotaPiePowerHelper")]);
     await exec(["codesign", "--force", "--sign", "-", "--timestamp=none", app]);
+    await exec(["/usr/bin/defaults", "write", bundleID, "local.quotapie.codex-desktop-profiles.v1", "-data", Buffer.from(JSON.stringify(profiles)).toString("hex")]);
     for (const scenario of [
       { name: "main-only", running: ["main"], frontmost: null, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "second-only", running: ["second"], frontmost: null, expected: { account: "codex/second", remaining: 100, label: "Second" } },
@@ -105,6 +112,7 @@ async function run() {
       { name: "no-running-account", running: [], frontmost: null, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "invalid-response", running: ["main"], frontmost: null, expected: null },
       { name: "nickname-settings", running: ["main"], frontmost: null, initialSection: "settings", expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "dock-icons", running: ["main"], frontmost: null, initialSection: "settings", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "recent-work", running: ["main"], frontmost: null, initialSection: "work", expected: { account: "codex/default", remaining: 18, label: "Main" } },
     ]) {
       malformed = scenario.expected == null;
@@ -112,10 +120,12 @@ async function run() {
       const request = join(stage, "request.json");
       await writeFile(request, JSON.stringify({ endpoint: `http://127.0.0.1:${server.port}`, reportPath, profiles,
         runningProfileIDs: scenario.running, frontmostProfileID: scenario.frontmost,
+        contentHeight: "contentHeight" in scenario ? scenario.contentHeight : undefined,
         initialSection: "initialSection" in scenario ? scenario.initialSection : undefined }));
       await exec(["/usr/bin/open", "-W", "-n", "-g", app, "--args", "--verification", request], 20_000);
       const observed = JSON.parse(await readFile(reportPath, "utf8")) as Observation;
       const failures = smokeFailures(observed, scenario.expected);
+      if (scenario.name === "dock-icons" && observed.profileDockIcons?.join(",") !== "codex-system,chatgpt") failures.push("profile_icons_not_preserved");
       if (scenario.name === "recent-work" && (observed.detailSection !== "work" ||
           observed.recentWorkIDs?.join(",") !== payload.recentWork.map(item => item.id).join(","))) {
         failures.push("recent_work_not_rendered");
@@ -151,6 +161,7 @@ async function run() {
     console.log(JSON.stringify({ result: "pass", sourceHash: hash, evidence: stage }));
   } finally {
     server.stop(true);
+    Bun.spawnSync(["/usr/bin/defaults", "delete", bundleID]);
     // Stop only the executable created by this run, even after open times out.
     const pids = Bun.spawnSync(["pgrep", "-x", "QuotaPie"]).stdout.toString().trim().split(/\s+/).filter(Boolean);
     for (const value of pids) {

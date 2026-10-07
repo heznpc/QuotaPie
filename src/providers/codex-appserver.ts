@@ -275,6 +275,14 @@ export class CodexAppServerClient {
     stdin.flush();
   }
 
+  /** Explicit user preference only; the native writer preserves unrelated TOML. */
+  async writeDockIcon(value: "app-default" | "codex-system" | "space-system"): Promise<void> {
+    await this.connect();
+    await this.request("config/value/write", {
+      keyPath: "desktop.dock-icon-preference", value, mergeStrategy: "upsert", reloadUserConfig: true,
+    });
+  }
+
   private request(method: string, params?: unknown): Promise<unknown> {
     const id = this.requestId++;
     return new Promise((resolve, reject) => {

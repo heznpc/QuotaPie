@@ -8,6 +8,7 @@ struct CodexDesktopProfile: Codable, Identifiable, Equatable {
     let codexHome: String
     let appData: String
     var collectionAccount: String? = nil
+    var dockIcon: CodexDockIcon? = nil
 
     static func canonical(_ path: String) -> String {
         var ancestor = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL
@@ -215,6 +216,14 @@ final class CodexProfilesModel: ObservableObject {
         let profile = CodexDesktopProfile(id: id, name: name.trimmingCharacters(in: .whitespacesAndNewlines),
             codexHome: home ?? root.appendingPathComponent("home").path, appData: data ?? root.appendingPathComponent("app-data").path)
         save(profiles + [profile])
+    }
+    func rememberDockIcon(_ icon: CodexDockIcon, for profile: CodexDesktopProfile) {
+        guard profiles.first(where: { $0.id == profile.id })?.dockIcon != icon else { return }
+        save(profiles.map { item in
+            var next = item
+            if item.id == profile.id { next.dockIcon = icon }
+            return next
+        })
     }
     func remove(_ profile: CodexDesktopProfile) {
         // Remove only the launch registration. Never delete files or stop apps.

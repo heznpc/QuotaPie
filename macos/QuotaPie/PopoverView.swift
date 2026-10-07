@@ -12,7 +12,7 @@ struct PopoverView: View {
                 get: { model.detailSection ?? .quota },
                 set: { model.detailSection = $0 }
             ), actions: actions, back: model.showOverview)
-                .frame(width: 460, height: model.popoverDetailHeight)
+                .frame(width: 460, height: AppVerification.current?.contentHeight.map { CGFloat(min(1200, max(560, $0))) } ?? model.popoverDetailHeight)
         } else {
             overview
         }
