@@ -15,6 +15,7 @@ interface Observation {
   recentWorkIDs?: string[];
   profileDockIcons?: string[];
   pendingResetIDs?: string[];
+  excludedPostIDs?: string[];
   accountSelectorVerified?: boolean;
   statusFailure: string | null;
   routedAccount?: string | null;
@@ -76,6 +77,9 @@ async function run() {
       { id: "b".repeat(64), provider: "claude", account: "default", accountLabel: "Main", projectLabel: "Another project", tokenCount: 8300, lastActiveAtMs: Date.now() - 3_600_000 },
     ],
     resetSignals: { enabled: true, source: "multiple", state: "ready", lastSuccessMs: Date.now(),
+      excludedPosts: [{id: "102", author: "thsottiaux", text: "Synthetic unrelated post", publishedAtMs: Date.now(),
+        contextText: null, missingContext: false, reason: "no-reset-or-benefit-evidence", source: "codexreset",
+        firstSeenAtMs: Date.now(), lastSeenAtMs: Date.now()}],
       coverage: "partial-relays", signals: [{ id: "100", fingerprint: "fixture-reset", author: "thsottiaux",
         sourceUrl: "https://x.com/thsottiaux/status/100", text: "We are almost Tuesday and I promised a reset for Tuesday.",
         publishedAtMs: Date.now() - 86_400_000, detectedAtMs: Date.now() - 60_000,
@@ -114,6 +118,7 @@ async function run() {
       { name: "invalid-response", running: ["main"], frontmost: null, expected: null },
       { name: "nickname-settings", running: ["main"], frontmost: null, initialSection: "settings", expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "dock-icons", running: ["main"], frontmost: null, initialSection: "settings", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "excluded-posts", running: ["main"], frontmost: null, initialSection: "resets", expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "recent-work", running: ["main"], frontmost: null, initialSection: "work", expected: { account: "codex/default", remaining: 18, label: "Main" } },
     ]) {
       malformed = scenario.expected == null;
@@ -127,6 +132,7 @@ async function run() {
       const observed = JSON.parse(await readFile(reportPath, "utf8")) as Observation;
       const failures = smokeFailures(observed, scenario.expected);
       if (scenario.expected && observed.pendingResetIDs?.join(",") !== "100") failures.push("pending_reset_displaced_by_newer_news");
+      if (scenario.name === "excluded-posts" && (observed.detailSection !== "resets" || observed.excludedPostIDs?.join(",") !== "codexreset:102")) failures.push("excluded_post_not_available");
       if (scenario.name === "dock-icons" && observed.profileDockIcons?.join(",") !== "codex-system,chatgpt") failures.push("profile_icons_not_preserved");
       if (scenario.name === "recent-work" && (observed.detailSection !== "work" ||
           observed.recentWorkIDs?.join(",") !== payload.recentWork.map(item => item.id).join(","))) {

@@ -32,6 +32,10 @@ export function migrate(db: Database): void {
       payload TEXT NOT NULL, notified INTEGER NOT NULL DEFAULT 0)`);
     db.run(`CREATE INDEX IF NOT EXISTS reset_signals_pending ON reset_signals(notified,published_ms)`);
     db.run(`CREATE TABLE IF NOT EXISTS reset_signal_source (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL)`);
+    db.run(`CREATE TABLE IF NOT EXISTS reset_post_reviews (
+      source TEXT NOT NULL, post_id TEXT NOT NULL, payload TEXT NOT NULL,
+      first_seen_ms INTEGER NOT NULL, last_seen_ms INTEGER NOT NULL,
+      PRIMARY KEY(source,post_id))`);
     db.run(`
       CREATE TABLE IF NOT EXISTS snapshots (
         id INTEGER PRIMARY KEY,

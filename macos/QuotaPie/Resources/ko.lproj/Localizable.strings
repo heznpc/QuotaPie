@@ -676,3 +676,11 @@
 "signal.pending.unknownTime" = "시각 미정";
 "signal.pending.notice" = "예고는 계정 회복을 뜻하지 않습니다. 시각 미정 예고는 48시간, 시각이 있는 예고는 예정 시각 후 24시간까지 표시하며 이후에는 소식 이력에서 볼 수 있습니다.";
 "signal.pending.openWork" = "대기 작업 확인";
+"signal.excluded.title" = "분류에서 제외된 원문 (%@)";
+"signal.excluded.coverage" = "X 직접 수집과 Codex Reset Monitor가 제공한 원문 중 제외된 글입니다. 모든 게시글을 수집한 것은 아니며, 분류 제외와 알림 미전달은 다릅니다. 최근 30일 내 확인한 최대 50건을 표시합니다.";
+"signal.excluded.empty" = "저장된 제외 원문이 없습니다. 미수집 글이 없다는 뜻은 아닙니다.";
+"signal.excluded.unwatched-author" = "관찰 대상 작성자가 아님";
+"signal.excluded.no-event-evidence" = "리셋을 언급하지만 새로운 예고·변경·시행의 근거를 찾지 못함";
+"signal.excluded.no-reset-or-benefit-evidence" = "원문과 확보한 문맥에서 리셋·사용량 혜택 사건의 근거를 찾지 못함";
+"signal.excluded.unknown" = "이 버전에서 설명할 수 없는 분류 이유";
+"signal.excluded.missingContext" = "참조된 답글 문맥을 확보하지 못했습니다. 문맥 누락이 분류에 영향을 줄 수 있습니다.";

@@ -164,6 +164,7 @@ struct ResetSignalHistory: View {
         LazyVStack(alignment: .leading, spacing: 20) {
             if let feed, feed.enabled {
                 Text(Strings.t("signal.accountNotice")).font(.callout)
+                ExcludedResetPostsView(posts: feed.excludedPosts ?? [])
                 if feed.signals.isEmpty { Text(Strings.t("signal.empty")).foregroundStyle(.secondary) }
                 ForEach(feed.signals.sorted { $0.publishedAtMs > $1.publishedAtMs }, id: \.fingerprint) { signal in
                     Divider()

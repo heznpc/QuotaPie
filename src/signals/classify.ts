@@ -44,8 +44,10 @@ const hint = /\b(?:button|celebrat\w*|rejoice|you know what comes next|good news
 const tentative = /\b(?:maybe|might|could|possibly|perhaps|soon|in a while|stay tuned)\b/i;
 const issuance = /\b(?:getting|giving|reissuing)\b.*\b(?:reset|another|one)\b/i;
 
-export function classifyPost(post: PublicPost, context: Map<string, PublicPost>): ResetSignal | null {
-  if (!isWatched(post.author)) return null;
+export type ExclusionReason = "unwatched-author" | "no-event-evidence" | "no-reset-or-benefit-evidence";
+export function classifyPost(post: PublicPost, context: Map<string, PublicPost>,
+  onExcluded?: (reason: ExclusionReason, contextText: string | null) => void): ResetSignal | null {
+  if (!isWatched(post.author)) { onExcluded?.("unwatched-author", null); return null; }
   const parents: PublicPost[] = [];
   const seen = new Set([post.id]);
   function visit(id: string, depth: number) {
@@ -86,7 +88,10 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>)
   // are not evidence of another reset. Raw monitored posts include both.
   const eventEvidence = done.test(text) || correction.test(text) || withdrawal.test(text) ||
     promised.test(text) || tentative.test(text) || hint.test(text) || issuance.test(text);
-  if (!(explicit && eventEvidence) && !followup && !implicit && !benefitEvidence) return null;
+  if (!(explicit && eventEvidence) && !followup && !implicit && !benefitEvidence) {
+    onExcluded?.(explicit ? "no-event-evidence" : "no-reset-or-benefit-evidence", parentText || null);
+    return null;
+  }
   // Quoting a reset request alone is insufficient to declare a reset promised.
   const state: SignalState = withdrawal.test(text) && !/\?|\bwho\s+(?:says|said)\b/i.test(text) ? "withdrawn" : correction.test(text) ? "updated"
     : done.test(text) ? "reported" : promisedFollowup || (explicit || benefitEvidence) && promised.test(text) && !/\?/.test(text) ? "announced" : benefitEvidence && !/\?|\b(?:maybe|might|could|possibly)\b/i.test(text) ? "reported" : "possible";
