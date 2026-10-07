@@ -43,6 +43,7 @@ struct CodexProfilesView: View {
                                 onRetry: actions.retryTask, onDismiss: actions.dismissTask)
                         }
                     }
+                    CodexDockIconPicker(profile: profile, actionToken: status.payload?.actionToken, profiles: profiles)
                     DisclosureGroup(Strings.t("profiles.paths")) {
                         Text("CODEX_HOME: " + profile.codexHome).textSelection(.enabled)
                         Text(Strings.t("profiles.appData") + ": " + profile.appData).textSelection(.enabled)

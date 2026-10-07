@@ -1,3 +1,4 @@
+import { profileDockIcon } from "./profile-dock-icon";
 import { localAnnouncementTime } from "./signals/time";
 import { benefitChangeText, signalDecision } from "./signals/presentation";
 import { connectProfileRelay } from "./profile-relay";
@@ -107,6 +108,15 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
         } catch (error) {
           return json({ error: error instanceof PoolError ? error.code : "pool_policy_update_failed" }, error instanceof PoolError ? error.status : 400);
         }
+      }
+      if (url.pathname === "/api/profiles/dock-icon") {
+        if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+        if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token"))) return json({ error: "forbidden" }, 403);
+        try {
+          const body = await request.text();
+          if (body.length > 2048) return json({ error: "invalid_icon" }, 400);
+          return json(await profileDockIcon(config, JSON.parse(body)));
+        } catch { return json({ error: "dock_icon_unavailable" }, 409); }
       }
       if (url.pathname === "/api/profiles/connect") {
         if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);

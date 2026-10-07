@@ -662,3 +662,15 @@
 "pool.requestFailed" = "A recent request failed or its completion could not be verified.";
 
 "signal.timingUnknownAction" = "Timing unknown · A reset may happen without further notice. Review work you want to finish before it.";
+
+"profiles.dockIcon" = "Dock icon";
+
+"profiles.iconConnectFirst" = "Connect this account to choose its icon.";
+
+"profiles.iconSaved" = "Saved. A running app uses the new preference the next time that account is launched.";
+
+"profiles.iconApplyFailed" = "Could not apply the icon. Check the account connection and installed app.";
+
+"profiles.iconDefault" = "App default";
+
+"profiles.iconSharedFallback" = "ChatGPT restores the shared app icon. Accounts using App default also use this icon.";

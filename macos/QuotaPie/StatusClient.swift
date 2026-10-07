@@ -121,6 +121,20 @@ final class StatusClient {
         } catch { completion(.failure(error)) }
     }
 
+    func profileDockIcon(account: String, icon: CodexDockIcon?, actionToken: String,
+                         completion: @escaping (Result<DockIconReply, Error>) -> Void) {
+        do {
+            var request = try authenticatedPOST(pathComponents: ["api", "profiles", "dock-icon"], actionToken: actionToken)
+            var body = ["account": account]
+            if let icon { body["icon"] = icon.nativeValue }
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            perform(request) { result in
+                completion(Result { try JSONDecoder().decode(DockIconReply.self, from: result.get()) })
+            }
+        } catch { completion(.failure(error)) }
+    }
+
     func connectProfile(_ profile: CodexDesktopProfile, actionToken: String,
                         completion: @escaping (Result<ProfileConnectionReply, Error>) -> Void) {
         do {

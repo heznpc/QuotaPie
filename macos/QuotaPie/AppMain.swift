@@ -105,6 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if !isFixturePreview {
             AwakeController.shared.start()
             profileUpdateMonitor.start()
+            CodexDockIconCoordinator.shared.start()
         }
         installPopoverContent()
         installKeyboardShortcuts()
@@ -178,6 +179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         profileUpdateMonitor.stop()
+        CodexDockIconCoordinator.shared.stop()
         refreshTimer?.invalidate()
         notificationTimer?.invalidate()
         if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
