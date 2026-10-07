@@ -39,7 +39,7 @@ test("distinguishes a context-free agent's parent relation from inherited histor
 test("rejects conflicting, self-referential, and malformed lineage", () => fixture(({ root, id, parent, write }) => {
   for (const payload of [
     { id: randomUUID(), forked_from_id: parent }, { forked_from_id: id },
-    { forked_from_id: "invalid" }, { forked_from_id: parent, history_base: { thread_id: randomUUID() } },
+    { forked_from_id: "invalid" },
   ]) {
     write(payload);
     expect(readCodexForkParent(root, id)).toEqual({ status: "unknown" });
@@ -85,4 +85,10 @@ test("missing DB and malformed thread IDs remain unknown without creating files"
   expect(readCodexForkParent(root, "../outside")).toEqual({ status: "unknown" });
   const empty = join(root, "empty"); mkdirSync(empty);
   expect(readCodexForkParent(empty, id)).toEqual({ status: "unknown" });
+}));
+
+test("forks from paginated history follow the logical parent, not the storage shard", () => fixture(({ root, id, parent, write }) => {
+  const shard = randomUUID();
+  write({ forked_from_id: parent, history_base: { thread_id: shard, end_ordinal_exclusive: 1493, end_byte_offset: 6716003 } });
+  expect(readCodexForkParent(root, id)).toEqual({ status: "known", parentId: parent });
 }));
