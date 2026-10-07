@@ -672,5 +672,3 @@
 "profiles.iconApplyFailed" = "아이콘을 적용하지 못했습니다. 계정 연결과 앱 설치 경로를 확인하세요.";
 
 "profiles.iconDefault" = "앱 기본값";
-
-"profiles.iconSharedFallback" = "ChatGPT는 앱 기본 아이콘을 복원합니다. ‘앱 기본값’을 선택한 계정도 이 아이콘을 사용합니다.";
