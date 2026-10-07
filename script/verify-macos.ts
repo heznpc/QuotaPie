@@ -67,7 +67,7 @@ async function run() {
       resetsAtMs: Date.now() + 3_600_000, observedAtMs: Date.now(), riskLevel: "none" }],
     collection: { health: "recent-success", sources: [] } });
   // Independent expected values: no production account-selection or headline code.
-  let payload: any = { actionToken: "isolated-fixture", headline: { kind: "normal", provider: "codex", account: "second", remainingPercent: 100 },
+  let payload = { actionToken: "isolated-fixture", headline: { kind: "normal", provider: "codex", account: "second", remainingPercent: 100 },
     accounts: [account("default", "Main", 18), account("second", "Second", 100)], events: [], resumeTasks: [],
     recentWorkState: "ready", recentWork: [
       { id: "a".repeat(64), provider: "codex", account: "default", accountLabel: "Main", projectLabel: "Example project", tokenCount: 12400, lastActiveAtMs: Date.now() - 60_000 },
