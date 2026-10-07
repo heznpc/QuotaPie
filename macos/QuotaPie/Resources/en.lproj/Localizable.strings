@@ -672,5 +672,3 @@
 "profiles.iconApplyFailed" = "Could not apply the icon. Check the account connection and installed app.";
 
 "profiles.iconDefault" = "App default";
-
-"profiles.iconSharedFallback" = "ChatGPT restores the shared app icon. Accounts using App default also use this icon.";

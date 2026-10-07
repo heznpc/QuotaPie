@@ -2,8 +2,9 @@ import XCTest
 @testable import QuotaPie
 
 final class CodexDockIconTests: XCTestCase {
-    func testChatGPTIsAnExplicitChoiceRatherThanAVersionDependentDefault() {
-        XCTAssertNotEqual(CodexDockIcon.chatGPT, .appDefault)
+    func testLegacyChatGPTUsesNativeDefaultWithoutOfferingBundleModification() {
+        XCTAssertEqual(CodexDockIcon.chatGPT.supportedChoice, .appDefault)
+        XCTAssertEqual(CodexDockIcon.allCases, [.appDefault, .codex, .space])
         XCTAssertEqual(CodexDockIcon.chatGPT.nativeValue, "app-default")
         XCTAssertEqual(CodexDockIcon.codex.nativeValue, "codex-system")
         XCTAssertEqual(CodexDockIcon.space.nativeValue, "space-system")
