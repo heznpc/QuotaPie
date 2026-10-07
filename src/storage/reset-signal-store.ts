@@ -78,7 +78,15 @@ export class ResetSignalStore {
       .all(nowMs - 24 * 3600_000).map(row => JSON.parse(row.payload) as ResetSignal).filter(supportsSignal).map(withAnnouncementTime);
     const latest = this.list(200);
     return rows.filter(s => (s.targetAtMs == null || s.targetAtMs > nowMs || s.state === "reported" || s.state === "withdrawn") &&
-      !latest.some(other => other.groupId === s.groupId && other.publishedAtMs > s.publishedAtMs)).slice(0, 20);
+      !latest.some(other => other.publishedAtMs > s.publishedAtMs &&
+        (other.groupId === s.groupId ||
+          // Relays assign different event IDs to a vote and its completion.
+          // Do not issue a late, untimed warning after a matching reset report.
+          ["possible", "announced", "updated"].includes(s.state) && s.targetAtMs == null &&
+          (s.benefitKind ?? "reset") === "reset" && s.resetKind !== "banked" &&
+          other.state === "reported" && (other.benefitKind ?? "reset") === "reset" && other.resetKind !== "banked" &&
+          (other.provider ?? "codex") === (s.provider ?? "codex") && other.scopeHint === s.scopeHint &&
+          other.publishedAtMs - s.publishedAtMs <= 24 * 3600_000))).slice(0, 20);
   }
   delivered(fingerprint: string) {
     this.storage.db.run("UPDATE reset_signals SET notified=1 WHERE fingerprint=?", [fingerprint]);

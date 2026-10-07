@@ -85,7 +85,7 @@ export function detectBenefits(text: string): SignalBenefit[] {
     // A reset credit is a reset entitlement, never spendable token credit.
     const spendable = clause.replace(/\breset\s+(?:cards?|credits?|tokens?)\b/gi, "");
     if (/\b(?:credits?|tokens?)\b|크레딧|토큰/i.test(spendable) && grant.test(spendable)
-      && !/\b(?:context|token\s+(?:support|logging|counter|counting|tracking|display)|(?:tokens?|credits?)\s+(?:spent|consumed|used|charged))\b|컨텍스트|문맥|토큰\s*(?:소모|사용량|계산)/i.test(spendable)) {
+      && !/\b(?:context|token\s+(?:support|logging|counter|counting|tracking|display)|(?:tokens?|credits?)\s+(?:spent|consumed|used|charged|needed)|efficient\s+ones|tokenizer)\b|컨텍스트|문맥|토큰\s*(?:소모|사용량|계산)/i.test(spendable)) {
       benefits.push({ kind: "credits", state, change: changeFor(spendable, "credits") });
     }
     const capacity = /\b(?:(?:usage|rate|weekly|daily|monthly)\s+)?(?:limits?|allowances?|quotas?|capacity)\b|기본\s*제공량|사용\s*(?:가능량|한도)|이용\s*한도/i.test(clause);

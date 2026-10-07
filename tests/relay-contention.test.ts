@@ -164,6 +164,7 @@ test("an exhausted bound alternate cannot spend credits after its quota snapshot
   const c = fixture();
   try {
     c.accounts[0]!.remaining = 0;
+    c.accounts[0]!.observedAtMs = Date.now();
     const input = c.input();
     expect(c.pool.select(input)?.route.account).toBe("other");
     c.accounts[1]!.remaining = 0;
@@ -172,6 +173,8 @@ test("an exhausted bound alternate cannot spend credits after its quota snapshot
     expect(() => c.pool.select({ ...input, requestId: randomUUID() })).toThrow("pool_target_quota_exhausted");
     // Fresh recovery elsewhere still allows portable history to move safely.
     c.accounts[0]!.remaining = 25;
+    // Recovery is a newer observation even when this test finishes within one millisecond.
+    c.accounts[0]!.observedAtMs! += 1;
     expect(c.pool.select({ ...input, requestId: randomUUID() })?.route).toMatchObject({ account: "source", reason: "recovered" });
   } finally { c.close(); }
 });

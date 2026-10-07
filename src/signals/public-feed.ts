@@ -23,13 +23,12 @@ export function parsePublicFeed(body: any, nowMs: number): ResetSignal[] {
     if (!item.withdrawn && item.topic === "action" && local?.state === "announced") state = "announced";
     const groupId = typeof item.eventId === "string" ? `feed:${item.eventId.slice(0, 120)}` : match[2]!;
     const fingerprint = createHash("sha256").update(JSON.stringify([groupId, match[2], state, text, item.targetAt])).digest("hex").slice(0, 24);
-    const target = Date.parse(item.targetAt);
     signals.push({ id: match[2]!, groupId, fingerprint, author: match[1]!, sourceUrl: `https://x.com/${match[1]}/status/${match[2]}`,
       text, contextText: typeof item.withdrawnReason === "string" ? item.withdrawnReason.slice(0, 1000) : null,
       publishedAtMs: at, state, provider: providerForAuthor(match[1]!), benefitKind: local?.benefitKind ?? "reset", resetKind: local?.resetKind ?? "unknown",
       ...(local?.change ? { change: local.change } : {}), ...(local?.benefits ? { benefits: local.benefits } : {}),
       timeHint: local?.timeHint ?? (item.topic === "schedule" ? text : null), scopeHint: null,
-      observedVia: "public-feed", targetAtMs: local?.targetAtMs ?? (Number.isFinite(target) ? target : null) });
+      observedVia: "public-feed", targetAtMs: local?.targetAtMs ?? null });
   }
   const rank = { possible: 0, announced: 1, reported: 2, updated: 3, withdrawn: 4 };
   const latest = new Map<string, ResetSignal>();

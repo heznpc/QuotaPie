@@ -81,12 +81,12 @@ export function parseAnnouncementTime(text: string, publishedAtMs: number): Sche
 
 export function withAnnouncementTime(signal: ResetSignal): ResetSignal {
   const schedule = parseAnnouncementTime(signalTimeText(signal), signal.publishedAtMs);
-  return schedule ? { ...signal, targetAtMs: schedule.targetAtMs } : signal.sourcePostId ? { ...signal, targetAtMs: null } : signal;
+  return schedule ? { ...signal, targetAtMs: schedule.targetAtMs } : { ...signal, targetAtMs: null };
 }
 
 export function localAnnouncementTime(signal: ResetSignal, locale: Locale, timeZone: string): string | null {
   const schedule = parseAnnouncementTime(signalTimeText(signal), signal.publishedAtMs);
-  const target = schedule?.targetAtMs ?? (signal.sourcePostId ? null : signal.targetAtMs);
+  const target = schedule?.targetAtMs;
   if (target == null || !Number.isFinite(target)) return null;
   const dateFormatter = new Intl.DateTimeFormat(locale === "ko" ? "ko-KR" : "en-US", {
     timeZone, year: "numeric", month: "short", day: "numeric", weekday: "short", hour: "numeric", minute: "2-digit", timeZoneName: "short",
