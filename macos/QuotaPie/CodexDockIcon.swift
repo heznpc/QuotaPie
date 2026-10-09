@@ -37,6 +37,9 @@ struct CodexDockIconPicker: View {
             } else {
                 Text(Strings.t("profiles.dockIcon")).font(.caption)
             }
+            if selected == .appDefault {
+                Text(Strings.t("profiles.iconDefaultMayMatch")).font(.caption).foregroundStyle(.secondary)
+            }
             if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
             if profile.collectionAccount == nil {
                 Text(Strings.t("profiles.iconConnectFirst")).font(.caption).foregroundStyle(.secondary)

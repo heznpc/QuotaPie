@@ -684,3 +684,4 @@
 "signal.excluded.no-reset-or-benefit-evidence" = "No reset or usage-benefit event evidence found in the post and available context";
 "signal.excluded.unknown" = "Classification reason not recognized by this version";
 "signal.excluded.missingContext" = "Referenced reply context was unavailable and may have affected classification.";
+"profiles.iconDefaultMayMatch" = "App default may use the same icon as Codex. Choose Codex and Space separately to distinguish accounts.";
