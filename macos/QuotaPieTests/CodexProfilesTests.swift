@@ -3,6 +3,125 @@ import AppKit
 @testable import QuotaPie
 
 final class CodexProfilesTests: XCTestCase {
+    func testFailedIsolationVerificationRetiresOnlyTheNewAttempt() throws {
+        guard let path = ProcessInfo.processInfo.environment["QUOTAPIE_TEST_PROFILE_APP"] else { throw XCTSkip("Fixture required") }
+        let target = URL(fileURLWithPath: path)
+        let fixtureID = try XCTUnwrap(Bundle(url: target)?.bundleIdentifier)
+        guard fixtureID.hasPrefix("local.quotapie.profile-fixture.") else { throw ProfileError.appMissing }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("quota-failed-restore-" + UUID().uuidString)
+        let profiles = ["primary", "second"].map { CodexDesktopProfile(id: $0, name: $0,
+            codexHome: root.appendingPathComponent($0 + "-home").path, appData: root.appendingPathComponent($0 + "-data").path) }
+        func instances() -> [NSRunningApplication] { NSWorkspace.shared.runningApplications.filter { $0.bundleIdentifier == fixtureID } }
+        func settle(_ seconds: Double) {
+            let done = expectation(description: "settle failed attempt")
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { done.fulfill() }
+            wait(for: [done], timeout: seconds + 5)
+        }
+        defer { instances().forEach { $0.terminate() }; settle(2); try? FileManager.default.removeItem(at: root) }
+        let launcher = CodexProfileLauncher()
+        let primaryReady = expectation(description: "primary open")
+        launcher.open(profiles[0], appURL: target) { result in
+            if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+            primaryReady.fulfill()
+        }
+        wait(for: [primaryReady], timeout: 15)
+        let primary = try XCTUnwrap(instances().first)
+        // Simulate a vendor app returning the primary identity for a B launch.
+        let misconfigured = CodexProfileLauncher(readIdentity: { _ in
+            .init(codexHome: profiles[0].codexHome, appData: profiles[0].appData)
+        })
+        for _ in 0..<2 {
+            let failed = expectation(description: "misconfigured launch rejected")
+            misconfigured.open(profiles[1], appURL: target) { result in
+                if case .success = result { XCTFail("Unverified profile was reported as launched") }
+                failed.fulfill()
+            }
+            wait(for: [failed], timeout: 15); settle(2)
+            XCTAssertFalse(primary.isTerminated)
+            XCTAssertEqual(instances().map(\.processIdentifier), [primary.processIdentifier])
+        }
+    }
+
+    func testDockShortcutRetainsBWithoutAnyLaunchEnvironmentAndDoesNotCreateAnotherA() throws {
+        guard let path = ProcessInfo.processInfo.environment["QUOTAPIE_TEST_PROFILE_APP"],
+              let source = ProcessInfo.processInfo.environment["QUOTAPIE_TEST_SHORTCUT_SOURCE"] else {
+            throw XCTSkip("Dedicated launcher fixture required")
+        }
+        let target = URL(fileURLWithPath: path)
+        let fixtureID = try XCTUnwrap(Bundle(url: target)?.bundleIdentifier)
+        guard fixtureID.hasPrefix("local.quotapie.profile-fixture.") else { throw ProfileError.appMissing }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("quota-shortcut-test-" + UUID().uuidString)
+        let a = CodexDesktopProfile(id: "primary", name: "A", codexHome: root.appendingPathComponent("a-home").path,
+                                   appData: root.appendingPathComponent("a-data").path)
+        let b = CodexDesktopProfile(id: "second", name: "B", codexHome: root.appendingPathComponent("b-home").path,
+                                   appData: root.appendingPathComponent("b-data").path)
+        func instances() -> [NSRunningApplication] { NSWorkspace.shared.runningApplications.filter { $0.bundleIdentifier == fixtureID } }
+        func settle(_ seconds: Double) {
+            let done = expectation(description: "settle shortcuts")
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { done.fulfill() }
+            wait(for: [done], timeout: seconds + 5)
+        }
+        defer {
+            instances().forEach { $0.terminate() }; settle(2)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let launcher = CodexProfileLauncher()
+        let launchedA = expectation(description: "open A")
+        launcher.open(a, appURL: target) { result in
+            if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+            launchedA.fulfill()
+        }
+        wait(for: [launchedA], timeout: 15)
+        let shortcut = try CodexProfileShortcut.install(b, target: target, root: root.appendingPathComponent("shortcuts"),
+                                                       source: URL(fileURLWithPath: source))
+        for _ in 0..<2 {
+            let request = expectation(description: "open fixed B Dock item")
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.createsNewApplicationInstance = true
+            // Exactly a Dock/login open: no profile arguments or environment.
+            NSWorkspace.shared.openApplication(at: shortcut, configuration: configuration) { _, error in
+                if let error { XCTFail(error.localizedDescription) }
+                request.fulfill()
+            }
+            wait(for: [request], timeout: 10); settle(4)
+            XCTAssertEqual(instances().filter { CodexProcessIdentity.read(pid: $0.processIdentifier)?.matches(a) == true }.count, 1)
+            let secondary = instances().filter { CodexProcessIdentity.read(pid: $0.processIdentifier)?.matches(b) == true }
+            XCTAssertEqual(secondary.count, 1)
+            XCTAssertTrue(secondary.first?.terminate() == true)
+            settle(2)
+        }
+    }
+
+    func testPersistedLoginRestoreSurvivesMeterRestartWithoutReopeningManuallyQuitB() throws {
+        guard let path = ProcessInfo.processInfo.environment["QUOTAPIE_TEST_PROFILE_APP"] else { throw XCTSkip("Fixture required") }
+        let target = URL(fileURLWithPath: path)
+        let fixtureID = try XCTUnwrap(Bundle(url: target)?.bundleIdentifier)
+        guard fixtureID.hasPrefix("local.quotapie.profile-fixture.") else { throw ProfileError.appMissing }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("quota-login-test-" + UUID().uuidString)
+        let profiles = ["primary", "second"].map { CodexDesktopProfile(id: $0, name: $0,
+            codexHome: root.appendingPathComponent($0 + "-home").path, appData: root.appendingPathComponent($0 + "-data").path) }
+        let suite = "quota-login-test-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.set(["boot": "previous-boot", "pending": []], forKey: "local.quotapie.profile-recovery.login.v1")
+        func instances() -> [NSRunningApplication] { NSWorkspace.shared.runningApplications.filter { $0.bundleIdentifier == fixtureID } }
+        func settle(_ seconds: Double) {
+            let done = expectation(description: "settle login")
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { done.fulfill() }
+            wait(for: [done], timeout: seconds + 5)
+        }
+        let monitor = CodexProfileUpdateMonitor(profiles: { profiles }, appURL: { target }, defaults: defaults)
+        let restarted = CodexProfileUpdateMonitor(profiles: { profiles }, appURL: { target }, defaults: defaults)
+        defer {
+            monitor.stop(); restarted.stop(); instances().forEach { $0.terminate() }; settle(2)
+            defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root)
+        }
+        monitor.start(); settle(5)
+        let b = try XCTUnwrap(instances().first { CodexProcessIdentity.read(pid: $0.processIdentifier)?.matches(profiles[1]) == true })
+        monitor.stop(); XCTAssertTrue(b.terminate()); settle(2)
+        restarted.start(); settle(4)
+        XCTAssertFalse(instances().contains { CodexProcessIdentity.read(pid: $0.processIdentifier)?.matches(profiles[1]) == true })
+    }
+
     func testUpdateMonitorRestoresSecondProfileWithoutStoppingPrimary() throws {
         guard let path = ProcessInfo.processInfo.environment["QUOTAPIE_TEST_PROFILE_APP"] else {
             throw XCTSkip("Dedicated app fixture required")

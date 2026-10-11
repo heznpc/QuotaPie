@@ -6,10 +6,11 @@ import OSLog
 /// a normal quit. Keep the primary process as the anchor when an updater starts
 /// a second, unconfigured copy of the same application.
 struct CodexProfileUpdateRecovery {
-    struct Instance {
+    struct Instance: Codable {
         let pid: pid_t
         let identity: CodexProcessIdentity
         let launchedAt: Date
+        var intendedAppData: String? = nil
     }
     struct Actions {
         var reopen: [CodexDesktopProfile] = []
@@ -89,6 +90,12 @@ struct CodexProfileUpdateRecovery {
 }
 
 final class CodexProfileUpdateMonitor {
+    private struct Snapshot: Codable {
+        let boot: String
+        let stamp: String
+        let instances: [CodexProfileUpdateRecovery.Instance]
+        let checkedAt: Date
+    }
     private var recovery = CodexProfileUpdateRecovery()
     private var timer: Timer?
     private var opening: Set<String> = []
@@ -97,25 +104,51 @@ final class CodexProfileUpdateMonitor {
     private let logger = Logger(subsystem: "local.quotapie.menubar", category: "ProfileUpdateRecovery")
     private let profiles: () -> [CodexDesktopProfile]
     private let appURL: () -> URL?
+    private let defaults: UserDefaults?
+    private let installShortcuts: Bool
+    private var loginRecovery: CodexProfileLoginRecovery?
+    private var powerObserver: NSObjectProtocol?
+    private var shuttingDown = false
+    private var lastSaved = Date.distantPast
+    private var retryStamp: String?
+    private let snapshotKey = "local.quotapie.profile-recovery.snapshot.v1"
+    private let loginKey = "local.quotapie.profile-recovery.login.v1"
 
-    init(profiles: @escaping () -> [CodexDesktopProfile], appURL: @escaping () -> URL? = CodexProfileLauncher.appURL) {
+    init(profiles: @escaping () -> [CodexDesktopProfile], appURL: @escaping () -> URL? = CodexProfileLauncher.appURL,
+         defaults: UserDefaults? = nil, installShortcuts: Bool = false) {
         self.profiles = profiles; self.appURL = appURL
+        self.defaults = defaults; self.installShortcuts = installShortcuts
     }
     func start() {
         guard timer == nil else { return }
+        if let defaults {
+            let boot = CodexProfileLoginRecovery.bootID()
+            let saved = defaults.dictionary(forKey: loginKey)
+            loginRecovery = CodexProfileLoginRecovery(boot: boot, savedBoot: saved?["boot"] as? String,
+                savedPending: saved?["pending"] as? [String] ?? [], profiles: profiles())
+            if let data = defaults.data(forKey: snapshotKey),
+               let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data), snapshot.boot == boot {
+                _ = recovery.observe(stamp: snapshot.stamp, instances: snapshot.instances,
+                                     profiles: profiles(), now: snapshot.checkedAt)
+            }
+        }
+        powerObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willPowerOffNotification,
+            object: nil, queue: .main) { [weak self] _ in self?.shuttingDown = true }
         poll()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
         if let timer { RunLoop.main.add(timer, forMode: .common) }
     }
-    func stop() { timer?.invalidate(); timer = nil }
+    func stop() {
+        timer?.invalidate(); timer = nil
+        if let powerObserver { NSWorkspace.shared.notificationCenter.removeObserver(powerObserver) }
+        powerObserver = nil
+    }
     deinit { timer?.invalidate() }
 
     private func poll() {
-        guard let url = appURL(), let executable = Bundle(url: url)?.executableURL,
-              let attributes = try? FileManager.default.attributesOfItem(atPath: executable.path),
-              let inode = attributes[.systemFileNumber] as? NSNumber,
-              let modified = attributes[.modificationDate] as? Date,
-              let size = attributes[.size] as? NSNumber else { return }
+        guard !shuttingDown, let url = appURL(), let executable = Bundle(url: url)?.executableURL,
+              let stamp = Self.applicationStamp(url) else { return }
+        if retryStamp != stamp { retryAfter.removeAll(); retryStamp = stamp }
         let apps = NSWorkspace.shared.runningApplications.filter {
             $0.executableURL?.standardizedFileURL == executable.standardizedFileURL
         }
@@ -123,11 +156,42 @@ final class CodexProfileUpdateMonitor {
             // Codex explicitly sets Electron userData from the environment;
             // retained argv alone cannot prove isolation after a relaunch.
             guard let identity = CodexProcessIdentity.read(pid: app.processIdentifier, environmentOnly: true), let date = app.launchDate else { return nil }
-            return .init(pid: app.processIdentifier, identity: identity, launchedAt: date)
+            return .init(pid: app.processIdentifier, identity: identity, launchedAt: date,
+                         intendedAppData: CodexProcessIdentity.read(pid: app.processIdentifier, environmentOnly: false)?.appData)
         }
         let now = Date()
-        let actions = recovery.observe(stamp: "\(inode):\(modified.timeIntervalSince1970):\(size)",
-                                       instances: instances, profiles: profiles(), now: now)
+        let registered = profiles()
+        var actions = recovery.observe(stamp: stamp, instances: instances, profiles: registered, now: now)
+        // Retained argv proves which isolated data folder was requested, even
+        // though it cannot prove the app actually used it after env loss.
+        for profile in registered where profile.id != "primary" {
+            let broken = instances.filter { !$0.identity.matches(profile)
+                && $0.intendedAppData == CodexDesktopProfile.canonical(profile.appData) }
+            if !broken.isEmpty {
+                actions.stopDuplicate += broken.map(\.pid)
+                if !actions.reopen.contains(profile) { actions.reopen.append(profile) }
+            }
+        }
+        if var login = loginRecovery {
+            actions.stopDuplicate += login.duplicatePrimaryPIDs(instances: instances, profiles: registered,
+                withinBootRestoration: ProcessInfo.processInfo.systemUptime < 180)
+            for profile in login.reconcile(instances: instances, profiles: registered)
+                where !actions.reopen.contains(profile) { actions.reopen.append(profile) }
+            loginRecovery = login
+            defaults?.set(["boot": login.boot, "pending": login.pending.sorted()], forKey: loginKey)
+        }
+        actions.stopDuplicate = Array(Set(actions.stopDuplicate))
+        if now.timeIntervalSince(lastSaved) >= 5, let defaults {
+            if let data = try? JSONEncoder().encode(Snapshot(boot: CodexProfileLoginRecovery.bootID(),
+                stamp: stamp, instances: instances, checkedAt: now)) { defaults.set(data, forKey: snapshotKey) }
+            lastSaved = now
+        }
+        if installShortcuts {
+            for profile in registered {
+                do { _ = try CodexProfileShortcut.install(profile, target: url) }
+                catch { logger.error("Could not update the fixed profile launcher") }
+            }
+        }
         // Graceful quit only; never force-kill an unknown or existing primary.
         for pid in actions.stopDuplicate {
             if let app = apps.first(where: { $0.processIdentifier == pid }), app.terminate() {
@@ -137,13 +201,27 @@ final class CodexProfileUpdateMonitor {
         guard actions.stopDuplicate.isEmpty else { return }
         for profile in actions.reopen where !opening.contains(profile.id) && (retryAfter[profile.id] ?? .distantPast) <= now {
             opening.insert(profile.id)
-            launcher.open(profile, appURL: url) { [weak self] result in
+            launcher.open(profile, appURL: url, activate: false) { [weak self] result in
                 guard let self else { return }
                 self.opening.remove(profile.id)
-                self.retryAfter[profile.id] = Date().addingTimeInterval(10)
-                if case .failure = result { self.logger.error("Profile restoration after update failed; will retry") }
+                if case .failure(let error) = result, (error as? ProfileError) == .identity {
+                    self.retryAfter[profile.id] = .distantFuture
+                    self.logger.error("Profile isolation could not be verified; automatic relaunch is suspended")
+                } else { self.retryAfter[profile.id] = Date().addingTimeInterval(10) }
+                if case .failure = result { self.logger.error("Profile restoration failed") }
                 else { self.logger.notice("Restored isolated profile after executable replacement") }
             }
         }
+    }
+
+    /// Electron updates can replace app.asar while retaining the native binary.
+    /// Watch the bundle metadata and app resources as well as the executable.
+    static func applicationStamp(_ app: URL) -> String? {
+        guard let executable = Bundle(url: app)?.executableURL else { return nil }
+        return [executable, app.appendingPathComponent("Contents/Info.plist"),
+                app.appendingPathComponent("Contents/Resources/app.asar")].map { path in
+            guard let a = try? FileManager.default.attributesOfItem(atPath: path.path) else { return "missing" }
+            return "\(a[.systemFileNumber] ?? 0):\(a[.modificationDate] ?? ""): \(a[.size] ?? 0)"
+        }.joined(separator: "|")
     }
 }

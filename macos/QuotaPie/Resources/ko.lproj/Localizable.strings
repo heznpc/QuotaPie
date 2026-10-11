@@ -499,6 +499,7 @@
 "profiles.primary" = "기존 앱";
 "profiles.description" = "실행 순서와 관계없이 계정별 앱을 엽니다. 이미 실행 중인 프로필은 앞으로 가져옵니다.";
 "profiles.open" = "열기 / 앞으로";
+"profiles.restoreOnLogin" = "Mac 재시동 후 이 계정 다시 열기";
 "profiles.remove" = "등록 해제";
 "profiles.paths" = "프로필 폴더";
 "profiles.appData" = "앱 데이터";
