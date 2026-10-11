@@ -24,15 +24,21 @@ enum CodexProfileShortcut {
               let binary = Bundle(url: source)?.executableURL else { throw ProfileError.paths }
         let fm = FileManager.default
         let descriptor = Descriptor(profile: profile, targetApp: target.path)
-        let encoded = try JSONEncoder().encode(descriptor).base64EncodedString()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let encoded = try encoder.encode(descriptor).base64EncodedString()
         let attributes = try fm.attributesOfItem(atPath: binary.path)
         let version = "\(attributes[.systemFileNumber] ?? 0):\(attributes[.modificationDate] ?? ""): \(attributes[.size] ?? 0)"
         let destination = url(for: profile, root: root)
-        if let info = Bundle(url: destination)?.infoDictionary,
+        let installedInfo = (try? Data(contentsOf: destination.appendingPathComponent("Contents/Info.plist")))
+            .flatMap { try? PropertyListSerialization.propertyList(from: $0, options: [], format: nil) as? [String: Any] }
+        // Bundle caches metadata by path; read the file so an atomic replacement
+        // does not make every subsequent monitor tick rebuild this launcher.
+        if let info = installedInfo,
            info["QuotaPieProfile"] as? String == encoded,
            info["QuotaPieLauncherSource"] as? String == version { return destination }
         if fm.fileExists(atPath: destination.path),
-           Bundle(url: destination)?.bundleIdentifier != prefix + profile.id { throw ProfileError.paths }
+           installedInfo?["CFBundleIdentifier"] as? String != prefix + profile.id { throw ProfileError.paths }
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
         let staging = root.appendingPathComponent("." + UUID().uuidString + ".app")
         defer { try? fm.removeItem(at: staging) }
@@ -103,16 +109,20 @@ enum CodexProfileShortcut {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         let launcher = CodexProfileLauncher()
-        var resultCode: Int32 = 1
+        var resultCode: Int32?
         launcher.open(descriptor.profile, appURL: target) { result in
-            if case .success = result { resultCode = 0 }
-            app.stop(nil)
-            app.postEvent(NSEvent.otherEvent(with: .applicationDefined, location: .zero,
-                modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
-                subtype: 0, data1: 0, data2: 0)!, atStart: false)
+            if case .success = result { resultCode = 0 } else { resultCode = 1 }
+            if app.isRunning {
+                app.stop(nil)
+                app.postEvent(NSEvent.otherEvent(with: .applicationDefined, location: .zero,
+                    modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                    subtype: 0, data1: 0, data2: 0)!, atStart: false)
+            }
         }
-        app.run()
+        // Focusing an existing B completes synchronously. Starting a run loop
+        // after that callback would leave an idle launcher alive forever.
+        if resultCode == nil { app.run() }
         withExtendedLifetime(launcher) {}
-        exit(resultCode)
+        exit(resultCode ?? 1)
     }
 }

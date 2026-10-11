@@ -74,6 +74,15 @@ final class CodexProfilesTests: XCTestCase {
         wait(for: [launchedA], timeout: 15)
         let shortcut = try CodexProfileShortcut.install(b, target: target, root: root.appendingPathComponent("shortcuts"),
                                                        source: URL(fileURLWithPath: source))
+        var renamed = b; renamed.name = "Renamed B"
+        _ = try CodexProfileShortcut.install(renamed, target: target, root: root.appendingPathComponent("shortcuts"),
+                                            source: URL(fileURLWithPath: source))
+        let manifest = shortcut.appendingPathComponent("Contents/Info.plist")
+        let before = try FileManager.default.attributesOfItem(atPath: manifest.path)[.systemFileNumber] as? NSNumber
+        _ = try CodexProfileShortcut.install(renamed, target: target, root: root.appendingPathComponent("shortcuts"),
+                                            source: URL(fileURLWithPath: source))
+        XCTAssertEqual(before, try FileManager.default.attributesOfItem(atPath: manifest.path)[.systemFileNumber] as? NSNumber,
+                       "An unchanged launcher must not be replaced on every monitor poll")
         for _ in 0..<2 {
             let request = expectation(description: "open fixed B Dock item")
             let configuration = NSWorkspace.OpenConfiguration()
@@ -87,6 +96,16 @@ final class CodexProfilesTests: XCTestCase {
             XCTAssertEqual(instances().filter { CodexProcessIdentity.read(pid: $0.processIdentifier)?.matches(a) == true }.count, 1)
             let secondary = instances().filter { CodexProcessIdentity.read(pid: $0.processIdentifier)?.matches(b) == true }
             XCTAssertEqual(secondary.count, 1)
+            let focus = expectation(description: "focus B already running")
+            NSWorkspace.shared.openApplication(at: shortcut, configuration: configuration) { _, error in
+                if let error { XCTFail(error.localizedDescription) }
+                focus.fulfill()
+            }
+            wait(for: [focus], timeout: 10); settle(2)
+            XCTAssertEqual(instances().count, 2)
+            XCTAssertFalse(NSWorkspace.shared.runningApplications.contains {
+                $0.bundleIdentifier == CodexProfileShortcut.prefix + b.id && $0.bundleURL == shortcut
+            }, "A completed focus request must not leave a launcher running")
             XCTAssertTrue(secondary.first?.terminate() == true)
             settle(2)
         }
