@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSyn
 import { dirname, join } from "node:path";
 import { codexProfileRoot, codexUsesFileCredentials, dataDirectory, loadConfig, type AppConfig } from "./config";
 import type { CodexForkParentResult } from "./account-pool-lineage";
+import { codexRequestIdentity } from "./codex-request-identity";
 import { defaultWorkBoundaryPath, profileReference } from "./work-boundary";
 import { portableReplay, filterForeignReasoning } from "./account-replay";
 
@@ -285,12 +286,36 @@ export class AccountPool {
           .run(source.id, source.identity, credentialDigest(source.accessToken), source.tokenExpiresAt);
     }).immediate();
   }
-  private inheritedBinding(source: string, thread: string, body: unknown): Binding | SourceOnlyReplay | null {
+  private inheritedBinding(source: string, thread: string, body: unknown, headers: Headers, sourceAccount?: PoolAccount): Binding | SourceOnlyReplay | null {
     if (!this.options.forkParent) return null;
+    const claim = codexRequestIdentity(headers);
+    if (claim.fork.status === "invalid" || claim.fork.status === "claimed" && claim.threadId !== thread)
+      throw new PoolError("pool_lineage_invalid", 409);
     const seen = new Set([thread]);
     for (let depth = 0; depth < 32; depth++) {
       const lineage = this.options.forkParent(thread);
-      if (lineage.status === "unknown") {
+      if (depth === 0 && claim.fork.status === "claimed") {
+        if (lineage.status === "known" && lineage.parentId !== claim.fork.parentId)
+          throw new PoolError("pool_lineage_conflict", 409);
+        if (lineage.status === "unknown") throw new PoolError("pool_lineage_unavailable", 409);
+        if (lineage.status === "missing") {
+          // In-memory forks have no rollout. Corroborate the protocol claim
+          // with a real parent in this profile AND an existing source binding.
+          // A header alone must never create ancestry or select another login.
+          const parent = claim.fork.parentId;
+          if (this.options.forkParent(parent).status !== "known")
+            throw new PoolError("pool_lineage_parent_unavailable", 409);
+          const binding = this.db.query<Binding, [string,string]>("SELECT * FROM bindings WHERE source=? AND thread=?").get(source, parent);
+          if (!binding) throw new PoolError("pool_lineage_binding_unavailable", 409);
+          if (!sourceAccount || binding.account !== source || binding.identity !== sourceAccount.identity ||
+              binding.source_identity !== sourceAccount.identity)
+            throw new PoolError("pool_lineage_account_mismatch", 409);
+          // select() still authenticates the caller and enforces quota,
+          // reserves and cooldowns before committing this child's binding.
+          return { ...binding, foreignReasoning: this.foreignReasoning(source, parent) };
+        }
+      }
+      if (lineage.status !== "known") {
         // Ephemeral Codex helpers do not persist rollout metadata and can carry
         // complete message/tool history. A verified portable request can run on
         // its authenticated source after removing account-bound replay caches.
@@ -323,7 +348,7 @@ export class AccountPool {
       // must remain on the account that created it.
       if (!saved && this.options.forkParent && (policy.accounts.includes(sourceID) ||
           this.db.query("SELECT 1 FROM bindings WHERE source=? LIMIT 1").get(sourceID))) {
-        const inherited = this.inheritedBinding(sourceID, thread, input.body);
+        const inherited = this.inheritedBinding(sourceID, thread, input.body, input.headers, source);
         if (inherited && "sourceReplay" in inherited) sourceReplay = inherited.sourceReplay;
         else saved = inherited;
       }
