@@ -29,4 +29,10 @@ PLIST
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $fixture_id" "$fixture_app/Contents/Info.plist"
 swiftc -target "$(uname -m)-apple-macos13.0" "$fixture_root/main.swift" -o "$fixture_app/Contents/MacOS/Fixture"
 codesign --force --sign - "$fixture_app"
-QUOTAPIE_TEST_PROFILE_APP="$fixture_app" swift test "$@"
+swift build --product QuotaPie
+shortcut_source="$fixture_root/LauncherSource.app"
+mkdir -p "$shortcut_source/Contents/MacOS" "$shortcut_source/Contents/Resources"
+cp "$(swift build --show-bin-path)/QuotaPie" "$shortcut_source/Contents/MacOS/QuotaPie"
+cp macos/QuotaPie/Info.plist "$shortcut_source/Contents/Info.plist"
+cp -R macos/QuotaPie/Resources/en.lproj macos/QuotaPie/Resources/ko.lproj "$shortcut_source/Contents/Resources/"
+QUOTAPIE_TEST_PROFILE_APP="$fixture_app" QUOTAPIE_TEST_SHORTCUT_SOURCE="$shortcut_source" swift test "$@"

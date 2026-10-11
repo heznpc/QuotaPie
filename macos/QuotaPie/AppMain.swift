@@ -7,6 +7,7 @@ import Combine
 @main
 struct QuotaPieApp {
     static func main() {
+        if CodexProfileShortcut.runIfNeeded() { return }
         let instance = SingleInstanceLock()
 #if DEBUG
         let fixturePreview = AppVerification.current != nil || ProcessInfo.processInfo.environment["QUOTAPIE_DEBUG_AUTO_OPEN"] == "1"
@@ -51,7 +52,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var selectionSubscription: AnyCancellable?
     private var activationObserver: NSObjectProtocol?
     private var lifecycleObservers: [NSObjectProtocol] = []
-    private let profileUpdateMonitor = CodexProfileUpdateMonitor(profiles: { CodexProfilesModel.shared.profiles })
+    private let profileUpdateMonitor = CodexProfileUpdateMonitor(profiles: { CodexProfilesModel.shared.profiles },
+        defaults: .standard, installShortcuts: true)
     private let verification = AppVerification.current
     private var isFixturePreview: Bool {
 #if DEBUG

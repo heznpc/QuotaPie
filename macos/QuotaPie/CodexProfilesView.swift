@@ -44,6 +44,11 @@ struct CodexProfilesView: View {
                         }
                     }
                     CodexDockIconPicker(profile: profile, actionToken: status.payload?.actionToken, profiles: profiles)
+                    if profile.id != "primary" {
+                        Toggle(Strings.t("profiles.restoreOnLogin"), isOn: Binding(
+                            get: { profile.restoreOnLogin != false },
+                            set: { profiles.setRestoreOnLogin($0, for: profile) }))
+                    }
                     DisclosureGroup(Strings.t("profiles.paths")) {
                         Text("CODEX_HOME: " + profile.codexHome).textSelection(.enabled)
                         Text(Strings.t("profiles.appData") + ": " + profile.appData).textSelection(.enabled)

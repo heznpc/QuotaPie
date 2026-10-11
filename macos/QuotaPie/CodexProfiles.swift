@@ -9,6 +9,7 @@ struct CodexDesktopProfile: Codable, Identifiable, Equatable {
     let appData: String
     var collectionAccount: String? = nil
     var dockIcon: CodexDockIcon? = nil
+    var restoreOnLogin: Bool? = nil
 
     static func canonical(_ path: String) -> String {
         var ancestor = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL
@@ -67,7 +68,7 @@ enum ProfileError: LocalizedError {
 
 /// Reads argv and only two environment fields. Never exposes credentials or the
 /// rest of the environment. The executable is verified through NSRunningApplication.
-struct CodexProcessIdentity {
+struct CodexProcessIdentity: Codable {
     let codexHome: String
     let appData: String
 
@@ -130,23 +131,28 @@ struct CodexProcessIdentity {
 }
 
 final class CodexProfileLauncher {
+    private let readIdentity: (pid_t) -> CodexProcessIdentity?
+    init(readIdentity: @escaping (pid_t) -> CodexProcessIdentity? = { CodexProcessIdentity.read(pid: $0) }) {
+        self.readIdentity = readIdentity
+    }
     static func appURL() -> URL? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return ["/Applications/ChatGPT.app", "/Applications/Codex.app", home + "/Applications/ChatGPT.app", home + "/Applications/Codex.app"]
             .map { URL(fileURLWithPath: $0) }.first { Bundle(url: $0)?.bundleIdentifier == "com.openai.codex" }
     }
 
-    func open(_ profile: CodexDesktopProfile, appURL: URL? = nil, completion: @escaping (Result<Void, Error>) -> Void) {
+    func open(_ profile: CodexDesktopProfile, appURL: URL? = nil, activate: Bool = true,
+              completion: @escaping (Result<Void, Error>) -> Void) {
         guard let url = appURL ?? Self.appURL(), let executable = Bundle(url: url)?.executableURL else {
             completion(.failure(ProfileError.appMissing)); return
         }
         let applications = NSWorkspace.shared.runningApplications.filter { $0.executableURL?.resolvingSymlinksInPath() == executable.resolvingSymlinksInPath() }
         for application in applications {
-            guard let identity = CodexProcessIdentity.read(pid: application.processIdentifier) else {
+            guard let identity = readIdentity(application.processIdentifier) else {
                 completion(.failure(ProfileError.identity)); return
             }
             if identity.matches(profile) {
-                completion(application.activate(options: [.activateAllWindows, .activateIgnoringOtherApps]) ? .success(()) : .failure(ProfileError.launch))
+                completion(!activate || application.activate(options: [.activateAllWindows, .activateIgnoringOtherApps]) ? .success(()) : .failure(ProfileError.launch))
                 return
             }
             if identity.overlaps(profile) { completion(.failure(ProfileError.paths)); return }
@@ -166,27 +172,37 @@ final class CodexProfileLauncher {
         } catch { completion(.failure(error)); return }
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.createsNewApplicationInstance = true
+        configuration.activates = activate
         configuration.arguments = profile.arguments
         configuration.environment = profile.environment
         NSWorkspace.shared.openApplication(at: url, configuration: configuration) { application, error in
             DispatchQueue.main.async {
                 guard error == nil, let application else { completion(.failure(error ?? ProfileError.launch)); return }
+                let created = !applications.contains { $0.processIdentifier == application.processIdentifier }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                    self.verify(application, profile: profile, attempts: 20, completion: completion)
+                    self.verify(application, profile: profile, attempts: 20, created: created, completion: completion)
                 }
             }
         }
     }
 
-    private func verify(_ app: NSRunningApplication, profile: CodexDesktopProfile, attempts: Int,
+    private func verify(_ app: NSRunningApplication, profile: CodexDesktopProfile, attempts: Int, created: Bool,
                         completion: @escaping (Result<Void, Error>) -> Void) {
         guard !app.isTerminated else { completion(.failure(ProfileError.launch)); return }
-        if CodexProcessIdentity.read(pid: app.processIdentifier)?.matches(profile) == true {
+        if readIdentity(app.processIdentifier)?.matches(profile) == true {
             completion(.success(())); return
         }
-        guard attempts > 0 else { completion(.failure(ProfileError.identity)); return }
+        guard attempts > 0 else {
+            // A failed restore must not leave an extra default-account app and
+            // then create another one on every retry. Retire only the process
+            // created by this attempt, with a positively mismatched identity.
+            if created, let actual = readIdentity(app.processIdentifier), !actual.matches(profile) {
+                _ = app.terminate()
+            }
+            completion(.failure(ProfileError.identity)); return
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            self.verify(app, profile: profile, attempts: attempts - 1, completion: completion)
+            self.verify(app, profile: profile, attempts: attempts - 1, created: created, completion: completion)
         }
     }
 }
@@ -228,6 +244,13 @@ final class CodexProfilesModel: ObservableObject {
     func remove(_ profile: CodexDesktopProfile) {
         // Remove only the launch registration. Never delete files or stop apps.
         save(profiles.filter { $0.id != profile.id })
+    }
+    func setRestoreOnLogin(_ enabled: Bool, for profile: CodexDesktopProfile) {
+        save(profiles.map { item in
+            var next = item
+            if item.id == profile.id { next.restoreOnLogin = enabled }
+            return next
+        })
     }
     private func save(_ next: [CodexDesktopProfile]) {
         do {

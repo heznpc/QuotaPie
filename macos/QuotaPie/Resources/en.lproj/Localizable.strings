@@ -499,6 +499,7 @@
 "profiles.primary" = "Main";
 "profiles.description" = "Open each account in its own app instance, in either order. An already running profile is brought forward.";
 "profiles.open" = "Open / Focus";
+"profiles.restoreOnLogin" = "Reopen this account after restarting the Mac";
 "profiles.remove" = "Unregister";
 "profiles.paths" = "Profile folders";
 "profiles.appData" = "App data";
