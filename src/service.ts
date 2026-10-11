@@ -1355,7 +1355,16 @@ export class QuotaPieService {
   /// the backoff, an account whose credentials have gone stale spins this loop
   /// once a second, and each pass rescans the whole snapshot history — enough
   /// to starve the HTTP server that the menu bar app depends on.
-  static readonly FAILURE_BACKOFF_MS = [5_000, 15_000, 60_000, 300_000];
+  static readonly FAILURE_BACKOFF_MS = [5_000, 15_000, 30_000];
+
+  static collectionRetryDelay(scheduled: number, failures: number): number {
+    if (failures <= 0) return scheduled;
+    // Failure recovery must not inherit a long normal poll interval. Preserve
+    // backoff against busy loops, but discover restored connectivity promptly.
+    return QuotaPieService.FAILURE_BACKOFF_MS[
+      Math.min(failures - 1, QuotaPieService.FAILURE_BACKOFF_MS.length - 1)
+    ]!;
+  }
 
   async collectResetSignals(): Promise<void> {
     if (this.signalWork) return this.signalWork;
@@ -1406,14 +1415,7 @@ export class QuotaPieService {
       consecutiveFailures = collected ? 0 : consecutiveFailures + 1;
       if (this.stopped) break;
       const scheduled = nextWakeDelayMs(windows, this.config);
-      const delay = consecutiveFailures > 0
-        ? Math.max(
-          scheduled,
-          QuotaPieService.FAILURE_BACKOFF_MS[
-            Math.min(consecutiveFailures - 1, QuotaPieService.FAILURE_BACKOFF_MS.length - 1)
-          ]!,
-        )
-        : scheduled;
+      const delay = QuotaPieService.collectionRetryDelay(scheduled, consecutiveFailures);
       if (this.refreshRequested) continue;
       await new Promise<void>((resolve) => {
         const finish = () => { clearTimeout(timer); this.wakeCollection = null; resolve(); };
