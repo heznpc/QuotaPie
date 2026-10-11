@@ -4,6 +4,7 @@ import { isAbsolute, join, relative, sep } from "node:path";
 
 export type CodexForkParentResult =
   | { status: "known"; parentId: string | null }
+  | { status: "missing" }
   | { status: "unknown" };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -31,7 +32,8 @@ export function readCodexForkParent(codexHome: string, threadId: string): CodexF
     db = new Database(databasePath, { readonly: true, strict: true });
     const row = db.query<{ rollout_path: string }, [string]>("SELECT rollout_path FROM threads WHERE id=?")
       .get(threadId.toLowerCase());
-    if (!row || typeof row.rollout_path !== "string" || !isAbsolute(row.rollout_path)) return { status: "unknown" };
+    if (!row) return { status: "missing" };
+    if (typeof row.rollout_path !== "string" || !isAbsolute(row.rollout_path)) return { status: "unknown" };
     const path = realpathSync(row.rollout_path);
     if (!within(root, path)) return { status: "unknown" };
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);

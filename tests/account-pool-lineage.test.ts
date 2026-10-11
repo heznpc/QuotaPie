@@ -70,7 +70,13 @@ test("reads the latest database version without falling back to stale rows", () 
   const latest = new Database(join(root, "state_10.sqlite"));
   latest.run("CREATE TABLE threads(id TEXT PRIMARY KEY, rollout_path TEXT)");
   latest.close();
+  expect(readCodexForkParent(root, id)).toEqual({ status: "missing" });
+}));
+
+test("distinguishes absent in-memory threads from unreadable persisted metadata", () => fixture(({ root, id, db }) => {
   expect(readCodexForkParent(root, id)).toEqual({ status: "unknown" });
+  db.query("DELETE FROM threads WHERE id=?").run(id);
+  expect(readCodexForkParent(root, id)).toEqual({ status: "missing" });
 }));
 
 test("bounds metadata reads and ignores later metadata-looking conversation content", () => fixture(({ root, id, parent, path, write }) => {

@@ -7,6 +7,7 @@ import { DEFAULT_COMPACTION_ROUTE, isCompaction, object, routeCompaction, safeEf
 import { DEFAULT_TASK_SAVINGS, TaskSavingsRouter, validateTaskSavings, type TaskSavingsPolicy, type SavingsReason } from "./task-savings";
 import { ResponseCompletionObserver } from "./codex-compaction-stream";
 import { PoolError, type AccountPool, type PoolRoute } from "./account-pool";
+import { codexRequestIdentity } from "./codex-request-identity";
 export { DEFAULT_COMPACTION_ROUTE, routeCompaction, validateCompactionRoute, type CompactionRoute } from "./codex-compaction-policy";
 
 import type { CompactionRequestEvent as CoreRequestEvent } from "../packages/quota-core/src/events.js";
@@ -15,21 +16,9 @@ export interface CompactionRequestEvent extends CoreRequestEvent {
   inlineImageCount?: number;
 }
 
-function protocolId(value: unknown): string | null {
-  return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value) ? value : null;
-}
-
 function requestIdentity(headers: Headers) {
-  let metadata: Record<string, unknown> = {};
-  try {
-    const raw = headers.get("x-codex-turn-metadata");
-    const parsed: unknown = raw && raw.length <= 4096 ? JSON.parse(raw) : null;
-    if (object(parsed)) metadata = parsed;
-  } catch { /* Unrecognized metadata remains private and unassociated. */ }
-  return {
-    threadId: protocolId(headers.get("session_id")) ?? protocolId(metadata.thread_id),
-    turnId: protocolId(headers.get("x-codex-turn-id")) ?? protocolId(metadata.turn_id),
-  };
+  const { threadId, turnId } = codexRequestIdentity(headers);
+  return { threadId, turnId };
 }
 
 const UPSTREAM = "https://chatgpt.com/backend-api/codex";
@@ -137,7 +126,7 @@ export function startCompactionProxy(options: {
       const path = url.pathname.slice(prefix.length);
       if (path === "/quotapie-health" && request.method === "GET") {
         return Response.json({ service: "quotapie-compaction", schemaVersion: 3, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolReserveVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 3 : 0, accountPoolRecoveryVersion: options.accountPool ? 2 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, responseOwnershipVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
-          accountPoolLineageVersion: options.accountPool ? 2 : 0,
+          accountPoolLineageVersion: options.accountPool ? 3 : 0,
           route: validateCompactionRoute(route), requests, rejectedRequests, compactions, attemptedCompactions,
           failedCompactions, cancelledCompactions, unverifiedCompactions, activeRequests, draining,
           active: [...active.values()], recent, lastRequest });
