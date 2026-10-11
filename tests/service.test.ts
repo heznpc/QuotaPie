@@ -820,6 +820,15 @@ describe("a failing provider does not starve the process", () => {
     service.close();
   });
 
+  test("failed collection recovers promptly even with a long normal poll interval", () => {
+    expect(QuotaPieService.collectionRetryDelay(3_600_000, 0)).toBe(3_600_000);
+    expect(QuotaPieService.collectionRetryDelay(3_600_000, 1)).toBe(5_000);
+    expect(QuotaPieService.collectionRetryDelay(3_600_000, 2)).toBe(15_000);
+    expect(QuotaPieService.collectionRetryDelay(3_600_000, 20)).toBe(30_000);
+    expect(QuotaPieService.collectionRetryDelay(1_000, 20)).toBe(30_000);
+    expect(QuotaPieService.collectionRetryDelay(60_000, 0)).toBe(60_000);
+  });
+
   test("the backoff grows and is bounded", () => {
     const steps = QuotaPieService.FAILURE_BACKOFF_MS;
     expect(steps[0]).toBeGreaterThanOrEqual(5_000);
