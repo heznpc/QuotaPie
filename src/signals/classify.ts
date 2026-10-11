@@ -59,6 +59,14 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>,
   for (const ref of post.references) visit(ref.id, 0);
   if (post.conversationId !== post.id) visit(post.conversationId, 0);
   const text = post.text;
+  // Short official announcements need no auxiliary verb ("will", "landing").
+  // Keep the deadline in the reset clause; unrelated EOD work is not a promise.
+  const deadlinePromise = /\breset\s+by\s+(?:EOD|end\s+of\s+(?:the\s+)?day|midnight|\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i.test(text)
+    && !/\?|\b(?:no|not|never|won't|will not|maybe|might|could|perhaps|possibly)\b/i.test(text);
+  const dailyReset = post.author.toLowerCase() === "thsottiaux"
+    && /^day\s+\d+\s*[/：:]\s*reset[.!]?\s*$/i.test(text.trim());
+  const propagatedReset = reset.test(text) && /\ball\s+propagated\b/i.test(text)
+    && !/\?|\b(?:not|never|will|when|if)\b/i.test(text);
   const detectedBenefits = detectBenefits(text);
   let benefitKind = benefitCategory(text, detectedBenefits[0]?.kind ?? "reset");
   const restricted = ["student", "discounts", "events"].includes(benefitKind);
@@ -86,7 +94,7 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>,
   const implicit = post.author.toLowerCase() === "thsottiaux" && hint.test(text) && (subject.test(text) || contextRelevant);
   // General explanations of how resets work, and mentions of prior resets,
   // are not evidence of another reset. Raw monitored posts include both.
-  const eventEvidence = done.test(text) || correction.test(text) || withdrawal.test(text) ||
+  const eventEvidence = deadlinePromise || dailyReset || propagatedReset || done.test(text) || correction.test(text) || withdrawal.test(text) ||
     promised.test(text) || tentative.test(text) || hint.test(text) || issuance.test(text);
   if (!(explicit && eventEvidence) && !followup && !implicit && !benefitEvidence) {
     onExcluded?.(explicit ? "no-event-evidence" : "no-reset-or-benefit-evidence", parentText || null);
@@ -94,7 +102,7 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>,
   }
   // Quoting a reset request alone is insufficient to declare a reset promised.
   const state: SignalState = withdrawal.test(text) && !/\?|\bwho\s+(?:says|said)\b/i.test(text) ? "withdrawn" : correction.test(text) ? "updated"
-    : done.test(text) ? "reported" : promisedFollowup || (explicit || benefitEvidence) && promised.test(text) && !/\?/.test(text) ? "announced" : benefitEvidence && !/\?|\b(?:maybe|might|could|possibly)\b/i.test(text) ? "reported" : "possible";
+    : done.test(text) || propagatedReset ? "reported" : promisedFollowup || explicit && deadlinePromise || (explicit || benefitEvidence) && promised.test(text) && !/\?/.test(text) ? "announced" : benefitEvidence && !/\?|\b(?:maybe|might|could|possibly)\b/i.test(text) ? "reported" : "possible";
   const combined = `${text}\n${parentText}`;
   const resetKind = bankedReset.test(text) ? "banked"
     : /\b(?:direct|instant|automatic|system.wide|global)\b|\ball\s+reset\s+for\s+everyone\b/i.test(text) ? "direct"

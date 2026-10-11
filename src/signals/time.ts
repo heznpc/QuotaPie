@@ -11,6 +11,8 @@ const zones: Record<string, number | string> = {
 const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 const weekdays = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 export function announcementTimeHint(text: string): string | null {
+  const deadline = text.match(/[^.!?\n]*\b(?:EOD|end\s+of\s+(?:the\s+)?day)\b[^.!?\n]*/i)?.[0]?.trim();
+  if (deadline) return deadline.slice(0, 300);
   return text.match(/[^.!?\n]*(?:\btomorrow\b|\btoday\b|\bmidnight\b|\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b|\b\d{1,2}(?::\d{2})?\s*(?:am|pm|PST|PDT|PT|UTC)\b|\bin\s+(?:~\s*)?(?:\d+|one|an?)\s+hours?\b)[^.!?\n]*/i)?.[0]?.trim().slice(0, 300) ?? null;
 }
 
