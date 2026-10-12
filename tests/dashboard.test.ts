@@ -44,9 +44,11 @@ function statusPayload() {
         timeToResetMs: null,
         reservePercent: 20,
         recentBurnPerHour: 1.5,
+        showUsageSpeed: true as boolean | undefined,
         personalBurnPerHour: 1.2,
         paceRatio: 1.1,
         exhaustsAtMs: null,
+        reserveReachesAtMs: null as number | null,
         confidence: "high",
         sampleCount: 8,
         activeHoursUntilReset: 12,
@@ -100,6 +102,33 @@ async function render(language: string, payload = statusPayload()) {
 }
 
 describe("dashboard localization", () => {
+  test("speed controls hide analysis when absent or off, then show reserve timing when on", async () => {
+    const payload = statusPayload();
+    const window = payload.accounts[0]!.windows[0]!;
+    window.reserveReachesAtMs = Date.UTC(2026, 8, 15, 12);
+    for (const language of ["en-US", "ko-KR"]) {
+      const recent = language === "ko-KR" ? "현재 속도" : "Recent pace";
+      const reserve = language === "ko-KR" ? "안전 여유 ETA" : "Safety margin ETA";
+      for (const flag of [undefined, false]) {
+        window.showUsageSpeed = flag;
+        const page = await render(language, payload);
+        const html = page.element("providers").innerHTML;
+        expect(html).not.toContain(reserve);
+        expect(html).not.toContain(language === "ko-KR" ? "학습 표본" : "Learning samples");
+        expect(html).not.toContain('window warm');
+        expect(html).toContain("28.0");
+        expect(html).toContain(language === "ko-KR" ? "원본 관측" : "Source observation");
+        expect(page.element("subtitle").textContent).toBe(language === "ko-KR" ? "한도 잔량 + 공급자 리셋 시각" : "Quota remaining + provider reset clock");
+      }
+      window.showUsageSpeed = true;
+      const page = await render(language, payload);
+      const html = page.element("providers").innerHTML;
+      expect(html).toContain(recent);
+      const date = new Date(window.reserveReachesAtMs).toLocaleString(language, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      expect(html).toContain(`${reserve} <strong>${date}</strong>`);
+    }
+  });
+
   test("stored credit additions render observed values and delta in both locales", async () => {
     const payload = statusPayload();
     const initial = payload.events[0]!;

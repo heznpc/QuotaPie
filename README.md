@@ -31,11 +31,48 @@ Currently supports Codex and Claude Code.
 - Temporary account lookup failures retain the last trusted snapshot and resident comparison context until a retry succeeds. An older provider that explicitly lacks `account/read` can still provide quota; a known plan change separates its anonymous usage baselines. Change notifications identify the configured local account label.
 - With the resident menu bar app connected, macOS notifications are posted by QuotaPie itself, so Notification Center attributes them to QuotaPie rather than to a script runner. `watch` and a clean older-app installation retain the legacy script notification as an upgrade fallback. An optional external command trigger is also supported.
 - Multiple Codex and Claude accounts are separated by profile directory and local alias; history, personal pace, bottleneck, and alert cooldowns are all isolated per account.
-- Notifications default to remaining-quota thresholds (20%, 10%, 5%) and an observed drop of at least 10 percentage points within 10 minutes. `alerts.rapidDropPercent` and `alerts.rapidWindowMinutes` set that rule. Speculative pace notifications require `alerts.paceForecasts: true`. The app shows notification permission status and a settings shortcut. After permission returns, it re-evaluates suppressed thresholds against current quota instead of replaying old messages.
+- Notifications default to remaining-quota thresholds (20%, 10%, 5%). Measured usage-speed display, rapid-consumption notifications, and reserve forecasts have separate native settings and default off. Enabling `alerts.topics.rapidConsumption` uses `alerts.rapidDropPercent` and `alerts.rapidWindowMinutes` (10 percentage points within 10 minutes by default). Forecasts require `alerts.paceForecasts: true` and at least medium evidence; they distinguish reaching the user's reserve from exhausting the entire allowance. Observation frequency alone cannot establish high confidence. The app shows notification permission status and a settings shortcut. After permission returns, it re-evaluates suppressed thresholds against current quota instead of replaying old messages.
 - Collection state is a four-state heartbeat (never-attempted / attempted-then-failed / stale-success / recent-success) so that a stalled collector and a disabled one do not wear the same face.
 - The burn leaderboard reads only token counts, paths, and timestamps (`cwd`, `usage`, `timestamp`) from Claude Code transcripts. Conversation content is never used, stored, or transmitted. Transcripts are line-delimited JSON, so reaching those fields does require parsing the lines that contain them — the accurate claim is "the content is not used", not "the content is never touched". Lines without the fields of interest are not parsed at all.
 
 The native settings window lets you select Sol, Luna, or Terra for future Astra compression requests, with the validated Low effort. It applies the choice to reachable relay generations that support live policy changes and shows how many acknowledge the selected model; older routes may retain their previous policy. Running requests keep their original policy snapshot. Activity groups compression start/end and the model of a later observed request from the same task (and the same turn when the turn ID is known). Unobserved follow-up models stay unverified. A bounded private metadata record preserves observed continuations after the relay’s live history rolls over.
+
+## Automatic continuation through Dots
+
+QuotaPie supplies fresh quota admission and MCP Events for explicitly approved
+existing Codex tasks. Dots retains execution ownership and sends one native
+follow-up after a single-use claim. The [connection guide](skills/quotapie-resume/references/connection.md)
+covers the private tunnel, per-task policy, reserves, reset timing, priority,
+turn limits and observed usage budget. Registration starts disabled.
+
+The macOS settings include **Dots connection**. QuotaPie discovers the official
+tunnel client even when it is outside PATH, manages its own runtime, and reports
+transport readiness, event discovery and active subscriptions separately. The
+connection is bound to a locally signed-in account and a remotely verified
+workspace; it never replaces another application's tunnel. Connection setup does
+not enable any task policy. `quotapie dots connection` exposes the same status.
+
+Initial account authorization and actual Dot availability must be established
+before creating the private connection. The account hosting the Dot and each
+task's execution account are separate: a task policy always retains its original
+account/profile. A local login or a ready tunnel does not prove Dot availability.
+
+The [quotapie-resume skill](skills/quotapie-resume/SKILL.md) describes the Dot
+workflow. A local heartbeat is not created as a substitute. Real Dot connection
+and original-task continuation require end-to-end verification in the user's
+account; an event receipt or a local test does not establish that result.
+
+`quotapie resume-check --provider codex --account ACCOUNT --json` queries the
+running collector. Fresh authoritative general quota windows and an optional
+`--bucket` model window must exceed their reserves. Profile mismatch, unknown or
+stale values, failed collection and an unconfirmed reset block admission.
+Exit codes are 0 (ready), 3 (wait), and 69 (unavailable). The equivalent local
+endpoint is `GET /api/resume-check?provider=codex&account=ACCOUNT`.
+
+Speed display, rapid-consumption alerts and reserve forecasts can be switched
+independently in notification settings, and default to off. Reserve forecasts
+use the usable allowance and the elapsed observation period, rather than the
+number of frequent polls alone. Low-quota warnings remain enabled.
 
 ## Shared quota core
 

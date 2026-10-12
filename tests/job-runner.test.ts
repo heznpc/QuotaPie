@@ -35,7 +35,7 @@ function fixture(mode: "auto" | "manual" = "auto") {
   service.jobs.accountBindings.bind("job", job.id, root);
   const window = (remainingPercent = 50, overrides: Partial<WindowAnalysis> = {}): WindowAnalysis => ({
     provider: "codex", account: "default", bucket: "codex:primary:300", quality: "authoritative",
-    freshness: "fresh", observedAtMs: now - 1, remainingPercent, resetsAtMs: now + 60_000, ...overrides,
+    freshness: "fresh", observedAtMs: now - 1, remainingPercent, reservePercent: 0, resetsAtMs: now + 60_000, ...overrides,
   } as WindowAnalysis);
   const advance = () => { now += 10; return now; };
   advance();
@@ -57,6 +57,25 @@ test("a passed reset, stale or missing observation cannot dispatch; unrelated Cl
   expect(jobCapacity(claude, windows, f.now(), 600_000).ready).toBeTrue();
   windows[0]!.observedAtMs = f.now() - 700_000;
   expect(jobCapacity(claude, windows, f.now(), 600_000).ready).toBeFalse();
+});
+
+test("automatic work waits at the configured reserve in every applicable window", async () => {
+  const f = fixture(); let calls = 0;
+  const runner = new ManagedJobRunner(f.service.jobs, f.config, { now: f.now, execute: async () => {
+    calls++; return { kind: "succeeded", reason: "completed", output: "ok" };
+  } });
+  runner.tick([f.window(1, { reservePercent: 10 })], f.now());
+  await runner.settle();
+  expect(calls).toBe(0);
+  expect(f.service.jobs.get(f.job.id)?.reason).toBe("quota-reserve-wait");
+  expect(jobCapacity(f.job, [f.window(50), f.window(15, {
+    bucket: "codex:secondary:10080", reservePercent: 15,
+  })], f.now()).ready).toBeFalse();
+  const recovered = f.advance();
+  runner.tick([f.window(30, { observedAtMs: recovered, reservePercent: 10 })], recovered);
+  await runner.settle();
+  expect(calls).toBe(1);
+  expect(f.service.jobs.get(f.job.id)?.steps[0]?.state).toBe("succeeded");
 });
 
 test("old observations from unrelated Codex model lanes do not defer fresh authorized work", async () => {

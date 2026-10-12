@@ -14,6 +14,7 @@ import type { AppNotificationDisposition, Headline, QuotaEvent } from "./types";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { ResumeTargetError } from "./service";
 import { ResumeTaskStoreError } from "./storage/resume-task-store";
+import { DotsConnection } from "./dots/connection";
 
 // Deprecated compatibility aliases for the one consumer that can be a version
 // behind this daemon: the menu bar app, during the seconds between the backend
@@ -46,6 +47,7 @@ function json(value: unknown, status = 200): Response {
 export function startDashboard(service: QuotaPieService, config: AppConfig, options: { compactionRoot?: string; preferencesPath?: string; poolPolicyPath?: string; poolDatabasePath?: string } = {}) {
   const runtime = captureRuntimeIdentity();
   const compaction = new CompactionStatusReader(options.compactionRoot);
+  const dots = new DotsConnection({ config: () => config });
   const dashboardFile = Bun.file(new URL("./dashboard.html", import.meta.url));
   const actionToken = randomBytes(32).toString("base64url");
   const tokenMatches = (candidate: string | null): boolean => {
@@ -65,8 +67,32 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
       const allowedHosts = new Set(["127.0.0.1", "localhost", "::1", config.dashboard.host.toLowerCase()]);
       if (!hostname || !allowedHosts.has(hostname)) return json({ error: "invalid_host" }, 403);
       const url = new URL(request.url);
+      if (url.pathname === "/api/dots/connection") {
+        if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token")))
+          return json({ error: "forbidden" }, 403);
+        if (request.method === "GET") return json(await dots.status());
+        if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+        try {
+          const body = await request.text();
+          if (body.length > 128) return json({ error: "invalid_connection_action" }, 400);
+          const input = JSON.parse(body);
+          if (Object.keys(input).length !== 1 || !["connect", "disconnect"].includes(input.action))
+            return json({ error: "invalid_connection_action" }, 400);
+          return json(input.action === "connect" ? await dots.connect() : await dots.disconnect());
+        } catch { return json({ error: "connection_action_failed" }, 409); }
+      }
       if (url.pathname === "/api/runtime") {
         return request.method === "GET" ? json(runtime) : json({ error: "method_not_allowed" }, 405);
+      }
+      if (url.pathname === "/api/resume-check") {
+        if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
+        const provider = url.searchParams.get("provider"), account = url.searchParams.get("account");
+        const bucket = url.searchParams.get("bucket");
+        if ((provider !== "codex" && provider !== "claude") || !account || account.length > 128 ||
+            (bucket != null && (!bucket || bucket.length > 160))) {
+          return json({ error: "invalid_resume_target" }, 400);
+        }
+        return json(service.resumeGate(provider, account, Date.now(), bucket ?? undefined));
       }
       if (url.pathname.startsWith("/api/recent-work/")) {
         if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);

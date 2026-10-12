@@ -370,6 +370,8 @@ Usage:
   quotapie pause [--provider codex|claude] [--account ID] [--session UUID]
                  [--cwd PATH] [--label NAME] [--bucket ID] [--json]
                                  Register this task for an explicit resume after quota recovers
+  quotapie resume-check [--provider codex|claude] [--account ID] [--json]
+                                 Check fresh quota and reserves for in-chat automatic continuation
   quotapie signals [--refresh]  Show public reset signals
   quotapie awake connect|disconnect
                                  Connect or remove working-task sleep hooks
@@ -405,6 +407,8 @@ Environment:
   quotapie pause [--provider codex|claude] [--account ID] [--session UUID]
                  [--cwd PATH] [--label NAME] [--bucket ID] [--json]
                                  한도 회복 후 명시적으로 재개할 작업 등록
+  quotapie resume-check [--provider codex|claude] [--account ID] [--json]
+                                 같은 대화의 자동 재개를 위한 최신 한도·예비량 확인
   quotapie signals [--refresh]  공개 리셋 소식 조회
   quotapie awake connect|disconnect
                                  작업 중 잠자기 방지 훅 연결 또는 해제

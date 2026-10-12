@@ -2,15 +2,15 @@ import type { AppConfig } from "./config";
 import type { NotificationPresentation } from "./types";
 
 export const DEFAULT_NOTIFICATION_TOPICS = {
-  modelChanges: true, quotaWarnings: true, collectionIssues: true, quotaRecovery: true,
+  modelChanges: true, quotaWarnings: true, rapidConsumption: false, collectionIssues: true, quotaRecovery: true,
   accountChanges: true, payments: true, resumeReady: true,
   studentBenefits: false, discounts: false, rewardEvents: false, resetCredits: true, creditGrants: true, limitChanges: true,
   resetPossible: true, resetAnnounced: true, resetUpdates: true, resetReported: true,
 };
 export type NotificationTopic = keyof typeof DEFAULT_NOTIFICATION_TOPICS;
 export type NotificationTopics = Record<NotificationTopic, boolean>;
-export interface NotificationPreferences { enabled: boolean; topics: NotificationTopics }
-export interface NotificationPreferencesPatch { enabled?: boolean; topics?: Partial<NotificationTopics> }
+export interface NotificationPreferences { enabled: boolean; topics: NotificationTopics; usageSpeed: boolean; paceForecasts: boolean }
+export interface NotificationPreferencesPatch { enabled?: boolean; topics?: Partial<NotificationTopics>; usageSpeed?: boolean; paceForecasts?: boolean }
 
 // Use semantic keys, never translated display text. The alert key is a fallback
 // for durable notifications queued before semantic presentation was introduced.
@@ -34,8 +34,9 @@ export function notificationTopic(input: {
   if (key.startsWith("signal:")) return "resetAnnounced";
   if (title.startsWith("alert.resume.") || key.startsWith("resume:") || title.startsWith("alert.jobs.") || key.startsWith("jobs:")) return "resumeReady";
   if (title.startsWith("alert.stale.") || key.endsWith(":stale")) return "collectionIssues";
-  if (title.startsWith("alert.remaining.") || title.startsWith("alert.rapid.") || title.startsWith("alert.pace.")
-    || /:(remaining:\d+|rapid|pace)$/.test(key)) return "quotaWarnings";
+  if (title.startsWith("alert.rapid.") || key.endsWith(":rapid")) return "rapidConsumption";
+  if (title.startsWith("alert.remaining.") || title.startsWith("alert.pace.")
+    || /:(remaining:\d+|pace)$/.test(key)) return "quotaWarnings";
   const event = message.startsWith("event.") ? message.slice(6) : key.startsWith("event:") ? key.split(":").at(-1) : "";
   if (["external_relief", "allowance_relief", "scheduled_reset", "banked_reset_consumed"].includes(event ?? "")) return "quotaRecovery";
   if (event === "banked_reset_added") return "resetCredits";
@@ -47,14 +48,17 @@ export function notificationTopic(input: {
 
 export function notificationAllowed(input: Parameters<typeof notificationTopic>[0], alerts: AppConfig["alerts"]): boolean {
   const topic = notificationTopic(input);
-  return alerts.enabled && (topic == null || alerts.topics[topic]);
+  const pace = input.presentation?.title.key.startsWith("alert.pace.") || (input.key ?? input.alertKey ?? "").endsWith(":pace");
+  return alerts.enabled && (!pace || alerts.paceForecasts) && (topic == null || alerts.topics[topic]);
 }
 
 export function validateNotificationPatch(input: unknown): asserts input is NotificationPreferencesPatch {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("invalid preferences");
   const patch = input as Record<string, unknown>;
-  if (!Object.keys(patch).length || Object.keys(patch).some(k => !["enabled", "topics"].includes(k))) throw new Error("invalid preferences");
-  if ("enabled" in patch && typeof patch.enabled !== "boolean") throw new Error("invalid enabled");
+  if (!Object.keys(patch).length || Object.keys(patch).some(k => !["enabled", "topics", "usageSpeed", "paceForecasts"].includes(k))) throw new Error("invalid preferences");
+  for (const key of ["enabled", "usageSpeed", "paceForecasts"]) {
+    if (key in patch && typeof patch[key] !== "boolean") throw new Error(`invalid ${key}`);
+  }
   if ("topics" in patch) {
     if (!patch.topics || typeof patch.topics !== "object" || Array.isArray(patch.topics)) throw new Error("invalid topics");
     for (const [key, value] of Object.entries(patch.topics)) {

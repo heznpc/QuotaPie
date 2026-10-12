@@ -81,6 +81,20 @@ final class StatusClient {
         }
     }
 
+    func dotsConnection(action: String? = nil, actionToken: String,
+                        completion: @escaping (Result<DotsConnectionStatus, Error>) -> Void) {
+        do {
+            var request = try authenticatedPOST(pathComponents: ["api", "dots", "connection"], actionToken: actionToken)
+            if let action {
+                request.httpBody = try JSONSerialization.data(withJSONObject: ["action": action])
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+            } else { request.httpMethod = "GET" }
+            perform(request) { result in
+                completion(Result { try JSONDecoder().decode(DotsConnectionStatus.self, from: result.get()) })
+            }
+        } catch { completion(.failure(error)) }
+    }
+
     func saveNickname(provider: String, account: String, nickname: String, actionToken: String,
                       completion: @escaping (Result<Void, Error>) -> Void) {
         do {
@@ -163,7 +177,8 @@ final class StatusClient {
                                 completion: @escaping (Result<NotificationPreferencesResponse, Error>) -> Void) {
         do {
             var request = try authenticatedPOST(pathComponents: ["api", "notifications", "preferences"], actionToken: actionToken)
-            let body: [String: Any] = key == "enabled" ? ["enabled": enabled] : ["topics": [key: enabled]]
+            let body: [String: Any] = ["enabled", "usageSpeed", "paceForecasts"].contains(key)
+                ? [key: enabled] : ["topics": [key: enabled]]
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             request.setValue(nil, forHTTPHeaderField: "content-length")
             request.setValue("application/json", forHTTPHeaderField: "content-type")

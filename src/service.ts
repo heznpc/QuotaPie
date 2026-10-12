@@ -1,5 +1,6 @@
 import { AccountBindingStore } from "./storage/account-binding-store";
 import { RecentWorkIndex, type RecentWorkSummary } from "./recent-work";
+import { evaluateResumeGate, resumeProfileKey } from "./resume-gate";
 import { codexAccountDisplay } from "./account-display";
 import { notificationAllowed, type NotificationPreferencesPatch } from "./notification-preferences";
 import { buildWorkBoundary, writeWorkBoundary } from "./work-boundary";
@@ -995,11 +996,25 @@ export class QuotaPieService {
 
   notificationPreferences() {
     return { enabled: this.config.alerts.enabled, topics: { ...this.config.alerts.topics },
+      usageSpeed: this.config.profile.showUsageSpeed, paceForecasts: this.config.alerts.paceForecasts,
       desktopEnabled: this.config.alerts.macOSNotifications, resetCollectionEnabled: this.config.resetSignals.enabled };
+  }
+
+  resumeGate(provider: Provider, account: string, nowMs = Date.now(), requiredBucket?: string) {
+    const gate = evaluateResumeGate(this.accountStates(nowMs).find(item =>
+      item.provider === provider && item.account === account), provider, account, nowMs,
+      Math.min(120_000, this.config.collection.staleAfterSeconds * 1000), requiredBucket);
+    gate.profileKey = resumeProfileKey(this.config, provider, account);
+    const profile = provider === "codex" ? this.config.accounts.codex.find(p => p.id === account && p.enabled) : null;
+    gate.accountKey = profile ? this.accountBindings.identityKey(codexProfileRoot(profile)) : null;
+    if (!gate.profileKey) { gate.ready = false; gate.reason = "account-unavailable"; }
+    return gate;
   }
 
   applyNotificationPreferences(patch: NotificationPreferencesPatch): void {
     if (patch.enabled != null) this.config.alerts.enabled = patch.enabled;
+    if (patch.usageSpeed != null) this.config.profile.showUsageSpeed = patch.usageSpeed;
+    if (patch.paceForecasts != null) this.config.alerts.paceForecasts = patch.paceForecasts;
     Object.assign(this.config.alerts.topics, patch.topics);
     this.cancelMutedNotifications();
   }
