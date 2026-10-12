@@ -53,7 +53,7 @@ const request=(input:any=body,id=thread)=>fetch(relay.baseUrl+"/responses",{meth
   headers:{authorization:"Bearer fixture-a","chatgpt-account-id":"fixture-a",session_id:id},body:JSON.stringify(input)});
 const consume=async(response:Response,status=200)=>{assert.equal(response.status,status);return response.text();};
 const steps:any[]=[],uiSnapshots:any[]=[];
-async function snapshot(name:string,expectedAccount:string,expectedError:string|null=null) {
+async function snapshot(name:string,expectedAccount:string,expectedError:string|null=null,expectedRejection?:string) {
   now++;
   for(const account of accounts) {
     const observed=Date.now();
@@ -66,10 +66,24 @@ async function snapshot(name:string,expectedAccount:string,expectedError:string|
   delete payload.actionToken;
   assert.equal(payload.accountPool.recent[0].account,expectedAccount);
   assert.equal(payload.accountPool.error,expectedError);
+  if (expectedRejection) {
+    // A pre-dispatch rejection belongs to this request, not global pool health.
+    // Match both the HTTP relay evidence and persisted task history.
+    const event=events.at(-1)!;
+    assert.equal(event.errorCode,expectedRejection);
+    assert.equal(event.phase,"failed");
+    const rejection=payload.accountPool.rejected.find((r:any)=>r.requestId===event.requestId);
+    assert(rejection,"Current request rejection must be persisted");
+    assert.equal(rejection.threadId,thread);
+    assert.equal(rejection.code,expectedRejection);
+    assert.equal(rejection.recovered,false);
+    assert.equal(payload.accountPool.unresolvedRejections.latestCode,expectedRejection);
+  }
   const routed=payload.accounts.find((a:any)=>a.account===expectedAccount);
   const remaining=routed.windows[0].remainingPercent;
   steps.push({name,actualBackendAccount:receipts.at(-1)?.account,displayedRouteAccount:expectedAccount,
-    routeState:payload.accountPool.recent[0].state,error:expectedError,backendCalls:receipts.length,remaining});
+    routeState:payload.accountPool.recent[0].state,error:expectedError,
+    ...(expectedRejection?{requestRejection:expectedRejection}:{}),backendCalls:receipts.length,remaining});
   if(["threshold-transfer","upstream-auth-failed","credential-recovery","partial-stream-failed","opaque-history-blocked","opaque-history-recovered"].includes(name))
     uiSnapshots.push({name,payload,expected:{account:`codex/${expectedAccount}`,remaining,error:expectedError}});
 }
@@ -84,7 +98,7 @@ try {
   let calls=receipts.length;
   accounts[0]!.remaining=20; accounts[1]!.remaining=10;
   await consume(await request(history),409); assert.equal(receipts.length,calls);
-  await snapshot("no-eligible-account","b","pool_reserve_reached");
+  await snapshot("no-eligible-account","b",null,"pool_reserve_reached");
   accounts[1]!.remaining=null; accounts[1]!.validUntil=0;
   const stale=await request(history); assert.equal(stale.status,409);
   assert.equal((await stale.json() as any).error.code,"pool_reserve_quota_unavailable");
@@ -98,21 +112,21 @@ try {
   accounts[1]!.accessToken="fixture-refreshed-b"; respond=()=>completed();
   await consume(await request(history)); await snapshot("credential-recovery","b");
   accounts[0]!.remaining=80;
-  respond=req=>req.headers.get("chatgpt-account-id")==="fixture-b"
+  respond=req=>req.headers.get("chatgpt-account-id")==="fixture-a"
     ? new Response("fixture limited",{status:429,headers:{"retry-after":"1"}}) : completed();
   calls=receipts.length; await consume(await request(history)); assert.equal(receipts.length,calls+2);
-  assert.deepEqual(receipts.slice(-2).map(r=>r.account),["b","a"]);
-  assert.equal(events.at(-1)!.retryCount,1); await snapshot("rate-limit-recovery","a");
+  assert.deepEqual(receipts.slice(-2).map(r=>r.account),["a","b"]);
+  assert.equal(events.at(-1)!.retryCount,1); await snapshot("rate-limit-recovery","b");
   respond=()=>new Response('data: {"type":"response.output_text.delta","delta":"fixture partial"}\n\n',
     {headers:{"content-type":"text/event-stream"}});
   calls=receipts.length; await consume(await request(history)); assert.equal(receipts.length,calls+1);
-  await snapshot("partial-stream-failed","a","pool_request_failed");
-  respond=()=>completed(); await consume(await request(history)); await snapshot("stream-recovery","a");
-  now+=1001; accounts[0]!.remaining=30;
+  await snapshot("partial-stream-failed","b","pool_request_failed");
+  respond=()=>completed(); await consume(await request(history)); await snapshot("stream-recovery","b");
+  now+=1001; accounts[1]!.remaining=10;
   calls=receipts.length;
   await consume(await request({...body,input:[...body.input,{type:"compaction",encrypted_content:"fixture-opaque"}]}),409);
-  assert.equal(receipts.length,calls); await snapshot("opaque-history-blocked","a","pool_recovery_requires_full_history");
-  await consume(await request(history)); await snapshot("opaque-history-recovered","b");
+  assert.equal(receipts.length,calls); await snapshot("opaque-history-blocked","b",null,"pool_recovery_requires_full_history");
+  await consume(await request(history)); await snapshot("opaque-history-recovered","a");
   let controller:ReadableStreamDefaultController<Uint8Array>;
   respond=()=>new Response(new ReadableStream<Uint8Array>({start(c){controller=c;
     c.enqueue(new TextEncoder().encode('data: {"type":"response.output_text.delta","delta":"fixture held"}\n\n'));}}),
