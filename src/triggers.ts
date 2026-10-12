@@ -70,7 +70,7 @@ export function planTriggers(
     }
     if (window.freshness !== "fresh") continue;
 
-    if ((window.rapidDropPercent ?? 0) >= config.alerts.rapidDropPercent && window.remainingPercent != null) {
+    if (config.alerts.topics.rapidConsumption && (window.rapidDropPercent ?? 0) >= config.alerts.rapidDropPercent && window.remainingPercent != null) {
       decisions.push({
         key: `${windowKey}:rapid`,
         ...present("alert.rapid.title", who, "alert.rapid.message", {
@@ -109,9 +109,10 @@ export function planTriggers(
 
     if (
       config.alerts.paceForecasts &&
-      (window.rapidDropPercent ?? 0) < config.alerts.rapidDropPercent &&
-      window.minutesBeforeReset != null &&
-      window.minutesBeforeReset >= config.alerts.predictedEarlyMinutes &&
+      (!config.alerts.topics.rapidConsumption || (window.rapidDropPercent ?? 0) < config.alerts.rapidDropPercent) &&
+      window.reserveMinutesBeforeReset != null &&
+      window.reserveMinutesBeforeReset >= config.alerts.predictedEarlyMinutes &&
+      (window.confidence === "medium" || window.confidence === "high") &&
       window.paceRatio != null &&
       window.paceRatio > 1 &&
       // Floor on measured burn: with no recent real usage, a habit-based
@@ -131,8 +132,8 @@ export function planTriggers(
         ...who,
         // `minutes` is the semantic value used by native clients. `detail` is
         // the daemon-locale compatibility rendering for older consumers.
-        minutes: window.minutesBeforeReset,
-        detail: humanGap(window.minutesBeforeReset, locale),
+        minutes: window.reserveMinutesBeforeReset,
+        detail: humanGap(window.reserveMinutesBeforeReset, locale),
       };
       decisions.push({
         key: `${windowKey}:pace`,

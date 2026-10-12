@@ -29,6 +29,7 @@ function window(overrides: Partial<WindowAnalysis> = {}): WindowAnalysis {
     paceRatio: 2,
     exhaustsAtMs: 5_000,
     minutesBeforeReset: 60,
+    reserveMinutesBeforeReset: 60,
     confidence: "medium",
     sampleCount: 10,
     activeHoursUntilReset: 1,
@@ -419,6 +420,29 @@ describe("trigger planning and claims", () => {
 });
 
 describe("pace alert honesty", () => {
+  test("rapid consumption is opt-in and low quota warnings remain enabled", () => {
+    const rapidlyLow = window({ rapidDropPercent: 20, rapidIntervalMinutes: 5 });
+    const defaults = planTriggers([rapidlyLow], [], DEFAULT_CONFIG, 0, 1_000);
+    expect(defaults.some(d => d.key.endsWith(":rapid"))).toBeFalse();
+    expect(defaults.some(d => d.key.includes(":remaining:"))).toBeTrue();
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.alerts.topics.rapidConsumption = true;
+    expect(planTriggers([rapidlyLow], [], config, 0, 1_000).some(d => d.key.endsWith(":rapid"))).toBeTrue();
+  });
+
+  test("reserve warnings use reserve timing even when full exhaustion is not before reset", () => {
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.alerts.paceForecasts = true;
+    const decision = planTriggers([window({ exhaustsAtMs: null, minutesBeforeReset: null,
+      remainingPercent: 70, reserveMinutesBeforeReset: 90 })], [], config, 0, 1_000)
+      .find(d => d.key.endsWith(":pace"));
+    expect(decision?.presentation?.message.params.minutes).toBe(90);
+    for (const variant of [window({ reserveMinutesBeforeReset: undefined }),
+      window({ reserveMinutesBeforeReset: null }), window({ confidence: "low" }), window({ confidence: "none" })]) {
+      expect(planTriggers([variant], [], config, 0, 1_000).some(d => d.key.endsWith(":pace"))).toBeFalse();
+    }
+  });
+
   test("suppresses pace alert when recent actual burn is zero", () => {
     const decisions = planTriggers(
       [window({
@@ -469,6 +493,7 @@ describe("alert wording stays readable", () => {
         recentBurnPerHour: 5,
         blendedBurnPerHour: 5,
         minutesBeforeReset: 8_259,
+        reserveMinutesBeforeReset: 8_259,
         exhaustsAtMs: 1_000,
       })],
       [],

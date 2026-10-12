@@ -3,6 +3,34 @@ import XCTest
 @testable import QuotaPie
 
 final class NotificationPreferencesTests: XCTestCase {
+    func testUsageSpeedRequiresOptInWhileExhaustionRemainsVisible() throws {
+        func window(showUsageSpeed: Bool?, remaining: Double = 70, freshness: String = "fresh") throws -> QuotaWindow {
+            let speed = showUsageSpeed.map { ",\"showUsageSpeed\":\($0)" } ?? ""
+            let json = """
+            {"provider":"codex","account":"default","bucket":"weekly","label":"Weekly",
+             "freshness":"\(freshness)","observedAtMs":1,"remainingPercent":\(remaining),
+             "recentBurnPerHour":12,"rapidDropPercent":3,"rapidIntervalMinutes":5\(speed)}
+            """
+            return try JSONDecoder().decode(QuotaWindow.self, from: Data(json.utf8))
+        }
+        XCTAssertNil(try window(showUsageSpeed: nil).paceText)
+        XCTAssertNil(try window(showUsageSpeed: false).paceText)
+        XCTAssertNotNil(try window(showUsageSpeed: true).paceText)
+        XCTAssertNil(try window(showUsageSpeed: true, freshness: "stale").paceText)
+        XCTAssertEqual(try window(showUsageSpeed: false, remaining: 0).paceText, Strings.t("window.exhausted"))
+    }
+
+    func testPreferencesDecodeOptionalSpeedControlsForOlderCollectors() throws {
+        let old = try status(enabled: true, time: 1).notificationPreferences
+        XCTAssertNil(old?.usageSpeed)
+        XCTAssertNil(old?.paceForecasts)
+        let json = #"{"enabled":true,"topics":{"quotaWarnings":true,"rapidConsumption":false},"desktopEnabled":true,"resetCollectionEnabled":true,"usageSpeed":true,"paceForecasts":false}"#
+        let current = try JSONDecoder().decode(NotificationPreferences.self, from: Data(json.utf8))
+        XCTAssertEqual(current.usageSpeed, true)
+        XCTAssertEqual(current.paceForecasts, false)
+        XCTAssertEqual(current.topics["rapidConsumption"], false)
+    }
+
     func testLateStatusCannotRevertSavedPreferencesButOtherStatusStillUpdates() throws {
         // Exercise fetches started both before and during a save, completing
         // after the save response. Neither may restore the old checkbox value.

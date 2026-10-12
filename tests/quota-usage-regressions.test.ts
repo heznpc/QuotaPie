@@ -8,6 +8,8 @@ import type { QuotaObservation } from "../src/types";
 
 const NOW = Date.UTC(2026, 8, 12, 20); // 05:00 KST, outside the legacy schedule.
 const MIN = 60_000;
+const RAPID_CONFIG = { ...DEFAULT_CONFIG, alerts: { ...DEFAULT_CONFIG.alerts,
+  topics: { ...DEFAULT_CONFIG.alerts.topics, rapidConsumption: true } } };
 function point(minutes: number, used: number, epoch = "session-a"): QuotaObservation {
   return { provider: "codex", account: "default", bucket: "codex:primary:10080", label: "Codex weekly",
     windowSeconds: 604800, source: "codex-appserver", quality: "authoritative", observedAtMs: NOW + minutes * MIN,
@@ -19,7 +21,7 @@ describe("observed quota regressions", () => {
     const history = [point(-9, 10), point(-5, 16), point(0, 24)];
     const a = analyzeWindow(history[2]!, history, DEFAULT_CONFIG, NOW);
     expect(a.recentBurnPerHour).toBeCloseTo(14 / 9 * 60);
-    const alerts = planTriggers([a], [], DEFAULT_CONFIG, 0, NOW);
+    const alerts = planTriggers([a], [], RAPID_CONFIG, 0, NOW);
     expect(alerts).toHaveLength(1);
     expect(alerts[0]?.key).toEndWith(":rapid");
     expect(alerts[0]?.presentation?.message.params).toMatchObject({ drop: 14, minutes: 9, percent: 76 });
@@ -29,7 +31,7 @@ describe("observed quota regressions", () => {
     const history = [point(-1, 10), point(0, 25)];
     const a = analyzeWindow(history[1]!, history, DEFAULT_CONFIG, NOW);
     expect(a.recentBurnPerHour).toBe(900);
-    expect(planTriggers([a], [], DEFAULT_CONFIG, 0, NOW).some(x => x.key.endsWith(":rapid"))).toBeTrue();
+    expect(planTriggers([a], [], RAPID_CONFIG, 0, NOW).some(x => x.key.endsWith(":rapid"))).toBeTrue();
   });
 
   test("a reset clears prior burn even if the provider keeps the reset clock", () => {
@@ -39,8 +41,10 @@ describe("observed quota regressions", () => {
     expect(a.recentBurnPerHour).toBeNull();
     expect(a.personalBurnPerHour).toBeNull();
     expect(a.exhaustsAtMs).toBeNull();
+    expect(a.reserveReachesAtMs).toBeNull();
+    expect(a.reserveMinutesBeforeReset).toBeNull();
     expect(a.riskLevel).toBe("none");
-    expect(planTriggers([a], [], DEFAULT_CONFIG, 0, NOW)).toEqual([]);
+    expect(planTriggers([a], [], RAPID_CONFIG, 0, NOW)).toEqual([]);
   });
 
   test("an account change cannot count the new account's higher usage as a spike", () => {
@@ -48,14 +52,15 @@ describe("observed quota regressions", () => {
     const a = analyzeWindow(history[2]!, history, DEFAULT_CONFIG, NOW);
     expect(a.recentBurnPerHour).toBeNull();
     expect(a.rapidDropPercent).toBe(0);
-    expect(planTriggers([a], [], DEFAULT_CONFIG, 0, NOW)).toEqual([]);
+    expect(a.reserveReachesAtMs).toBeNull();
+    expect(planTriggers([a], [], RAPID_CONFIG, 0, NOW)).toEqual([]);
   });
 
   test("a burst ages out and stale readings cannot send consumption alerts", () => {
     const history = [point(-20, 0), point(-15, 30), point(0, 30)];
     const a = analyzeWindow(history[2]!, history, DEFAULT_CONFIG, NOW);
     expect(a.rapidDropPercent).toBe(0);
-    expect(planTriggers([{ ...a, freshness: "stale", rapidDropPercent: 20 }], [], DEFAULT_CONFIG, 0, NOW)
+    expect(planTriggers([{ ...a, freshness: "stale", rapidDropPercent: 20 }], [], RAPID_CONFIG, 0, NOW)
       .filter(x => x.key.endsWith(":rapid") || x.key.includes(":remaining:"))).toEqual([]);
   });
 
@@ -218,6 +223,6 @@ test("fast provider push updates retain a rapid drop even inside ten seconds", (
   const history = [point(-0.05, 10), point(0, 25)];
   const analysis = analyzeWindow(history[1]!, history, DEFAULT_CONFIG, NOW);
   expect(analysis.rapidDropPercent).toBe(15);
-  const rapid = planTriggers([analysis], [], DEFAULT_CONFIG, 0, NOW).find(x => x.key.endsWith(":rapid"));
+  const rapid = planTriggers([analysis], [], RAPID_CONFIG, 0, NOW).find(x => x.key.endsWith(":rapid"));
   expect(rapid?.presentation?.message.params).toMatchObject({ minutes: 1, drop: 15, percent: 75 });
 });

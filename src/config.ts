@@ -37,6 +37,7 @@ export interface AppConfig {
     // recognisable is set.
     locale: string;
     timeZone: string;
+    showUsageSpeed: boolean;
     recentLookbackMinutes: number;
     historyDays: number;
     recentWeight: number;
@@ -93,6 +94,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   profile: {
     locale: "auto",
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    showUsageSpeed: false,
     recentLookbackMinutes: 120,
     historyDays: 28,
     recentWeight: 0.7,
@@ -320,6 +322,7 @@ function validateProfile(config: AppConfig): void {
     throw new Error(`profile.locale must be "auto" or one of ${LOCALES.join(", ")}, got ${String(profile.locale)}`);
   }
   requireNumber(profile.recentWeight, "profile.recentWeight", { min: 0, max: 1 });
+  if (typeof profile.showUsageSpeed !== "boolean") throw new Error("profile.showUsageSpeed must be boolean");
   requireNumber(profile.historyDays, "profile.historyDays", { min: 1, max: 3_650, integer: true });
   requireNumber(profile.recentLookbackMinutes, "profile.recentLookbackMinutes", { min: 1, max: 10_080 });
 
@@ -392,11 +395,13 @@ export function saveNotificationPreferences(input: unknown, path = configPath())
   validateNotificationPatch(input);
   const raw = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
   const alerts = { ...raw.alerts, ...(input.enabled == null ? {} : { enabled: input.enabled }),
+    ...(input.paceForecasts == null ? {} : { paceForecasts: input.paceForecasts }),
     topics: { ...raw.alerts?.topics, ...input.topics } };
+  const profile = input.usageSpeed == null ? raw.profile : { ...raw.profile, showUsageSpeed: input.usageSpeed };
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
-    writeFileSync(temporary, JSON.stringify({ ...raw, alerts }, null, 2) + "\n", { mode: 0o600 });
+    writeFileSync(temporary, JSON.stringify({ ...raw, profile, alerts }, null, 2) + "\n", { mode: 0o600 });
     renameSync(temporary, path);
   } finally { if (existsSync(temporary)) unlinkSync(temporary); }
   return input;

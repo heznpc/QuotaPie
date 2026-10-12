@@ -5,6 +5,8 @@ struct NotificationPreferences: Decodable {
     let topics: [String: Bool]
     let desktopEnabled: Bool
     let resetCollectionEnabled: Bool
+    let usageSpeed: Bool?
+    let paceForecasts: Bool?
 }
 struct NotificationPreferencesResponse: Decodable { let notificationPreferences: NotificationPreferences }
 
@@ -12,7 +14,7 @@ struct NotificationPreferencesView: View {
     @ObservedObject var model: PopoverModel
     let save: (String, Bool) -> Void
     private let groups: [(String, [String])] = [
-        ("account", ["quotaWarnings", "quotaRecovery", "accountChanges", "payments"]),
+        ("account", ["quotaWarnings", "rapidConsumption", "quotaRecovery", "accountChanges", "payments"]),
         ("benefits", ["resetCredits", "creditGrants", "limitChanges", "studentBenefits", "discounts", "rewardEvents"]),
         ("news", ["resetPossible", "resetAnnounced", "resetUpdates", "resetReported"]),
         ("operation", ["resumeReady", "collectionIssues", "modelChanges"])
@@ -22,6 +24,8 @@ struct NotificationPreferencesView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(Strings.t("detail.notifications")).font(.headline)
             if let preferences = model.payload?.notificationPreferences {
+                Toggle(Strings.t("notification.preferences.usageSpeed"), isOn: Binding(
+                    get: { preferences.usageSpeed ?? false }, set: { save("usageSpeed", $0) }))
                 Toggle(Strings.t("notification.preferences.enabled"), isOn: Binding(
                     get: { preferences.enabled }, set: { save("enabled", $0) }))
                 Text(Strings.t("notification.preferences.history")).font(.caption).foregroundStyle(.secondary)
@@ -30,7 +34,12 @@ struct NotificationPreferencesView: View {
                         Text(Strings.t("notification.preferences.group." + group.0)).font(.subheadline).bold()
                         ForEach(group.1, id: \.self) { topic in
                             Toggle(Strings.t("notification.topic." + topic), isOn: Binding(
-                                get: { preferences.topics[topic] ?? !["studentBenefits", "discounts", "rewardEvents"].contains(topic) }, set: { save(topic, $0) }))
+                                get: { preferences.topics[topic] ?? !["rapidConsumption", "studentBenefits", "discounts", "rewardEvents"].contains(topic) }, set: { save(topic, $0) }))
+                        }
+                        if group.0 == "account" {
+                            Toggle(Strings.t("notification.preferences.paceForecasts"), isOn: Binding(
+                                get: { preferences.paceForecasts ?? false }, set: { save("paceForecasts", $0) }))
+                                .disabled(preferences.topics["quotaWarnings"] == false)
                         }
                     }.disabled(!preferences.enabled)
                 }

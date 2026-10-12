@@ -104,6 +104,13 @@ describe("forecast inputs are validated at load", () => {
 
   test("the shipped defaults pass their own validation", () => {
     expect(loadConfig(write({})).profile.recentWeight).toBe(0.7);
+    expect(loadConfig(write({})).profile.showUsageSpeed).toBeFalse();
+    expect(loadConfig(write({})).alerts.topics.rapidConsumption).toBeFalse();
+  });
+
+  test("usage speed display requires an explicit boolean", () => {
+    expect(loadConfig(write({ profile: { showUsageSpeed: true } })).profile.showUsageSpeed).toBeTrue();
+    expect(() => loadConfig(write({ profile: { showUsageSpeed: "false" } }))).toThrow(/showUsageSpeed/);
   });
 });
 

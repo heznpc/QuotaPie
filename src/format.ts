@@ -55,7 +55,7 @@ function windowLine(window: WindowAnalysis, bottleneck: boolean, locale: Locale)
     : t("format.status.reset-in", { detail: formatDuration(window.timeToResetMs, locale) }, locale);
   const freshness = t(`format.freshness.${window.freshness}`, {}, locale);
   const lines = [t("format.status.window", { marker, label: window.label, remaining, reset, freshness }, locale)];
-  if (window.blendedBurnPerHour != null) {
+  if (window.showUsageSpeed === true && window.blendedBurnPerHour != null) {
     const pace = window.paceRatio == null
       ? t("format.status.pace-learning", {}, locale)
       : t("format.status.safe-pace", { pace: window.paceRatio.toFixed(2) }, locale);
@@ -67,14 +67,14 @@ function windowLine(window: WindowAnalysis, bottleneck: boolean, locale: Locale)
         confidence: t(`format.confidence.${window.confidence}`, {}, locale),
       }, locale),
     );
-  } else {
+  } else if (window.showUsageSpeed === true) {
     lines.push(t("format.status.personal-learning", { count: window.sampleCount }, locale));
   }
-  if (window.minutesBeforeReset != null && window.minutesBeforeReset > 0) {
+  if (window.showUsageSpeed === true && window.reserveMinutesBeforeReset != null && window.reserveMinutesBeforeReset > 0) {
     lines.push(
       t("format.status.reserve-eta", {
-        date: clock(window.exhaustsAtMs, locale),
-        detail: formatDuration(window.minutesBeforeReset * 60_000, locale),
+        date: clock(window.reserveReachesAtMs ?? null, locale),
+        detail: formatDuration(window.reserveMinutesBeforeReset * 60_000, locale),
       }, locale),
     );
   }
@@ -144,7 +144,7 @@ export function compactClaudeLine(
     const pace = window.paceRatio == null
       ? t("format.claude.learning", {}, locale)
       : `${window.paceRatio.toFixed(1)}×`;
-    return `${name} ${Math.round(window.remainingPercent)}% · ${formatDuration(window.timeToResetMs, locale)} · ${pace}`;
+    return `${name} ${Math.round(window.remainingPercent)}% · ${formatDuration(window.timeToResetMs, locale)}${window.showUsageSpeed === true ? ` · ${pace}` : ""}`;
   };
   return `⏱${accountLabel ? ` ${accountLabel}` : ""} ${
     item(short, t("format.claude.short", {}, locale))

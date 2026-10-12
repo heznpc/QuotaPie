@@ -188,7 +188,7 @@ struct ManagedJobSummary: Decodable, Identifiable {
         guard let reason, !reason.isEmpty else { return nil }
         switch reason {
         case "quota-collection-wait": return Strings.t("jobs.reason.collection")
-        case "quota-wait", "quota-exhausted": return Strings.t("jobs.reason.quota")
+        case "quota-wait", "quota-exhausted", "quota-reserve-wait": return Strings.t("jobs.reason.quota")
         case "quota-retry-review", "review-retry-requested": return Strings.t("jobs.reason.retry")
         case "execution-uncertain", "lease-expired": return Strings.t("jobs.reason.uncertain")
         case "policy-expired": return Strings.t("jobs.reason.expired")
@@ -614,6 +614,7 @@ struct QuotaWindow: Decodable, Identifiable {
     let recentBurnPerHour: Double?
     let rapidDropPercent: Double?
     let rapidIntervalMinutes: Double?
+    let showUsageSpeed: Bool?
 
     var id: String { "\(provider)/\(account)/\(bucket)" }
     var isAtRisk: Bool { riskLevel == "at-risk" }
@@ -646,6 +647,7 @@ struct QuotaWindow: Decodable, Identifiable {
     var paceText: String? {
         guard freshness == "fresh" else { return nil }
         if isExhausted { return Strings.t("window.exhausted") }
+        guard showUsageSpeed == true else { return nil }
         if let drop = rapidDropPercent, let minutes = rapidIntervalMinutes, minutes > 0, drop > 0 {
             return Strings.t("window.recentUsage", String(Int(max(1, ceil(minutes)))), String(format: "%.1f", drop))
         }

@@ -47,6 +47,14 @@ export function jobCapacity(job: Job, windows: WindowAnalysis[], nowMs: number, 
   if (all.some(w => w!.remainingPercent! <= 0) || (job.notBeforeMs != null && nowMs < job.notBeforeMs)) {
     return { ready: false, reason: "quota-wait" };
   }
+  if (job.spec.policy.mode === "auto") {
+    if (all.some(w => !Number.isFinite(w!.reservePercent) || w!.reservePercent < 0 || w!.reservePercent > 100)) {
+      return { ready: false, reason: "quota-collection-wait" };
+    }
+    if (all.some(w => w!.remainingPercent! <= w!.reservePercent)) {
+      return { ready: false, reason: "quota-reserve-wait" };
+    }
+  }
   return { ready: true, reason: null };
 }
 

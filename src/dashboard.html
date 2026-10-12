@@ -119,6 +119,7 @@
           "noEvents": "No events recorded yet.",
           "failed": "Connection failed",
           "page.subtitle": "Provider clock + personal burn rate",
+          "page.subtitle.basic": "Quota remaining + provider reset clock",
           "page.connecting": "Connecting…",
           "page.waiting": "Waiting for the first observation.",
           "page.whyChanged": "Why it changed",
@@ -219,6 +220,7 @@
           "noEvents": "아직 기록된 이벤트가 없습니다.",
           "failed": "연결 실패",
           "page.subtitle": "공급자 원본 시계 + 개인 사용 속도",
+          "page.subtitle.basic": "한도 잔량 + 공급자 리셋 시각",
           "page.connecting": "연결 중…",
           "page.waiting": "첫 관측을 기다리는 중입니다.",
           "page.whyChanged": "왜 바뀌었나",
@@ -328,20 +330,20 @@
         const used = window.usedPercent ?? (remaining == null ? null : 100 - remaining);
         const heat = window.freshness !== "fresh" || remaining == null
           ? "unknown"
-          : remaining <= window.reservePercent ? "hot" : window.paceRatio > 1 ? "warm" : "";
+          : remaining <= window.reservePercent ? "hot" : window.showUsageSpeed === true && window.paceRatio > 1 ? "warm" : "";
         return `<div class="window ${heat}">
           <div class="row"><span class="label ${bottleneck ? "bottleneck" : ""}">${bottleneck ? "● " : ""}${escapeHtml(window.label)}</span><span class="badge">${escapeHtml(enumText("freshness", window.freshness))}</span></div>
           <div class="row"><span class="remaining">${remaining == null ? "—" : `${remaining.toFixed(1)}${t("window.remaining")}`}</span><span class="muted">${used == null ? "" : `${used.toFixed(1)}${t("window.used")}`}</span><span class="muted">${window.resetsAtMs == null ? t("window.resetUnknown") : `${duration(window.timeToResetMs)}${t("window.resetsIn")}`}</span></div>
           <div class="bar"><div class="fill" style="width:${remaining == null ? 0 : Math.max(0, Math.min(100, remaining))}%"></div></div>
           <div class="facts">
-            <div class="fact">${t("fact.recent")} <strong>${number(window.recentBurnPerHour, t("unit.perActiveHour"))}</strong></div>
+            ${window.showUsageSpeed === true ? `<div class="fact">${t("fact.recent")} <strong>${number(window.recentBurnPerHour, t("unit.perActiveHour"))}</strong></div>
             <div class="fact">${t("fact.personal")} <strong>${number(window.personalBurnPerHour, t("unit.perActiveHour"))}</strong></div>
             <div class="fact">${t("fact.vsSafe")} <strong>${number(window.paceRatio, t("unit.times"))}</strong></div>
             <div class="fact">${t("fact.confidence")} <strong>${escapeHtml(enumText("confidence", window.confidence))}</strong></div>
             <div class="fact">${t("fact.activeHours")} <strong>${number(window.activeHoursUntilReset, t("unit.hours"))}</strong></div>
             <div class="fact">${t("fact.samples")} <strong>${window.sampleCount}</strong></div>
+            <div class="fact">${t("fact.safetyEta")} <strong>${exactTime(window.reserveReachesAtMs)}</strong></div>` : ""}
             <div class="fact">${t("fact.providerReset")} <strong>${exactTime(window.resetsAtMs)}</strong></div>
-            <div class="fact">${t("fact.safetyEta")} <strong>${exactTime(window.exhaustsAtMs)}</strong></div>
             <div class="fact">${t("fact.observed")} <strong>${exactTime(window.observedAtMs)}</strong></div>
             <div class="fact">${t("fact.observedAge")} <strong>${duration(Date.now() - window.observedAtMs)}</strong></div>
             <div class="fact">${t("fact.source")} <strong>${escapeHtml(enumText("source", window.source))}</strong></div>
@@ -395,7 +397,7 @@
         return bits.length ? ` · ${bits.join(" · ")}` : "";
       };
       async function refresh() {
-        document.getElementById("subtitle").textContent = t("page.subtitle");
+        document.getElementById("subtitle").textContent = t("page.subtitle.basic");
         document.getElementById("whyChanged").textContent = t("page.whyChanged");
         try {
           const response = await fetch("/api/status", { cache: "no-store" });
@@ -414,6 +416,7 @@
             return `<div class="event"><strong>${escapeHtml(signal.newsTitle ?? words[signal.state] ?? signal.state)}</strong><span>${escapeHtml(words[signal.state] ?? signal.state)} · @${escapeHtml(signal.author)} · ${escapeHtml(exactTime(signal.publishedAtMs))}</span><strong>${escapeHtml(signal.benefitText ?? "")}</strong><span>${escapeHtml(signal.localTimeText ?? "")}</span><span>${escapeHtml(signal.text)} ${safe ? `<a href="${escapeHtml(signal.sourceUrl)}" target="_blank" rel="noopener noreferrer">${words.source}</a>` : ""}</span></div>`;
           }).join("") || words.empty}<p class="notice">${words.note}</p></article>` : "";
           const accounts = Array.isArray(data.accounts) && data.accounts.length ? data.accounts : (data.statuses ?? []);
+          document.getElementById("subtitle").textContent = t(accounts.some(account => (account.windows ?? []).some(window => window.showUsageSpeed === true)) ? "page.subtitle" : "page.subtitle.basic");
           document.getElementById("providers").innerHTML = accounts.length
             ? accounts.map((account) => {
                 const label = escapeHtml(account.accountLabel ?? account.account);
