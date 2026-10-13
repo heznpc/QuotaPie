@@ -8,6 +8,7 @@ import { notificationAllowed, type NotificationPreferencesPatch } from "./notifi
 import { buildWorkBoundary, defaultWorkBoundaryPath, writeWorkBoundary } from "./work-boundary";
 import { JobStore } from "./storage/job-store";
 import { ManagedJobRunner } from "./jobs/runner";
+import { resetOpportunities } from "./signals/opportunities";
 import { buildResetTracking } from "./signals/correlation";
 import { codexContextChange } from "./domain/codex-context";
 import { ResetSignalStore } from "./storage/reset-signal-store";
@@ -1046,7 +1047,12 @@ export class QuotaPieService {
     const profile = provider === "codex" ? this.config.accounts.codex.find(p => p.id === account && p.enabled) : null;
     gate.accountKey = profile ? this.accountBindings.identityKey(codexProfileRoot(profile)) : null;
     if (!gate.profileKey) { gate.ready = false; gate.reason = "account-unavailable"; }
+    gate.resetOpportunities = this.resetOpportunities(provider, account, nowMs);
     return gate;
+  }
+
+  resetOpportunities(provider: Provider, account: string, nowMs = Date.now()) {
+    return resetOpportunities(this.resetSignals.list(1000), this.db.recentEvents(2000), provider, account, nowMs);
   }
 
   applyNotificationPreferences(patch: NotificationPreferencesPatch): void {

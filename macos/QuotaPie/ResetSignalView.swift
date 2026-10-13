@@ -135,6 +135,9 @@ struct ResetSignalSummary: View {
                         Link(Strings.t("overview.original"), destination: url)
                     }
                 }.font(.caption2)
+                if let forecast = signal.forecastText {
+                    Text(forecast).font(.caption).foregroundStyle(.secondary)
+                }
                 if let localTime = signal.localTimeText {
                     Text(localTime).font(.callout).bold()
                         .fixedSize(horizontal: false, vertical: true)
@@ -251,6 +254,9 @@ struct ResetSignalHistory: View {
             }
             Text(Strings.t(signal.classificationKey) + " · " + Strings.t("signal.kind." + (["resetCredits", "credits", "limits", "student", "discounts", "events"].contains(signal.displayedBenefitKind ?? "") ? signal.displayedBenefitKind! : signal.resetKind)))
                 .font(.caption).foregroundStyle(.secondary)
+            if let forecast = signal.forecastText {
+                Text(forecast).font(.caption).foregroundStyle(.secondary)
+            }
             if let localTime = signal.localTimeText {
                 Text(localTime).font(.callout).bold()
             } else if let target = signal.targetAtMs {

@@ -67,6 +67,7 @@ export class DotBridge {
       return { targetId, threadId: state.policy.threadId, executionMode: state.policy.executionMode ?? "native",
         executionPurpose: state.policy.executionPurpose ?? "report-check", maxDurationSeconds: state.policy.executionMode === "profile-managed"
           ? state.policy.maxDurationSeconds ?? (state.policy.executionPurpose === "continue-work" ? null : 60) : null,
+        resetTiming: state.policy.resetTiming ?? "scheduled", resetOpportunities: gate.resetOpportunities ?? [],
         enabled: state.policy.enabled, ready: ready && preflight.ready,
         reason: !preflight.ready ? preflight.reason : ready ? "ready" : gate.ready ? "policy-hold" : gate.reason,
         quotaReady: gate.ready, execution: preflight,

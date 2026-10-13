@@ -1014,3 +1014,23 @@ finishes the request. It never touches installed profiles or tests a real logout
 The metadata collector also detects replacement of its configured executable or
 symlink on its next read; a missing explicit path is not silently replaced by a
 different CLI.
+
+### Public reset preparation
+
+A reviewed Dots `quota.reset_approaching` policy can select
+`resetTiming: "public-announcement"` to start at a universal reset announcement
+instead of waiting for the account API's scheduled reset. Existing policies
+retain `scheduled` timing. The target must still be enabled and subscribed,
+with its original account, fresh positive quota, explicit reserve and usage
+budget. News never raises quota, changes a cutoff, or enables a policy.
+
+`/api/resume-check` and `/api/status` expose `resetOpportunities`; the macOS reset
+detail shows the estimate separately from the original announcement time.
+EOD estimates use the range of authoritative near-full recoveries following
+the same author's EOD announcements on at least two distinct UTC dates. This
+is temporal association, not proof of causation or a calibrated prediction.
+The bounded history scan uses up to 1,000 signals and 2,000 recent events over
+30 days; missing evidence means no forecast. Scheduled resets, reset-credit
+consumption and observation gaps over 30 minutes do not contribute.
+A completion, withdrawal, revision or observed near-full recovery retires
+the opportunity. A report alone is not treated as the actual reset time.

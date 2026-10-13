@@ -15,9 +15,9 @@ test("October 11 EOD announcement is actionable without inventing a reset instan
   expect(signal.targetAtMs).toBeNull();
   const notice = signalDecision(signal, "ko", "Asia/Seoul", ["계정 1 · 주간: 63% 남음"]);
   expect(notice.severity).toBe("warning");
-  expect(notice.message).toContain("자정까지 기다리지 마세요");
+  expect(notice.message).toContain("남은 한도로 할 작업을 지금 확인하세요");
   expect(notice.message).toContain("63% 남음");
-  expect(signalDecision(signal, "en", "UTC").message).toContain("Do not wait until midnight");
+  expect(signalDecision(signal, "en", "UTC").message).toContain("Review work for your remaining quota now");
 });
 
 test("daily reset hint and propagation confirmation survive local classification", () => {

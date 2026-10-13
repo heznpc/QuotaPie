@@ -9,12 +9,13 @@ export function parsePolicy(input: unknown, config: AppConfig): DotPolicy {
   const p = input as DotPolicy;
   if (!p || typeof p !== "object" || Array.isArray(p) ||
       Object.keys(p).some(k => !["id", "threadId", "account", "continuation", "trigger", "resetBucket",
-        "resetWithinMinutes", "requiredBucket", "reservePercent", "maxTurns", "maxUsagePercent", "expiresAtMs", "priority", "executionMode", "executionPurpose", "maxDurationSeconds"].includes(k)) ||
+        "resetWithinMinutes", "resetTiming", "requiredBucket", "reservePercent", "maxTurns", "maxUsagePercent", "expiresAtMs", "priority", "executionMode", "executionPurpose", "maxDurationSeconds"].includes(k)) ||
       !/^[a-z0-9][a-z0-9-]{0,63}$/.test(p.id ?? "") ||
       !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(p.threadId ?? "") ||
       typeof p.account !== "string" || typeof p.continuation !== "string" ||
       p.continuation.length < 1 || p.continuation.length > 2000 ||
       !["quota.ready", "quota.reset_approaching"].includes(p.trigger)) throw new Error("invalid-policy");
+  if (p.resetTiming != null && !["scheduled", "public-announcement"].includes(p.resetTiming)) throw new Error("invalid-reset-timing");
   if (p.executionMode != null && !["native", "profile-managed"].includes(p.executionMode)) throw new Error("invalid-execution-mode");
   if (p.executionPurpose != null && !["report-check", "continue-work"].includes(p.executionPurpose)) throw new Error("invalid-execution-purpose");
   if (p.executionPurpose === "continue-work" && p.executionMode !== "profile-managed") throw new Error("managed-work-required");
@@ -103,6 +104,10 @@ export function eligible(state: TargetState, gate: ResumeGate, now: number): boo
         })) return false;
   }
   if (p.trigger === "quota.reset_approaching") {
+    if (p.resetTiming === "public-announcement") {
+      return !!gate.resetOpportunities?.some(o => o.actionableFromMs <= now && o.expiresAtMs > now &&
+        o.publishedAtMs <= now && o.provider === gate.provider);
+    }
     const window = gate.windows.find(w => w.bucket === p.resetBucket);
     return !!window && window.resetsAtMs! - now <= p.resetWithinMinutes * 60000;
   }

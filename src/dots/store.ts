@@ -18,6 +18,8 @@ export interface DotPolicy {
   enabled: boolean;
   trigger: "quota.ready" | "quota.reset_approaching";
   resetBucket?: string;
+  /** Public news can start reviewed work, never grant quota or change its cutoff. */
+  resetTiming?: "scheduled" | "public-announcement";
   resetWithinMinutes: number;
   requiredBucket?: string;
   reservePercent: number;

@@ -44,10 +44,10 @@ export function signalDecision(signal: ResetSignal, locale: Locale, timeZone = I
   const deadline = benefit === "reset" && signal.resetKind !== "banked"
     && ["possible", "announced", "updated"].includes(signal.state) && !!localTime && /\bby\b/i.test(evidence);
   const guidance = endOfDay && localTime ? (locale === "ko"
-    ? "확정 리셋 시각이 아니며 더 일찍 리셋될 수 있습니다."
-    : "This is not a confirmed reset time; it may reset earlier.") : endOfDay ? (locale === "ko"
-    ? `오늘 중 리셋 예고(EOD): ${sourceZone ? `원문 시간대 ${sourceZone}, 정확한 시행 시각 미정` : "원문의 날짜·시간대 기준과 시행 시각 미확인"}. 자정까지 기다리지 마세요. 그 전에 리셋될 수 있으니 남은 한도로 할 작업을 지금 확인하세요.`
-    : `Reset announced by end of day (EOD): ${sourceZone ? `source zone ${sourceZone}, execution time unknown` : "source date/time-zone basis and execution time unverified"}. Do not wait until midnight; it may reset earlier. Review work for your remaining quota now.`) : deadline ? (locale === "ko"
+    ? "날짜 경계 환산이며 실제 시행 시각은 확인되지 않았습니다."
+    : "This converts the calendar boundary; the execution time is unconfirmed.") : endOfDay ? (locale === "ko"
+    ? `EOD 리셋 예고: ${sourceZone ? `원문 시간대 ${sourceZone}, 정확한 시행 시각 미정` : "원문의 날짜·시간대 기준과 시행 시각 미확인"}. 남은 한도로 할 작업을 지금 확인하세요.`
+    : `Reset announcement (EOD): ${sourceZone ? `source zone ${sourceZone}, execution time unknown` : "source date/time-zone basis and execution time unverified"}. Review work for your remaining quota now.`) : deadline ? (locale === "ko"
     ? "표시된 시각은 시행 예정 시각이 아니라 발표된 마감입니다. 그보다 일찍 리셋될 수 있으니 남은 한도로 할 작업을 지금 확인하세요."
     : "The displayed time is the announced deadline, not the scheduled reset time. It may reset earlier; review work for your remaining quota now.") : uncertain ? (locale === "ko"
     ? "시각 미정: 예고 없이 시행될 수 있습니다. 리셋 전에 쓸 작업을 확인하세요."
