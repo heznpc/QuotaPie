@@ -195,6 +195,38 @@ class LifecycleTests(unittest.TestCase):
                 "Label": settings["label"], "KeepAlive": True, "RunAtLoad": True,
                 "ProgramArguments": [settings["bun"], str(path.parent / "relay.js"), str(path)]}))
 
+    def test_owned_agent_rejects_absent_or_invalid_runtime_identity(self):
+        self.write_owned_agents()
+        for value in (None, "", "  ", 123, []):
+            with self.subTest(bun=value):
+                settings = {**self.settings[0], "bun": value}
+                with self.assertRaisesRegex(RuntimeError, "ownership"):
+                    self.relay.owned_agent(self.paths[0], settings)
+        settings = dict(self.settings[0])
+        settings.pop("bun")
+        with self.assertRaisesRegex(RuntimeError, "ownership"):
+            self.relay.owned_agent(self.paths[0], settings)
+
+    def test_upgrade_skips_legacy_without_bun_and_stages_other_generations(self):
+        self.write_owned_agents()
+        legacy = dict(self.settings[0])
+        legacy.pop("bun")
+        self.paths[0].write_text(json.dumps(legacy))
+        before = [path.read_bytes() for path in self.paths]
+        args = SimpleNamespace(source=str(self.root), codex_home=None, watch=True)
+        with patch.object(self.relay, "stage_runtime") as stage, \
+                patch.object(self.relay, "install_upgrade_watcher", return_value={"installed": True}) as watcher, \
+                patch.object(manager.subprocess, "run") as run, \
+                patch.object(manager.urllib.request, "build_opener") as opener:
+            result = self.relay.upgrade(args)
+        self.assertEqual(result["staged"], ["1", "2"])
+        self.assertEqual(result["deferred"], [{"generation": "0", "reason": "ownership-unverified"}])
+        self.assertEqual([call.args[0] for call in stage.call_args_list], self.paths[1:])
+        self.assertEqual([path.read_bytes() for path in self.paths], before)
+        watcher.assert_called_once_with()
+        run.assert_not_called()
+        opener.assert_not_called()
+
     def prepare_upgrade(self, modern=False):
         self.write_owned_agents()
         for path in self.paths:
