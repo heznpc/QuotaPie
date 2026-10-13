@@ -744,3 +744,67 @@ test("expiry, reset and cutoff decisions use the final snapshot-read time withou
     } finally { f.close(); }
   }
 });
+
+test("interactive requests treat collector outages as advisory without weakening automatic budgets", () => {
+  const changes = [
+    (f: ReturnType<typeof fixture>) => { f.state.expiresAtMs=f.now();f.write(); },
+    (f: ReturnType<typeof fixture>) => { f.state.accounts[0]!.windows=[];f.write(); },
+    (f: ReturnType<typeof fixture>) => { f.state.accounts[0]!.collectionState="attempted-then-failed";f.write(); },
+    (f: ReturnType<typeof fixture>) => { rmSync(join(f.root,"work-state.json")); },
+    (f: ReturnType<typeof fixture>) => { writeFileSync(join(f.root,"work-state.json"),"{broken"); },
+  ];
+  for(const change of changes) {
+    const f=fixture();
+    try{
+      const windows=f.state.accounts[0]!.windows;
+      const interactive=createSubscriptionGuard({...f.options,quotaObservationMode:"advisory"});
+      const automatic=createSubscriptionGuard({...f.options,quotaObservationMode:"advisory",
+        minimumReserveByBucket:Object.fromEntries(windows.map(w=>[w.bucket,0])),
+        baselineResetsAtByBucket:Object.fromEntries(windows.map(w=>[w.bucket,w.resetsAtMs]))});
+      change(f);
+      expect(interactive.check({headers:new Headers(f.headers()),model})).toMatchObject({ready:true,reason:"ready"});
+      expect(interactive.check().quotaObservationReason).toBeString();
+      expect(automatic.check().ready).toBeFalse();expect(f.guard.check().ready).toBeFalse();
+      f.reserve(5);expect(interactive.check().ready).toBeFalse();f.reserve(0);
+      expect(interactive.check({headers:new Headers({...f.headers(),"chatgpt-account-id":"foreign"}),model}).reason).toBe("request-identity-mismatch");
+      expect(interactive.check({model:"credit-only-fixture"}).reason).toBe("model-unverified");
+    }finally{f.close();}
+  }
+});
+
+test("advisory collection cannot hide confirmed exhaustion or an unresolved provider quota response",()=>{
+  const f=fixture();const guard=createSubscriptionGuard({...f.options,quotaObservationMode:"advisory"});
+  try{
+    f.state.accounts[0]!.windows[0]!.remainingPercent=0;
+    f.state.accounts[0]!.windows[1]!.quality="inferred";f.write();
+    expect(guard.check({model}).reason).toBe("quota-exhausted");
+    f.state.accounts[0]!.windows[0]!.remainingPercent=80;f.state.accounts[0]!.windows[1]!.quality="authoritative";f.write();
+    guard.observeResponse!(429);f.state.expiresAtMs=f.now();f.write();
+    expect(guard.check({model}).reason).toBe("upstream-quota-hold");
+    f.advance(1);f.state.expiresAtMs=f.now()+600000;
+    for(const w of f.state.accounts[0]!.windows)w.observedAtMs=f.now();f.write();
+    expect(guard.check({model}).ready).toBeTrue();
+    rmSync(join(f.root,"work-state.json"));
+    expect(guard.check({model})).toMatchObject({ready:true,quotaObservationReason:"quota-observation-unavailable"});
+  }finally{f.close();}
+});
+
+test("interactive HTTP request and stream keep the same account when observations expire",async()=>{
+ const f=fixture();let calls=0,aborted=0;let upstream!:ReadableStreamDefaultController<Uint8Array>;
+ const guard=createSubscriptionGuard({...f.options,quotaObservationMode:"advisory"});
+ const proxy=startCompactionProxy({subscriptionGuard:guard,fetchUpstream:async(_url,init)=>{
+   calls++;expect(new Headers(init.headers).get("authorization")).toBe(f.headers().authorization);
+   expect(new Headers(init.headers).get("chatgpt-account-id")).toBe(f.headers()["chatgpt-account-id"]);
+   init.signal!.addEventListener("abort",()=>aborted++);
+   return new Response(new ReadableStream<Uint8Array>({start(c){upstream=c;c.enqueue(frame({type:"response.output_text.delta",delta:"first"}));}}),{headers:{"content-type":"text/event-stream"}});
+ }});
+ try{
+   f.state.expiresAtMs=f.now();f.write();
+   const response=await fetch(proxy.baseUrl+"/responses",{method:"POST",headers:f.headers(),body:JSON.stringify(input)});
+   expect(response.status).toBe(200);const reader=response.body!.getReader();await reader.read();
+   rmSync(join(f.root,"work-state.json"));await new Promise(r=>setTimeout(r,35));
+   expect(aborted).toBe(0);upstream.enqueue(frame({type:"response.output_text.delta",delta:"continued"}));
+   expect(new TextDecoder().decode((await reader.read()).value)).toContain("continued");
+   upstream.close();await reader.read();expect(calls).toBe(1);
+ }finally{proxy.stop();f.close();}
+});

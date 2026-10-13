@@ -646,7 +646,7 @@ export async function runCompactionCodex(args: string[], defaultCommand: string)
   const proxy = startCompactionProxy({
     route,
     accountPool,
-    subscriptionGuard: createSubscriptionGuard({ codexHome, sourceAccount, config }),
+    subscriptionGuard: createSubscriptionGuard({ codexHome, sourceAccount, config, quotaObservationMode: "advisory" }),
     onProvenance: event => console.error(JSON.stringify({ service: "quotapie-compaction", kind: "response_provenance", ...event })),
     onRequest: (event) => {
       console.error(JSON.stringify({ service: "quotapie-compaction", ...event }));

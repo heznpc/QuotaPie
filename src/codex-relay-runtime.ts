@@ -53,7 +53,7 @@ export const createRelayRuntime: RuntimeFactory = (settings, memory) => {
   }
   const accountPool = memory.accountPool;
   const handler = createCompactionHandler({ ...settings, accountPool, savingsState: memory.savings,
-      subscriptionGuard: createSubscriptionGuard({ codexHome: home, sourceAccount, config, memory: memory.guard }),
+      subscriptionGuard: createSubscriptionGuard({ codexHome: home, sourceAccount, config, memory: memory.guard, quotaObservationMode: "advisory" }),
       savingsModelSupported: createSavingsModelSupport(join(home, "models_cache.json")),
       onProvenance: event => console.log(JSON.stringify({ kind: "response_provenance", ...event })),
       onRequest: event => { if (event.kind === "compaction" || event.kind === "response") console.log(JSON.stringify(event)); },

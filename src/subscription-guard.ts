@@ -16,6 +16,9 @@ export interface SubscriptionGuardState {
   reason: string;
   checkedAtMs: number;
   windows: ResumeGate["windows"];
+  /** Advisory collector failure; the original authenticated request may proceed. */
+  quotaObservationReason?: string;
+  quotaObservationMode?: "required" | "advisory";
 }
 export interface SubscriptionGuard {
   intervalMs: number;
@@ -48,8 +51,8 @@ function readJSON(path: string, maxBytes: number): any {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-/** Subscription protection is independent of account-pool routing. An unknown
- * observation is a stop, never permission to use credits or another login.
+/** Subscription protection is independent of account-pool routing. Automatic
+ * budgets require observations; interactive requests may treat them as advisory.
  * The cutoff follows observed quota; provider-side accounting may arrive later. */
 export function createSubscriptionGuard(options: {
   codexHome: string;
@@ -60,6 +63,7 @@ export function createSubscriptionGuard(options: {
   poolPolicy?: () => PoolPolicy;
   now?: () => number;
   intervalMs?: number;
+  quotaObservationMode?: "required" | "advisory";
   minimumReserveByBucket?: Record<string, number>;
   baselineResetsAtByBucket?: Record<string, number>;
 }): SubscriptionGuard {
@@ -87,7 +91,7 @@ export function createSubscriptionGuard(options: {
   function checkState(request: { headers?: Headers; model?: string } = {}, identityOnly = false): SubscriptionGuardState {
     let at = now();
     const state: SubscriptionGuardState = { version: 1, account: options.sourceAccount ?? null,
-      profileKey, ready: false, reason: "account-unavailable", checkedAtMs: at, windows: [] };
+      profileKey, ready: false, reason: "account-unavailable", checkedAtMs: at, windows: [], quotaObservationMode: options.quotaObservationMode ?? "required" };
     const hold = (reason: string) => ({ ...state, ready: false, reason });
     if (!identityOnly && !validBudget) return hold("budget-baseline-invalid");
     if (!root || !profileKey || !options.sourceAccount) return state;
@@ -127,8 +131,19 @@ export function createSubscriptionGuard(options: {
       if (identityOnly) return { ...state, ready: true, reason: "ready" };
       if (request.model !== undefined && !SUBSCRIPTION_MODELS.has(request.model))
         return hold("model-unverified");
-      const boundary = readJSON(options.boundaryPath ?? defaultWorkBoundaryPath(), 16 * 1024 * 1024);
       const poolReserve = explicitAccountReserve(options.sourceAccount, (options.poolPolicy ?? readPoolPolicy)());
+      // A collector outage cannot revoke an interactive user's valid login.
+      // Only observation failures are advisory; auth/model/explicit budgets
+      // and known quota exhaustion still use the ordinary rejection path.
+      let knownExhaustion = false;
+      const observationHold = (reason: string): SubscriptionGuardState =>
+        knownExhaustion ? hold("quota-exhausted") : memory.deniedAtMs != null ? hold("upstream-quota-hold") :
+        options.quotaObservationMode === "advisory" && !hasBudget && poolReserve === 0
+          ? { ...state, ready: true, reason: "ready", quotaObservationReason: reason }
+          : hold(reason);
+      let boundary: any;
+      try { boundary = readJSON(options.boundaryPath ?? defaultWorkBoundaryPath(), 16 * 1024 * 1024); }
+      catch { return observationHold("quota-observation-unavailable"); }
       // A separate collector can publish while config/auth/boundary files are
       // being read. Evaluate the captured snapshot against the time after all
       // inputs were read, not the time before that snapshot existed.
@@ -140,18 +155,28 @@ export function createSubscriptionGuard(options: {
         const remembered = knownCredentials.get(digest(request.headers.get("authorization") ?? "").toString("hex"));
         if (remembered == null || remembered <= at) return hold("request-identity-mismatch");
       }
+      // A bad second bucket must not erase a separately valid exhaustion
+      // observation. Read only this verified profile's relevant windows.
+      if (boundary?.schemaVersion === 1 && Number.isFinite(boundary.generatedAtMs) && boundary.generatedAtMs <= at && Array.isArray(boundary.accounts)) {
+        const matching = boundary.accounts.filter((a: any) => a?.provider === "codex" && a.account === options.sourceAccount && a.profileKey === profileKey);
+        if (matching.length === 1 && Array.isArray(matching[0].windows)) knownExhaustion = matching[0].windows.some((w: any) =>
+          typeof w?.bucket === "string" && (w.bucket.startsWith("codex:") || request.model != null && w.bucket.startsWith(request.model + ":")) &&
+          w.quality === "authoritative" && w.freshness === "fresh" && w.remainingPercent === 0 &&
+          Number.isFinite(w.observedAtMs) && w.observedAtMs >= memory.boundAuthAtMs! && w.observedAtMs <= at && at-w.observedAtMs <= config.collection.staleAfterSeconds*1000 &&
+          Number.isFinite(w.validUntilMs) && w.validUntilMs > at && Number.isFinite(w.resetsAtMs) && w.resetsAtMs > at);
+      }
       if (boundary?.schemaVersion !== 1 || !Number.isFinite(boundary.generatedAtMs) || boundary.generatedAtMs > at ||
           !Number.isFinite(boundary.expiresAtMs) || boundary.expiresAtMs <= at || !Array.isArray(boundary.accounts))
-        return hold("quota-stale");
+        return observationHold("quota-stale");
       const rows = boundary.accounts.filter((a: any) => a?.provider === "codex" && a.account === options.sourceAccount);
-      if (rows.length !== 1 || rows[0].profileKey !== profileKey) return hold("profile-mismatch");
+      if (rows.length !== 1 || rows[0].profileKey !== profileKey) return observationHold("profile-mismatch");
       const row = rows[0];
-      if (!Array.isArray(row.windows) || !row.windows.length) return hold("quota-unknown");
+      if (!Array.isArray(row.windows) || !row.windows.length) return observationHold("quota-unknown");
       if (row.collectionState !== "recent-success" && !(row.collectionState === "attempted-then-failed" &&
-          ["network", "provider-error"].includes(row.collectionErrorCategory))) return hold("collection-unavailable");
+          ["network", "provider-error"].includes(row.collectionErrorCategory))) return observationHold("collection-unavailable");
       // General limits apply to every subscription model. A named model limit
       // applies only to that model, never to unrelated models or features.
-      const relevant = row.windows.filter((w: any) => typeof w.bucket === "string" &&
+      const relevant = row.windows.filter((w: any) => typeof w?.bucket === "string" &&
         (w.bucket.startsWith("codex:") || request.model != null && w.bucket.startsWith(request.model + ":")));
       if (hasBudget && (relevant.length !== budgetKeys.length || relevant.some((w: any) =>
           !Object.hasOwn(baselineResets, w.bucket) || w.resetsAtMs !== baselineResets[w.bucket])))
@@ -171,18 +196,19 @@ export function createSubscriptionGuard(options: {
       let gate = evaluateResumeGate(account, "codex", options.sourceAccount, at, maxAge);
       state.windows = windows.map(w => ({ bucket: w.bucket, remainingPercent: w.remainingPercent,
         reservePercent: w.reservePercent, observedAtMs: w.observedAtMs, resetsAtMs: w.resetsAtMs }));
-      if (!gate.ready) return hold(gate.reason === "reserve-reached" &&
+      if (!gate.ready) return (gate.reason === "reserve-reached" ? hold : observationHold)(gate.reason === "reserve-reached" &&
         windows.some(w => w.remainingPercent === 0) ? "quota-exhausted" : gate.reason);
       // Apply a named limit only when it belongs to this request's model.
       for (const w of windows.filter(w => !w.bucket.startsWith("codex:"))) {
         gate = evaluateResumeGate(account, "codex", options.sourceAccount, at, maxAge, w.bucket);
-        if (!gate.ready) return hold(gate.reason === "reserve-reached" &&
+        if (!gate.ready) return (gate.reason === "reserve-reached" ? hold : observationHold)(gate.reason === "reserve-reached" &&
           w.remainingPercent === 0 ? "quota-exhausted" : gate.reason);
       }
-      if (new Set(windows.map(w => w.bucket)).size !== windows.length) return hold("quota-unknown");
+      if (new Set(windows.map(w => w.bucket)).size !== windows.length) return observationHold("quota-unknown");
       if (relevant.some((w: any) => !Number.isFinite(w.validUntilMs) || w.validUntilMs <= at ||
-          !Number.isFinite(w.observedAtMs) || w.observedAtMs < memory.boundAuthAtMs!)) return hold("quota-stale");
+          !Number.isFinite(w.observedAtMs) || w.observedAtMs < memory.boundAuthAtMs!)) return observationHold("quota-stale");
       if (memory.deniedAtMs != null && windows.some(w => w.observedAtMs <= memory.deniedAtMs!)) return hold("upstream-quota-hold");
+      memory.deniedAtMs = null;
       return { ...state, ready: true, reason: "ready" };
     } catch { return hold("guard-unavailable"); }
   }
