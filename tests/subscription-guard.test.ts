@@ -624,3 +624,70 @@ test("replacement guard preserves previously observed same-login credentials and
     expect(changed.checkIdentity({ headers: previous }).ready).toBe(false);
   } finally { f.close(); }
 });
+
+test("discovery-cache absence, omissions and invalid JSON cannot revoke known subscription models", () => {
+  const f = fixture(), cachePath = join(f.root, "models_cache.json");
+  try {
+    const cacheChanges = [
+      () => rmSync(cachePath),
+      () => writeFileSync(cachePath, JSON.stringify({ models: [] })),
+      () => writeFileSync(cachePath, '{"models":'),
+      () => writeFileSync(cachePath, JSON.stringify({ models: [{ slug: "credit-only-fixture" }] })),
+    ];
+    for (const change of cacheChanges) {
+      change();
+      for (const known of ["gpt-6-astra", "gpt-6.1-sol", "gpt-5.6-sol"])
+        expect(f.guard.check({ headers: new Headers(f.headers()), model: known })).toMatchObject({ ready: true, reason: "ready" });
+      for (const unknown of ["unverified-model", "credit-only-fixture"])
+        expect(f.guard.check({ model: unknown })).toMatchObject({ ready: false, reason: "model-unverified" });
+    }
+    // The remaining quota gates are still authoritative without the cache.
+    const windows = f.state.accounts[0]!.windows;
+    windows.push({ ...windows[0]!, bucket: model + ":primary:300", remainingPercent: 0 }); f.write();
+    expect(f.guard.check({ model })).toMatchObject({ ready: false, reason: "quota-exhausted" });
+    expect(f.guard.check({ model: "gpt-5.6-sol" }).ready).toBe(true);
+    windows.pop(); windows[1]!.remainingPercent = 0; f.write();
+    expect(f.guard.check({ model: "gpt-5.6-sol" })).toMatchObject({ ready: false, reason: "quota-exhausted" });
+  } finally { f.close(); }
+});
+
+test("discovery-cache refresh cannot interrupt an active known-model stream while the explicit cutoff still does", async () => {
+  const f = fixture(), cachePath = join(f.root, "models_cache.json");
+  const events: CompactionRequestEvent[] = [];
+  let aborted = 0, cancelled = 0, upstream!: ReadableStreamDefaultController<Uint8Array>;
+  f.reserve(10);
+  const proxy = startCompactionProxy({ subscriptionGuard: f.guard, onRequest: event => events.push(event),
+    fetchUpstream: async (_url, init) => {
+      init.signal!.addEventListener("abort", () => aborted++);
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) { upstream = controller; controller.enqueue(frame({ type: "response.output_text.delta", delta: "initial" })); },
+        cancel() { cancelled++; },
+      }), { headers: { "content-type": "text/event-stream" } });
+    } });
+  try {
+    const response = await fetch(proxy.baseUrl + "/responses", { method: "POST", headers: f.headers(), body: JSON.stringify(input) });
+    const reader = response.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain("initial");
+    const changes = [
+      () => rmSync(cachePath),
+      () => writeFileSync(cachePath, JSON.stringify({ models: [] })),
+      () => writeFileSync(cachePath, '{"models":'),
+      () => writeFileSync(cachePath, JSON.stringify({ models: [{ slug: "credit-only-fixture" }] })),
+    ];
+    for (const [index, change] of changes.entries()) {
+      change();
+      await new Promise(resolve => setTimeout(resolve, 35));
+      expect(aborted).toBe(0); expect(cancelled).toBe(0);
+      upstream.enqueue(frame({ type: "response.output_text.delta", delta: `cache-change-${index}` }));
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain(`cache-change-${index}`);
+    }
+    f.state.accounts[0]!.windows[0]!.remainingPercent = 9; f.write();
+    let failure = "";
+    while (true) { const next = await reader.read(); if (next.done) break; failure += new TextDecoder().decode(next.value); }
+    expect(failure).toContain("subscription_reserve_reached");
+    expect(failure).not.toContain("model_unverified");
+    expect(aborted).toBe(1); expect(cancelled).toBe(1);
+    expect(events.filter(event => event.phase === "failed")).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ errorCode: "subscription_reserve_reached", failureOrigin: "relay" });
+  } finally { proxy.stop(); f.close(); }
+});

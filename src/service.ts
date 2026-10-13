@@ -5,7 +5,7 @@ import { RecentWorkIndex, type RecentWorkSummary } from "./recent-work";
 import { evaluateResumeGate, resumeProfileKey } from "./resume-gate";
 import { codexAccountDisplay } from "./account-display";
 import { notificationAllowed, type NotificationPreferencesPatch } from "./notification-preferences";
-import { buildWorkBoundary, writeWorkBoundary } from "./work-boundary";
+import { buildWorkBoundary, defaultWorkBoundaryPath, writeWorkBoundary } from "./work-boundary";
 import { JobStore } from "./storage/job-store";
 import { ManagedJobRunner } from "./jobs/runner";
 import { buildResetTracking } from "./signals/correlation";
@@ -14,7 +14,7 @@ import { ResetSignalStore } from "./storage/reset-signal-store";
 import { ResetSignalCollector } from "./signals/collector";
 import { signalDecision } from "./signals/presentation";
 import { analyzeWindow, analysisHistoryStart, buildHeadline, groupStatuses } from "./analytics";
-import { buildQuotaBoundary, cachedLeaderboard, collectionHealth, writeQuotaBoundary } from "./boundary";
+import { buildQuotaBoundary, cachedLeaderboard, collectionHealth, defaultBoundaryPath, writeQuotaBoundary } from "./boundary";
 import type { AppConfig, CodexAccountConfig } from "./config";
 import { codexProfileRoot, codexUsesFileCredentials, resolveUserPath } from "./config";
 import { QuotaDatabase } from "./db";
@@ -32,7 +32,7 @@ import type { Locale } from "./i18n";
 import { nextWakeDelayMs } from "./scheduler";
 import { alertScope, deliverTrigger, notificationAccountParams, planTriggers } from "./triggers";
 import { randomUUID } from "node:crypto";
-import { basename, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   findClaudeResumeTarget,
   findCodexResumeTarget,
@@ -96,6 +96,12 @@ const SOURCE_AUTHORITY: Record<string, number> = {
   [CLAUDE_STATUSLINE_SOURCE]: 1,
 };
 
+export interface ServiceBoundaryPaths {
+  /** Explicit destinations; null disables this export. Relative paths bind now. */
+  workState?: string | null;
+  quota?: string | null;
+}
+
 export class QuotaPieService {
   readonly recentWork = new RecentWorkIndex();
   private recentWorkSnapshot: RecentWorkSummary[] = [];
@@ -129,12 +135,30 @@ export class QuotaPieService {
 
   readonly locale: Locale;
   private readonly accountBindings: AccountBindingStore;
+  private readonly workBoundaryPath: string | null;
+  private readonly quotaBoundaryPath: string | null;
 
   constructor(
     readonly config: AppConfig,
     database?: QuotaDatabase,
+    boundaryPaths: ServiceBoundaryPaths = {},
   ) {
     this.db = database ?? new QuotaDatabase();
+    // An injected memory/fixture database does not own the installed app's
+    // exports. Capture destinations once, before asynchronous collection; a
+    // later process environment change must not redirect this service's writes.
+    const filename = this.db.db.filename;
+    const databaseRoot = filename && filename !== ":memory:" ? dirname(resolve(filename)) : null;
+    const bindPath = (specified: string | null | undefined, fallback: string | null): string | null => {
+      const path = specified === undefined ? fallback : specified;
+      if (path === null) return null;
+      if (!path.trim()) throw new Error("Boundary destination must be a non-empty path or null");
+      return resolve(path);
+    };
+    this.workBoundaryPath = bindPath(boundaryPaths.workState, database
+      ? databaseRoot ? join(databaseRoot, "work-state.json") : null : defaultWorkBoundaryPath());
+    this.quotaBoundaryPath = bindPath(boundaryPaths.quota, database
+      ? databaseRoot ? join(databaseRoot, "quota.json") : null : defaultBoundaryPath());
     // One connection, several collaborators. The service depends on each of
     // them directly rather than reaching through the database for everything.
     this.storage = this.db.storage;
@@ -1349,8 +1373,9 @@ export class QuotaPieService {
   }
 
   publishWorkBoundary(nowMs = Date.now(), analysed?: WindowAnalysis[]): void {
+    if (this.workBoundaryPath === null) return;
     try {
-      writeWorkBoundary(buildWorkBoundary(this.accountStates(nowMs, analysed ?? this.currentQuotaWindows(nowMs)), this.resumeTasks.active(), this.config, nowMs));
+      writeWorkBoundary(buildWorkBoundary(this.accountStates(nowMs, analysed ?? this.currentQuotaWindows(nowMs)), this.resumeTasks.active(), this.config, nowMs), this.workBoundaryPath);
     } catch (error) {
       console.error(`[quotapie] work-state.json publish failed: ${String(error)}`);
     }
@@ -1360,6 +1385,7 @@ export class QuotaPieService {
     // A push can arrive while this tick awaits alerts/jobs. Never overwrite its
     // routing protection with the older analysis captured at tick start.
     this.publishWorkBoundary();
+    if (this.quotaBoundaryPath === null) return;
     try {
       const accounts = this.accountStates(nowMs, analysed);
       const document = buildQuotaBoundary(
@@ -1368,7 +1394,7 @@ export class QuotaPieService {
         nowMs,
         await cachedLeaderboard(nowMs),
       );
-      writeQuotaBoundary(document);
+      writeQuotaBoundary(document, this.quotaBoundaryPath);
     } catch (error) {
       // A failed boundary write must not kill the collection and alert tick
       // that is this loop's actual job.

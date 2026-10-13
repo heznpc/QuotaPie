@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "quotapie": "bun run src/cli.ts",
-    "test": "bun test ./tests",
+    "test": "bun script/test-isolated.ts",
     "check": "bun run check:backend && bun run check:quota-core && bun run check:quota-core:host && bun run check:macos",
-    "check:backend": "bun test ./tests && tsc --noEmit && bun build src/cli.ts --target=bun --outdir /tmp/quotapie-build",
+    "check:backend": "bun run test && tsc --noEmit && bun build src/cli.ts --target=bun --outdir /tmp/quotapie-build",
     "check:macos": "bash script/test_codex_profiles.sh && bash script/build_and_run.sh --verify",
     "check:runtime": "bun script/check-runtime.ts",
     "build:quota-core": "tsc -p packages/quota-core/tsconfig.json",

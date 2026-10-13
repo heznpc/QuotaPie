@@ -845,6 +845,15 @@ insert are a single unit of work.
 bun run check
 ```
 
+Run backend tests with `bun run test`, or a selected file with
+`bun script/test-isolated.ts tests/service-boundary-isolation.test.ts`.
+The macOS runner verifies an OS sandbox before starting tests: standard QuotaPie
+installation paths, profile state, and launch agents cannot be overwritten.
+Outbound connections are limited to newly reserved loopback fixture ports;
+`Bun.serve({ port: 0, ... })` uses that pool automatically. Tests use temporary
+data directories; direct `bun test` is rejected. An injected in-memory
+service does not publish integration files unless given explicit destinations.
+
 The tests cover low-usage normal and early resets, reset-clock rebases, allowance relief where only the ratio falls, null data, out-of-order responses, multi-session Claude consensus, multi-account isolation and validation, per-account alert keys, retirement of dynamic Codex entries, durable alert and native-notification claims, file permissions, paid credits, personal burn rate, bottleneck selection, dynamic rescheduling, exact-session resume races, API capability checks, and the native launcher's command boundary.
 
 ## Limitations

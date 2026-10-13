@@ -37,8 +37,10 @@ export function subscriptionGuardMemory(): SubscriptionGuardMemory {
 
 const digest = (value: string) => createHash("sha256").update(value).digest();
 const equal = (a: string, b: string) => timingSafeEqual(digest(a), digest(b));
-// Catalog membership alone includes internal/reserve-only models and does not
-// prove that the ordinary Codex allowance covers them.
+// Only explicitly supported subscription models are admitted. The desktop's
+// discovery cache may be absent, incomplete or replaced during refresh; it is
+// neither an allowance authority nor a reason to interrupt a known model.
+// Catalog entries also cannot expand this set to internal/credit-only models.
 const SUBSCRIPTION_MODELS = new Set(["gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-6-luna",
   "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]);
 function readJSON(path: string, maxBytes: number): any {
@@ -122,11 +124,8 @@ export function createSubscriptionGuard(options: {
       // Keep its source identity fixed, but let the provider handle token expiry
       // so an expired/stale allowance cannot block its own recovery path.
       if (identityOnly) return { ...state, ready: true, reason: "ready" };
-      if (request.model !== undefined) {
-        const models = readJSON(join(root, "models_cache.json"), 8 * 1024 * 1024)?.models;
-        if (!SUBSCRIPTION_MODELS.has(request.model) || !Array.isArray(models) || !models.some(m => m?.slug === request.model))
-          return hold("model-unverified");
-      }
+      if (request.model !== undefined && !SUBSCRIPTION_MODELS.has(request.model))
+        return hold("model-unverified");
       const boundary = readJSON(options.boundaryPath ?? defaultWorkBoundaryPath(), 16 * 1024 * 1024);
       if (boundary?.schemaVersion !== 1 || !Number.isFinite(boundary.generatedAtMs) || boundary.generatedAtMs > at ||
           !Number.isFinite(boundary.expiresAtMs) || boundary.expiresAtMs <= at || !Array.isArray(boundary.accounts))
