@@ -6,6 +6,7 @@ import { codexProfileRoot, codexUsesFileCredentials, type AppConfig } from "./co
 import { evaluateResumeGate, type ResumeGate } from "./resume-gate";
 import { defaultWorkBoundaryPath, profileReference } from "./work-boundary";
 import type { AccountState, WindowAnalysis } from "./types";
+import { explicitAccountReserve } from "./subscription-policy";
 
 export interface SubscriptionGuardState {
   version: 1;
@@ -18,6 +19,7 @@ export interface SubscriptionGuardState {
 }
 export interface SubscriptionGuard {
   intervalMs: number;
+  checkIdentity(request?: { headers?: Headers }): SubscriptionGuardState;
   check(request?: { headers?: Headers; model?: string }): SubscriptionGuardState;
   observeResponse?(status: number): void;
 }
@@ -67,85 +69,107 @@ export function createSubscriptionGuard(options: {
   // A login replacement requires a new relay generation. Token refresh for
   // the same subject and workspace does not change this identity.
   let boundIdentity: string | null = null;
+  let boundAuthAtMs: number | null = null;
+  const knownCredentials = new Map<string, number>();
   let deniedAtMs: number | null = null;
+  function checkState(request: { headers?: Headers; model?: string } = {}, identityOnly = false): SubscriptionGuardState {
+    const at = now();
+    const state: SubscriptionGuardState = { version: 1, account: options.sourceAccount ?? null,
+      profileKey, ready: false, reason: "account-unavailable", checkedAtMs: at, windows: [] };
+    const hold = (reason: string) => ({ ...state, ready: false, reason });
+    if (!identityOnly && !validBudget) return hold("budget-baseline-invalid");
+    if (!root || !profileKey || !options.sourceAccount) return state;
+    try {
+      const config = options.config();
+      const profile = config.accounts.codex.find(p => p.enabled && p.id === options.sourceAccount);
+      if (!profile || realpathSync(codexProfileRoot(profile)) !== root || !codexUsesFileCredentials(profile)) return state;
+      const authPath = join(root, "auth.json"), stamp = statSync(authPath);
+      const auth = readJSON(authPath, 262144);
+      const token = auth.tokens?.access_token, upstreamAccount = auth.tokens?.account_id;
+      if (auth.OPENAI_API_KEY || auth.auth_mode && auth.auth_mode !== "chatgpt" ||
+          typeof token !== "string" || typeof upstreamAccount !== "string" || !upstreamAccount || /[\r\n]/.test(token + upstreamAccount))
+        return hold("subscription-auth-required");
+      const claims = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"));
+      if (typeof claims.sub !== "string" || !claims.sub || !Number.isFinite(claims.exp) ||
+          !identityOnly && claims.exp * 1000 <= at + 30000)
+        return hold("subscription-auth-unavailable");
+      const identity = digest(JSON.stringify([root, upstreamAccount, claims.sub])).toString("hex");
+      if (boundIdentity && boundIdentity !== identity) return hold("account-identity-changed");
+      boundIdentity ??= identity;
+      boundAuthAtMs ??= stamp.mtimeMs;
+      // Accept an earlier still-valid token only if this relay actually read
+      // it from the same local login. Self-asserted JWT claims are not proof.
+      for (const [key, expires] of knownCredentials) if (expires <= at) knownCredentials.delete(key);
+      knownCredentials.set(digest(`Bearer ${token}`).toString("hex"), claims.exp * 1000);
+      while (knownCredentials.size > 8) knownCredentials.delete(knownCredentials.keys().next().value!);
+      if (request.headers) {
+        const authorization = request.headers.get("authorization") ?? "";
+        const remembered = knownCredentials.get(digest(authorization).toString("hex"));
+        if ((!equal(authorization, `Bearer ${token}`) && !(remembered != null && remembered > at)) ||
+            request.headers.get("chatgpt-account-id") !== upstreamAccount) return hold("request-identity-mismatch");
+      }
+      // Metadata is needed to initialize the collector that refreshes quota.
+      // Keep its source identity fixed, but let the provider handle token expiry
+      // so an expired/stale allowance cannot block its own recovery path.
+      if (identityOnly) return { ...state, ready: true, reason: "ready" };
+      if (request.model !== undefined) {
+        const models = readJSON(join(root, "models_cache.json"), 8 * 1024 * 1024)?.models;
+        if (!SUBSCRIPTION_MODELS.has(request.model) || !Array.isArray(models) || !models.some(m => m?.slug === request.model))
+          return hold("model-unverified");
+      }
+      const boundary = readJSON(options.boundaryPath ?? defaultWorkBoundaryPath(), 16 * 1024 * 1024);
+      if (boundary?.schemaVersion !== 1 || !Number.isFinite(boundary.generatedAtMs) || boundary.generatedAtMs > at ||
+          !Number.isFinite(boundary.expiresAtMs) || boundary.expiresAtMs <= at || !Array.isArray(boundary.accounts))
+        return hold("quota-stale");
+      const rows = boundary.accounts.filter((a: any) => a?.provider === "codex" && a.account === options.sourceAccount);
+      if (rows.length !== 1 || rows[0].profileKey !== profileKey) return hold("profile-mismatch");
+      const row = rows[0];
+      if (!Array.isArray(row.windows) || !row.windows.length) return hold("quota-unknown");
+      if (row.collectionState !== "recent-success" && !(row.collectionState === "attempted-then-failed" &&
+          ["network", "provider-error"].includes(row.collectionErrorCategory))) return hold("collection-unavailable");
+      // General limits apply to every subscription model. A named model limit
+      // applies only to that model, never to unrelated models or features.
+      const relevant = row.windows.filter((w: any) => typeof w.bucket === "string" &&
+        (w.bucket.startsWith("codex:") || request.model != null && w.bucket.startsWith(request.model + ":")));
+      if (hasBudget && (relevant.length !== budgetKeys.length || relevant.some((w: any) =>
+          !Object.hasOwn(baselineResets, w.bucket) || w.resetsAtMs !== baselineResets[w.bucket])))
+        return hold("budget-baseline-changed");
+      const poolReserve = explicitAccountReserve(options.sourceAccount, (options.poolPolicy ?? readPoolPolicy)());
+      const windows: WindowAnalysis[] = relevant.map((w: any): WindowAnalysis => {
+        return { provider: "codex", account: options.sourceAccount!, bucket: w.bucket,
+          quality: w.quality, freshness: w.freshness, observedAtMs: w.observedAtMs,
+          remainingPercent: w.remainingPercent, resetsAtMs: w.resetsAtMs,
+          reservePercent: Math.max(poolReserve,
+            Object.hasOwn(minimumReserves, w.bucket) ? minimumReserves[w.bucket]! : 0) } as WindowAnalysis;
+      });
+      // A failed refresh is not evidence that a still-valid successful quota
+      // observation was revoked. The gate below checks every timestamp/value.
+      const account = { provider: "codex", account: options.sourceAccount, enabled: true,
+        collection: { health: "recent-success", errorCategory: null }, windows } as AccountState;
+      const maxAge = config.collection.staleAfterSeconds * 1000;
+      let gate = evaluateResumeGate(account, "codex", options.sourceAccount, at, maxAge);
+      state.windows = windows.map(w => ({ bucket: w.bucket, remainingPercent: w.remainingPercent,
+        reservePercent: w.reservePercent, observedAtMs: w.observedAtMs, resetsAtMs: w.resetsAtMs }));
+      if (!gate.ready) return hold(gate.reason === "reserve-reached" &&
+        windows.some(w => w.remainingPercent === 0) ? "quota-exhausted" : gate.reason);
+      // Apply a named limit only when it belongs to this request's model.
+      for (const w of windows.filter(w => !w.bucket.startsWith("codex:"))) {
+        gate = evaluateResumeGate(account, "codex", options.sourceAccount, at, maxAge, w.bucket);
+        if (!gate.ready) return hold(gate.reason === "reserve-reached" &&
+          w.remainingPercent === 0 ? "quota-exhausted" : gate.reason);
+      }
+      if (new Set(windows.map(w => w.bucket)).size !== windows.length) return hold("quota-unknown");
+      if (relevant.some((w: any) => !Number.isFinite(w.validUntilMs) || w.validUntilMs <= at ||
+          !Number.isFinite(w.observedAtMs) || w.observedAtMs < boundAuthAtMs!)) return hold("quota-stale");
+      if (deniedAtMs != null && windows.some(w => w.observedAtMs <= deniedAtMs!)) return hold("upstream-quota-hold");
+      return { ...state, ready: true, reason: "ready" };
+    } catch { return hold("guard-unavailable"); }
+  }
   const guard: SubscriptionGuard = {
     intervalMs: Math.min(1000, Math.max(10, options.intervalMs ?? 500)),
     observeResponse(status) { if (status === 429 || status === 402) deniedAtMs = now(); },
-    check(request = {}) {
-      const at = now();
-      const state: SubscriptionGuardState = { version: 1, account: options.sourceAccount ?? null,
-        profileKey, ready: false, reason: "account-unavailable", checkedAtMs: at, windows: [] };
-      const hold = (reason: string) => ({ ...state, ready: false, reason });
-      if (!validBudget) return hold("budget-baseline-invalid");
-      if (!root || !profileKey || !options.sourceAccount) return state;
-      try {
-        const config = options.config();
-        const profile = config.accounts.codex.find(p => p.enabled && p.id === options.sourceAccount);
-        if (!profile || realpathSync(codexProfileRoot(profile)) !== root || !codexUsesFileCredentials(profile)) return state;
-        const authPath = join(root, "auth.json"), stamp = statSync(authPath);
-        const auth = readJSON(authPath, 262144);
-        const token = auth.tokens?.access_token, upstreamAccount = auth.tokens?.account_id;
-        if (auth.OPENAI_API_KEY || auth.auth_mode && auth.auth_mode !== "chatgpt" ||
-            typeof token !== "string" || typeof upstreamAccount !== "string" || !upstreamAccount || /[\r\n]/.test(token + upstreamAccount))
-          return hold("subscription-auth-required");
-        const claims = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"));
-        if (typeof claims.sub !== "string" || !claims.sub || !Number.isFinite(claims.exp) || claims.exp * 1000 <= at + 30000)
-          return hold("subscription-auth-unavailable");
-        const identity = digest(JSON.stringify([root, upstreamAccount, claims.sub])).toString("hex");
-        if (boundIdentity && boundIdentity !== identity) return hold("account-identity-changed");
-        boundIdentity ??= identity;
-        if (request.headers && (!equal(request.headers.get("authorization") ?? "", `Bearer ${token}`) ||
-            request.headers.get("chatgpt-account-id") !== upstreamAccount)) return hold("request-identity-mismatch");
-        if (request.model !== undefined) {
-          const models = readJSON(join(root, "models_cache.json"), 8 * 1024 * 1024)?.models;
-          if (!SUBSCRIPTION_MODELS.has(request.model) || !Array.isArray(models) || !models.some(m => m?.slug === request.model))
-            return hold("model-unverified");
-        }
-        const boundary = readJSON(options.boundaryPath ?? defaultWorkBoundaryPath(), 16 * 1024 * 1024);
-        if (boundary?.schemaVersion !== 1 || !Number.isFinite(boundary.generatedAtMs) || boundary.generatedAtMs > at ||
-            !Number.isFinite(boundary.expiresAtMs) || boundary.expiresAtMs <= at || !Array.isArray(boundary.accounts))
-          return hold("quota-stale");
-        const rows = boundary.accounts.filter((a: any) => a?.provider === "codex" && a.account === options.sourceAccount);
-        if (rows.length !== 1 || rows[0].profileKey !== profileKey) return hold("profile-mismatch");
-        const row = rows[0];
-        if (!Array.isArray(row.windows) || !row.windows.length) return hold("quota-unknown");
-        if (hasBudget && (row.windows.length !== budgetKeys.length || row.windows.some((w: any) =>
-            !Object.hasOwn(baselineResets, w.bucket) || w.resetsAtMs !== baselineResets[w.bucket])))
-          return hold("budget-baseline-changed");
-        const poolReserve = (options.poolPolicy ?? readPoolPolicy)().reservePercent?.[options.sourceAccount] ?? 0;
-        if (!Number.isFinite(poolReserve) || poolReserve < 0 || poolReserve > 100) return hold("reserve-invalid");
-        const windows: WindowAnalysis[] = row.windows.map((w: any): WindowAnalysis => {
-          const duration = w.windowSeconds ?? (typeof w.bucket === "string" && /^.+:(?:primary|secondary):\d+$/.test(w.bucket)
-            ? Number(w.bucket.split(":").at(-1)) * 60 : null);
-          const reserve = config.reservePercent.codex;
-          const configured = duration != null && duration <= 6 * 3600 ? reserve.short
-            : duration != null && duration >= 6 * 86400 ? reserve.weekly : reserve.other;
-          return { provider: "codex", account: options.sourceAccount!, bucket: w.bucket,
-            quality: w.quality, freshness: w.freshness, observedAtMs: w.observedAtMs,
-            remainingPercent: w.remainingPercent, resetsAtMs: w.resetsAtMs,
-            reservePercent: Math.max(1, configured, poolReserve, w.reservePercent ?? 0,
-              Object.hasOwn(minimumReserves, w.bucket) ? minimumReserves[w.bucket]! : 0) } as WindowAnalysis;
-        });
-        const account = { provider: "codex", account: options.sourceAccount, enabled: true,
-          collection: { health: row.collectionState, errorCategory: null }, windows } as AccountState;
-        const maxAge = Math.min(120000, config.collection.staleAfterSeconds * 1000);
-        let gate = evaluateResumeGate(account, "codex", options.sourceAccount, at, maxAge);
-        state.windows = windows.map(w => ({ bucket: w.bucket, remainingPercent: w.remainingPercent,
-          reservePercent: w.reservePercent, observedAtMs: w.observedAtMs, resetsAtMs: w.resetsAtMs }));
-        if (!gate.ready) return hold(gate.reason);
-        // Every exported Codex limit protects the subscription. Unknown model
-        // bucket associations are treated conservatively, never ignored.
-        for (const w of windows.filter(w => !w.bucket.startsWith("codex:"))) {
-          gate = evaluateResumeGate(account, "codex", options.sourceAccount, at, maxAge, w.bucket);
-          if (!gate.ready) return hold(gate.reason);
-        }
-        if (new Set(windows.map(w => w.bucket)).size !== windows.length) return hold("quota-unknown");
-        if (row.windows.some((w: any) => !Number.isFinite(w.validUntilMs) || w.validUntilMs <= at ||
-            !Number.isFinite(w.observedAtMs) || w.observedAtMs < stamp.mtimeMs)) return hold("quota-stale");
-        if (deniedAtMs != null && windows.some(w => w.observedAtMs <= deniedAtMs!)) return hold("upstream-quota-hold");
-        return { ...state, ready: true, reason: "ready" };
-      } catch { return hold("guard-unavailable"); }
-    },
+    checkIdentity(request = {}) { return checkState(request, true); },
+    check(request = {}) { return checkState(request); },
   };
   // Bind before the first request, not to credentials supplied by that request.
   guard.check();

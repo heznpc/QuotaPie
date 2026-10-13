@@ -25,8 +25,9 @@ quotapie dots mcp                   Private stdio MCP 2.0 server for an authenti
 
 Configuration and subscriptions live in QUOTAPIE_HOME/dots.sqlite with mode 0600.
 Status can start a bounded read-only profile app-server. Native continuation stays blocked
-until its original host is verified. An explicitly enabled profile-managed policy can run
-its reviewed prompt once through execute_continuation, using the original profile and thread.`);
+until its original host is verified. An explicitly enabled profile-managed policy uses the
+original profile and thread. report-check (the legacy default) is a tool-free check;
+continue-work preserves work tools in workspace-write with explicit duration, turn and quota limits.`);
     return 0;
   }
   if (["connection", "bind", "connect", "disconnect"].includes(command)) {
@@ -64,7 +65,9 @@ its reviewed prompt once through execute_continuation, using the original profil
         subscriptions: store.subscriptions().filter(s => s.targetId === value).map(s => ({
           id: s.id, event: s.name, expiresAtMs: s.expiresAtMs,
         })), limits: state.policy.executionMode === "profile-managed"
-          ? "Managed execution uses an observed quota cutoff and cancels on disable, unsubscribe or transport loss. Accounting delay can exceed the measured budget."
+          ? `${state.policy.executionPurpose === "continue-work"
+            ? "Continue-work preserves original tools in workspace-write and uses the reviewed duration, turn and usage limits."
+            : "Report-check is tool-free/read-only, one turn, and at most 60 seconds."} Managed execution uses an observed quota cutoff and cancels on disable, unsubscribe or transport loss. Accounting delay can exceed the measured budget.`
           : "Native admission checks do not cancel a host-owned turn. Dots must verify the original host before sending one follow-up; measured usage may exceed its budget." }, null, 2));
     } else if ((command === "enable" || command === "disable") && value) {
       const state = store.setEnabled(value, command === "enable");

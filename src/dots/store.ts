@@ -11,6 +11,10 @@ export interface DotPolicy {
   accountKey: string;
   continuation: string;
   executionMode?: "native" | "profile-managed";
+  /** Omitted legacy policies remain the bounded, tool-free verification. */
+  executionPurpose?: "report-check" | "continue-work";
+  /** Required for continue-work; bounds each owned invocation. */
+  maxDurationSeconds?: number;
   enabled: boolean;
   trigger: "quota.ready" | "quota.reset_approaching";
   resetBucket?: string;
@@ -42,6 +46,8 @@ export interface TargetState {
   claimed: string | null;
   claimExpiresAtMs?: number;
   dispatchedClaim?: string;
+  quotaBlockedAtMs?: number;
+  quotaBlockedWindows?: ResumeGate["windows"];
   outcome: "completed" | "quota-blocked" | "failed" | null;
 }
 

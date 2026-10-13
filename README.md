@@ -47,8 +47,13 @@ paths. A separate inspector's `notLoaded` does not establish native task idlenes
 Native execution-host and loaded-relay verification are not yet implemented;
 native-mode claims therefore fail closed even when quota is ready. An explicitly
 reviewed `profile-managed` policy can instead resume that same thread through
-the bundled Codex CLI in its original profile. This mode permits one read-only
-report, with a 60-second process limit and no automatic retries. Its in-memory
+the bundled Codex CLI in its original profile. `executionPurpose: report-check`
+(the legacy default) permits one tool-free, read-only report lasting at most
+60 seconds. `continue-work` permits actual workspace changes and existing tools,
+with an explicitly reviewed `maxDurationSeconds`, turn limit and usage budget.
+A completed or failed task stops; only a witnessed quota interruption can wait
+for recovery within the same approved policy. Neither mode retries an uncertain
+dispatch. Its in-memory
 proxy binds the original account and quota windows, rejects unguarded routes,
 and cancels the connection when permission or measured quota ends. Policies
 start disabled; live continuation still requires end-to-end verification.
@@ -78,8 +83,11 @@ account; an event receipt or a local test does not establish that result.
 
 `quotapie resume-check --provider codex --account ACCOUNT --json` queries the
 running collector. Fresh authoritative general quota windows and an optional
-`--bucket` model window must exceed their reserves. Profile mismatch, unknown or
-stale values, failed collection and an unconfirmed reset block admission.
+`--bucket` model window must exceed an explicitly configured execution cutoff
+(default 0%). Forecast headroom does not prevent spending remaining quota.
+Profile mismatch, unknown or expired values, authentication failures and an
+unconfirmed reset block admission. A temporary network/provider refresh failure
+does not revoke an authoritative observation before its configured expiry.
 Exit codes are 0 (ready), 3 (wait), and 69 (unavailable). The equivalent local
 endpoint is `GET /api/resume-check?provider=codex&account=ACCOUNT`.
 
@@ -299,15 +307,25 @@ It applies only to requests through this
 Mac's QuotaPie Codex relay. Transfers require the same portable history checks
 described above. Current installed relays also enforce independent subscription
 protection: requests stay on the source profile, pool routing and 429 failover
-are bypassed, and disabling the pool does not disable the guard. Its reserve is
-the maximum of the configured quota-window reserve, per-account pool reserve,
-and a 1% minimum. Missing, stale (at most 120 seconds), reset-due or mismatched
+are bypassed, and disabling the pool does not disable subscription exhaustion
+protection. Only an explicit enabled per-account reserve, or a separately reviewed
+continuation budget, stops execution above 0%. The forecast's default 10%/15%
+headroom is advisory; there is no hidden 1% execution minimum. Reset announcements
+do not create a cutoff. Missing, expired (`collection.staleAfterSeconds`), reset-due or mismatched
 quota/auth observations stop requests before dispatch. API-key, unsupported
 model/route and background requests are rejected. While a response is running,
 the guard rechecks every 500ms and cancels the upstream connection if the latest
 observation no longer permits it. This does not refund already-processed work
 or establish an exact provider-side billing cap; concurrent usage and delayed
-provider accounting remain outside the relay's control.
+provider accounting remain outside the relay's control. Model metadata remains
+available for quota/auth recovery, and local holds return a non-retryable 400
+with a specific reason. Previously observed, still-valid credentials survive
+same-login token refresh; replacing the login still stops execution.
+`/api/status` includes `compaction.subscriptionProtection` with live policy
+revisions, observation ages and reason-specific rejection counts, including
+ordinary requests. `quotapie-compaction repair-idle --source REPOSITORY` repairs
+older guarded listeners without changing loaded endpoint URLs; active requests
+are deferred and a failed restart restores the previous binary.
 After first installing reserve support, finish active work and reopen Codex:
 already-loaded tasks may still use an older relay that does not enforce reserves.
 Use only accounts you are authorized to access, in accordance with the applicable
@@ -717,7 +735,7 @@ The settings that matter most:
 
 - `recentWeight`: how strongly today's measured pace overrides your long-term personal pattern. With few samples, the long-term pattern automatically carries more weight.
 - `workSchedule`: ranges may cross midnight. `09:00`–`02:00` means 9am until 2am the next day.
-- `reservePercent`: the safety margin you want left when the reset arrives.
+- `reservePercent`: advisory headroom for forecasts; it is not an execution cutoff.
 - `accounts.*[].id`: the stable local alias used in the database and alerts. It must be unique within a provider.
 - `codexHome` / `configDir`: the per-account profile root. Two enabled accounts sharing a directory is rejected at startup.
 - `alerts.remainingThresholds`: the remaining-percentage steps that trigger alerts.

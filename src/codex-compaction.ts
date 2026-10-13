@@ -37,9 +37,29 @@ const HOP_HEADERS = [
 class SubscriptionRequestError extends Error {
   constructor(readonly reason: string) { super(reason); }
 }
-const subscriptionError = (reason: string) => ({ type: "quotapie_subscription_guard",
-  code: `subscription_${reason.replace(/^subscription-/, "").replaceAll("-", "_")}`,
-  message: "QuotaPie paused this request to protect the existing subscription allowance. Refresh quota or wait for it to recover; no other account or paid fallback was used." });
+function subscriptionError(reason: string) {
+  const messages: Record<string, string> = {
+    "reserve-reached": "The configured remaining quota reserve has been reached. Wait for quota recovery or review the reserve in QuotaPie.",
+    "quota-exhausted": "The subscription quota is exhausted. Wait for quota recovery; paid credits are not a fallback.",
+    "quota-stale": "A fresh quota observation is unavailable. Retry after quota collection has refreshed.",
+    "collection-unavailable": "The quota collector is unavailable. Restore quota collection before retrying.",
+    "quota-unknown": "The current subscription allowance has not been verified. Retry after quota collection succeeds.",
+    "reset-unconfirmed": "The quota reset has not been confirmed. Wait for a fresh quota observation.",
+    "upstream-quota-hold": "The provider rejected a previous inference request for quota or billing limits. Wait for a newer quota observation before retrying.",
+    "account-unavailable": "The configured Codex account profile is unavailable.",
+    "account-identity-changed": "The Codex login in this profile changed. Reconnect the relay to the intended account before retrying.",
+    "request-identity-mismatch": "This request does not match the configured Codex login. Reopen the task in its owning account profile.",
+    "subscription-auth-required": "This relay requires the configured ChatGPT subscription login.",
+    "subscription-auth-unavailable": "The configured ChatGPT login is expired or unavailable. Refresh that profile's login before retrying.",
+    "profile-mismatch": "The quota observation belongs to a different account profile.",
+    "model-unverified": "This model has not been verified for the configured subscription.",
+    "route-unsupported": "This request route is not supported by subscription protection.",
+    "request-unsupported": "This request format is not supported by subscription protection.",
+  };
+  return { type: "quotapie_subscription_guard",
+    code: `subscription_${reason.replace(/^subscription-/, "").replaceAll("-", "_")}`,
+    message: `QuotaPie paused this request. ${messages[reason] ?? "Subscription protection could not be verified for this request."} No other account or paid fallback was used.` };
+}
 
 function transportHeaders(source: Headers): Headers {
   const headers = new Headers(source);
@@ -116,6 +136,8 @@ export function startCompactionProxy(options: {
   let activeRequests = 0;
   let draining = false;
   let guardBlockedRequests = 0, guardAbortedRequests = 0;
+  const blockedByReason: Record<string, number> = {};
+  const abortedByReason: Record<string, number> = {};
   const active = new Map<string, CompactionRequestEvent>();
   const recent: CompactionRequestEvent[] = [];
   const record = (update: CompactionRequestEvent) => {
@@ -145,8 +167,10 @@ export function startCompactionProxy(options: {
       if (path === "/quotapie-health" && request.method === "GET") {
         return Response.json({ service: "quotapie-compaction", schemaVersion: 3, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolReserveVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 3 : 0, accountPoolRecoveryVersion: options.accountPool ? 2 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, responseOwnershipVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
           subscriptionGuardVersion: options.subscriptionGuard ? 1 : 0,
+          subscriptionGuardRevision: options.subscriptionGuard ? 2 : 0,
           subscriptionGuard: options.subscriptionGuard ? { ...options.subscriptionGuard.check(),
-            blockedRequests: guardBlockedRequests, abortedRequests: guardAbortedRequests } : null,
+            blockedRequests: guardBlockedRequests, abortedRequests: guardAbortedRequests,
+            blockedByReason, abortedByReason } : null,
           accountPoolLineageVersion: options.accountPool ? 3 : 0,
           route: validateCompactionRoute(route), requests, rejectedRequests, compactions, attemptedCompactions,
           failedCompactions, cancelledCompactions, unverifiedCompactions, activeRequests, draining,
@@ -167,11 +191,15 @@ export function startCompactionProxy(options: {
       }
       const rejectGuard = (reason: string) => {
         guardBlockedRequests++; rejectedRequests++;
-        return Response.json({ error: subscriptionError(reason) }, { status: 409 });
+        blockedByReason[reason] = (blockedByReason[reason] ?? 0) + 1;
+        // A local hold is not a transient provider conflict. Codex retries 409,
+        // which cannot repair a reserve or identity failure.
+        return Response.json({ error: subscriptionError(reason) }, { status: 400 });
       };
       if (options.subscriptionGuard && (request.method === "POST"
         ? !["/responses", "/responses/compact"].includes(path) : path !== "/models"))
         return rejectGuard("route-unsupported");
+      const metadataRequest = request.method === "GET" && path === "/models";
       let headers = transportHeaders(request.headers);
       // Bun fetch decompresses upstream responses; request identity to keep streaming simple.
       headers.set("accept-encoding", "identity");
@@ -260,7 +288,9 @@ export function startCompactionProxy(options: {
           }
         }
         if (options.subscriptionGuard && request.method !== "POST") {
-          const guard = options.subscriptionGuard.check({ headers });
+          // Model discovery is metadata needed for native login and collector
+          // recovery. It cannot consume inference allowance.
+          const guard = options.subscriptionGuard.checkIdentity({ headers });
           if (!guard.ready) throw new SubscriptionRequestError(guard.reason);
         }
       } catch (error) {
@@ -272,7 +302,7 @@ export function startCompactionProxy(options: {
           return new Response(null, { status: 499 });
         }
         if (error instanceof SubscriptionRequestError) {
-          if (event) record({ ...event, phase: "failed", status: 409, errorCode: subscriptionError(error.reason).code,
+          if (event) record({ ...event, phase: "failed", status: 400, errorCode: subscriptionError(error.reason).code,
             at: new Date().toISOString(), durationMs: Math.round(performance.now() - started), retryCount: 0 });
           return rejectGuard(error.reason);
         }
@@ -352,12 +382,14 @@ export function startCompactionProxy(options: {
       const checkSubscription = () => {
         if (finished || guardFailure || !options.subscriptionGuard) return;
         if (receivedResponse && status >= 400) return;
-        const check = options.subscriptionGuard.check({ model: guardModel });
+        const check = metadataRequest ? options.subscriptionGuard.checkIdentity()
+          : options.subscriptionGuard.check({ model: guardModel });
         if (check.ready) return;
         // A terminal provider result already delivered to the client is final.
         const terminal = observer?.terminal();
         if (terminal) { finish(terminal.phase, terminal.errorCode); return; }
         guardFailure = check.reason; guardAbortedRequests++;
+        abortedByReason[check.reason] = (abortedByReason[check.reason] ?? 0) + 1;
         finish("failed", subscriptionError(check.reason).code);
         cancellation.abort();
         void upstreamReader?.cancel().catch(() => {});
@@ -371,7 +403,7 @@ export function startCompactionProxy(options: {
         if (!finished) guardTimer = setInterval(checkSubscription, options.subscriptionGuard.intervalMs);
       }
       try {
-        if (guardFailure) return Response.json({ error: subscriptionError(guardFailure) }, { status: 409 });
+        if (guardFailure) return Response.json({ error: subscriptionError(guardFailure) }, { status: 400 });
         if (finished || cancellation.signal.aborted) return new Response(null, { status: 499 });
         // Cooldowns are routing evidence and must be durable before failover.
         // Success status is telemetry: enqueue it without delaying any bytes.
@@ -383,7 +415,8 @@ export function startCompactionProxy(options: {
           try { await write; return true; } catch { return false; }
         };
         // The transport may retry a connection failure before any response.
-        // Recheck the allowance before each attempt, not only the first one.
+        // Recheck the request's protection before each attempt. Metadata uses
+        // only identity checks; it never depends on inference allowance.
         const guardedFetch: typeof upstreamFetch = async (target, init) => {
           checkSubscription();
           cancellation.signal.throwIfAborted();
@@ -394,7 +427,7 @@ export function startCompactionProxy(options: {
         }, code => { retryCount++; transportCode = code; });
         receivedResponse = true;
         status = response.status;
-        options.subscriptionGuard?.observeResponse?.(status);
+        if (!metadataRequest) options.subscriptionGuard?.observeResponse?.(status);
         const cooldownRecorded = await recordPoolResponse(response);
         // A rejected HTTP request has produced no model output. Retry once with
         // complete portable history; never retry a 200 stream or partial output.
@@ -432,7 +465,7 @@ export function startCompactionProxy(options: {
           }
         }
         if (finished) { await response.body?.cancel(); return guardFailure
-          ? Response.json({ error: subscriptionError(guardFailure) }, { status: 409 }) : new Response(null, { status: 499 }); }
+          ? Response.json({ error: subscriptionError(guardFailure) }, { status: 400 }) : new Response(null, { status: 499 }); }
         if ([301, 302, 303, 307, 308].includes(status)) {
           await response.body?.cancel(); finish("failed", "upstream_redirect");
           return new Response("Unexpected Codex upstream redirect", { status: 502 });
@@ -530,7 +563,7 @@ export function startCompactionProxy(options: {
         });
         return new Response(stream, { status, headers: responseHeaders });
       } catch (error) {
-        if (guardFailure) return Response.json({ error: subscriptionError(guardFailure) }, { status: 409 });
+        if (guardFailure) return Response.json({ error: subscriptionError(guardFailure) }, { status: 400 });
         if (cancellation.signal.aborted) {
           clientClosed();
           return new Response(null, { status: 499 });

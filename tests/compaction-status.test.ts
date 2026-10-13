@@ -6,6 +6,88 @@ import { CompactionStatusReader } from "../src/compaction-status";
 import { startCompactionProxy } from "../src/codex-compaction";
 import { DEFAULT_TASK_SAVINGS } from "../src/task-savings";
 
+test("guard diagnostics expose repeated holds and mixed live revisions without transport or login data", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "quotapie-guard-status-")));
+  const now = Date.parse("2026-10-13T03:00:00Z");
+  const token = "cd".repeat(24), route = { from: "gpt-6-astra", to: "gpt-5.6-sol", effort: "low" };
+  const blocked = { requestId: "11111111-1111-4111-8111-111111111111", threadId: null, turnId: null,
+    kind: "response", from: "gpt-6-astra", to: "gpt-6-astra", routed: false, phase: "failed", status: 400,
+    requestedEffort: null, reasoningEffort: null, at: new Date(now).toISOString(), durationMs: 1,
+    errorCode: "subscription_quota_stale" };
+  try {
+    const directories = [root, join(root, "releases", "1"), join(root, "releases", "2")];
+    for (const [index, directory] of directories.entries()) {
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, "settings.json"), JSON.stringify({ port: 45001 + index, token, route }));
+    }
+    await writeFile(join(root, "current.json"), JSON.stringify({ settings_path: join(root, "settings.json") }));
+    await writeFile(join(root, "relay.log"), JSON.stringify(blocked) + "\n");
+    const reader = new CompactionStatusReader(root, (async (input: RequestInfo | URL) => {
+      const index = Number(new URL(String(input)).port) - 45001;
+      return Response.json({ service: "quotapie-compaction", schemaVersion: 3, route, taskSavings: DEFAULT_TASK_SAVINGS,
+        subscriptionGuardVersion: index === 2 ? 0 : 1,
+        ...(index === 2 ? {} : { subscriptionGuardRevision: index === 0 ? 2 : 1 }), activeRequests: index,
+        subscriptionGuard: index === 2 ? null : { version: 1, account: index === 0 ? "primary" : "second",
+          profileKey: "private-profile-key", email: "private@example.com", token, endpoint: "https://secret.example.com", path: root,
+          ready: false, reason: index === 0 ? "quota-stale" : "reserve-reached", blockedRequests: index === 0 ? 24 : 3,
+          abortedRequests: index === 0 ? 2 : 0,
+          blockedByReason: index === 0 ? { "quota-stale": 20, "collection-unavailable": 4 } : { "reserve-reached": 3 },
+          windows: [{ bucket: "codex:primary:300", remainingPercent: 63, reservePercent: 0, observedAtMs: now - 125000 },
+            { bucket: "https://secret.example.com", remainingPercent: 100, reservePercent: 0, observedAtMs: now }] },
+        recent: index === 0 ? [blocked] : index === 1 ? [blocked, { ...blocked,
+          requestId: "22222222-2222-4222-8222-222222222222", errorCode: "subscription_reserve_reached" }] : [] });
+    }) as unknown as typeof fetch);
+    const status = await reader.status(now);
+    expect(status.subscriptionProtection).toMatchObject({ expectedRevision: 2, reachable: 3, outOfDate: 2,
+      revisionMismatch: true, blockedRequests: 27, abortedRequests: 2, activeRequests: 3,
+      blockedByReason: { "quota-stale": 20, "collection-unavailable": 4, "reserve-reached": 3 },
+      observedBlocksByReason: { "quota-stale": 1, "reserve-reached": 1 } });
+    expect(status.subscriptionProtection.relays[0]).toEqual({ generation: 1, reachable: true, revision: 2, outOfDate: false,
+      account: "primary", ready: false, reason: "quota-stale", blockedRequests: 24, abortedRequests: 2, activeRequests: 0,
+      blockedByReason: { "quota-stale": 20, "collection-unavailable": 4 },
+      windows: [{ bucket: "codex:primary:300", remainingPercent: 63, reservePercent: 0, observedAgeMs: 125000 }] });
+    expect(status.subscriptionProtection.relays[2]).toMatchObject({ revision: null, outOfDate: true, account: null,
+      ready: null, reason: "guard-unavailable" });
+    const serialized = JSON.stringify(status.subscriptionProtection);
+    for (const secret of [token, root, "private-profile-key", "private@example.com", "secret.example.com", "endpoint", "profileKey"])
+      expect(serialized).not.toContain(secret);
+    const stale = reader.snapshot(now + 20000);
+    expect(stale.subscriptionProtection).toMatchObject({ reachable: 0, activeRequests: 0, outOfDate: 0, revisionMismatch: false,
+      blockedRequests: 27, blockedByReason: { "quota-stale": 20, "collection-unavailable": 4, "reserve-reached": 3 } });
+    expect(stale.subscriptionProtection.relays.every(r => !r.reachable && r.ready === null && r.reason === "observer-state-stale")).toBe(true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("guard diagnostics sanitize malformed fields and do not call an unreachable relay ready", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "quotapie-guard-sanitize-")));
+  const now = Date.parse("2026-10-13T03:00:00Z");
+  const route = { from: "gpt-6-astra", to: "gpt-5.6-sol", effort: "low" };
+  let reachable = true;
+  try {
+    await writeFile(join(root, "settings.json"), JSON.stringify({ port: 45001, token: "ef".repeat(24), route }));
+    await writeFile(join(root, "current.json"), JSON.stringify({ settings_path: join(root, "settings.json") }));
+    const reader = new CompactionStatusReader(root, (async () => {
+      if (!reachable) throw new Error("https://secret.example.com/private-token");
+      return Response.json({ service: "quotapie-compaction", schemaVersion: 3, route, activeRequests: -10,
+        subscriptionGuardVersion: 1, subscriptionGuardRevision: 2, subscriptionGuard: { version: 1,
+          account: "private@example.com", reason: "https://secret.example.com/private-token", ready: "true",
+          blockedRequests: -1, abortedRequests: "20", blockedByReason: { "private@example.com": 2, "quota-stale": -4 },
+          windows: [{ bucket: "codex:primary:300", remainingPercent: 101, reservePercent: -1, observedAtMs: now + 1 }] } });
+    }) as unknown as typeof fetch);
+    expect(reader.snapshot(now).subscriptionProtection).toMatchObject({ reachable: 0, relays: [] });
+    const first = await reader.status(now);
+    expect(first.subscriptionProtection).toMatchObject({ reachable: 1, outOfDate: 0, revisionMismatch: false,
+      blockedRequests: 0, abortedRequests: 0, activeRequests: 0, blockedByReason: { unknown: 2 } });
+    expect(first.subscriptionProtection.relays[0]).toMatchObject({ account: null, ready: null, reason: "unknown",
+      windows: [{ bucket: "codex:primary:300", remainingPercent: null, reservePercent: null, observedAgeMs: null }] });
+    expect(JSON.stringify(first.subscriptionProtection)).not.toContain("private");
+    reachable = false;
+    const lost = await reader.status(now + 3000);
+    expect(lost.subscriptionProtection).toMatchObject({ reachable: 0, outOfDate: 0, revisionMismatch: false,
+      relays: [{ reachable: false, revision: null, outOfDate: false, account: null, ready: null, reason: "relay-unreachable" }] });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("observation reuses validated settings for both policies while still observing unlisted generations", async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "quotapie-shared-settings-")));
   const paths = [join(root, "releases", "1", "settings.json"), join(root, "releases", "2", "settings.json")];

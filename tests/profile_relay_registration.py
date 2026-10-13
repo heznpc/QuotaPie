@@ -33,7 +33,7 @@ with tempfile.TemporaryDirectory() as tmp:
         (home/'config.toml').write_text(m.enabled_config('model = "gpt-6-astra"\n',m.LocalRelay.endpoint(settings)))
     relay.settings_path=Path(paths[0]);relay.manifest={'settings_path':paths[0],'profile_settings':{str(root/'1'):paths[1]}}
     relay.health=lambda s: {'service':'quotapie-compaction','schemaVersion':3,'route':s['route'],
-        'subscriptionGuardVersion':1,'subscriptionGuard':{'version':1,'account':'fixture',
+        'subscriptionGuardVersion':1,'subscriptionGuardRevision':2,'subscriptionGuard':{'version':1,'account':'fixture',
         'profileKey':hashlib.sha256(str(Path(s['codex_home']).resolve()).encode()).hexdigest()}}
     relay.install=lambda args: (_ for _ in ()).throw(AssertionError('duplicate generation installed'))
     assert relay.ensure_profile(SimpleNamespace(codex_home=str(root/'1')))['relayConnected']

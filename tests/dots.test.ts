@@ -222,6 +222,59 @@ test("usage budget and policy expiry stop admission without pretending to cancel
   } finally { f.store.close(); }
 });
 
+test("quota-blocked work re-arms within its turn count and passes the remaining total budget", async () => {
+  const f = fixture(), budgets: number[] = [];
+  const state = f.store.target("original");
+  Object.assign(state.policy, { executionMode: "profile-managed", executionPurpose: "continue-work", maxDurationSeconds: 3600, maxTurns: 2 });
+  f.store.save(state);
+  const managed = new DotBridge(f.store, f.bridge.readGate, f.bridge.post, f.bridge.now, f.bridge.preflight,
+    async p => { budgets.push(p.maxUsagePercent); const outcome = budgets.length === 1 ? "quota-blocked" : "completed";
+      if (outcome === "quota-blocked") f.setGate({ ...gate(), windows: [{ ...gate().windows[0]!, remainingPercent: 77 }] });
+      return { nativeThreadId: p.threadId, outcome, reason: outcome, attempts: 1 }; });
+  try {
+    f.store.setEnabled("original", true); await f.subscribe(); await managed.tick();
+    const first: any = await managed.claim("original", f.store.target("original").event!.eventId);
+    expect(await managed.execute("original", first.claimId)).toMatchObject({ outcome: "quota-blocked", enabled: true });
+    await expect(managed.execute("original", first.claimId)).rejects.toThrow("claim-not-dispatchable");
+    await managed.tick(); expect(f.store.target("original").event).toBeNull();
+    f.setNow(NOW + 1000);
+    f.setGate({ ...gate(), checkedAtMs: NOW + 1000, windows: [{ ...gate().windows[0]!, observedAtMs: NOW + 1000, remainingPercent: 77 }] });
+    await managed.tick(); expect(f.store.target("original").event).toBeNull();
+    f.setGate({ ...gate(), checkedAtMs: NOW + 1000, windows: [{ ...gate().windows[0]!, observedAtMs: NOW + 1000, remainingPercent: 78 }] });
+    await managed.tick();
+    const second: any = await managed.claim("original", f.store.target("original").event!.eventId);
+    expect(await managed.execute("original", second.claimId)).toMatchObject({ outcome: "completed", enabled: false });
+    expect(budgets).toEqual([5, 2]);
+    expect(f.store.target("original")).toMatchObject({ turns: 2, spent: 3, policy: { maxUsagePercent: 5, enabled: false } });
+  } finally { f.store.close(); }
+});
+
+test("collector freshness deadlines replace the hidden two-minute Dots cutoff", () => {
+  const p = { ...policy(), reservePercent: 0 };
+  const g = { ...gate(), validUntilMs: NOW + 450000,
+    windows: [{ ...gate().windows[0]!, reservePercent: 0, remainingPercent: 9, observedAtMs: NOW - 150000 }] };
+  expect(gateAllows(p, g, NOW)).toBeTrue();
+  expect(gateAllows(p, { ...g, validUntilMs: NOW }, NOW)).toBeFalse();
+  expect(gateAllows(p, { ...g, validUntilMs: undefined }, NOW)).toBeFalse();
+  expect(gateAllows({ ...p, reservePercent: 10 }, g, NOW)).toBeFalse();
+});
+
+test("usage observed between claim and dispatch is deducted before a work budget is granted", async () => {
+  const f = fixture(), budgets: number[] = [];
+  const state = f.store.target("original");
+  Object.assign(state.policy, { executionMode: "profile-managed", executionPurpose: "continue-work", maxDurationSeconds: 3600, maxTurns: 2 });
+  f.store.save(state);
+  const managed = new DotBridge(f.store, f.bridge.readGate, f.bridge.post, () => NOW, f.bridge.preflight,
+    async p => { budgets.push(p.maxUsagePercent); return { nativeThreadId: p.threadId, outcome: "completed", reason: "completed", attempts: 1 }; });
+  try {
+    f.store.setEnabled("original", true); await f.subscribe(); await managed.tick();
+    const claim: any = await managed.claim("original", f.store.target("original").event!.eventId);
+    f.setGate({ ...gate(), windows: [{ ...gate().windows[0]!, remainingPercent: 77 }] });
+    expect(await managed.execute("original", claim.claimId)).toMatchObject({ outcome: "completed", enabled: false });
+    expect(budgets).toEqual([2]); expect(f.store.target("original").spent).toBe(3);
+  } finally { f.store.close(); }
+});
+
 test("stable ready state never emits another event; a quota transition invalidates the old event", async () => {
   const f = fixture();
   try {
@@ -317,6 +370,11 @@ test("registration verifies the thread metadata in the selected profile and alwa
     const { enabled: _, profileKey: __, accountKey: ___, ...input } = policy();
     input.expiresAtMs = Date.now() + 3600000;
     expect(parsePolicy(input, config)).toMatchObject({ enabled: false, threadId: policy().threadId });
+    const work = { ...input, executionMode: "profile-managed", executionPurpose: "continue-work", maxTurns: 3, maxDurationSeconds: 3600 };
+    expect(parsePolicy(work, config)).toMatchObject({ enabled: false, executionPurpose: "continue-work", maxTurns: 3, maxDurationSeconds: 3600 });
+    expect(() => parsePolicy({ ...work, maxDurationSeconds: undefined }, config)).toThrow("invalid-policy-maxDurationSeconds");
+    expect(() => parsePolicy({ ...work, executionPurpose: "report-check" }, config)).toThrow("managed-single-turn-required");
+    expect(() => parsePolicy({ ...work, executionPurpose: "other" }, config)).toThrow("invalid-execution-purpose");
     expect(() => parsePolicy({ ...input, enabled: true }, config)).toThrow();
     expect(() => parsePolicy({ ...input, threadId: "22222222-2222-3333-4444-555555555555" }, config)).toThrow("thread-profile-unverified");
   } finally { rmSync(root, { recursive: true, force: true }); }

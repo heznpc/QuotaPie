@@ -13,6 +13,7 @@ import type { DotPolicy } from "./store";
 import type { ResumeGate } from "../resume-gate";
 
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+const QUOTA_HOLDS = new Set(["reserve-reached", "quota-exhausted", "upstream-quota-hold"]);
 type Lifecycle = { type: "task_complete" | "turn_aborted"; atMs: number };
 export interface ManagedPreparation {
   ready: boolean;
@@ -34,6 +35,7 @@ export interface ManagedChild {
   sendPrompt(prompt: string): void;
   kill(signal: "SIGTERM" | "SIGKILL"): void;
   disposeStreams?(): void;
+  cleanup?(): Promise<void>;
 }
 export interface ManagedProcessPlan { binary: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }
 export interface ManagedRunOptions extends PreparationOptions {
@@ -137,23 +139,36 @@ export async function prepareManagedContinuation(config: AppConfig, policy: DotP
   }
 }
 
-function environment(root: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
+function environment(root: string, reportOnly: boolean): NodeJS.ProcessEnv {
+  // Work keeps the profile's existing tool environment. Provider credentials
+  // and endpoint overrides cannot replace the fixed ChatGPT relay identity.
+  const env: NodeJS.ProcessEnv = reportOnly ? {} : { ...process.env };
   for (const key of ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TMP", "TEMP"])
     if (process.env[key] !== undefined) env[key] = process.env[key];
+  for (const key of ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_ORG_ID", "OPENAI_ORGANIZATION", "OPENAI_PROJECT_ID", "CHATGPT_BASE_URL"])
+    delete env[key];
   return { ...env, CODEX_HOME: root, TERM: "dumb", NO_COLOR: "1" };
 }
 function startProxy(config: AppConfig, root: string, policy: DotPolicy, guard: SubscriptionGuard) {
   const pool = new AccountPool({ sourceAccount: policy.account, accounts: () => poolAccounts(config), policy: readPoolPolicy,
     forkParent: threadId => readCodexForkParent(root, threadId) });
   try {
-    const proxy = startCompactionProxy({ accountPool: pool, subscriptionGuard: guard, reportOnly: true,
+    const proxy = startCompactionProxy({ accountPool: pool, subscriptionGuard: guard, reportOnly: policy.executionPurpose !== "continue-work",
       route: { from: "gpt-6-astra", to: "gpt-6-astra" }, taskSavings: { enabled: false, model: "gpt-5.6-luna", effort: "low" } });
     return { baseUrl: proxy.baseUrl, stop() { proxy.stop(); pool.close(); } };
   } catch (error) { pool.close(); throw error; }
 }
-function spawnChild(plan: ManagedProcessPlan): ManagedChild {
-  const child = Bun.spawn([plan.binary, ...plan.args], { cwd: plan.cwd, env: plan.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+export function spawnManagedChild(plan: ManagedProcessPlan): ManagedChild {
+  // A distinct session owns the CLI and the shell/MCP children it starts. Only
+  // this invocation's process group may be signalled, never the desktop owner.
+  const child = Bun.spawn([plan.binary, ...plan.args], { cwd: plan.cwd, env: plan.env,
+    detached: true, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const signalGroup = (signal: "SIGTERM" | "SIGKILL") => {
+    try { process.kill(-child.pid, signal); } catch (error: any) { if (error?.code !== "ESRCH") throw error; }
+  };
+  const groupExists = () => {
+    try { process.kill(-child.pid, 0); return true; } catch (error: any) { if (error?.code === "ESRCH") return false; throw error; }
+  };
   const out = child.stdout.getReader(), err = child.stderr.getReader();
   const chunks = async function* (reader: ReadableStreamDefaultReader<Uint8Array>) {
     try { while (true) { const next = await reader.read(); if (next.done) return; yield next.value; } }
@@ -161,7 +176,16 @@ function spawnChild(plan: ManagedProcessPlan): ManagedChild {
   };
   return { stdout: chunks(out), stderr: chunks(err), exited: child.exited,
     sendPrompt(prompt) { child.stdin.write(prompt); child.stdin.end(); },
-    kill(signal) { try { child.kill(signal); } catch { /* The owned process already exited. */ } },
+    kill: signalGroup,
+    async cleanup() {
+      if (!groupExists()) return;
+      signalGroup("SIGTERM");
+      // A CLI can exit before a tool that ignores TERM. Do not use only the
+      // leader's exit promise as proof that its owned process group is gone.
+      const deadline = performance.now() + 1000;
+      while (groupExists() && performance.now() < deadline) await Bun.sleep(20);
+      if (groupExists()) signalGroup("SIGKILL");
+    },
     disposeStreams() {
       for (const reader of [out, err]) { try { void reader.cancel().catch(() => {}); } catch { /* Already released. */ } }
     } };
@@ -171,10 +195,15 @@ function spawnChild(plan: ManagedProcessPlan): ManagedChild {
  * lease; this adapter never claims, schedules, retries or chooses another task. */
 export async function runManagedContinuation(input: { config: AppConfig; policy: DotPolicy; claimId: string }, options: ManagedRunOptions): Promise<ManagedContinuationResult> {
   const { config, policy } = input, now = options.now ?? Date.now;
+  const reportOnly = policy.executionPurpose !== "continue-work";
+  const durationSeconds = policy.maxDurationSeconds ?? (reportOnly ? 60 : NaN);
   let attempts: 0 | 1 = 0;
   const failed = (reason: string): ManagedContinuationResult => ({ nativeThreadId: policy.threadId, outcome: "failed", reason, attempts });
   const authorized = () => {
-    try { return policy.enabled && policy.executionMode === "profile-managed" && policy.maxTurns === 1 &&
+    try { return policy.enabled && policy.executionMode === "profile-managed" &&
+      (policy.executionPurpose == null || ["report-check", "continue-work"].includes(policy.executionPurpose)) &&
+      Number.isInteger(policy.maxTurns) && policy.maxTurns >= 1 && policy.maxTurns <= 100 && (!reportOnly || policy.maxTurns === 1) &&
+      Number.isInteger(durationSeconds) && durationSeconds >= 1 && durationSeconds <= (reportOnly ? 60 : 7 * 86400) &&
       policy.expiresAtMs > now() && UUID.test(input.claimId) && options.stillAuthorized() === true; }
     catch { return false; }
   };
@@ -196,7 +225,7 @@ export async function runManagedContinuation(input: { config: AppConfig; policy:
   catch { return failed("execution-config-unverified"); }
   const guardOptions = { codexHome: snapshot.root, sourceAccount: policy.account, config: () => config };
   const createGuard = options.guard ?? createSubscriptionGuard;
-  const baseline = createGuard(guardOptions).check();
+  const baseline = createGuard(guardOptions).check({ model: snapshot.model });
   if (!baseline.ready || baseline.profileKey !== policy.profileKey || !baseline.windows.length) return failed("subscription-guard-hold");
   const minimumReserveByBucket: Record<string, number> = {}, baselineResetsAtByBucket: Record<string, number> = {};
   for (const w of baseline.windows) {
@@ -208,11 +237,15 @@ export async function runManagedContinuation(input: { config: AppConfig; policy:
   // Bind the guard's captured credential identity to the durable policy account,
   // even if authentication changed after the earlier quota gate.
   try { gate = await gateReader(policy); } catch { return failed("policy-or-quota-hold"); }
-  if (!gateAllows(policy, gate, now()) || !sourceGuard.check().ready || !authorized()) return failed("policy-or-quota-hold");
+  if (!gateAllows(policy, gate, now()) || !sourceGuard.check({ model: snapshot.model }).ready || !authorized()) return failed("policy-or-quota-hold");
   let blocked: string | null = null;
   const guard: SubscriptionGuard = { intervalMs: 500, observeResponse: status => sourceGuard.observeResponse?.(status),
+    checkIdentity(request) {
+      const state = sourceGuard.checkIdentity(request);
+      return authorized() ? state : { ...state, ready: false, reason: "continuation-authorization-ended" };
+    },
     check(request) {
-      const state = sourceGuard.check(request);
+      const state = sourceGuard.check({ ...request, model: request?.model ?? snapshot.model });
       const mismatch = request?.headers && request.model !== undefined && codexRequestIdentity(request.headers).threadId !== policy.threadId;
       const reason = blocked ?? (!authorized() ? "continuation-authorization-ended" : mismatch ? "continuation-thread-mismatch" : !state.ready ? state.reason : null);
       if (reason) { blocked = reason; return { ...state, ready: false, reason }; }
@@ -225,18 +258,19 @@ export async function runManagedContinuation(input: { config: AppConfig; policy:
       return failed("dispatch-precondition-changed");
     const disabledFeatures = ["hooks", "goals", "multi_agent", "apps", "plugins", "remote_plugin", "shell_tool", "unified_exec", "skill_mcp_dependency_install"];
     const mcp = `mcp_servers={${executionConfig.mcpServers.map(name => `${JSON.stringify(name)}={enabled=false}`).join(",")}}`;
-    const args = compactionCodexArgs(proxy.baseUrl, ["-a", "never", ...disabledFeatures.flatMap(name => ["-c", `features.${name}=false`]),
-      "-c", "orchestrator.mcp.enabled=false", "-c", "notify=[]", "-c", 'web_search="disabled"', "-c", "apps._default.enabled=false", "-c", mcp,
+    const reportRestrictions = reportOnly ? [...disabledFeatures.flatMap(name => ["-c", `features.${name}=false`]),
+      "-c", "orchestrator.mcp.enabled=false", "-c", "notify=[]", "-c", 'web_search="disabled"', "-c", "apps._default.enabled=false", "-c", mcp] : [];
+    const args = compactionCodexArgs(proxy.baseUrl, ["-a", "never", ...reportRestrictions,
       "-c", `model=${JSON.stringify(snapshot.model)}`,
       ...(snapshot.effort ? ["-c", `model_reasoning_effort=${JSON.stringify(snapshot.effort)}`] : []),
       "-c", 'forced_login_method="chatgpt"',
-      "-c", 'cli_auth_credentials_store="file"', "exec", "--sandbox", "read-only", "resume", policy.threadId, "--json", "-"]);
+      "-c", 'cli_auth_credentials_store="file"', "exec", "--sandbox", reportOnly ? "read-only" : "workspace-write", "resume", policy.threadId, "--json", "-"]);
     // This table is generated above, never supplied by the caller. Pin native
     // transport retries too: one managed attempt must not reconnect/replay.
     const providerIndex = args.findIndex(arg => arg.startsWith("model_providers.quotapie_compaction={"));
     if (providerIndex < 0 || !args[providerIndex]!.endsWith("}")) return failed("managed-provider-unverified");
     args[providerIndex] = args[providerIndex]!.slice(0, -1) + ",request_max_retries=0,stream_max_retries=0}";
-    const child = (options.spawn ?? spawnChild)({ binary, args, cwd: snapshot.cwd, env: environment(snapshot.root) });
+    const child = (options.spawn ?? spawnManagedChild)({ binary, args, cwd: snapshot.cwd, env: environment(snapshot.root, reportOnly) });
     attempts = 1;
     let stopped: string | null = null, finished = false, exited = false, matched = false, complete = false, report = "", quota = false;
     let hardKill: ReturnType<typeof setTimeout> | undefined, stopDeadline: ReturnType<typeof setTimeout> | undefined;
@@ -251,34 +285,36 @@ export async function runManagedContinuation(input: { config: AppConfig; policy:
       }
     };
     const authTimer = setInterval(() => { if (!authorized()) stop("continuation-authorization-ended"); }, 500);
-    const timeout = setTimeout(() => stop("continuation-timeout"), 60000);
+    const timeout = setTimeout(() => stop("continuation-timeout"), Math.min(durationSeconds * 1000, policy.expiresAtMs - now()));
     const stdout = (async () => {
       const decoder = new TextDecoder(); let buffer = "", bytes = 0;
       for await (const chunk of child.stdout) {
         bytes += chunk.length;
-        if (bytes > 2 * 1024 * 1024) { stop("continuation-output-limit"); break; }
+        if (reportOnly && bytes > 2 * 1024 * 1024) { stop("continuation-output-limit"); break; }
         buffer += decoder.decode(chunk, { stream: true });
         let index;
         while ((index = buffer.indexOf("\n")) >= 0) {
           const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
           if (!line.trim()) continue;
+          if (line.length > 2 * 1024 * 1024) { stop("continuation-output-limit"); break; }
           let event: any;
           try { event = JSON.parse(line); } catch { stop("continuation-invalid-output"); continue; }
           if (event.type === "thread.started") {
             if (event.thread_id !== policy.threadId) stop("continuation-thread-mismatch"); else matched = true;
           }
-          if (["item.started", "item.updated", "item.completed"].includes(event.type) &&
+          if (reportOnly && ["item.started", "item.updated", "item.completed"].includes(event.type) &&
               !["agent_message", "reasoning"].includes(event.item?.type)) stop("continuation-tool-violation");
           if (event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string")
             report = event.item.text.slice(0, 1000);
           if (["error", "turn.failed"].includes(event.type)) {
             const error = event.error ?? event, text = typeof error.message === "string" ? error.message : "";
             quota ||= error.status === 429 || error.api_error_status === 429 ||
-              /^(?:subscription_|quota_|usage_limit|rate_limit)/.test(String(error.code ?? error.type ?? ""));
+              /^(?:subscription_(?:reserve_reached|quota_exhausted|upstream_quota_hold)$|quota_|usage_limit|rate_limit)/.test(String(error.code ?? error.type ?? ""));
             stop(text.includes("active writer") || text.includes("thread writer lock") ? "native-writer-conflict" : quota ? "subscription-quota-blocked" : "continuation-provider-failed");
           }
           if (event.type === "turn.completed") complete = true;
         }
+        if (buffer.length > 2 * 1024 * 1024) { stop("continuation-output-limit"); break; }
       }
       if (buffer.trim()) stop("continuation-truncated-output");
     })().catch(() => stop("continuation-output-unavailable"));
@@ -287,7 +323,7 @@ export async function runManagedContinuation(input: { config: AppConfig; policy:
       for await (const chunk of child.stderr) {
         size += chunk.length; tail = (tail + decoder.decode(chunk, { stream: true })).slice(-512);
         if (tail.includes("active writer") || tail.includes("thread writer lock")) stop("native-writer-conflict");
-        if (size > 262144) { stop("continuation-diagnostic-limit"); break; }
+        if (reportOnly && size > 262144) { stop("continuation-diagnostic-limit"); break; }
       }
     })().catch(() => stop("continuation-output-unavailable"));
     try {
@@ -305,7 +341,7 @@ export async function runManagedContinuation(input: { config: AppConfig; policy:
       } finally { clearTimeout(drainTimer); }
       finished = true;
       const blockedReason = blocked as string | null;
-      if (blockedReason?.startsWith("continuation-")) return failed(blockedReason);
+      if (blockedReason && !QUOTA_HOLDS.has(blockedReason)) return failed(blockedReason);
       if (blocked || quota) return { nativeThreadId: policy.threadId, outcome: "quota-blocked", reason: blocked ?? "subscription-quota-blocked", attempts };
       if (stopped) return failed(stopped);
       if (code !== 0 || !matched || !complete || !report.trim()) return failed("continuation-completion-unverified");
@@ -313,6 +349,7 @@ export async function runManagedContinuation(input: { config: AppConfig; policy:
     } finally {
       finished = true; clearInterval(authTimer); clearTimeout(timeout); clearTimeout(hardKill); clearTimeout(stopDeadline);
       child.disposeStreams?.();
+      await child.cleanup?.();
     }
   } catch { return failed("managed-execution-unavailable"); }
   finally { proxy?.stop(); }
