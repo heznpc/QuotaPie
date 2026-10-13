@@ -1,11 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { appendFileSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config";
 import { resumeProfileKey, type ResumeGate } from "../src/resume-gate";
-import { prepareManagedContinuation, runManagedContinuation, type ManagedRunOptions, type ManagedProcessPlan } from "../src/dots/managed-continuation";
+import { prepareManagedContinuation, runManagedContinuation, spawnManagedChild, type ManagedRunOptions, type ManagedProcessPlan } from "../src/dots/managed-continuation";
 import type { DotPolicy } from "../src/dots/store";
 import type { ProfileThreadStatus } from "../src/dots/thread-reader";
 import type { SubscriptionGuardState } from "../src/subscription-guard";
@@ -35,7 +35,7 @@ function fixture() {
   const gate: ResumeGate = { schemaVersion: 1, provider: "codex", account: "plus", profileKey: policy.profileKey, accountKey: policy.accountKey,
     ready: true, reason: "ready", checkedAtMs: now, retryAtMs: null, windows };
   const state: SubscriptionGuardState = { version: 1, account: "plus", profileKey: policy.profileKey, ready: true, reason: "ready", checkedAtMs: now, windows };
-  const plans: ManagedProcessPlan[] = [], prompts: string[] = [], kills: string[] = [], guardOptions: any[] = [];
+  const plans: ManagedProcessPlan[] = [], prompts: string[] = [], kills: string[] = [], guardOptions: any[] = [], guardChecks: Array<{ model?: string } | undefined> = [];
   let stopped = 0, allowed = true;
   const output = [JSON.stringify({ type: "thread.started", thread_id: threadId }),
     JSON.stringify({ type: "item.completed", item: { type: "reasoning", text: "private reasoning transcript" } }),
@@ -43,12 +43,13 @@ function fixture() {
   const options: ManagedRunOptions = {
     readExecutionConfig: async () => ({ mcpServers: ["local-server", "namespaced.server"], unchanged: () => true }),
     now: () => now, stillAuthorized: () => allowed, threadStatus: status, readGate: async () => gate, binary: () => "/official/bundled/codex",
-    guard: options => { guardOptions.push(options); return { intervalMs: 500, check: () => state }; },
+    guard: options => { guardOptions.push(options); return { intervalMs: 500,
+      check: request => { guardChecks.push(request); return state; }, checkIdentity: () => state }; },
     proxy: () => ({ baseUrl: "http://127.0.0.1:12345/fixture/backend-api/codex", stop() { stopped++; } }),
     spawn: plan => { plans.push(plan); return { stdout: (async function* () { yield Buffer.from(output.join("\n") + "\n"); })(),
       stderr: (async function* () {})(), exited: Promise.resolve(0), sendPrompt(prompt) { prompts.push(prompt); }, kill(signal) { kills.push(signal); } }; },
   };
-  return { root, path, config, policy, input: { config, policy, claimId }, options, plans, prompts, kills, guardOptions, output,
+  return { root, path, config, policy, input: { config, policy, claimId }, options, plans, prompts, kills, guardOptions, guardChecks, output,
     get stopped() { return stopped; }, setAllowed: (value: boolean) => { allowed = value; } };
 }
 
@@ -89,6 +90,7 @@ test("one fixed UUID uses stdin, read-only sandbox, subscription auth, fixed rel
   expect(plan.args).toContain("orchestrator.mcp.enabled=false");
   expect(plan.args).toContain("notify=[]"); expect(plan.args).toContain('web_search="disabled"');
   expect(f.guardOptions[1].minimumReserveByBucket).toEqual({ "codex:primary:300": 75 });
+  expect(f.guardChecks.every(check => check?.model === "gpt-6.1-sol")).toBeTrue();
   expect(f.guardOptions[1].baselineResetsAtByBucket).toEqual({ "codex:primary:300": now + 3600000 }); expect(f.stopped).toBe(1);
 });
 
@@ -99,6 +101,64 @@ test("disabled, native-mode, exhausted or revoked policies cannot spawn", async 
   }
   const f = fixture(); f.setAllowed(false);
   expect(await runManagedContinuation(f.input, f.options)).toMatchObject({ outcome: "failed", attempts: 0 });
+});
+
+test("reviewed work keeps the original tools and workspace-write without report restrictions", async () => {
+  const f = fixture(); Object.assign(f.policy, { executionPurpose: "continue-work", maxDurationSeconds: 3600, maxTurns: 3 });
+  f.output[1] = JSON.stringify({ type: "item.completed", item: { type: "command_execution", exit_code: 0 } });
+  const previous = process.env.QUOTAPIE_FIXTURE_TOOL_ENV, apiKey = process.env.OPENAI_API_KEY;
+  process.env.QUOTAPIE_FIXTURE_TOOL_ENV = "original-tool-value"; process.env.OPENAI_API_KEY = "must-not-inherit";
+  try {
+    expect(await runManagedContinuation(f.input, f.options)).toMatchObject({ outcome: "completed", attempts: 1 });
+  } finally {
+    if (previous === undefined) delete process.env.QUOTAPIE_FIXTURE_TOOL_ENV; else process.env.QUOTAPIE_FIXTURE_TOOL_ENV = previous;
+    if (apiKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = apiKey;
+  }
+  const plan = f.plans[0]!;
+  expect(plan.args.slice(-7)).toEqual(["exec", "--sandbox", "workspace-write", "resume", threadId, "--json", "-"]);
+  expect(plan.args).toContain('model="gpt-6.1-sol"'); expect(plan.args).toContain('model_reasoning_effort="high"');
+  expect(plan.args).toContain("never"); expect(plan.args).toContain('forced_login_method="chatgpt"');
+  expect(plan.args.some(value => value.startsWith("features.") || value.startsWith("mcp_servers=") || value.startsWith("web_search="))).toBeFalse();
+  expect(plan.args).not.toContain("notify=[]"); expect(plan.env.QUOTAPIE_FIXTURE_TOOL_ENV).toBe("original-tool-value");
+  expect(plan.env).not.toHaveProperty("OPENAI_API_KEY"); expect(f.kills).toEqual([]);
+});
+
+test("work requires an explicit duration and unknown execution purposes cannot spawn", async () => {
+  for (const patch of [{ executionPurpose: "continue-work" }, { executionPurpose: "continue-work", maxDurationSeconds: 0 },
+    { executionPurpose: "unknown", maxDurationSeconds: 3600 }]) {
+    const f = fixture(); Object.assign(f.policy, patch);
+    expect(await runManagedContinuation(f.input, f.options)).toMatchObject({ outcome: "failed", attempts: 0 });
+    expect(f.plans).toHaveLength(0);
+  }
+});
+
+test("work is cancelled at its explicitly reviewed duration", async () => {
+  const f = fixture(); Object.assign(f.policy, { executionPurpose: "continue-work", maxDurationSeconds: 1 });
+  let resolveExit!: (code: number) => void;
+  const exited = new Promise<number>(resolve => { resolveExit = resolve; });
+  f.options.spawn = plan => { f.plans.push(plan); return {
+    stdout: (async function* () { await exited; })(), stderr: (async function* () {})(), exited,
+    sendPrompt() {}, kill(signal) { f.kills.push(signal); resolveExit(1); },
+  }; };
+  expect(await runManagedContinuation(f.input, f.options)).toMatchObject({ outcome: "failed", reason: "continuation-timeout", attempts: 1 });
+  expect(f.kills).toEqual(["SIGTERM"]);
+});
+
+test("owned process-group cleanup stops a tool child even when the CLI leader exits first", async () => {
+  const root = mkdtempSync(join(tmpdir(), "quotapie-owned-processes-")); roots.push(root);
+  const heartbeat = join(root, "heartbeat");
+  const tool = `const {writeFileSync}=require("node:fs");process.on("SIGTERM",()=>{});let n=0;writeFileSync(${JSON.stringify(heartbeat)},String(n));console.log("tool-ready");setInterval(()=>writeFileSync(${JSON.stringify(heartbeat)},String(++n)),10);`;
+  const leader = `const tool=Bun.spawn([process.execPath,"-e",${JSON.stringify(tool)}],{stdin:"ignore",stdout:"inherit",stderr:"inherit"});await tool.exited;`;
+  const child = spawnManagedChild({ binary: process.execPath, args: ["-e", leader], cwd: root, env: { PATH: process.env.PATH } });
+  try {
+    const ready = (async () => { for await (const chunk of child.stdout) if (new TextDecoder().decode(chunk).includes("tool-ready")) return; throw new Error("fixture-not-ready"); })();
+    await ready;
+    child.kill("SIGTERM"); await child.exited;
+    await child.cleanup!();
+    const stopped = readFileSync(heartbeat, "utf8");
+    await Bun.sleep(60);
+    expect(readFileSync(heartbeat, "utf8")).toBe(stopped);
+  } finally { child.kill("SIGKILL"); child.disposeStreams?.(); await child.cleanup?.(); }
 });
 
 test("another thread ID in native output stops the owned child and is never retried", async () => {
@@ -112,6 +172,17 @@ test("native writer errors fail closed without returning diagnostics or replayin
   const result = await runManagedContinuation(f.input, f.options);
   expect(result).toMatchObject({ outcome: "failed", attempts: 1, reason: "native-writer-conflict" });
   expect(JSON.stringify(result)).not.toContain("private"); expect(f.plans).toHaveLength(1);
+});
+
+test("authentication and stale-observation failures cannot re-arm as quota recovery", async () => {
+  for (const code of ["subscription_account_identity_changed", "subscription_quota_stale", "subscription_model_unverified",
+    "subscription_quota_exhausted", "subscription_reserve_reached"]) {
+    const f = fixture();
+    f.output.splice(1, f.output.length, JSON.stringify({ type: "turn.failed", error: { code } }));
+    expect((await runManagedContinuation(f.input, f.options)).outcome).toBe(
+      ["subscription_quota_exhausted", "subscription_reserve_reached"].includes(code) ? "quota-blocked" : "failed");
+    expect(f.plans).toHaveLength(1);
+  }
 });
 
 test("only the final agent report is returned and is bounded to 1000 characters", async () => {

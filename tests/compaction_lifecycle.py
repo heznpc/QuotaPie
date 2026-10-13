@@ -60,7 +60,7 @@ class LifecycleTests(unittest.TestCase):
 
     def healthy(self, settings):
         return {"service": "quotapie-compaction", "schemaVersion": 3, "route": settings["route"],
-                "subscriptionGuardVersion": 1, "subscriptionGuard": {"version": 1, "account": "fixture",
+                "subscriptionGuardVersion": 1, "subscriptionGuardRevision": 2, "subscriptionGuard": {"version": 1, "account": "fixture",
                 "profileKey": hashlib.sha256(str(Path(settings["codex_home"]).resolve()).encode()).hexdigest()}}
 
     def add_unreadable_retired(self):
@@ -191,6 +191,134 @@ class LifecycleTests(unittest.TestCase):
             self.relay.agent_path(settings).write_bytes(plistlib.dumps({
                 "Label": settings["label"], "KeepAlive": True, "RunAtLoad": True,
                 "ProgramArguments": [settings["bun"], str(path.parent / "relay.js"), str(path)]}))
+
+    def prepare_idle_repair(self):
+        self.write_owned_agents()
+        for path in self.paths:
+            (path.parent / "relay.js").write_bytes(b"original guarded relay\n")
+        self.relay.health = lambda settings: {**self.healthy(settings), "subscriptionGuardRevision": 1, "activeRequests": 0}
+        self.relay.wait_healthy = lambda settings: {**self.healthy(settings), "activeRequests": 0,
+            "subscriptionGuard": {**self.healthy(settings)["subscriptionGuard"], "ready": True, "reason": "ready"}}
+        self.repair_arguments = SimpleNamespace(source=str(self.root), codex_home=self.settings[1]["codex_home"])
+        self.repair_binary = self.paths[1].parent / "relay.js"
+        self.repair_candidate = self.paths[1].parent / "relay-repair-candidate.js"
+        self.repair_backup = self.paths[1].parent / "relay-before-repair.js"
+
+    def repair_command(self, command, **kwargs):
+        # Every subprocess, including launchctl, is replaced by this fixture.
+        if command[:2] == ["test-bun", "build"]:
+            Path(command[command.index("--outfile") + 1]).write_bytes(b"candidate guarded relay\n")
+        elif command[:2] == ["launchctl", "kickstart"]:
+            self.assertEqual(command, ["launchctl", "kickstart", "-k", "test/test.1"])
+        else:
+            self.assertEqual(command, ["test-bun", str(self.repair_candidate), "--check-policy", str(self.paths[1])])
+        self.assertTrue(kwargs["check"])
+        return SimpleNamespace(returncode=0)
+
+    def test_idle_repair_skips_active_requests_and_unguarded_or_current_listeners(self):
+        self.prepare_idle_repair()
+        for active in (1, True, -1, "0", None):
+            with self.subTest(active=active):
+                self.relay.health = lambda settings: {**self.healthy(settings), "subscriptionGuardRevision": 1, "activeRequests": active}
+                with patch.object(manager.subprocess, "run") as run, patch.object(manager.urllib.request, "build_opener") as opener:
+                    result = self.relay.repair_idle(self.repair_arguments)
+                run.assert_not_called()
+                opener.assert_not_called()
+                self.assertEqual(result["repaired"], [])
+                self.assertEqual(result["deferred"], [{"generation": "1", "reason": "active-requests"}])
+        for version, revision in ((0, None), (1, 2), (1, 3)):
+            with self.subTest(version=version, revision=revision):
+                self.relay.health = lambda settings: {**self.healthy(settings), "subscriptionGuardVersion": version,
+                    "subscriptionGuardRevision": revision, "activeRequests": 0}
+                with patch.object(manager.subprocess, "run") as run, patch.object(manager.urllib.request, "build_opener") as opener:
+                    result = self.relay.repair_idle(self.repair_arguments)
+                run.assert_not_called()
+                opener.assert_not_called()
+                self.assertEqual(result["repaired"], [])
+
+    def test_idle_repair_preserves_endpoint_settings_configs_and_confirms_new_revision(self):
+        self.prepare_idle_repair()
+        before_settings = [path.read_bytes() for path in self.paths]
+        before_configs = {(Path(s["codex_home"]) / "config.toml"): (Path(s["codex_home"]) / "config.toml").read_bytes() for s in self.settings}
+        before_endpoints = [self.relay.endpoint(s) for s in self.settings]
+        with self.drain({"draining": True, "activeRequests": 0}), patch.object(manager.subprocess, "run", side_effect=self.repair_command) as run:
+            result = self.relay.repair_idle(self.repair_arguments)
+        self.assertEqual(result, {"repaired": [{"generation": "1", "revision": 2, "ready": True, "reason": "ready"}],
+            "deferred": [], "endpoints_preserved": True})
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual([path.read_bytes() for path in self.paths], before_settings)
+        self.assertEqual([self.relay.endpoint(json.loads(path.read_text())) for path in self.paths], before_endpoints)
+        self.assertTrue(all(path.read_bytes() == contents for path, contents in before_configs.items()))
+        self.assertEqual(self.repair_binary.read_bytes(), b"candidate guarded relay\n")
+        self.assertEqual(self.repair_backup.read_bytes(), b"original guarded relay\n")
+        self.assertFalse(self.repair_candidate.exists())
+        self.assertTrue(all((path.parent / "relay.js").read_bytes() == b"original guarded relay\n" for path in (self.paths[0], self.paths[2])))
+
+    def test_idle_repair_drain_race_defers_without_terminating_current_request(self):
+        self.prepare_idle_repair()
+        before_settings = self.paths[1].read_bytes()
+        with self.drain({"draining": True, "activeRequests": 1}), patch.object(manager.subprocess, "run", side_effect=self.repair_command) as run:
+            result = self.relay.repair_idle(self.repair_arguments)
+        self.assertEqual(result["repaired"], [])
+        self.assertEqual(result["deferred"], [{"generation": "1", "reason": "draining-active-requests"}])
+        self.assertEqual(run.call_count, 2)
+        self.assertFalse(any(call.args[0][0] == "launchctl" for call in run.call_args_list))
+        self.assertEqual(self.repair_binary.read_bytes(), b"original guarded relay\n")
+        self.assertEqual(self.paths[1].read_bytes(), before_settings)
+        self.assertFalse(self.repair_backup.exists())
+        self.assertFalse(self.repair_candidate.exists())
+
+    def test_idle_repair_candidate_validation_failure_never_drains_or_restarts(self):
+        self.prepare_idle_repair()
+        def command(arguments, **kwargs):
+            if "--check-policy" in arguments:
+                raise subprocess.CalledProcessError(1, arguments)
+            return self.repair_command(arguments, **kwargs)
+        with patch.object(manager.subprocess, "run", side_effect=command) as run, patch.object(manager.urllib.request, "build_opener") as opener:
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.relay.repair_idle(self.repair_arguments)
+        opener.assert_not_called()
+        self.assertFalse(any(call.args[0][0] == "launchctl" for call in run.call_args_list))
+        self.assertEqual(self.repair_binary.read_bytes(), b"original guarded relay\n")
+        self.assertFalse(self.repair_backup.exists())
+        self.assertFalse(self.repair_candidate.exists())
+
+    def test_idle_repair_restart_failure_restores_original_binary(self):
+        self.prepare_idle_repair()
+        restarts = []
+        def command(arguments, **kwargs):
+            if arguments[0] == "launchctl":
+                restarts.append(self.repair_binary.read_bytes())
+                if len(restarts) == 1:
+                    raise subprocess.CalledProcessError(1, arguments)
+            return self.repair_command(arguments, **kwargs)
+        with self.drain({"draining": True, "activeRequests": 0}), patch.object(manager.subprocess, "run", side_effect=command):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.relay.repair_idle(self.repair_arguments)
+        self.assertEqual(restarts, [b"candidate guarded relay\n", b"original guarded relay\n"])
+        self.assertEqual(self.repair_binary.read_bytes(), b"original guarded relay\n")
+        self.assertEqual(self.repair_backup.read_bytes(), b"original guarded relay\n")
+        self.assertFalse(self.repair_candidate.exists())
+
+    def test_idle_repair_failed_health_or_revision_confirmation_rolls_back(self):
+        for failure in (RuntimeError("unhealthy candidate"), {"subscriptionGuardVersion": 1, "subscriptionGuardRevision": 1},
+                        {"subscriptionGuardVersion": 0, "subscriptionGuardRevision": 2}):
+            with self.subTest(failure=failure):
+                self.prepare_idle_repair()
+                health_results = iter((failure, self.healthy(self.settings[1])))
+                def verify(settings):
+                    result = next(health_results)
+                    if isinstance(result, Exception):
+                        raise result
+                    return result
+                self.relay.wait_healthy = verify
+                with self.drain({"draining": True, "activeRequests": 0}), patch.object(manager.subprocess, "run", side_effect=self.repair_command) as run:
+                    with self.assertRaises(RuntimeError):
+                        self.relay.repair_idle(self.repair_arguments)
+                self.assertEqual(sum(call.args[0][0] == "launchctl" for call in run.call_args_list), 2)
+                self.assertEqual(self.repair_binary.read_bytes(), b"original guarded relay\n")
+                self.assertFalse(self.repair_candidate.exists())
+                self.repair_backup.unlink()
 
     def test_retirement_archives_login_job_without_draining_loaded_sessions(self):
         self.write_owned_agents()

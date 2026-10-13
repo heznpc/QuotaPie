@@ -21,6 +21,7 @@ import urllib.request
 LABEL = "local.quotapie.compaction"
 BEGIN = "# BEGIN QuotaPie compaction relay\n"
 END = "# END QuotaPie compaction relay\n"
+GUARD_REVISION = 2
 
 
 def strip_managed_config(text):
@@ -310,7 +311,8 @@ class LocalRelay:
                 health = self.health(settings)
                 guard = health.get("subscriptionGuard", {})
                 profile_key = hashlib.sha256(str(target).encode()).hexdigest()
-                if (health.get("subscriptionGuardVersion") == 1 and guard.get("version") == 1
+                if (health.get("subscriptionGuardVersion") == 1 and health.get("subscriptionGuardRevision") == GUARD_REVISION
+                        and guard.get("version") == 1
                         and guard.get("profileKey") == profile_key and guard.get("account")):
                     return {"relayConnected": True, "restart_required": True}
                 # A healthy legacy relay is not proof of subscription protection.
@@ -340,6 +342,85 @@ class LocalRelay:
         except (OSError, ValueError, RuntimeError):
             pass
         return result
+
+    def repair_idle(self, args):
+        """Explicit repair of guarded listeners already loaded by desktop tasks.
+
+        Preserve the endpoint and settings. Never terminate an active request,
+        upgrade unguarded legacy relays, or publish a changed Codex config.
+        Keep a recoverable binary and roll back a failed restart.
+        """
+        source = Path(args.source or Path(__file__).resolve().parent.parent).resolve()
+        repaired, deferred = [], []
+        target = Path(args.codex_home).expanduser().resolve() if args.codex_home else None
+        for path, raw, settings in self.registered_entries():
+            if target is not None and Path(settings["codex_home"]).resolve() != target:
+                continue
+            generation = path.parent.name
+            try:
+                health = self.health(settings)
+            except (OSError, ValueError, RuntimeError):
+                deferred.append({"generation": generation, "reason": "health-unavailable"})
+                continue
+            revision = health.get("subscriptionGuardRevision")
+            if health.get("subscriptionGuardVersion") != 1 or (type(revision) is int and revision >= GUARD_REVISION):
+                continue
+            if revision is not None and (type(revision) is not int or revision < 0):
+                deferred.append({"generation": generation, "reason": "revision-unverified"})
+                continue
+            if type(health.get("activeRequests")) is not int or health["activeRequests"] != 0:
+                deferred.append({"generation": generation, "reason": "active-requests"})
+                continue
+            binary = path.parent / "relay.js"
+            candidate = path.parent / "relay-repair-candidate.js"
+            backup = path.parent / "relay-before-repair.js"
+            if candidate.exists() or backup.exists():
+                raise RuntimeError("A previous repair needs inspection before retrying")
+            # Verify ownership before replacing any executable or signaling it.
+            agent = self.agent_path(settings)
+            if not agent.exists():
+                agent = path.parent / "retired-launch-agent.plist"
+            job = plistlib.loads(agent.read_bytes())
+            if job.get("Label") != settings.get("label") or job.get("ProgramArguments") != [settings["bun"], str(binary), str(path)]:
+                raise RuntimeError("Relay launch agent ownership could not be verified")
+            try:
+                subprocess.run([settings["bun"], "build", str(source / "src/codex-compaction-daemon.ts"),
+                                "--target=bun", "--outfile", str(candidate)], check=True, capture_output=True)
+                subprocess.run([settings["bun"], str(candidate), "--check-policy", str(path)], check=True, capture_output=True)
+                if path.read_text() != raw:
+                    raise RuntimeError("Relay settings changed during repair")
+                request = urllib.request.Request(self.endpoint(settings) + "/quotapie-drain", method="POST")
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with opener.open(request, timeout=2) as response:
+                    drain = json.load(response)
+                if (not isinstance(drain, dict) or drain.get("draining") is not True
+                        or type(drain.get("activeRequests")) is not int or drain["activeRequests"] < 0):
+                    raise RuntimeError("Relay drain could not be verified")
+                # A request may have arrived during the build. Leave it running;
+                # a later repair can finish after that request completes.
+                if drain["activeRequests"]:
+                    deferred.append({"generation": generation, "reason": "draining-active-requests"})
+                    continue
+                shutil.copy2(binary, backup)
+                os.replace(candidate, binary)
+                try:
+                    subprocess.run(["launchctl", "kickstart", "-k", self.domain + "/" + settings["label"]],
+                                   check=True, capture_output=True)
+                    checked = self.wait_healthy(settings)
+                    if checked.get("subscriptionGuardRevision") != GUARD_REVISION or checked.get("subscriptionGuardVersion") != 1:
+                        raise RuntimeError("Repaired relay did not acknowledge the policy revision")
+                except Exception:
+                    shutil.copy2(backup, binary)
+                    subprocess.run(["launchctl", "kickstart", "-k", self.domain + "/" + settings["label"]],
+                                   check=True, capture_output=True)
+                    self.wait_healthy(settings)
+                    raise
+                repaired.append({"generation": generation, "revision": GUARD_REVISION,
+                                 "ready": checked.get("subscriptionGuard", {}).get("ready"),
+                                 "reason": checked.get("subscriptionGuard", {}).get("reason")})
+            finally:
+                candidate.unlink(missing_ok=True)
+        return {"repaired": repaired, "deferred": deferred, "endpoints_preserved": True}
 
     def configure(self, args):
         changes = []
@@ -474,7 +555,7 @@ class LocalRelay:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["install", "ensure-profile", "status", "configure", "disable", "stop", "retire"])
+    parser.add_argument("action", choices=["install", "ensure-profile", "status", "configure", "disable", "stop", "retire", "repair-idle"])
     parser.add_argument("--source")
     parser.add_argument("--bun")
     parser.add_argument("--codex-home")
@@ -487,7 +568,7 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX)
         # Another manager may have activated a generation while we waited.
         relay = LocalRelay()
-        if args.action in ["install", "configure", "ensure-profile", "disable"]:
+        if args.action in ["install", "configure", "ensure-profile", "disable", "repair-idle"]:
             result = getattr(relay, args.action.replace("-", "_"))(args)
         else:
             result = getattr(relay, args.action)()

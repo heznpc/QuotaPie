@@ -9,7 +9,7 @@ import { ALERTABLE_EVENT_KINDS } from "../src/types";
 import { QuotaDatabase } from "../src/db";
 import { nextWakeDelayMs } from "../src/scheduler";
 import { QuotaPieService } from "../src/service";
-import type { QuotaObservation, TriggerDecision, WindowAnalysis } from "../src/types";
+import type { AccountState, QuotaObservation, TriggerDecision, WindowAnalysis } from "../src/types";
 import { AlertStore } from "../src/storage/alert-store";
 import { CollectionStore } from "../src/storage/collection-store";
 
@@ -27,6 +27,42 @@ function observation(at: number, used: number): QuotaObservation {
     quality: "authoritative",
   };
 }
+
+test("resume admission separates forecast reserves from explicit execution cutoffs and honors configured freshness", () => {
+  const root = mkdtempSync(join(tmpdir(), "quotapie-resume-cutoff-")), previousHome = process.env.QUOTAPIE_HOME;
+  const now = 2_000_000_000_000, db = new QuotaDatabase(":memory:");
+  process.env.QUOTAPIE_HOME = root;
+  const config = structuredClone(DEFAULT_CONFIG);
+  config.accounts.codex = [{ id: "fixture", label: "Fixture", codexHome: root, enabled: true }];
+  const service = new QuotaPieService(config, db);
+  const state = { provider: "codex", account: "fixture", enabled: true,
+    collection: { health: "recent-success", errorCategory: null },
+    windows: [{ provider: "codex", account: "fixture", bucket: "codex:primary:300", quality: "authoritative", freshness: "fresh",
+      remainingPercent: 9, reservePercent: 10, observedAtMs: now - 150000, resetsAtMs: now + 3600000 }] } as AccountState;
+  const spy = spyOn(service, "accountStates").mockImplementation(() => [state]);
+  const pool = (enabled: boolean, reserve?: number) => writeFileSync(join(root, "account-pool.json"), JSON.stringify({ enabled,
+    accounts: ["fixture"], ...(reserve === undefined ? {} : { reservePercent: { fixture: reserve } }) }));
+  try {
+    pool(true, 0);
+    expect(service.resumeGate("codex", "fixture", now)).toMatchObject({ ready: true, validUntilMs: now + 450000,
+      windows: [{ remainingPercent: 9, reservePercent: 0 }] });
+    expect(state.windows[0]!.reservePercent).toBe(10);
+    pool(true, 10); expect(service.resumeGate("codex", "fixture", now).reason).toBe("reserve-reached");
+    pool(false, 10); expect(service.resumeGate("codex", "fixture", now).ready).toBeTrue();
+    pool(true); expect(service.resumeGate("codex", "fixture", now).ready).toBeTrue();
+    state.collection.health = "attempted-then-failed"; state.collection.errorCategory = "network";
+    expect(service.resumeGate("codex", "fixture", now).ready).toBeTrue();
+    state.collection.errorCategory = "auth-required";
+    expect(service.resumeGate("codex", "fixture", now).reason).toBe("collection-unavailable");
+    state.collection.errorCategory = "provider-error"; state.windows[0]!.observedAtMs = now - 600001;
+    expect(service.resumeGate("codex", "fixture", now).reason).toBe("quota-stale");
+    state.windows[0]!.observedAtMs = now - 1000; state.windows[0]!.remainingPercent = 0;
+    expect(service.resumeGate("codex", "fixture", now).reason).toBe("reserve-reached");
+  } finally {
+    spy.mockRestore(); db.close(); if (previousHome === undefined) delete process.env.QUOTAPIE_HOME; else process.env.QUOTAPIE_HOME = previousHome;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 describe("state persistence and scheduler", () => {
   test("ignores an out-of-order response", () => {

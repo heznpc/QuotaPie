@@ -1,4 +1,6 @@
 import { AccountBindingStore } from "./storage/account-binding-store";
+import { readPoolPolicy } from "./account-pool";
+import { explicitAccountReserve } from "./subscription-policy";
 import { RecentWorkIndex, type RecentWorkSummary } from "./recent-work";
 import { evaluateResumeGate, resumeProfileKey } from "./resume-gate";
 import { codexAccountDisplay } from "./account-display";
@@ -1001,9 +1003,21 @@ export class QuotaPieService {
   }
 
   resumeGate(provider: Provider, account: string, nowMs = Date.now(), requiredBucket?: string) {
-    const gate = evaluateResumeGate(this.accountStates(nowMs).find(item =>
-      item.provider === provider && item.account === account), provider, account, nowMs,
-      Math.min(120_000, this.config.collection.staleAfterSeconds * 1000), requiredBucket);
+    let state = this.accountStates(nowMs).find(item => item.provider === provider && item.account === account);
+    const maxAgeMs = this.config.collection.staleAfterSeconds * 1000;
+    if (state && provider === "codex") {
+      let cutoff = NaN;
+      try { cutoff = explicitAccountReserve(account, readPoolPolicy()); } catch { /* Invalid execution policy cannot admit work. */ }
+      // Forecast reserves remain presentation inputs. Only an explicit enabled
+      // execution cutoff stops available subscription quota. A transient failed
+      // poll does not invalidate the still-fresh authoritative sample below.
+      state = { ...state, windows: state.windows.map(window => ({ ...window, reservePercent: cutoff })),
+        collection: state.collection.health === "attempted-then-failed" &&
+          ["provider-error", "network"].includes(state.collection.errorCategory ?? "")
+          ? { ...state.collection, health: "recent-success", errorCategory: null } : state.collection };
+    }
+    const gate = evaluateResumeGate(state, provider, account, nowMs, maxAgeMs, requiredBucket);
+    if (gate.windows.length) gate.validUntilMs = Math.min(...gate.windows.map(window => window.observedAtMs + maxAgeMs));
     gate.profileKey = resumeProfileKey(this.config, provider, account);
     const profile = provider === "codex" ? this.config.accounts.codex.find(p => p.id === account && p.enabled) : null;
     gate.accountKey = profile ? this.accountBindings.identityKey(codexProfileRoot(profile)) : null;

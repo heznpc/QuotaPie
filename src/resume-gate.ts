@@ -23,6 +23,7 @@ export interface ResumeGate {
   reason: "ready" | "account-unavailable" | "collection-unavailable" | "quota-unknown" | "quota-stale" | "reset-unconfirmed" | "reserve-reached";
   checkedAtMs: number;
   retryAtMs: number | null;
+  validUntilMs?: number;
   windows: Array<{ bucket: string; remainingPercent: number | null; reservePercent: number; observedAtMs: number; resetsAtMs: number | null }>;
 }
 

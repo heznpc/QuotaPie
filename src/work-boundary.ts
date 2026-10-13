@@ -30,6 +30,7 @@ export function buildWorkBoundary(accounts: AccountState[], tasks: ResumeTask[],
         provider: account.provider, account: account.account, label: account.accountLabel,
         profileKey: root ? profileReference(root) : null,
         collectionState: account.collection.health,
+        collectionErrorCategory: account.collection.errorCategory,
         windows: account.windows.map(window => ({
           bucket: window.bucket, label: window.label,
           quality: window.quality, windowSeconds: window.windowSeconds, reservePercent: window.reservePercent,
