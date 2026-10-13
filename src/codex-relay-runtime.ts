@@ -37,7 +37,7 @@ export const createRelayRuntime: RuntimeFactory = (settings, memory) => {
   const home = settings.codex_home ?? join(homedir(), ".codex");
   const config = () => loadConfig();
   const sourceAccount = config().accounts.codex.find(profile => {
-    try { return realpathSync(codexProfileRoot(profile)) === realpathSync(home); } catch { return false; }
+    try { return profile.enabled && realpathSync(codexProfileRoot(profile)) === realpathSync(home); } catch { return false; }
   })?.id;
   if (memory.sourceAccount !== undefined && memory.sourceAccount !== (sourceAccount ?? null))
     throw new Error("runtime_account_changed");
