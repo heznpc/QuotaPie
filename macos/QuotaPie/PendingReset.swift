@@ -8,7 +8,7 @@ extension ResetSignalPayload {
         let day = 86_400_000.0
         let resets = signals.filter {
             ($0.benefitKind == nil || $0.benefitKind == "reset") && $0.resetKind != "banked"
-                && $0.publishedAtMs <= nowMs
+                && $0.publishedAtMs <= nowMs && $0.preparationClosed != true
         }
         let groups = Dictionary(grouping: resets) {
             ($0.provider ?? "codex") + ":" + ($0.groupId ?? $0.sourcePostId ?? $0.id)

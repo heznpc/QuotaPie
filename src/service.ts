@@ -8,7 +8,7 @@ import { notificationAllowed, type NotificationPreferencesPatch } from "./notifi
 import { buildWorkBoundary, defaultWorkBoundaryPath, writeWorkBoundary } from "./work-boundary";
 import { JobStore } from "./storage/job-store";
 import { ManagedJobRunner } from "./jobs/runner";
-import { resetOpportunities } from "./signals/opportunities";
+import { resetOpportunities, resetSignalClosed } from "./signals/opportunities";
 import { buildResetTracking } from "./signals/correlation";
 import { codexContextChange } from "./domain/codex-context";
 import { ResetSignalStore } from "./storage/reset-signal-store";
@@ -1051,8 +1051,17 @@ export class QuotaPieService {
     return gate;
   }
 
+  resetPlanning(accounts: Array<{ provider: Provider; account: string }>, nowMs = Date.now()) {
+    const signals = this.resetSignals.list(1000), events = this.db.recentEvents(2000);
+    return accounts.map(account => ({ ...account,
+      opportunities: resetOpportunities(signals, events, account.provider, account.account, nowMs),
+      closedSignalIDs: signals.filter(s => (s.provider ?? "codex") === account.provider &&
+        resetSignalClosed(s, signals, events.filter(e => e.account === account.account), nowMs)).map(s => s.id),
+    }));
+  }
+
   resetOpportunities(provider: Provider, account: string, nowMs = Date.now()) {
-    return resetOpportunities(this.resetSignals.list(1000), this.db.recentEvents(2000), provider, account, nowMs);
+    return this.resetPlanning([{ provider, account }], nowMs)[0]!.opportunities;
   }
 
   applyNotificationPreferences(patch: NotificationPreferencesPatch): void {
