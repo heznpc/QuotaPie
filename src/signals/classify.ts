@@ -59,6 +59,13 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>,
   for (const ref of post.references) visit(ref.id, 0);
   if (post.conversationId !== post.id) visit(post.conversationId, 0);
   const text = post.text;
+  // An aspirational condition is not a dated reset commitment, even when
+  // written by a watched author using "will" and "resets".
+  if (/\b(?:the day|when|if)\s+we\s+(?:reach|achieve)\s+perfection\b/i.test(text) &&
+      !/\b(?:today|tomorrow|EOD|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b/i.test(text)) {
+    onExcluded?.("no-event-evidence", parents.map(p => p.text).join("\n") || null);
+    return null;
+  }
   // Short official announcements need no auxiliary verb ("will", "landing").
   // Keep the deadline in the reset clause; unrelated EOD work is not a promise.
   const deadlinePromise = /\breset\s+(?:by|at|around)\s+(?:EOD|end\s+of\s+(?:the\s+)?day|midnight|\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i.test(text)
