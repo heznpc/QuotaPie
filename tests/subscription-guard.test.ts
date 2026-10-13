@@ -744,3 +744,53 @@ test("expiry, reset and cutoff decisions use the final snapshot-read time withou
     } finally { f.close(); }
   }
 });
+
+test('native image generation and edits preserve bytes, source login and subscription protection', async () => {
+  const f=fixture(); const received: {url:string;body:string}[]=[]; let histories=0;
+  const pool={assertSourceContinuation(){histories++;},selectAsync(){throw new Error('Image account switching is forbidden');}} as any;
+  const proxy=startCompactionProxy({subscriptionGuard:f.guard,accountPool:pool,fetchUpstream:async(url,init)=>{
+    expect(new Headers(init.headers).get('authorization')).toBe(f.headers().authorization);
+    expect(new Headers(init.headers).get('chatgpt-account-id')).toBe(f.auth.tokens.account_id);
+    const body=typeof init.body==='string'?init.body:Buffer.from(init.body as Uint8Array).toString();received.push({url,body});
+    return Response.json({data:[{b64_json:'fixture-only'}]});
+  }});
+  const body=JSON.stringify({prompt:'fixture',transparent_background:false,images:['fixture-reference']});
+  const request=(route:string,headers:Record<string,string>=f.headers())=>fetch(proxy.baseUrl+route,{method:'POST',headers:{...headers,'content-type':'application/json'},body});
+  try{
+    for(const route of ['/images/generations','/images/edits']){
+      const response=await request(route);expect(response.status).toBe(200);await response.text();
+      expect(received.at(-1)).toEqual({url:'https://chatgpt.com/backend-api/codex'+route,body});
+    }
+    expect(histories).toBe(0);
+    expect((await request('/v1/images/generations')).status).toBe(400);
+    expect((await request('/images/anything')).status).toBe(400);
+    expect((await request('/images/edits',{...f.headers(),authorization:'Bearer api-key-fixture'})).status).toBe(400);
+    f.reserve(85);expect((await request('/images/edits')).status).toBe(400);f.reserve(0);
+    f.state.accounts[0]!.windows[0]!.remainingPercent=0;f.write();
+    expect((await request('/images/edits')).status).toBe(400);
+    expect(received).toHaveLength(2);
+  }finally{proxy.stop();f.close();}
+});
+
+test('report-only execution cannot generate or edit images',async()=>{
+  const f=fixture();let calls=0;
+  const proxy=startCompactionProxy({subscriptionGuard:f.guard,reportOnly:true,fetchUpstream:async()=>{calls++;return Response.json({});}});
+  try{
+    for(const route of ['/images/generations','/images/edits'])expect((await fetch(proxy.baseUrl+route,{method:'POST',headers:{...f.headers(),'content-type':'application/json'},body:'{}'})).status).toBe(400);
+    expect(calls).toBe(0);
+  }finally{proxy.stop();f.close();}
+});
+
+test('image quota protection remains active while awaiting the generated response',async()=>{
+  const f=fixture();let started!:()=>void,aborted!:()=>void;
+  const began=new Promise<void>(resolve=>started=resolve),cancelled=new Promise<void>(resolve=>aborted=resolve);
+  const proxy=startCompactionProxy({subscriptionGuard:f.guard,fetchUpstream:async(_url,init)=>{
+    started();return new Promise<Response>((_resolve,reject)=>init.signal!.addEventListener('abort',()=>{aborted();reject(init.signal!.reason);},{once:true}));
+  }});
+  try{
+    const pending=fetch(proxy.baseUrl+'/images/edits',{method:'POST',headers:{...f.headers(),'content-type':'application/json'},body:'{"prompt":"fixture"}'});
+    await began;f.state.accounts[0]!.windows[0]!.remainingPercent=0;f.write();
+    await cancelled;const response=await pending;
+    expect(response.status).toBe(400);expect((await response.json() as any).error.code).toBe('subscription_quota_exhausted');
+  }finally{proxy.stop();f.close();}
+});
