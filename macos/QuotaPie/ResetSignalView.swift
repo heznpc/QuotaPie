@@ -136,7 +136,7 @@ struct ResetSignalSummary: View {
                     }
                 }.font(.caption2)
                 if let localTime = signal.localTimeText {
-                    Text(Strings.t("signal.localTime", localTime)).font(.callout).bold()
+                    Text(localTime).font(.callout).bold()
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let hint = signal.summaryTimeHint {
@@ -252,7 +252,7 @@ struct ResetSignalHistory: View {
             Text(Strings.t(signal.classificationKey) + " · " + Strings.t("signal.kind." + (["resetCredits", "credits", "limits", "student", "discounts", "events"].contains(signal.displayedBenefitKind ?? "") ? signal.displayedBenefitKind! : signal.resetKind)))
                 .font(.caption).foregroundStyle(.secondary)
             if let localTime = signal.localTimeText {
-                Text(Strings.t("signal.localTime", localTime)).font(.callout).bold()
+                Text(localTime).font(.callout).bold()
             } else if let target = signal.targetAtMs {
                 Text(Strings.t(target < Date().timeIntervalSince1970 * 1000 ? "signal.elapsed" : "signal.feedTime", ResetSignal.stamp(target)))
                     .font(.caption).foregroundStyle(.secondary)
@@ -260,7 +260,7 @@ struct ResetSignalHistory: View {
             if let hint = signal.originalTimeHint {
                 Text(Strings.t("signal.originalTime", hint)).font(.caption).foregroundStyle(.secondary)
             }
-            if signal.originalTimeHint != nil && signal.targetAtMs == nil {
+            if signal.originalTimeHint != nil && signal.targetAtMs == nil && signal.localTimeText == nil {
                 Text(Strings.t("signal.timeUnresolved")).font(.caption).foregroundStyle(.secondary)
             }
             if let scope = signal.scopeHint, !scope.isEmpty {
