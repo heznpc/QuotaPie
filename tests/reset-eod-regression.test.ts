@@ -28,7 +28,7 @@ test("daily reset hint and propagation confirmation survive local classification
 
 test("explicit source zones and deadlines do not promise users a safe waiting period", () => {
   const eod = classify("Global reset by EOD PST.")!;
-  expect(signalDecision(eod, "ko", "Asia/Seoul").message).toContain("원문 시간대 PST");
+  expect(signalDecision(eod, "ko", "Asia/Seoul").message).toContain("EOD → KST");
   expect(eod.targetAtMs).toBeNull();
   const timed = classify("Global reset by tomorrow 10am PST.")!;
   const notice = signalDecision(timed, "ko", "Asia/Seoul");
