@@ -878,6 +878,7 @@ struct ResetSignal: Decodable, Identifiable {
     var provider: String? = nil
     var benefitKind: String? = nil
     var localTimeText: String? = nil
+    var forecastText: String? = nil
     var benefitText: String? = nil
     var newsTitle: String? = nil
     var sourcePostId: String? = nil

@@ -61,7 +61,7 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>,
   const text = post.text;
   // Short official announcements need no auxiliary verb ("will", "landing").
   // Keep the deadline in the reset clause; unrelated EOD work is not a promise.
-  const deadlinePromise = /\breset\s+by\s+(?:EOD|end\s+of\s+(?:the\s+)?day|midnight|\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i.test(text)
+  const deadlinePromise = /\breset\s+(?:by|at|around)\s+(?:EOD|end\s+of\s+(?:the\s+)?day|midnight|\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i.test(text)
     && !/\?|\b(?:no|not|never|won't|will not|maybe|might|could|perhaps|possibly)\b/i.test(text);
   const dailyReset = post.author.toLowerCase() === "thsottiaux"
     && /^day\s+\d+\s*[/：:]\s*reset[.!]?\s*$/i.test(text.trim());

@@ -95,7 +95,7 @@ export function parseAnnouncementTime(text: string, publishedAtMs: number): Sche
 }
 
 /** A calendar-day boundary for display only, never a scheduled reset instant. */
-function endOfDayBoundary(text: string, publishedAtMs: number): Schedule | null {
+export function endOfDayBoundary(text: string, publishedAtMs: number): Schedule | null {
   if (!Number.isFinite(publishedAtMs) || !endOfDayPattern.test(text) || clocksIn(text).length) return null;
   // Do not turn unsupported or conflicting date references into "today".
   if (/\b(?:yesterday|day\s+(?:after|before)|next\s+(?:week|month|year)|in\s+\d+\s+days?)\b/i.test(text) ||
@@ -107,7 +107,7 @@ function endOfDayBoundary(text: string, publishedAtMs: number): Schedule | null 
   if (!date) return null;
   const next = new Date(Date.UTC(date[0]!, date[1]! - 1, date[2]! + 1));
   const targetAtMs = instant([next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), 0, 0], zone);
-  return targetAtMs == null ? null : { targetAtMs, sourceZone, qualifier: "by" };
+  return targetAtMs == null ? null : { targetAtMs, sourceZone, qualifier: /\bby\s+(?:EOD|end\s+of)/i.test(text) ? "by" : "at" };
 }
 
 export function withAnnouncementTime(signal: ResetSignal): ResetSignal {
@@ -135,7 +135,7 @@ export function localAnnouncementTime(signal: ResetSignal, locale: Locale, timeZ
     }).formatToParts(target).find(p => p.type === "timeZoneName")!.value;
     const stamp = (p: number[]) => `${p[0] !== parts(signal.publishedAtMs, zones[boundary.sourceZone]!)[0] ? `${p[0]}/` : ""}${p[1]}/${p[2]}`;
     const time = `${String(local[3]).padStart(2, "0")}:${String(local[4]).padStart(2, "0")}`;
-    return `${boundary.sourceZone} ${stamp(source)} EOD → ${localZone} ${stamp(local)} ${time}${locale === "ko" ? " 전 · 시각 미정" : " latest · time unknown"}`;
+    return `${boundary.sourceZone} ${stamp(source)} EOD → ${localZone} ${stamp(local)} ${time}${locale === "ko" ? (boundary.qualifier === "by" ? " 전 · 시각 미정" : " 날짜 경계 · 시행 시각 미정") : (boundary.qualifier === "by" ? " latest · time unknown" : " calendar boundary · execution time unknown")}`;
   }
   const qualifier = schedule?.qualifier === "by" ? (locale === "ko" ? "까지" : "By ") : schedule?.qualifier === "around" ? (locale === "ko" ? "경" : "Around ") : "";
   const label = locale === "ko" ? `${date}${qualifier}` : `${qualifier}${date}`;

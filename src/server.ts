@@ -330,12 +330,28 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           notificationPreferences: service.notificationPreferences(),
           resetSignals: (() => {
             const feed = service.signalCollector.status(nowMs);
+            const opportunities = accounts.flatMap(account => service.resetOpportunities(account.provider, account.account, nowMs));
+            const forecastText = (id: string) => {
+              const entries = opportunities.filter(o => o.signalId === id);
+              if (!entries.length) return null;
+              const forecasts = entries.flatMap(o => o.forecast ? [o.forecast] : []);
+              const ko = service.locale === "ko";
+              if (!forecasts.length) return ko ? "패턴 근거 부족 · 승인된 작업은 예고부터 시작 가능" : "Insufficient history · reviewed work can start at announcement";
+              const format = (ms: number) => new Intl.DateTimeFormat(ko ? "ko-KR" : "en-US", {
+                timeZone: service.config.profile.timeZone, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short",
+              }).format(ms);
+              const low = Math.min(...forecasts.map(f => f.earliestMs)), high = Math.max(...forecasts.map(f => f.latestMs));
+              return `${ko ? "관측 기반 추정" : "Observed estimate"}: ${format(low)}–${format(high)} · ${ko ? "확정 아님" : "unconfirmed"}`;
+            };
             return { ...feed, signals: feed.signals.map(signal => ({ ...signal,
+              forecastText: forecastText(signal.id),
               localTimeText: localAnnouncementTime(signal, service.locale, service.config.profile.timeZone),
               benefitText: benefitChangeText(signal, service.locale),
               newsTitle: signalDecision(signal, service.locale, service.config.profile.timeZone).title,
             })) };
           })(),
+          resetOpportunities: accounts.flatMap(account => service.resetOpportunities(account.provider, account.account, nowMs)
+            .map(opportunity => ({ ...opportunity, account: account.account }))),
           resetTracking: service.resetTracking(nowMs, accounts),
           compaction: compaction.snapshot(nowMs),
           accountPool: (() => { try {

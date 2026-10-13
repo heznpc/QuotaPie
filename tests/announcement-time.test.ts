@@ -113,3 +113,17 @@ test("saved EOD announcements gain local display without replaying delivered not
     expect(store.pending(eodPublished)).toHaveLength(0);
   } finally { db.close(); }
 });
+
+test("at EOD preserves wording rather than turning it into a by deadline", () => {
+  const signal = eodSignal("Global reset will happen at EOD PST");
+  const label = localAnnouncementTime(signal, "ko", "Asia/Seoul")!;
+  expect(label).toContain("날짜 경계");
+  expect(label).not.toContain(" 전 ·");
+  expect(withAnnouncementTime(signal).targetAtMs).toBeNull();
+});
+
+test("terse reset at EOD remains an announcement with an at qualifier", () => {
+  const signal = eodSignal("Global reset at EOD PST");
+  expect(signal.state).toBe("announced");
+  expect(localAnnouncementTime(signal, "en", "UTC")).toContain("calendar boundary");
+});

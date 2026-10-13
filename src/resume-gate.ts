@@ -24,6 +24,7 @@ export interface ResumeGate {
   checkedAtMs: number;
   retryAtMs: number | null;
   validUntilMs?: number;
+  resetOpportunities?: import("./signals/opportunities").ResetOpportunity[];
   windows: Array<{ bucket: string; remainingPercent: number | null; reservePercent: number; observedAtMs: number; resetsAtMs: number | null }>;
 }
 
