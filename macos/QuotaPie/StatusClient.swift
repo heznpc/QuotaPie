@@ -96,6 +96,58 @@ final class StatusClient {
         } catch { completion(.failure(error)) }
     }
 
+    func automaticWork(actionToken: String, completion: @escaping (Result<AutomaticWorkResponse, Error>) -> Void) {
+        workRequest(actionToken: actionToken, completion: completion)
+    }
+
+    func automaticWorkTargets(provider: String, account: String, actionToken: String,
+                              completion: @escaping (Result<AutomaticWorkTargetsResponse, Error>) -> Void) {
+        workRequest(path: ["api", "work", "targets"], query: [URLQueryItem(name: "provider", value: provider),
+                    URLQueryItem(name: "account", value: account)], actionToken: actionToken, completion: completion)
+    }
+
+    func saveAutomaticWork(_ policy: AutomaticWorkPolicy, actionToken: String,
+                           completion: @escaping (Result<AutomaticWorkSaveResponse, Error>) -> Void) {
+        let body: [String: Any] = ["action": "save", "policy": policy.input,
+            "expectedRevision": policy.revision.map { $0 as Any } ?? NSNull(), "requestId": UUID().uuidString]
+        workRequest(body: body, actionToken: actionToken, completion: completion)
+    }
+
+    func enableAutomaticWork(id: String, enabled: Bool, revision: Int, actionToken: String,
+                             completion: @escaping (Result<AutomaticWorkSaveResponse, Error>) -> Void) {
+        workRequest(body: ["action": "enabled", "id": id, "enabled": enabled,
+            "expectedRevision": revision, "requestId": UUID().uuidString], actionToken: actionToken, completion: completion)
+    }
+
+    private func workRequest<T: Decodable>(path: [String] = ["api", "work"], query: [URLQueryItem] = [],
+                                          body: [String: Any]? = nil, actionToken: String,
+                                          completion: @escaping (Result<T, Error>) -> Void) {
+        do {
+            var request = try authenticatedPOST(pathComponents: path, actionToken: actionToken)
+            if !query.isEmpty, let url = request.url {
+                var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                parts?.queryItems = query
+                request.url = parts?.url
+            }
+            request.setValue(nil, forHTTPHeaderField: "content-length")
+            if let body {
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+            } else { request.httpMethod = "GET" }
+            session.dataTask(with: request) { data, response, error in
+                if let error { completion(.failure(error)); return }
+                guard let http = response as? HTTPURLResponse else {
+                    completion(.failure(StatusClientError.invalidResponse)); return
+                }
+                let payload = data ?? Data()
+                guard (200..<300).contains(http.statusCode) else {
+                    completion(.failure(AutomaticWorkError(data: payload, status: http.statusCode))); return
+                }
+                completion(Result { try JSONDecoder().decode(T.self, from: payload) })
+            }.resume()
+        } catch { completion(.failure(error)) }
+    }
+
     func saveNickname(provider: String, account: String, nickname: String, actionToken: String,
                       completion: @escaping (Result<Void, Error>) -> Void) {
         do {

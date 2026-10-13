@@ -81,6 +81,26 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           return json(input.action === "connect" ? await dots.connect() : await dots.disconnect());
         } catch { return json({ error: "connection_action_failed" }, 409); }
       }
+      if (url.pathname === "/api/work" || url.pathname.startsWith("/api/work/")) {
+        if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token"))) return json({error:"forbidden"},403);
+        try {
+          if(request.method === "GET" && url.pathname === "/api/work") return json(service.workStatus());
+          if(request.method === "GET" && url.pathname === "/api/work/targets")
+            return json(await service.workTargets(url.searchParams.get("provider")??"",url.searchParams.get("account")??""));
+          if(request.method !== "POST") return json({error:"method_not_allowed"},405);
+          const body=await request.text();
+          if(body.length>65536) return json({error:"work-policy-too-large"},400);
+          const input=JSON.parse(body);
+          if(url.pathname === "/api/work/execute") return json({execution:await service.work.dispatch(input.id,"dots",input.expectedRevision,input.requestId)});
+          if(url.pathname !== "/api/work") return json({error:"not_found"},404);
+          if(input.action === "save") return json({policy:await service.work.save(input.policy,input.expectedRevision,input.requestId)});
+          if(input.action === "enabled") return json({policy:await service.work.setEnabled(input.id,input.enabled,input.expectedRevision,input.requestId)});
+          return json({error:"work-action-invalid"},400);
+        }catch(error){
+          const reason=error instanceof Error && /^[a-z-]{3,100}$/.test(error.message)?error.message:"work-action-failed";
+          return json({error:reason},409);
+        }
+      }
       if (url.pathname === "/api/runtime") {
         return request.method === "GET" ? json(runtime) : json({ error: "method_not_allowed" }, 405);
       }

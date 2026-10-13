@@ -1,3 +1,4 @@
+import {createSharedWorkClient} from "./work-client";
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { dataDirectory, loadConfig } from "../config";
@@ -43,10 +44,20 @@ continue-work preserves work tools in workspace-write with explicit duration, tu
   }
   const store = new DotStore(join(dataDirectory(), "dots.sqlite"));
   let transportOpen = true;
+  const sharedWork=createSharedWorkClient(loadConfig());
   const bridge = new DotBridge(store, policy => readGate(loadConfig(), policy), undefined, Date.now,
-    (policy, purpose) => readContinuationPreflight(loadConfig(), policy, purpose),
+    async (policy, purpose) => {
+      // Legacy policies must be retired explicitly before enrolling the same
+      // account in shared work. Never auto-migrate old scalar budgets.
+      try {
+        const snapshot=await sharedWork.list();
+        if(snapshot.policies.some(p=>p.provider==="codex" && (p.account===policy.account || p.accountKey===policy.accountKey) &&
+            (p.enabled || p.state.activeExecutionId))) return {ready:false,reason:"shared-work-policy-active"};
+      }catch{return {ready:false,reason:"shared-work-status-unavailable"};}
+      return readContinuationPreflight(loadConfig(), policy, purpose);
+    },
     (policy, claimId, stillAuthorized) => runManagedContinuation({ config: loadConfig(), policy, claimId },
-      { stillAuthorized: () => transportOpen && stillAuthorized() }));
+      { stillAuthorized: () => transportOpen && stillAuthorized() }), sharedWork);
   try {
     if (command === "configure" && value) {
       if (statSync(value).size > 8192) throw new Error("policy-too-large");

@@ -15,6 +15,9 @@ enum ResumeTaskActivity: Equatable {
 }
 
 final class PopoverModel: ObservableObject {
+    var statusClient: StatusClient?
+    @Published var automaticWorkLoadedPolicyIDs: [String]?
+
     @Published var payload: StatusPayload?
     @Published var lastError: String?
     @Published var statusFailure: StatusFailure?

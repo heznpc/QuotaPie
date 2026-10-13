@@ -5,6 +5,8 @@ import type { ResumeGate } from "../resume-gate";
 import type { ProfileThreadStatus } from "./thread-reader";
 import { CallbackEndpointError, callbackURL, signingKey, verifyCallback, signedPost, postWebhook, type WebhookPost } from "./webhook";
 
+import type { SharedWorkClient, SharedWorkPolicy } from "./work-client";
+
 type GateReader = (policy: DotPolicy) => Promise<ResumeGate>;
 export interface ContinuationPreflight {
   ready: boolean;
@@ -25,13 +27,30 @@ type ManagedRunner = (policy: DotPolicy, claimId: string, stillAuthorized: () =>
 const object = (properties: Record<string, unknown>, required = Object.keys(properties)) =>
   ({ type: "object", properties, required, additionalProperties: false });
 const str = { type: "string" };
-const instructions = "Use continuation_status to locate the original thread in its configured account profile. A default computer host may have a different profile; thread not found there does not mean the original thread is missing. notLoaded from a separate reader does not prove the original task is idle. Only act on explicitly enabled targets. Call claim_continuation immediately before one continuation. A claim never starts work. For executionMode profile-managed, call execute_continuation once with that claim; QuotaPie uses the original profile and thread and records the result itself. executionPurpose report-check is a tool-free read-only verification; continue-work permits the reviewed work with the original tools in a workspace-write sandbox and explicit duration, turn and quota limits. Never send a native follow-up as well. For native mode, the original execution host must be verified and finish_continuation records its observed result. Do not substitute accounts, create tasks, run arbitrary CLI commands, or repeat an uncertain dispatch. Stop on failure, expiry or disabled policy.";
+const workPolicySchema = object({
+  id: str, provider: { enum: ["codex", "claude"] }, account: str, nativeSessionId: str,
+  prompt: str, objective: str, completionCriteria: { type: "array", items: str, minItems: 1 },
+  dispatchOwner: { enum: ["local", "dots"] }, enabled: { type: "boolean", default: false },
+  trigger: { enum: ["quota-ready", "public-announcement", "scheduled"] }, resetBucket: str,
+  resetWithinMinutes: { type: "integer", minimum: 1 },
+  budgetByBucket: { type: "object", minProperties: 1, additionalProperties: object({
+    reservePercent: { type: "number", minimum: 0, maximum: 100 },
+    maxUsagePercent: { type: "number", exclusiveMinimum: 0, maximum: 100 },
+    targetUsagePercent: { type: "number", minimum: 0, maximum: 100 },
+  }, ["reservePercent", "maxUsagePercent"]) },
+  maxTurns: { type: "integer", minimum: 1 }, maxDurationSeconds: { type: "integer", minimum: 1 },
+  maxTotalDurationSeconds: { type: "integer", minimum: 1 }, expiresAtMs: { type: "integer" },
+  priority: { type: "integer", minimum: 0 }, workDeadline: { type: "integer" },
+  onReset: { enum: ["stop", "continue"] },
+  activitySchedule: object({ timeZone: str, days: { type: "array", items: { type: "integer", minimum: 0, maximum: 6 } }, start: str, end: str }),
+}, ["id", "provider", "account", "nativeSessionId", "prompt", "objective", "completionCriteria", "dispatchOwner", "enabled", "trigger", "resetWithinMinutes", "budgetByBucket", "maxTurns", "maxDurationSeconds", "maxTotalDurationSeconds", "expiresAtMs", "priority", "onReset"]);
+const instructions = "For shared policies use work_list, work_targets, work_save, work_set_enabled and work_execute; these share the app and local execution policy, budget and ledger. Only save or enable work within the human request. For a shared policy wakeup call work_execute once with its revision and a stable requestId (the eventId), never legacy claim or native followup. Read work_list after an uncertain transport response; never invent a new requestId to retry execution. Shared work is provider-independent. Use work_list for available accounts/defaults/current settings and work_targets for original conversations before saving a new policy. Never invent hidden profile/account binding fields or select a different model. Existing legacy target IDs alone use the following continuation_* instructions; shared work IDs never do. Use continuation_status to locate the original thread in its configured account profile. A default computer host may have a different profile; thread not found there does not mean the original thread is missing. notLoaded from a separate reader does not prove the original task is idle. Only act on explicitly enabled targets. Call claim_continuation immediately before one continuation. A claim never starts work. For executionMode profile-managed, call execute_continuation once with that claim; QuotaPie uses the original profile and thread and records the result itself. executionPurpose report-check is a tool-free read-only verification; continue-work permits the reviewed work with the original tools in a workspace-write sandbox and explicit duration, turn and quota limits. Never send a native follow-up as well. For native mode, the original execution host must be verified and finish_continuation records its observed result. Do not substitute accounts, create tasks, run arbitrary CLI commands, or repeat an uncertain dispatch. Stop on failure, expiry or disabled policy.";
 
 export class DotBridge {
   constructor(readonly store: DotStore, readonly readGate: GateReader,
     readonly post: WebhookPost = postWebhook, readonly now = Date.now,
     readonly preflight: PreflightReader = async () => ({ ready: false, reason: "execution-host-unverified" }),
-    readonly managedRunner?: ManagedRunner) {}
+    readonly managedRunner?: ManagedRunner, readonly sharedWork?: SharedWorkClient) {}
 
   private subscriptionID(name: string, targetId: string, url: string) {
     // This transport is a single authenticated tunnel principal.
@@ -172,6 +191,16 @@ export class DotBridge {
   async tick() {
     const now = this.now();
     for (const sub of this.store.subscriptions()) if (sub.expiresAtMs <= now) this.store.unsubscribe(sub.id);
+    if (this.sharedWork) {
+      let shared: SharedWorkPolicy[] = [];
+      try { shared = (await this.sharedWork.list()).policies; } catch { /* Collector unavailable: no wakeups. */ }
+      for (const policy of shared) {
+        if (!policy.enabled || policy.dispatchOwner !== "dots" || !policy.admission?.ready || policy.expiresAtMs <= now) continue;
+        const event = this.workEvent(policy);
+        for (const sub of this.store.subscriptions().filter(s => s.targetId === policy.id && s.name === event.name))
+          await this.deliver(sub, event, true);
+      }
+    }
     for (const current of this.store.targets()) {
       const subs = this.store.subscriptions().filter(s => s.targetId === current.policy.id);
       if (!subs.length || !current.policy.enabled || current.claimed) continue;
@@ -200,7 +229,12 @@ export class DotBridge {
       for (const sub of subs) await this.deliver(sub, event);
     }
   }
-  private async deliver(sub: Subscription, event: DotEvent) {
+  private workEvent(policy: SharedWorkPolicy): DotEvent {
+    return { eventId: createHash("sha256").update(JSON.stringify(["work", policy.id, policy.revision, policy.state.turns])).digest("hex"),
+      name: policy.trigger === "quota-ready" ? "quota.ready" : "quota.reset_approaching",
+      timestamp: new Date(this.now()).toISOString(), data: { targetId: policy.id, threadId: policy.nativeSessionId }, cursor: null };
+  }
+  private async deliver(sub: Subscription, event: DotEvent, shared = false) {
     const now = this.now();
     const claimed = this.store.db.transaction(() => {
       this.store.db.query("INSERT OR IGNORE INTO deliveries(subscription_id,event_id) VALUES (?,?)").run(sub.id, event.eventId);
@@ -212,8 +246,14 @@ export class DotBridge {
       return true;
     }).immediate();
     if (!claimed) return;
-    const current = this.store.target(sub.targetId);
-    if (!current.policy.enabled || current.claimed || current.event?.eventId !== event.eventId) return;
+    if (shared) {
+      let current: SharedWorkPolicy | undefined;
+      try { current = (await this.sharedWork!.list()).policies.find(p => p.id === sub.targetId); } catch { return; }
+      if (!current?.enabled || current.dispatchOwner !== "dots" || !current.admission?.ready || this.workEvent(current).eventId !== event.eventId) return;
+    } else {
+      const current = this.store.target(sub.targetId);
+      if (!current.policy.enabled || current.claimed || current.event?.eventId !== event.eventId) return;
+    }
     let status = 0;
     try { status = (await signedPost(this.post, sub, event.eventId, JSON.stringify(event), now)).status; } catch { /* bounded retry */ }
     if (status === 410) { this.store.unsubscribe(sub.id); return; }
@@ -231,6 +271,13 @@ export class DotBridge {
       serverInfo: { name: "quotapie", version: "0.1.0" }, capabilities: { tools: {} }, instructions };
     if (method === "ping") return {};
     if (method === "tools/list") return { tools: [
+      ...(this.sharedWork ? [
+        { name: "work_list", description: "Read shared app/Dots/local policies, applied settings, budgets, readiness and execution records. No execution.", inputSchema: object({}), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
+        { name: "work_targets", description: "List existing conversations within the selected configured provider/account; use a returned nativeSessionId for enrollment without starting a new conversation.", inputSchema: object({ provider: { enum: ["codex", "claude"] }, account: str }), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
+        { name: "work_save", description: "Save the user's shared work settings for an existing original conversation. Preserve settings outside the requested change; expectedRevision prevents overwriting concurrent changes. New policies are disabled unless the user requested activation.", inputSchema: object({ policy: workPolicySchema, expectedRevision: { type: ["integer", "null"] }, requestId: str }), annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false } },
+        { name: "work_set_enabled", description: "Enable or pause a shared policy within the user's instruction. Uses the same revision and budgets as the app and local execution.", inputSchema: object({ id: str, enabled: { type: "boolean" }, expectedRevision: { type: "integer" }, requestId: str }), annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false } },
+        { name: "work_execute", description: "Claim and execute one eligible shared Dots-owned policy through the collector and original provider/session. Use the eventId as stable requestId. Do not repeat via a new requestId after uncertain transport; read the execution ledger.", inputSchema: object({ id: str, expectedRevision: { type: "integer" }, requestId: str }), annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true } },
+      ] : []),
       { name: "continuation_status", title: "Check an approved continuation",
         description: "Read the original thread in its configured account profile, plus quota, relay protection and continuation readiness. notLoaded is not proof of an idle native task.",
         inputSchema: object({ targetId: str }), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
@@ -247,6 +294,15 @@ export class DotBridge {
     ] };
     if (method === "tools/call") {
       const a = p.arguments ?? {};
+      if (["work_list", "work_targets", "work_save", "work_set_enabled", "work_execute"].includes(p.name)) {
+        if (!this.sharedWork) throw new Error("shared-work-unavailable");
+        if (p.name === "work_targets" && (!["codex", "claude"].includes(a.provider) || typeof a.account !== "string")) throw new Error("invalid-work-target");
+        const result = p.name === "work_list" ? await this.sharedWork.list()
+          : p.name === "work_targets" ? await this.sharedWork.targets(a.provider, a.account)
+          : p.name === "work_save" ? await this.sharedWork.save(a)
+          : p.name === "work_set_enabled" ? await this.sharedWork.setEnabled(a) : await this.sharedWork.execute(a);
+        return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result };
+      }
       if (typeof a.targetId !== "string") throw new Error("invalid-target");
       let result;
       if (p.name === "continuation_status") result = await this.status(a.targetId);
@@ -266,15 +322,19 @@ export class DotBridge {
       const a = p.arguments, d = p.delivery;
       if (!a || typeof a.targetId !== "string" || Object.keys(a).length !== 1 ||
           !d || d.mode !== "webhook" || typeof d.url !== "string") throw new Error("invalid-subscription");
-      const state = this.store.target(a.targetId);
-      if (p.name !== state.policy.trigger) throw new Error("event-not-allowed");
+      const shared = this.sharedWork ? (await this.sharedWork.list()).policies.find(policy => policy.id === a.targetId) : undefined;
+      const legacy = shared ? null : this.store.target(a.targetId);
+      if (shared && shared.dispatchOwner !== "dots") throw new Error("dispatch-owner-mismatch");
+      const trigger = shared ? this.workEvent(shared).name : legacy!.policy.trigger;
+      const policyExpiry = shared?.expiresAtMs ?? legacy!.policy.expiresAtMs;
+      if (p.name !== trigger) throw new Error("event-not-allowed");
       const url = callbackURL(d.url).href, id = this.subscriptionID(p.name, a.targetId, url);
       if (method === "events/unsubscribe") { this.store.unsubscribe(id); return {}; }
       if (typeof d.secret !== "string") throw new Error("invalid-signing-key");
       signingKey(d.secret);
       const now = this.now(), ttl = p.ttlMs ?? 86400000;
       if (!Number.isFinite(ttl) || ttl < 1000) throw new Error("invalid-subscription-ttl");
-      const expiresAtMs = Math.min(now + Math.min(ttl, 86400000), state.policy.expiresAtMs);
+      const expiresAtMs = Math.min(now + Math.min(ttl, 86400000), policyExpiry);
       if (expiresAtMs <= now) throw new Error("policy-expired");
       const sub: Subscription = { id, targetId: a.targetId, name: p.name, url, secret: d.secret, expiresAtMs };
       // Verify before persistence or application data delivery.

@@ -78,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let client = try StatusClient(environment: verification.map { ["QUOTAPIE_API_URL": $0.endpoint] }
                                           ?? ProcessInfo.processInfo.environment)
             self.client = client
+            popoverModel.statusClient = client
             if isFixturePreview { return }
             let presenter = NotificationPresenter(
                 client: client,

@@ -73,6 +73,8 @@ struct DetailsView: View {
                 Button(Strings.t("action.openSettings"), action: actions.openConfig)
             }
         case .work:
+            AutomaticWorkView(model: model)
+            Divider()
             RecentWorkSection(items: model.payload?.recentWork ?? [],
                               supportsRecentWork: model.payload?.supportsRecentWork ?? true,
                               state: model.payload?.recentWorkState ?? "loading",

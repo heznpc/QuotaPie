@@ -155,6 +155,9 @@ test("owned process-group cleanup stops a tool child even when the CLI leader ex
     await ready;
     child.kill("SIGTERM"); await child.exited;
     await child.cleanup!();
+    // The isolation sandbox can deny process-group inventory even after exit.
+    // Its fail-closed proof is tested separately; the known tool PID below must be gone.
+    expect(typeof child.ownedGroupStopped?.()).toBe("boolean");
     const stopped = readFileSync(heartbeat, "utf8");
     await Bun.sleep(60);
     expect(readFileSync(heartbeat, "utf8")).toBe(stopped);
@@ -277,4 +280,19 @@ test("a rejected exit promise still terminates the owned child and returns withi
   }; };
   expect(await runManagedContinuation(f.input, f.options)).toMatchObject({ outcome: "failed", reason: "continuation-exit-unverified", attempts: 1 });
   expect(f.kills).toEqual(["SIGTERM", "SIGKILL"]); expect(f.stopped).toBe(1);
+});
+
+test("intentional managed stop requires owned group proof independently of leader exit", async () => {
+  for (const proven of [false, true]) {
+    const f=fixture(); Object.assign(f.policy,{executionPurpose:"continue-work",maxDurationSeconds:1});
+    let resolveExit!:(code:number)=>void;
+    const exited=new Promise<number>(resolve=>{resolveExit=resolve;});
+    let cleaned=false;
+    f.options.spawn=()=>({stdout:(async function*(){await exited;})(),stderr:(async function*(){})(),exited,
+      sendPrompt(){f.setAllowed(false);},kill(){resolveExit(1);},async cleanup(){cleaned=true;},
+      ownedGroupStopped:()=>proven&&cleaned});
+    const result=await runManagedContinuation(f.input,f.options);
+    expect(result.reason).toBe("continuation-authorization-ended");
+    expect(result.processStopped).toBe(proven?true:undefined);
+  }
 });

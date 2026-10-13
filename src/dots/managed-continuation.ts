@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { Database } from "bun:sqlite";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
@@ -36,10 +37,14 @@ export interface ManagedChild {
   kill(signal: "SIGTERM" | "SIGKILL"): void;
   disposeStreams?(): void;
   cleanup?(): Promise<void>;
+  ownedGroupStopped?(): boolean;
 }
 export interface ManagedProcessPlan { binary: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }
 export interface ManagedRunOptions extends PreparationOptions {
   stillAuthorized: () => boolean;
+  /** Resolved from the shared stored policy, never raw HTTP guard overrides. */
+  budgetByBucket?: Record<string, {reservePercent:number;remainingUsagePercent:number}>;
+  structuredWork?: boolean;
   readGate?: (policy: DotPolicy) => Promise<ResumeGate>;
   binary?: () => string | null;
   readExecutionConfig?: typeof readExecutionConfiguration;
@@ -53,12 +58,13 @@ export interface ManagedContinuationResult {
   reason: string;
   attempts: 0 | 1;
   report?: string;
+  processStopped?: true;
 }
 
 /** A lock file's absence and a completed rollout are only a snapshot. The
  * official CLI must still acquire its own native writer lock at dispatch.
  * Never acquire/remove another owner's lock or terminate that owner here. */
-function inspectLifecycle(config: AppConfig, policy: DotPolicy) {
+export function inspectManagedSession(config: AppConfig, policy: Pick<DotPolicy, "account" | "threadId">) {
   const profile = config.accounts.codex.find(p => p.enabled && p.id === policy.account);
   if (!profile) throw new Error("profile-unavailable");
   const root = realpathSync(codexProfileRoot(profile));
@@ -130,7 +136,7 @@ export async function prepareManagedContinuation(config: AppConfig, policy: DotP
     if (!thread.found || thread.threadId !== policy.threadId || thread.targetId !== policy.id || thread.account !== policy.account ||
         !thread.evidence.profileMatched || !thread.evidence.accountMatched || !thread.evidence.sessionMetadataMatched || !thread.evidence.rolloutPathMatched)
       throw new Error("thread-profile-unverified");
-    const snapshot = inspectLifecycle(config, policy);
+    const snapshot = inspectManagedSession(config, policy);
     if (snapshot.lastLifecycle.atMs > (options.now ?? Date.now)()) throw new Error("lifecycle-unverified");
     return { ...result, ready: true, reason: "ready-native-lock-required", lastLifecycle: snapshot.lastLifecycle };
   } catch (error) {
@@ -164,10 +170,19 @@ export function spawnManagedChild(plan: ManagedProcessPlan): ManagedChild {
   const child = Bun.spawn([plan.binary, ...plan.args], { cwd: plan.cwd, env: plan.env,
     detached: true, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   const signalGroup = (signal: "SIGTERM" | "SIGKILL") => {
-    try { process.kill(-child.pid, signal); } catch (error: any) { if (error?.code !== "ESRCH") throw error; }
+    try { process.kill(-child.pid, signal); } catch (error: any) { if (!["ESRCH", "EPERM"].includes(error?.code)) throw error; }
   };
   const groupExists = () => {
-    try { process.kill(-child.pid, 0); return true; } catch (error: any) { if (error?.code === "ESRCH") return false; throw error; }
+    try { process.kill(-child.pid, 0); return true; } catch (error: any) {
+      if (error?.code === "ESRCH") return false;
+      if (error?.code === "EPERM") {
+        const groups = spawnSync("/bin/ps", ["-axo", "pgid="], { encoding: "utf8", timeout: 1000 });
+        if (groups.status === 0 && /^\s*(?:\d+\s*)+$/.test(groups.stdout))
+          return groups.stdout.trim().split(/\s+/).includes(String(child.pid));
+      }
+      if (error?.code === "EPERM") return true; // Cannot prove absence inside a restricted host.
+      throw error;
+    }
   };
   const out = child.stdout.getReader(), err = child.stderr.getReader();
   const chunks = async function* (reader: ReadableStreamDefaultReader<Uint8Array>) {
@@ -177,6 +192,7 @@ export function spawnManagedChild(plan: ManagedProcessPlan): ManagedChild {
   return { stdout: chunks(out), stderr: chunks(err), exited: child.exited,
     sendPrompt(prompt) { child.stdin.write(prompt); child.stdin.end(); },
     kill: signalGroup,
+    ownedGroupStopped: () => !groupExists(),
     async cleanup() {
       if (!groupExists()) return;
       signalGroup("SIGTERM");
@@ -184,7 +200,11 @@ export function spawnManagedChild(plan: ManagedProcessPlan): ManagedChild {
       // leader's exit promise as proof that its owned process group is gone.
       const deadline = performance.now() + 1000;
       while (groupExists() && performance.now() < deadline) await Bun.sleep(20);
-      if (groupExists()) signalGroup("SIGKILL");
+      if (groupExists()) {
+        signalGroup("SIGKILL");
+        const killDeadline = performance.now() + 1000;
+        while (groupExists() && performance.now() < killDeadline) await Bun.sleep(10);
+      }
     },
     disposeStreams() {
       for (const reader of [out, err]) { try { void reader.cancel().catch(() => {}); } catch { /* Already released. */ } }
@@ -207,7 +227,7 @@ export async function runManagedContinuation(input: { config: AppConfig; policy:
       policy.expiresAtMs > now() && UUID.test(input.claimId) && options.stillAuthorized() === true; }
     catch { return false; }
   };
-  if (!authorized() || !policy.continuation.trim() || policy.continuation.length > 2000 ||
+  if (!authorized() || !policy.continuation.trim() || policy.continuation.length > (options.structuredWork ? 32000 : 2000) ||
       !Number.isFinite(policy.maxUsagePercent) || policy.maxUsagePercent <= 0 || policy.maxUsagePercent > 100)
     return failed("managed-policy-not-authorized");
   const preparation = await prepareManagedContinuation(config, policy, options);
@@ -216,8 +236,8 @@ export async function runManagedContinuation(input: { config: AppConfig; policy:
   let gate: ResumeGate;
   try { gate = await gateReader(policy); } catch { return failed("policy-or-quota-hold"); }
   if (!gateAllows(policy, gate, now()) || !authorized()) return failed("policy-or-quota-hold");
-  let snapshot: ReturnType<typeof inspectLifecycle>;
-  try { snapshot = inspectLifecycle(config, policy); } catch { return failed("dispatch-precondition-changed"); }
+  let snapshot: ReturnType<typeof inspectManagedSession>;
+  try { snapshot = inspectManagedSession(config, policy); } catch { return failed("dispatch-precondition-changed"); }
   const binary = (options.binary ?? findBundledCodex)();
   if (!binary) return failed("bundled-codex-unavailable");
   let executionConfig: Awaited<ReturnType<typeof readExecutionConfiguration>>;
@@ -230,7 +250,11 @@ export async function runManagedContinuation(input: { config: AppConfig; policy:
   const minimumReserveByBucket: Record<string, number> = {}, baselineResetsAtByBucket: Record<string, number> = {};
   for (const w of baseline.windows) {
     if (w.remainingPercent == null || w.resetsAtMs == null) return failed("subscription-budget-unverified");
-    minimumReserveByBucket[w.bucket] = Math.max(policy.reservePercent, w.remainingPercent - policy.maxUsagePercent);
+    const budget = options.budgetByBucket?.[w.bucket];
+    if (options.budgetByBucket && !budget) return failed("subscription-budget-unverified");
+    minimumReserveByBucket[w.bucket] = budget
+      ? Math.max(budget.reservePercent, w.remainingPercent - budget.remainingUsagePercent)
+      : Math.max(policy.reservePercent, w.remainingPercent - policy.maxUsagePercent);
     baselineResetsAtByBucket[w.bucket] = w.resetsAtMs;
   }
   const sourceGuard = createGuard({ ...guardOptions, minimumReserveByBucket, baselineResetsAtByBucket });
@@ -254,7 +278,7 @@ export async function runManagedContinuation(input: { config: AppConfig; policy:
   let proxy: { baseUrl: string; stop(): void } | undefined;
   try {
     proxy = (options.proxy ?? startProxy)(config, snapshot.root, policy, guard);
-    if (!executionConfig.unchanged() || !guard.check().ready || !authorized() || inspectLifecycle(config, policy).stamp !== snapshot.stamp)
+    if (!executionConfig.unchanged() || !guard.check().ready || !authorized() || inspectManagedSession(config, policy).stamp !== snapshot.stamp)
       return failed("dispatch-precondition-changed");
     const disabledFeatures = ["hooks", "goals", "multi_agent", "apps", "plugins", "remote_plugin", "shell_tool", "unified_exec", "skill_mcp_dependency_install"];
     const mcp = `mcp_servers={${executionConfig.mcpServers.map(name => `${JSON.stringify(name)}={enabled=false}`).join(",")}}`;
@@ -305,7 +329,7 @@ export async function runManagedContinuation(input: { config: AppConfig; policy:
           if (reportOnly && ["item.started", "item.updated", "item.completed"].includes(event.type) &&
               !["agent_message", "reasoning"].includes(event.item?.type)) stop("continuation-tool-violation");
           if (event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string")
-            report = event.item.text.slice(0, 1000);
+            report = event.item.text.slice(0, options.structuredWork ? 32000 : 1000);
           if (["error", "turn.failed"].includes(event.type)) {
             const error = event.error ?? event, text = typeof error.message === "string" ? error.message : "";
             quota ||= error.status === 429 || error.api_error_status === 429 ||
@@ -341,9 +365,17 @@ export async function runManagedContinuation(input: { config: AppConfig; policy:
       } finally { clearTimeout(drainTimer); }
       finished = true;
       const blockedReason = blocked as string | null;
-      if (blockedReason && !QUOTA_HOLDS.has(blockedReason)) return failed(blockedReason);
+      const stoppedResult = async (reason: string): Promise<ManagedContinuationResult> => {
+        const result = failed(reason);
+        if (exited && ["continuation-authorization-ended", "continuation-timeout"].includes(reason)) {
+          await child.cleanup?.();
+          if (child.ownedGroupStopped?.() === true) result.processStopped = true;
+        }
+        return result;
+      };
+      if (blockedReason && !QUOTA_HOLDS.has(blockedReason)) return await stoppedResult(blockedReason);
       if (blocked || quota) return { nativeThreadId: policy.threadId, outcome: "quota-blocked", reason: blocked ?? "subscription-quota-blocked", attempts };
-      if (stopped) return failed(stopped);
+      if (stopped) return await stoppedResult(stopped);
       if (code !== 0 || !matched || !complete || !report.trim()) return failed("continuation-completion-unverified");
       return { nativeThreadId: policy.threadId, outcome: "completed", reason: "completed", attempts, report };
     } finally {

@@ -13,6 +13,7 @@ interface Observation {
   viewRendered: boolean;
   detailSection?: string;
   recentWorkIDs?: string[];
+  automaticWorkLoadedPolicyIDs?: string[];
   profileDockIcons?: string[];
   pendingResetIDs?: string[];
   excludedPostIDs?: string[];
@@ -91,11 +92,21 @@ async function run() {
           benefitKind: "limits", change: { percent: 50, evidence: "Synthetic: 50% more usage for everyone." },
           benefitText: "Announced: +50% (1.5× previous allowance)", targetAtMs: null }] },
     accountPool: {enabled:true, accounts:["default","second"], recent:[{sourceAccount:"default",account:"second",accountLabel:"Second",state:"completed",status:200,atMs:Date.now()}]} };
+  const automaticPolicy = { id: "fixture-work", provider: "claude", account: "default", nativeSessionId: "fixture-session",
+    model: "original-session-model", prompt: "Continue the selected work", objective: "Shared work fixture", completionCriteria: ["Evidence recorded"],
+    dispatchOwner: "local", enabled: false, trigger: "quota-ready", resetWithinMinutes: 60,
+    budgetByBucket: {five_hour: {reservePercent: 0, maxUsagePercent: 20, targetUsagePercent: 10}},
+    maxTurns: 3, maxDurationSeconds: 60, maxTotalDurationSeconds: 120, expiresAtMs: Date.now()+3600000, priority: 0, onReset: "stop", revision: 2,
+    state: {spentByBucket: {five_hour: 4}, turns: 1, totalDurationSeconds: 12, status: "turn-finished", activeExecutionId: null} };
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async request => {
     if (request.method === "POST" && new URL(request.url).pathname === "/api/profiles/dock-icon") {
       const body = await request.json() as {account?: string; icon?: string};
       if (body.icon !== undefined || !["default", "second"].includes(body.account ?? "")) return new Response("Read-only fixture", {status: 400});
       return Response.json({icon: body.account === "default" ? "codex-system" : "app-default", changed: false});
+    }
+    if (request.method === "GET" && new URL(request.url).pathname === "/api/work") {
+      if(request.headers.get("x-quotapie-action-token")!=="isolated-fixture") return new Response("Unauthorized",{status:403});
+      return Response.json({policies:[automaticPolicy], executions:[], accounts:[{provider:"claude",account:"default",label:"Main",buckets:["five_hour"],reserveByBucket:{five_hour:0}}],defaults:{timeZone:"Asia/Seoul"}});
     }
     if (request.method !== "GET" || new URL(request.url).pathname !== "/api/status") return new Response("Unexpected request", { status: 400 });
     return malformed ? new Response("{invalid", { headers: { "content-type": "application/json" } }) : Response.json(payload);
@@ -138,6 +149,7 @@ async function run() {
           observed.recentWorkIDs?.join(",") !== payload.recentWork.map(item => item.id).join(","))) {
         failures.push("recent_work_not_rendered");
       }
+      if(scenario.name === "recent-work" && observed.automaticWorkLoadedPolicyIDs?.join(",") !== "fixture-work") failures.push("shared_work_not_loaded");
       console.log(JSON.stringify({ check: scenario.name, result: failures.length ? "fail" : "pass", failures }));
       if (failures.length) throw new Error(`Native verification failed: ${scenario.name}`);
     }

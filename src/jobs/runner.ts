@@ -1,3 +1,4 @@
+import type { WorkController } from "../work/controller";
 import { createHash } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { basename } from "node:path";
@@ -59,6 +60,7 @@ export function jobCapacity(job: Job, windows: WindowAnalysis[], nowMs: number, 
 }
 
 export interface JobRunnerDependencies {
+  work?: WorkController;
   execute?: typeof executeJobStep;
   now?: () => number;
   changed?: () => void;
@@ -105,11 +107,13 @@ export class ManagedJobRunner {
   tick(windows: WindowAnalysis[], nowMs = this.now()): void {
     if (this.stopped) return;
     this.evaluate(windows, nowMs);
+    this.deps.work?.tick();
     if (this.running) return;
     // Only explicitly submitted QuotaPie jobs are eligible. Shared policy or
     // quota observations do not enroll executions owned by another host (Taxi).
     for (const job of this.store.active()) {
       if (job.state !== "ready") continue;
+      if (this.deps.work?.store.list().some(p=>p.provider===job.spec.provider&&(p.account===job.spec.account||p.profileKey===job.spec.profileKey)&&p.state.activeExecutionId)) continue;
       const claim = this.store.claim(job.id, nowMs);
       if (!claim) continue;
       this.controller = new AbortController();
@@ -170,5 +174,6 @@ export class ManagedJobRunner {
     this.stopped = true;
     this.controller?.abort();
     await this.running;
+    await this.deps.work?.close();
   }
 }

@@ -323,3 +323,17 @@ test("muted terminal outbox entries retry after unmute but obsolete cancelled jo
   await f.service.deliverJobNotifications();
   expect(f.service.claimNextAppNotification()).toBeNull();
 });
+
+test("queued legacy work can drain beside an enabled shared policy without deadlocking both paths", async () => {
+  const f = fixture(); let calls = 0;
+  f.service.work.store.save({id:"shared-waiting",provider:"codex",account:"default",profileKey:f.spec.profileKey!,accountKey:"identity",
+    nativeSessionId:"session",cwd:f.spec.cwd,prompt:"continue",objective:"task",completionCriteria:["evidence"],dispatchOwner:"dots",enabled:true,
+    trigger:"quota-ready",resetWithinMinutes:60,budgetByBucket:{"codex:primary:300":{reservePercent:0,maxUsagePercent:20}},
+    maxTurns:2,maxDurationSeconds:60,maxTotalDurationSeconds:120,expiresAtMs:f.now()+3600000,priority:0,onReset:"stop"},null,"create");
+  const runner = new ManagedJobRunner(f.service.jobs,f.config,{now:f.now,work:f.service.work,execute:async()=>{
+    calls++;return {kind:"succeeded",reason:"completed",output:"ok"};
+  }});
+  runner.tick([f.window()],f.now());await runner.settle();
+  expect(calls).toBe(1);expect(f.service.work.store.executions()).toHaveLength(0);
+  await runner.close();
+});

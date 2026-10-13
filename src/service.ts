@@ -1,3 +1,13 @@
+import { inspectManagedSession } from "./dots/managed-continuation";
+import { workWindows as scopedWorkWindows } from "./work/admission";
+import { evaluateWorkPerformance } from "./work/performance";
+import { realpathSync, existsSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { WorkStore } from "./work/store";
+import { WorkController } from "./work/controller";
+import { inspectWorkTarget, executeWorkTurn } from "./work/runtime";
+import { executeCodexWork } from "./work/codex";
+import type { WorkPolicyInput, WorkPolicy } from "./work/types";
 import { AccountBindingStore } from "./storage/account-binding-store";
 import { readPoolPolicy } from "./account-pool";
 import { explicitAccountReserve } from "./subscription-policy";
@@ -117,6 +127,7 @@ export class QuotaPieService {
   readonly resumeTasks: ResumeTaskStore;
   readonly jobs: JobStore;
   readonly jobRunner: ManagedJobRunner;
+  readonly work: WorkController;
   private jobsEnabled = false;
   private jobNotifications: Promise<void> | null = null;
   readonly resetSignals: ResetSignalStore;
@@ -169,7 +180,18 @@ export class QuotaPieService {
     this.claudeSessions = new ClaudeSessionStore(this.storage);
     this.resumeTasks = new ResumeTaskStore(this.storage);
     this.jobs = new JobStore(this.storage);
+    this.work = new WorkController(new WorkStore(this.storage), config, {
+      windows: () => this.workWindows(),
+      inspect: p => this.inspectWork(p),
+      execute: (p,id,authorized,signal) => p.provider === "claude"
+        ? executeWorkTurn(config,p,{claimId:id,policyRevision:p.revision,timeoutMs:p.maxDurationSeconds*1000,signal,stillAuthorized:authorized})
+        : executeCodexWork(config,p,id,authorized,()=>this.workGate(p)),
+      announcement: p => this.resetOpportunities(p.provider,p.account).some(o=>o.actionableFromMs<=Date.now()&&o.expiresAtMs>Date.now()),
+      legacyBusy: p => this.legacyWorkBusy(p),
+    });
     this.jobRunner = new ManagedJobRunner(this.jobs, config, {
+      work: this.work,
+
       changed: () => { void this.deliverJobNotifications().catch(() => undefined); },
     });
     this.locale = resolveLocale(config.profile.locale);
@@ -178,6 +200,67 @@ export class QuotaPieService {
     if (!config.alerts.enabled || !config.alerts.macOSNotifications) {
       this.alerts.cancelAllAppNotifications();
     }
+  }
+
+  private workWindows(): WindowAnalysis[] {
+    return this.analyses(Date.now()).map(w => w.provider === "codex"
+      ? {...w,reservePercent:Math.max(0,explicitAccountReserve(w.account,readPoolPolicy()))} : w);
+  }
+  private legacyWorkBusy(p: WorkPolicyInput): boolean {
+    if(this.jobs.active().some(j=>j.spec.provider===p.provider && (j.spec.account===p.account || j.spec.profileKey===p.profileKey ||
+      (p.provider==="codex" && this.config.accounts.codex.some(a=>a.id===j.spec.account && this.accountBindings.identityKey(codexProfileRoot(a))===p.accountKey))))) return true;
+    const file=this.storage.db.filename;
+    if(!file || file===":memory:") return false;
+    const path=join(dirname(file),"dots.sqlite");
+    if(!existsSync(path) || p.provider!=="codex") return false;
+    let db:Database|undefined;
+    try {
+      db=new Database(path,{readonly:true});
+      return db.query<{state:string},[]>("SELECT state FROM targets").all().some(row=>{
+        const s=JSON.parse(row.state);
+        return (s.policy.enabled || s.claimed) && (s.policy.account===p.account || s.policy.accountKey===p.accountKey);
+      });
+    } catch {return true;} finally {db?.close();}
+  }
+  private async inspectWork(p: WorkPolicyInput) {
+    if(p.provider==="claude") return inspectWorkTarget(this.config,p);
+    if(p.provider!=="codex") throw new Error("work-provider-unsupported");
+    const profile=this.config.accounts.codex.find(a=>a.id===p.account&&a.enabled);
+    if(!profile) throw new Error("account-unavailable");
+    const plan=await this.buildResumePlan({provider:p.provider,account:p.account,taskKey:resumeTaskKey(p.provider,p.account,p.nativeSessionId)});
+    const profileKey=resumeProfileKey(this.config,p.provider,p.account);
+    const accountKey=this.accountBindings.identityKey(codexProfileRoot(profile));
+    if(!profileKey||!accountKey) throw new Error("account-identity-unavailable");
+    const original=inspectManagedSession(this.config,{account:p.account,threadId:p.nativeSessionId});
+    if(original.cwd!==realpathSync(plan.workingDirectory)) throw new Error("thread-workspace-changed");
+    return {profileKey,accountKey,cwd:original.cwd,model:original.model};
+  }
+  private workGate(p: WorkPolicy) {
+    const gate=this.resumeGate(p.provider,p.account);
+    const windows=scopedWorkWindows(p,this.workWindows());
+    const state=this.accountStates().find(s=>s.provider===p.provider&&s.account===p.account);
+    const scoped=state?{...state,windows:windows.map(w=>({...w,reservePercent:Math.max(w.reservePercent,p.budgetByBucket[w.bucket]?.reservePercent??0)}))}:undefined;
+    return {...evaluateResumeGate(scoped,p.provider,p.account,Date.now(),this.config.collection.staleAfterSeconds*1000),
+      profileKey:gate.profileKey,accountKey:gate.accountKey,validUntilMs:gate.validUntilMs};
+  }
+  workStatus() {
+    const accounts=this.accountStates().filter(a=>a.provider==="codex"||a.provider==="claude").map(a=>({
+      provider:a.provider,account:a.account,label:a.accountLabel,buckets:a.windows.map(w=>w.bucket),
+      reserveByBucket:Object.fromEntries(a.windows.map(w=>[w.bucket,w.reservePercent])),
+    }));
+    const executions=this.work.store.executions();
+    return {policies:this.work.list().map(p=>({...p,performance:evaluateWorkPerformance(p,executions)})),executions:executions.slice(-200),accounts,defaults:{timeZone:this.config.profile.timeZone}};
+  }
+  async workTargets(provider:string,account:string) {
+    const summaries=(await this.recentWork.summaries(this.config)).filter(s=>s.provider===provider&&s.account===account).slice(0,30);
+    const targets=[];
+    for(const s of summaries) {
+      try {
+        const plan=await this.buildResumePlan({provider:s.provider,account:s.account,taskKey:s.id});
+        targets.push({nativeSessionId:plan.arguments.at(-1)!,title:s.projectLabel,cwd:plan.workingDirectory});
+      }catch{}
+    }
+    return {targets};
   }
 
   ingest(observations: QuotaObservation[]): QuotaEvent[] {

@@ -46,7 +46,7 @@ struct AppVerification: Decodable {
         DispatchQueue.main.asyncAfter(deadline: .now() + 12) { exit(3) }
     }
 
-    func record(model: PopoverModel, item: NSStatusItem, content: NSViewController?) {
+    func record(model: PopoverModel, item: NSStatusItem, content: NSViewController?, workLoadAttempt: Int = 0, mountedWindow: NSWindow? = nil) {
         var rendered = false
         var accountSelectorVerified = false
         let expectsSelector = model.detailSection == nil && (model.payload?.accounts.filter(\.enabled).count ?? 0) > 1
@@ -62,9 +62,20 @@ struct AppVerification: Decodable {
             }
         }
         if let content {
-            let window = NSWindow(contentViewController: content)
+            let window = mountedWindow ?? NSWindow(contentViewController: content)
             window.setContentSize(NSSize(width: model.detailSection == nil ? 380 : 460, height: min(1200, max(560, contentHeight ?? 560))))
             content.view.layoutSubtreeIfNeeded()
+            // Mount the real SwiftUI surface first so its authenticated work
+            // request runs. Only this asynchronous section needs readiness.
+            if model.detailSection == .work, model.lastError == nil,
+               model.automaticWorkLoadedPolicyIDs == nil, workLoadAttempt < 100 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    withExtendedLifetime(window) {
+                        record(model: model, item: item, content: content, workLoadAttempt: workLoadAttempt + 1, mountedWindow: window)
+                    }
+                }
+                return
+            }
             if let selector = findSelector(content.view) {
                 let focused = window.makeFirstResponder(selector)
                 accountSelectorVerified = focused && selector.focusRingType == .none
@@ -106,6 +117,7 @@ struct AppVerification: Decodable {
             "viewRendered": rendered,
             "detailSection": model.detailSection?.rawValue as Any? ?? NSNull(),
             "recentWorkIDs": model.payload?.recentWork.map(\.id) ?? [],
+            "automaticWorkLoadedPolicyIDs": model.automaticWorkLoadedPolicyIDs as Any? ?? NSNull(),
             "excludedPostIDs": model.payload?.resetSignals?.excludedPosts?.map(\.identity) ?? [],
             "pendingResetIDs": model.payload?.resetSignals?.pendingResets(nowMs: Date().timeIntervalSince1970 * 1000).map(\.id) ?? [],
             "profileDockIcons": CodexProfilesModel.shared.profiles.compactMap { $0.dockIcon?.rawValue },
