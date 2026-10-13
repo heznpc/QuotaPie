@@ -3,6 +3,7 @@
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -306,8 +307,15 @@ class LocalRelay:
         endpoint = config.get("openai_base_url")
         for _, _, settings in self.registered_entries():
             if Path(settings.get("codex_home", "")).resolve() == target and endpoint == self.endpoint(settings):
-                self.health(settings)
-                return {"relayConnected": True, "restart_required": True}
+                health = self.health(settings)
+                guard = health.get("subscriptionGuard", {})
+                profile_key = hashlib.sha256(str(target).encode()).hexdigest()
+                if (health.get("subscriptionGuardVersion") == 1 and guard.get("version") == 1
+                        and guard.get("profileKey") == profile_key and guard.get("account")):
+                    return {"relayConnected": True, "restart_required": True}
+                # A healthy legacy relay is not proof of subscription protection.
+                # Stage a new guarded generation; loaded clients retain the old one.
+                break
         # Existing custom endpoints are rejected by enabled_config, never replaced.
         self.install(args)
         return {"relayConnected": True, "restart_required": True}

@@ -9,12 +9,14 @@ export function parsePolicy(input: unknown, config: AppConfig): DotPolicy {
   const p = input as DotPolicy;
   if (!p || typeof p !== "object" || Array.isArray(p) ||
       Object.keys(p).some(k => !["id", "threadId", "account", "continuation", "trigger", "resetBucket",
-        "resetWithinMinutes", "requiredBucket", "reservePercent", "maxTurns", "maxUsagePercent", "expiresAtMs", "priority"].includes(k)) ||
+        "resetWithinMinutes", "requiredBucket", "reservePercent", "maxTurns", "maxUsagePercent", "expiresAtMs", "priority", "executionMode"].includes(k)) ||
       !/^[a-z0-9][a-z0-9-]{0,63}$/.test(p.id ?? "") ||
       !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(p.threadId ?? "") ||
       typeof p.account !== "string" || typeof p.continuation !== "string" ||
       p.continuation.length < 1 || p.continuation.length > 2000 ||
       !["quota.ready", "quota.reset_approaching"].includes(p.trigger)) throw new Error("invalid-policy");
+  if (p.executionMode != null && !["native", "profile-managed"].includes(p.executionMode)) throw new Error("invalid-execution-mode");
+  if (p.executionMode === "profile-managed" && p.maxTurns !== 1) throw new Error("managed-single-turn-required");
   for (const [key, min, max] of [
     ["reservePercent", 0, 99], ["maxTurns", 1, 100], ["maxUsagePercent", 1, 100],
     ["resetWithinMinutes", 1, 1440], ["priority", 0, 100],

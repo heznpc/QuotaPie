@@ -134,6 +134,7 @@ function hasUnverifiedAttachments(body: any): boolean {
 
 type Binding = { account: string; identity: string; source_identity: string; label: string; foreignReasoning?: string[] };
 type PoolSelectInput = { threadId: string | null; requestId: string; body: unknown; model: string; headers: Headers };
+export type SourceContinuationInput = { threadId: string | null; body: unknown; headers: Headers };
 type SourceOnlyReplay = { sourceReplay: NonNullable<ReturnType<typeof portableReplay>> };
 export class AccountPool {
   private db: Database;
@@ -232,6 +233,75 @@ export class AccountPool {
     return this.enqueueWrite(context?.requestId ?? "rejection", () => this.reject(code, context));
   }
   private now() { return this.options.now?.() ?? Date.now(); }
+  /** Validate the original login without routing, rewriting history or changing
+   * durable bindings. Subscription-only relays must not bypass older pool
+   * provenance just because new account selection is disabled. */
+  assertSourceContinuation(input: SourceContinuationInput): void {
+    if (this.closed) throw new PoolError("pool_closed");
+    const sourceID = this.options.sourceAccount, source = this.options.accounts().find(a => a.id === sourceID);
+    if (!source || source.tokenExpiresAt <= this.now() + 30_000) throw new PoolError("pool_source_auth_unavailable", 401);
+    const bearer = input.headers.get("authorization");
+    if (bearer !== `Bearer ${source.accessToken}` || input.headers.get("chatgpt-account-id") !== source.upstreamAccount)
+      throw new PoolError("pool_source_identity_mismatch", 401);
+    const claim = codexRequestIdentity(input.headers);
+    if (claim.fork.status === "invalid") throw new PoolError("pool_lineage_invalid", 409);
+    // A portable body carries its complete text/tool history without handles
+    // that might have been issued under another account. Never silently strip
+    // encrypted reasoning, item IDs or compaction data in this assertion.
+    const portable = () => {
+      const replay = portableReplay(input.body);
+      return replay != null && replay.fingerprints.length === 0 &&
+        (input.body as { input: any[] }).input.every(item => item.id == null);
+    };
+    if (!input.threadId) {
+      if (claim.threadId || !portable()) throw new PoolError("pool_source_history_unverified", 409);
+      return;
+    }
+    if (claim.threadId !== input.threadId) throw new PoolError("pool_thread_identity_required", 409);
+    const seen = new Set<string>();
+    let sourceBound = false;
+    let thread = input.threadId;
+    for (let depth = 0; depth < 32; depth++) {
+      if (seen.has(thread)) throw new PoolError("pool_lineage_invalid", 409);
+      seen.add(thread);
+      const saved = this.db.query<Binding, [string, string]>(
+        "SELECT * FROM bindings WHERE source=? AND thread=?").get(sourceID, thread);
+      if (saved) {
+        if (saved.account !== sourceID || saved.source_identity !== source.identity || saved.identity !== source.identity)
+          throw new PoolError("pool_source_continuation_mismatch", 409);
+        sourceBound = true;
+      }
+      // Even an empty replay filter records a prior cross-account recovery.
+      // Subscription-only mode never repairs or replays that history itself.
+      if (this.foreignReasoning(sourceID, thread) !== undefined)
+        throw new PoolError("pool_source_history_unverified", 409);
+      const lineage = this.options.forkParent?.(thread);
+      if (depth === 0 && claim.fork.status === "claimed") {
+        if (lineage?.status === "known" && lineage.parentId !== claim.fork.parentId)
+          throw new PoolError("pool_lineage_conflict", 409);
+        if (lineage?.status !== "known") {
+          // An ephemeral child may be absent, but its claimed parent must be
+          // verified in this profile before consulting the parent's binding.
+          if (lineage?.status !== "missing" || this.options.forkParent?.(claim.fork.parentId).status !== "known")
+            throw new PoolError("pool_lineage_unavailable", 409);
+          thread = claim.fork.parentId;
+          continue;
+        }
+      }
+      if (lineage?.status !== "known") {
+        if (depth > 0) throw new PoolError("pool_lineage_unavailable", 409);
+        if (sourceBound) return;
+        break;
+      }
+      // The full native lineage was verified inside the source profile and no
+      // ancestor carries another account's binding or replay state. Its opaque
+      // reasoning/response handles may stay on the original login unchanged.
+      if (!lineage.parentId) return;
+      thread = lineage.parentId;
+      if (depth === 31) throw new PoolError("pool_lineage_invalid", 409);
+    }
+    if (!portable()) throw new PoolError("pool_source_history_unverified", 409);
+  }
   private reserve(account: PoolAccount): number {
     const policy = this.options.policy();
     return policy.enabled && policy.reservePercent && Object.hasOwn(policy.reservePercent, account.id)

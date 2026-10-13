@@ -10,6 +10,7 @@ export interface DotPolicy {
   profileKey: string;
   accountKey: string;
   continuation: string;
+  executionMode?: "native" | "profile-managed";
   enabled: boolean;
   trigger: "quota.ready" | "quota.reset_approaching";
   resetBucket?: string;
@@ -39,6 +40,8 @@ export interface TargetState {
   last: ResumeGate["windows"] | null;
   event: DotEvent | null;
   claimed: string | null;
+  claimExpiresAtMs?: number;
+  dispatchedClaim?: string;
   outcome: "completed" | "quota-blocked" | "failed" | null;
 }
 

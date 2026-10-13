@@ -32,6 +32,7 @@ export function buildWorkBoundary(accounts: AccountState[], tasks: ResumeTask[],
         collectionState: account.collection.health,
         windows: account.windows.map(window => ({
           bucket: window.bucket, label: window.label,
+          quality: window.quality, windowSeconds: window.windowSeconds, reservePercent: window.reservePercent,
           remainingPercent: window.remainingPercent, resetsAtMs: window.resetsAtMs,
           observedAtMs: window.observedAtMs, freshness: window.freshness,
           validUntilMs: window.observedAtMs + config.collection.staleAfterSeconds * 1_000,

@@ -2,12 +2,18 @@ import { ResponseOwnershipGuard, ResponseOwnershipError, type OwnershipProvenanc
 import { fetchCodexUpstream, transportFailure } from "./codex-transport";
 import { randomBytes, randomUUID } from "node:crypto";
 import { gunzipSync, inflateSync } from "node:zlib";
+import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 import { DEFAULT_COMPACTION_ROUTE, isCompaction, object, routeCompaction, safeEffort, validateCompactionRoute, type CompactionRoute } from "./codex-compaction-policy";
 import { DEFAULT_TASK_SAVINGS, TaskSavingsRouter, validateTaskSavings, type TaskSavingsPolicy, type SavingsReason } from "./task-savings";
 import { ResponseCompletionObserver } from "./codex-compaction-stream";
-import { PoolError, type AccountPool, type PoolRoute } from "./account-pool";
+import { AccountPool, PoolError, poolAccounts, readPoolPolicy, type PoolRoute } from "./account-pool";
 import { codexRequestIdentity } from "./codex-request-identity";
+import { createSubscriptionGuard, type SubscriptionGuard } from "./subscription-guard";
+import { codexProfileRoot, loadConfig } from "./config";
+import { readCodexForkParent } from "./account-pool-lineage";
 export { DEFAULT_COMPACTION_ROUTE, routeCompaction, validateCompactionRoute, type CompactionRoute } from "./codex-compaction-policy";
 
 import type { CompactionRequestEvent as CoreRequestEvent } from "../packages/quota-core/src/events.js";
@@ -27,6 +33,13 @@ const HOP_HEADERS = [
   "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
   "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length",
 ];
+
+class SubscriptionRequestError extends Error {
+  constructor(readonly reason: string) { super(reason); }
+}
+const subscriptionError = (reason: string) => ({ type: "quotapie_subscription_guard",
+  code: `subscription_${reason.replace(/^subscription-/, "").replaceAll("-", "_")}`,
+  message: "QuotaPie paused this request to protect the existing subscription allowance. Refresh quota or wait for it to recover; no other account or paid fallback was used." });
 
 function transportHeaders(source: Headers): Headers {
   const headers = new Headers(source);
@@ -83,7 +96,11 @@ export function startCompactionProxy(options: {
   savingsModelSupported?: () => boolean;
   fetchUpstream?: (url: string, init: RequestInit) => Promise<Response>;
   accountPool?: AccountPool;
+  subscriptionGuard?: SubscriptionGuard;
+  /** A reviewed managed report may not invoke inherited or future tools. */
+  reportOnly?: boolean;
 } = {}) {
+  if (options.reportOnly && !options.subscriptionGuard) throw new Error("Report-only execution requires a subscription guard");
   const route = options.route ?? { ...DEFAULT_COMPACTION_ROUTE };
   validateCompactionRoute(route);
   const savingsPolicy = options.taskSavings ?? { ...DEFAULT_TASK_SAVINGS };
@@ -98,6 +115,7 @@ export function startCompactionProxy(options: {
   let attemptedCompactions = 0, failedCompactions = 0, cancelledCompactions = 0, unverifiedCompactions = 0;
   let activeRequests = 0;
   let draining = false;
+  let guardBlockedRequests = 0, guardAbortedRequests = 0;
   const active = new Map<string, CompactionRequestEvent>();
   const recent: CompactionRequestEvent[] = [];
   const record = (update: CompactionRequestEvent) => {
@@ -126,6 +144,9 @@ export function startCompactionProxy(options: {
       const path = url.pathname.slice(prefix.length);
       if (path === "/quotapie-health" && request.method === "GET") {
         return Response.json({ service: "quotapie-compaction", schemaVersion: 3, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolReserveVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 3 : 0, accountPoolRecoveryVersion: options.accountPool ? 2 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, responseOwnershipVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
+          subscriptionGuardVersion: options.subscriptionGuard ? 1 : 0,
+          subscriptionGuard: options.subscriptionGuard ? { ...options.subscriptionGuard.check(),
+            blockedRequests: guardBlockedRequests, abortedRequests: guardAbortedRequests } : null,
           accountPoolLineageVersion: options.accountPool ? 3 : 0,
           route: validateCompactionRoute(route), requests, rejectedRequests, compactions, attemptedCompactions,
           failedCompactions, cancelledCompactions, unverifiedCompactions, activeRequests, draining,
@@ -144,6 +165,13 @@ export function startCompactionProxy(options: {
       if (!/^\/[a-zA-Z0-9_/-]+$/.test(path) || !["GET", "POST"].includes(request.method)) {
         return new Response("Unsupported route", { status: 400 });
       }
+      const rejectGuard = (reason: string) => {
+        guardBlockedRequests++; rejectedRequests++;
+        return Response.json({ error: subscriptionError(reason) }, { status: 409 });
+      };
+      if (options.subscriptionGuard && (request.method === "POST"
+        ? !["/responses", "/responses/compact"].includes(path) : path !== "/models"))
+        return rejectGuard("route-unsupported");
       let headers = transportHeaders(request.headers);
       // Bun fetch decompresses upstream responses; request identity to keep streaming simple.
       headers.set("accept-encoding", "identity");
@@ -153,6 +181,7 @@ export function startCompactionProxy(options: {
       let poolSelection: ReturnType<AccountPool["select"]> = null;
       let poolInput: { body: unknown; headers: Headers } | undefined;
       let selectingAccount = false;
+      let guardModel: string | undefined;
       const started = performance.now();
       // Freeze the policy for this request. A live policy update cannot change
       // its target, effort, or attribution after the request has been sent.
@@ -169,13 +198,20 @@ export function startCompactionProxy(options: {
               activeRequests--;
               return new Response("Request too large", { status: 413 });
             }
-            const input: unknown = JSON.parse(new TextDecoder().decode(decoded));
+            const parsed: unknown = JSON.parse(new TextDecoder().decode(decoded));
+            // Apply at the provider boundary as well as in CLI configuration.
+            // Old rollout tool definitions cannot authorize a new tool call.
+            const input = options.reportOnly && object(parsed) ? { ...parsed, tools: [], tool_choice: "none" } : parsed;
+            if (options.subscriptionGuard && (!object(input) || typeof input.model !== "string" || !input.model ||
+                input.background !== undefined && input.background !== false))
+              throw new SubscriptionRequestError("request-unsupported");
             expectsSse = object(input) && (input.stream === true || (path === "/responses" && isCompaction(path, input)));
             const compact = object(input) && isCompaction(path, input);
             const savings = !compact && path === "/responses" ? savingsRouter.route(input, taskPolicy, requestIdentity(headers).threadId) : null;
             const routed = compact ? routeCompaction(path, input, policy) : savings ?? { body: input, routed: false };
             if (object(input) && typeof input.model === "string") {
               const outgoing = object(routed.body) ? routed.body : input;
+              guardModel = typeof outgoing.model === "string" ? outgoing.model : input.model;
               event = {
                 requestId: randomUUID(), ...requestIdentity(headers),
                 kind: isCompaction(path, input) ? "compaction" : "response",
@@ -189,7 +225,19 @@ export function startCompactionProxy(options: {
                 requestedEffort: safeEffort(object(input.reasoning) ? input.reasoning.effort : null),
                 reasoningEffort: safeEffort(object(outgoing.reasoning) ? outgoing.reasoning.effort : null),
               };
-              if (options.accountPool) {
+              if (options.subscriptionGuard) {
+                const guard = options.subscriptionGuard.check({ headers, model: guardModel });
+                if (!guard.ready) throw new SubscriptionRequestError(guard.reason);
+                try {
+                  // Keep the source login, but retain the pool's history and
+                  // fork ownership checks. A former foreign binding cannot be
+                  // replayed against this source merely because routing is off.
+                  options.accountPool?.assertSourceContinuation({ threadId: event.threadId, body: outgoing, headers });
+                } catch (error) {
+                  throw new SubscriptionRequestError(error instanceof PoolError ? error.code : "source-continuation-unverified");
+                }
+              }
+              if (options.accountPool && !options.subscriptionGuard) {
                 selectingAccount = true;
                 poolSelection = await options.accountPool.selectAsync({ threadId: event.threadId, requestId: event.requestId,
                   body: outgoing, model: event.to, headers }, request.signal);
@@ -205,11 +253,15 @@ export function startCompactionProxy(options: {
               }
             }
             // Unchanged requests retain their exact original bytes and encoding.
-            if (routed.routed) {
+            if (routed.routed || options.reportOnly) {
               body = JSON.stringify(poolSelection?.body ?? routed.body);
               headers.delete("content-encoding");
             }
           }
+        }
+        if (options.subscriptionGuard && request.method !== "POST") {
+          const guard = options.subscriptionGuard.check({ headers });
+          if (!guard.ready) throw new SubscriptionRequestError(guard.reason);
         }
       } catch (error) {
         activeRequests--;
@@ -218,6 +270,11 @@ export function startCompactionProxy(options: {
           if (event) record({ ...event, phase: "cancelled", status: 0, errorCode: "client_disconnected",
             at: new Date().toISOString(), durationMs: Math.round(performance.now() - started), retryCount: 0 });
           return new Response(null, { status: 499 });
+        }
+        if (error instanceof SubscriptionRequestError) {
+          if (event) record({ ...event, phase: "failed", status: 409, errorCode: subscriptionError(error.reason).code,
+            at: new Date().toISOString(), durationMs: Math.round(performance.now() - started), retryCount: 0 });
+          return rejectGuard(error.reason);
         }
         if (selectingAccount) {
           const code = error instanceof PoolError ? error.code : "pool_request_rejected";
@@ -242,6 +299,21 @@ export function startCompactionProxy(options: {
       let upstreamContentLength: number | null | undefined;
       let upstreamBytes = 0, relayQueuedBytes = 0;
       const cancellation = new AbortController();
+      let guardTimer: ReturnType<typeof setInterval> | undefined;
+      let guardFailure: string | undefined;
+      let upstreamReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+      let downstream: ReadableStreamDefaultController<Uint8Array> | undefined;
+      const sendGuardFailure = () => {
+        if (!guardFailure || !downstream) return;
+        try {
+          // A quota stop is visible to Codex even after SSE headers were sent.
+          if (expectsSse) downstream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: "response.failed",
+            response: { status: "failed", error: subscriptionError(guardFailure) } })}\n\n`));
+          else downstream.error(new Error(subscriptionError(guardFailure).code));
+          if (expectsSse) downstream.close();
+        } catch { /* The client may already have disconnected. */ }
+        downstream = undefined;
+      };
       if (event?.routed && event.kind === "compaction") attemptedCompactions++;
       const emit = (phase: CompactionRequestEvent["phase"], errorCode?: string) => {
         if (!event) return;
@@ -257,6 +329,7 @@ export function startCompactionProxy(options: {
         if (finished) return;
         finished = true;
         activeRequests--;
+        clearInterval(guardTimer);
         request.signal.removeEventListener("abort", onAbort);
         if (event?.routed && event.kind === "response" && ["failed", "unverified"].includes(phase)) savingsRouter.failed(event.threadId);
         if (event?.routed && event.kind === "compaction") {
@@ -276,10 +349,29 @@ export function startCompactionProxy(options: {
         finish(terminal?.phase ?? "cancelled", terminal?.errorCode ?? (terminal ? undefined : "client_disconnected"));
       };
       const onAbort = () => { cancellation.abort(); clientClosed(); };
+      const checkSubscription = () => {
+        if (finished || guardFailure || !options.subscriptionGuard) return;
+        if (receivedResponse && status >= 400) return;
+        const check = options.subscriptionGuard.check({ model: guardModel });
+        if (check.ready) return;
+        // A terminal provider result already delivered to the client is final.
+        const terminal = observer?.terminal();
+        if (terminal) { finish(terminal.phase, terminal.errorCode); return; }
+        guardFailure = check.reason; guardAbortedRequests++;
+        finish("failed", subscriptionError(check.reason).code);
+        cancellation.abort();
+        void upstreamReader?.cancel().catch(() => {});
+        sendGuardFailure();
+      };
       emit("started");
       request.signal.addEventListener("abort", onAbort, { once: true });
       if (request.signal.aborted) onAbort();
+      if (options.subscriptionGuard && !finished) {
+        checkSubscription();
+        if (!finished) guardTimer = setInterval(checkSubscription, options.subscriptionGuard.intervalMs);
+      }
       try {
+        if (guardFailure) return Response.json({ error: subscriptionError(guardFailure) }, { status: 409 });
         if (finished || cancellation.signal.aborted) return new Response(null, { status: 499 });
         // Cooldowns are routing evidence and must be durable before failover.
         // Success status is telemetry: enqueue it without delaying any bytes.
@@ -290,15 +382,23 @@ export function startCompactionProxy(options: {
           if (![401, 403, 429].includes(response.status)) { void write.catch(() => {}); return true; }
           try { await write; return true; } catch { return false; }
         };
-        let response = await fetchCodexUpstream(upstreamFetch, `${UPSTREAM}${path}${url.search}`, {
+        // The transport may retry a connection failure before any response.
+        // Recheck the allowance before each attempt, not only the first one.
+        const guardedFetch: typeof upstreamFetch = async (target, init) => {
+          checkSubscription();
+          cancellation.signal.throwIfAborted();
+          return upstreamFetch(target, init);
+        };
+        let response = await fetchCodexUpstream(guardedFetch, `${UPSTREAM}${path}${url.search}`, {
           method: request.method, headers, body, redirect: "manual", signal: cancellation.signal,
         }, code => { retryCount++; transportCode = code; });
         receivedResponse = true;
         status = response.status;
+        options.subscriptionGuard?.observeResponse?.(status);
         const cooldownRecorded = await recordPoolResponse(response);
         // A rejected HTTP request has produced no model output. Retry once with
         // complete portable history; never retry a 200 stream or partial output.
-        if (status === 429 && cooldownRecorded && poolSelection && poolInput && event && !finished && !cancellation.signal.aborted) {
+        if (!options.subscriptionGuard && status === 429 && cooldownRecorded && poolSelection && poolInput && event && !finished && !cancellation.signal.aborted) {
           let replacement: ReturnType<AccountPool["select"]> = null;
           const nextId = randomUUID();
           try {
@@ -331,7 +431,8 @@ export function startCompactionProxy(options: {
             await recordPoolResponse(response);
           }
         }
-        if (finished) { await response.body?.cancel(); return new Response(null, { status: 499 }); }
+        if (finished) { await response.body?.cancel(); return guardFailure
+          ? Response.json({ error: subscriptionError(guardFailure) }, { status: 409 }) : new Response(null, { status: 499 }); }
         if ([301, 302, 303, 307, 308].includes(status)) {
           await response.body?.cancel(); finish("failed", "upstream_redirect");
           return new Response("Unexpected Codex upstream redirect", { status: 502 });
@@ -352,19 +453,23 @@ export function startCompactionProxy(options: {
             options.onProvenance?.({ requestId: event?.requestId ?? "untracked", ...entry });
           }) : undefined;
         const reader = response.body?.getReader();
+        upstreamReader = reader;
         if (!reader) {
           const result = observer.finish();
           finish(response.ok ? result.phase : "failed", response.ok ? result.errorCode : "upstream_http_error");
           return new Response(null, { status, headers: responseHeaders });
         }
         const stream = new ReadableStream<Uint8Array>({
+          start(controller) { downstream = controller; sendGuardFailure(); },
           async pull(controller) {
             try {
               // A fragmented event can require several upstream reads before
               // producing a downstream chunk. Keep satisfying this pull until
               // a checked frame is available (Bun need not re-pull on silence).
               while (true) {
+                if (guardFailure) { sendGuardFailure(); return; }
                 const next = await reader.read();
+                if (guardFailure) { sendGuardFailure(); return; }
                 let delivered = false;
                 const deliver = (bytes: Uint8Array) => {
                   delivered = true;
@@ -386,6 +491,7 @@ export function startCompactionProxy(options: {
                 }
               }
             } catch (error) {
+              if (guardFailure) { sendGuardFailure(); return; }
               if (error instanceof ResponseOwnershipError) {
                 // Ownership failure overrides even a prior completion. Stop this
                 // reader only; never retry a stream that may have produced tools.
@@ -424,6 +530,7 @@ export function startCompactionProxy(options: {
         });
         return new Response(stream, { status, headers: responseHeaders });
       } catch (error) {
+        if (guardFailure) return Response.json({ error: subscriptionError(guardFailure) }, { status: 409 });
         if (cancellation.signal.aborted) {
           clientClosed();
           return new Response(null, { status: 499 });
@@ -443,6 +550,14 @@ export function startCompactionProxy(options: {
 }
 
 export function compactionCodexArgs(baseUrl: string, args: string[]): string[] {
+  for (let i = 0; i < args.length && args[i] !== "--"; i++) {
+    const arg = args[i]!;
+    const override = arg === "-c" || arg === "--config" ? args[++i]
+      : arg.startsWith("--config=") ? arg.slice(9) : arg.startsWith("-c") && arg !== "-c" ? arg.slice(2) : undefined;
+    const key = override?.split("=", 1)[0]?.replace(/["'\s]/g, "");
+    if (key && /(?:^|\.)(?:model_provider|model_providers|openai_base_url)(?:\.|$)/.test(key))
+      throw new Error("QuotaPie controls the subscription-protected provider endpoint; provider overrides are not supported.");
+  }
   // A custom provider named OpenAI retains Codex's remote compaction protocol.
   // HTTP lets each complete request choose a model without WS session reuse conflicts.
   const provider = `model_providers.quotapie_compaction={name="OpenAI",base_url=${JSON.stringify(baseUrl)},wire_api="responses",requires_openai_auth=true,supports_websockets=false}`;
@@ -472,8 +587,18 @@ export async function runCompactionCodex(args: string[], defaultCommand: string)
       default: throw new Error("Usage: quotapie codex [--codex-bin PATH] [--compact-from MODEL] [--compact-model MODEL] [--compact-effort low] -- [Codex arguments]");
     }
   }
+  const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
+  const config = () => loadConfig();
+  const sourceAccount = config().accounts.codex.find(profile => {
+    try { return profile.enabled && realpathSync(codexProfileRoot(profile)) === realpathSync(codexHome); }
+    catch { return false; }
+  })?.id;
+  const accountPool = sourceAccount ? new AccountPool({ sourceAccount, accounts: () => poolAccounts(config()), policy: readPoolPolicy,
+    forkParent: thread => readCodexForkParent(codexHome, thread) }) : undefined;
   const proxy = startCompactionProxy({
     route,
+    accountPool,
+    subscriptionGuard: createSubscriptionGuard({ codexHome, sourceAccount, config }),
     onProvenance: event => console.error(JSON.stringify({ service: "quotapie-compaction", kind: "response_provenance", ...event })),
     onRequest: (event) => {
       console.error(JSON.stringify({ service: "quotapie-compaction", ...event }));
@@ -493,5 +618,6 @@ export async function runCompactionCodex(args: string[], defaultCommand: string)
     process.off("SIGINT", interrupt);
     process.off("SIGTERM", terminate);
     proxy.stop();
+    accountPool?.close();
   }
 }

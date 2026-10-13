@@ -31,7 +31,7 @@ function fixture() {
     const parsed = JSON.parse(body); calls.push({ headers, body: parsed });
     return { status: 200, body: JSON.stringify(parsed.type === "verification" ? { challenge: parsed.challenge } : {}) };
   };
-  const bridge = new DotBridge(store, async () => snapshot, post, () => now);
+  const bridge = new DotBridge(store, async () => snapshot, post, () => now, async () => ({ ready: true, reason: "fixture-native-host-verified" }));
   const subscribe = (url = "https://callback.example/event", ttlMs?: number) => bridge.method("events/subscribe", {
     name: "quota.ready", arguments: { targetId: "original" },
     delivery: { mode: "webhook", url, secret }, ...(ttlMs == null ? {} : { ttlMs }),
@@ -135,6 +135,80 @@ test("quota, profile, model bucket, reset and freshness are rechecked at claim t
   } finally { f.store.close(); }
 });
 
+test("profile lookup never grants continuation through an unverified execution host", async () => {
+  const f = fixture();
+  try {
+    f.store.setEnabled("original", true); await f.subscribe(); await f.bridge.tick();
+    const denied = new DotBridge(f.store, async () => gate(), f.bridge.post, () => NOW);
+    expect(await denied.claim("original", f.store.target("original").event!.eventId))
+      .toEqual({ granted: false, reason: "execution-host-unverified" });
+    expect(await denied.status("original")).toMatchObject({ ready: false, quotaReady: true, reason: "execution-host-unverified" });
+    expect(f.store.target("original").turns).toBe(0);
+  } finally { f.store.close(); }
+});
+
+test("managed dispatch is durable, single-use, and records its own result", async () => {
+  const f = fixture(); let attempts = 0;
+  const state = f.store.target("original"); state.policy.executionMode = "profile-managed"; f.store.save(state);
+  const managed = new DotBridge(f.store, f.bridge.readGate, f.bridge.post, () => NOW, f.bridge.preflight,
+    async (p, _claim, authorized) => {
+      expect(authorized()).toBeTrue(); attempts++;
+      return { nativeThreadId: p.threadId, outcome: "completed", reason: "turn-completed", report: "fixture", attempts: 1 };
+    });
+  try {
+    f.store.setEnabled("original", true); await f.subscribe(); await managed.tick();
+    const claim: any = await managed.claim("original", f.store.target("original").event!.eventId);
+    expect(claim.executionMode).toBe("profile-managed");
+    const results = await Promise.allSettled([managed.execute("original", claim.claimId), managed.execute("original", claim.claimId)]);
+    expect(results.filter(r => r.status === "fulfilled")).toHaveLength(1);
+    expect(attempts).toBe(1);
+    expect(f.store.target("original")).toMatchObject({ dispatchedClaim: claim.claimId, claimed: null, outcome: "completed", policy: { enabled: false } });
+    await expect(managed.execute("original", claim.claimId)).rejects.toThrow("claim-not-dispatchable");
+  } finally { f.store.close(); }
+});
+
+test("revoked managed claims cannot dispatch and uncertain attempts never retry", async () => {
+  const f = fixture(); let attempts = 0;
+  const state = f.store.target("original"); state.policy.executionMode = "profile-managed"; f.store.save(state);
+  const managed = new DotBridge(f.store, f.bridge.readGate, f.bridge.post, () => NOW, f.bridge.preflight,
+    async () => { attempts++; throw new Error("unknown-child-result"); });
+  try {
+    f.store.setEnabled("original", true); await f.subscribe(); await managed.tick();
+    const claim: any = await managed.claim("original", f.store.target("original").event!.eventId);
+    f.store.setEnabled("original", false);
+    await expect(managed.execute("original", claim.claimId)).rejects.toThrow("claim-not-dispatchable");
+    expect(attempts).toBe(0);
+    // Simulate the original reviewed state; normal enable deliberately refuses an unresolved claim.
+    const current = f.store.target("original"); current.policy.enabled = true; f.store.save(current);
+    expect(await managed.execute("original", claim.claimId)).toMatchObject({ outcome: "failed", enabled: false });
+    expect(attempts).toBe(1);
+    await expect(managed.execute("original", claim.claimId)).rejects.toThrow();
+    expect(attempts).toBe(1);
+  } finally { f.store.close(); }
+});
+
+test("unsubscribing revokes both a pending managed claim and a running lease", async () => {
+  const f = fixture(); let attempts = 0;
+  const state = f.store.target("original"); state.policy.executionMode = "profile-managed"; f.store.save(state);
+  const managed = new DotBridge(f.store, f.bridge.readGate, f.bridge.post, () => NOW, f.bridge.preflight,
+    async (p, _claim, authorized) => {
+      attempts++; expect(authorized()).toBeTrue();
+      for (const sub of f.store.subscriptions()) f.store.unsubscribe(sub.id);
+      expect(authorized()).toBeFalse();
+      return { nativeThreadId: p.threadId, outcome: "failed", reason: "authorization-ended", attempts: 1 };
+    });
+  try {
+    f.store.setEnabled("original", true); const sub = await f.subscribe(); await managed.tick();
+    const claim: any = await managed.claim("original", f.store.target("original").event!.eventId);
+    f.store.unsubscribe(sub.id!);
+    await expect(managed.execute("original", claim.claimId)).rejects.toThrow("claim-not-dispatchable");
+    expect(attempts).toBe(0);
+    await f.subscribe();
+    expect(await managed.execute("original", claim.claimId)).toMatchObject({ outcome: "failed", enabled: false });
+    expect(attempts).toBe(1);
+  } finally { f.store.close(); }
+});
+
 test("usage budget and policy expiry stop admission without pretending to cancel host work", async () => {
   const f = fixture();
   try {
@@ -212,7 +286,7 @@ test("transient retries preserve the event ID and stop after three attempts", as
     let now = NOW;
     const retry = new DotBridge(f.store, async () => ({ ...gate(), checkedAtMs: now,
       windows: [{ ...gate().windows[0]!, observedAtMs: now }] }),
-      bridge.post, () => now);
+      bridge.post, () => now, async () => ({ ready: true, reason: "fixture-native-host-verified" }));
     for (let i = 0; i < 5; i++) { await retry.tick(); now += 120000; }
     expect(attempts).toBe(3); expect(new Set(ids).size).toBe(1);
   } finally { f.store.close(); }

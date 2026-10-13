@@ -2,6 +2,7 @@
 import importlib.util
 import io
 import json
+import hashlib
 import plistlib
 from pathlib import Path
 import subprocess
@@ -58,7 +59,9 @@ class LifecycleTests(unittest.TestCase):
         self.arguments = SimpleNamespace(compact_model="gpt-5.6-terra", compact_effort="low")
 
     def healthy(self, settings):
-        return {"service": "quotapie-compaction", "schemaVersion": 3, "route": settings["route"]}
+        return {"service": "quotapie-compaction", "schemaVersion": 3, "route": settings["route"],
+                "subscriptionGuardVersion": 1, "subscriptionGuard": {"version": 1, "account": "fixture",
+                "profileKey": hashlib.sha256(str(Path(settings["codex_home"]).resolve()).encode()).hexdigest()}}
 
     def add_unreadable_retired(self):
         corrupt = self.root / "corrupt.json"
