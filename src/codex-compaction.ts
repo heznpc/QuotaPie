@@ -7,7 +7,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { DEFAULT_COMPACTION_ROUTE, isCompaction, object, routeCompaction, safeEffort, validateCompactionRoute, type CompactionRoute } from "./codex-compaction-policy";
-import { DEFAULT_TASK_SAVINGS, TaskSavingsRouter, validateTaskSavings, type TaskSavingsPolicy, type SavingsReason } from "./task-savings";
+import { DEFAULT_TASK_SAVINGS, TaskSavingsRouter, validateTaskSavings, type TaskSavingsPolicy, type SavingsReason, type TaskState } from "./task-savings";
+import { failureOrigin, upstreamRequestIds, type UpstreamRequestIds } from "../packages/quota-core/src/codex-error-diagnostics.js";
 import { ResponseCompletionObserver } from "./codex-compaction-stream";
 import { AccountPool, PoolError, poolAccounts, readPoolPolicy, type PoolRoute } from "./account-pool";
 import { codexRequestIdentity } from "./codex-request-identity";
@@ -106,7 +107,7 @@ function poolErrorMessage(error: PoolError): string {
 }
 
 /** One loopback relay per launched Codex process. Credentials and bodies stay in memory. */
-export function startCompactionProxy(options: {
+export interface CompactionProxyOptions {
   route?: CompactionRoute;
   port?: number;
   token?: string;
@@ -114,17 +115,20 @@ export function startCompactionProxy(options: {
   onProvenance?: (event: OwnershipProvenance & { requestId: string }) => void;
   taskSavings?: TaskSavingsPolicy;
   savingsModelSupported?: () => boolean;
+  savingsState?: Map<string, TaskState>;
   fetchUpstream?: (url: string, init: RequestInit) => Promise<Response>;
   accountPool?: AccountPool;
   subscriptionGuard?: SubscriptionGuard;
   /** A reviewed managed report may not invoke inherited or future tools. */
   reportOnly?: boolean;
-} = {}) {
+}
+
+export function createCompactionHandler(options: CompactionProxyOptions = {}) {
   if (options.reportOnly && !options.subscriptionGuard) throw new Error("Report-only execution requires a subscription guard");
   const route = options.route ?? { ...DEFAULT_COMPACTION_ROUTE };
   validateCompactionRoute(route);
   const savingsPolicy = options.taskSavings ?? { ...DEFAULT_TASK_SAVINGS };
-  const savingsRouter = new TaskSavingsRouter(options.savingsModelSupported);
+  const savingsRouter = new TaskSavingsRouter(options.savingsModelSupported, options.savingsState);
   const token = options.token ?? randomBytes(24).toString("hex");
   if (!/^[a-f0-9]{48}$/.test(token)) throw new Error("Invalid relay token");
   const prefix = `/${token}/backend-api/codex`;
@@ -153,19 +157,7 @@ export function startCompactionProxy(options: {
     try { options.onRequest?.(update); } catch { /* Never log callback errors. */ }
   };
   const upstreamFetch = options.fetchUpstream ?? fetch;
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: options.port ?? 0,
-    idleTimeout: 0,
-    maxRequestBodySize: MAX_BODY_BYTES,
-    async fetch(request) {
-      const url = new URL(request.url);
-      if (!url.pathname.startsWith(`${prefix}/`) || request.headers.has("origin")) {
-        return new Response("Not found", { status: 404 });
-      }
-      const path = url.pathname.slice(prefix.length);
-      if (path === "/quotapie-health" && request.method === "GET") {
-        return Response.json({ service: "quotapie-compaction", schemaVersion: 3, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolReserveVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 3 : 0, accountPoolRecoveryVersion: options.accountPool ? 2 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, responseOwnershipVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
+  const snapshot = () => ({ service: "quotapie-compaction", schemaVersion: 3, serverErrorDiagnosticsVersion: 1, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolReserveVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 3 : 0, accountPoolRecoveryVersion: options.accountPool ? 2 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, responseOwnershipVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
           subscriptionGuardVersion: options.subscriptionGuard ? 1 : 0,
           subscriptionGuardRevision: options.subscriptionGuard ? 2 : 0,
           subscriptionGuard: options.subscriptionGuard ? { ...options.subscriptionGuard.check(),
@@ -175,6 +167,17 @@ export function startCompactionProxy(options: {
           route: validateCompactionRoute(route), requests, rejectedRequests, compactions, attemptedCompactions,
           failedCompactions, cancelledCompactions, unverifiedCompactions, activeRequests, draining,
           active: [...active.values()], recent, lastRequest });
+  return {
+    prefix, snapshot,
+    get activeRequests() { return activeRequests; },
+    async fetch(request: Request): Promise<Response> {
+      const url = new URL(request.url);
+      if (!url.pathname.startsWith(`${prefix}/`) || request.headers.has("origin")) {
+        return new Response("Not found", { status: 404 });
+      }
+      const path = url.pathname.slice(prefix.length);
+      if (path === "/quotapie-health" && request.method === "GET") {
+        return Response.json(snapshot());
       }
       if (path === "/quotapie-drain" && request.method === "POST") {
         draining = true;
@@ -297,12 +300,12 @@ export function startCompactionProxy(options: {
         activeRequests--;
         if (request.signal.aborted) {
           if (poolSelection && event) void options.accountPool!.finishAsync(event.requestId, "cancelled").catch(() => {});
-          if (event) record({ ...event, phase: "cancelled", status: 0, errorCode: "client_disconnected",
+          if (event) record({ ...event, phase: "cancelled", status: 0, errorCode: "client_disconnected", failureOrigin: "client",
             at: new Date().toISOString(), durationMs: Math.round(performance.now() - started), retryCount: 0 });
           return new Response(null, { status: 499 });
         }
         if (error instanceof SubscriptionRequestError) {
-          if (event) record({ ...event, phase: "failed", status: 400, errorCode: subscriptionError(error.reason).code,
+          if (event) record({ ...event, phase: "failed", status: 400, errorCode: subscriptionError(error.reason).code, failureOrigin: "relay",
             at: new Date().toISOString(), durationMs: Math.round(performance.now() - started), retryCount: 0 });
           return rejectGuard(error.reason);
         }
@@ -310,7 +313,7 @@ export function startCompactionProxy(options: {
           const code = error instanceof PoolError ? error.code : "pool_request_rejected";
           const status = error instanceof PoolError ? error.status : 503;
           rejectedRequests++;
-          if (event) record({ ...event, phase: "failed", status, errorCode: code, at: new Date().toISOString(),
+          if (event) record({ ...event, phase: "failed", status, errorCode: code, failureOrigin: "relay", at: new Date().toISOString(),
             durationMs: Math.round(performance.now() - started), retryCount: 0 });
           void options.accountPool!.rejectAsync(code, event ? { requestId: event.requestId, threadId: event.threadId, status } : undefined).catch(() => {});
           const responseHeaders = new Headers();
@@ -325,6 +328,7 @@ export function startCompactionProxy(options: {
       let retryCount = 0;
       let transportCode: string | undefined;
       let observer: ResponseCompletionObserver | undefined;
+      let responseRequestIds: UpstreamRequestIds | undefined;
       let upstreamBodyPresent: boolean | undefined;
       let upstreamContentLength: number | null | undefined;
       let upstreamBytes = 0, relayQueuedBytes = 0;
@@ -347,9 +351,12 @@ export function startCompactionProxy(options: {
       if (event?.routed && event.kind === "compaction") attemptedCompactions++;
       const emit = (phase: CompactionRequestEvent["phase"], errorCode?: string) => {
         if (!event) return;
+        const serverError = observer?.serverError;
+        const requestIds = { ...responseRequestIds, ...observer?.requestIds };
         const update: CompactionRequestEvent = { ...event, phase, status, at: new Date().toISOString(),
           durationMs: Math.round(performance.now() - started), retryCount,
-          ...(transportCode ? { transportCode } : {}), ...(errorCode ? { errorCode } : {}),
+          ...(transportCode ? { transportCode } : {}), ...(errorCode ? { errorCode, failureOrigin: failureOrigin(errorCode) } : {}),
+          ...(Object.keys(requestIds).length ? { upstreamRequestIds: requestIds } : {}), ...(serverError ? { serverError } : {}),
           ...(upstreamBodyPresent === undefined ? {} : { upstreamBodyPresent, upstreamContentLength,
             upstreamBytes, relayQueuedBytes }),
           responseModel: observer?.responseModel ?? null, usage: observer?.usage ?? null };
@@ -427,6 +434,7 @@ export function startCompactionProxy(options: {
         }, code => { retryCount++; transportCode = code; });
         receivedResponse = true;
         status = response.status;
+        responseRequestIds = upstreamRequestIds(response.headers);
         if (!metadataRequest) options.subscriptionGuard?.observeResponse?.(status);
         const cooldownRecorded = await recordPoolResponse(response);
         // A rejected HTTP request has produced no model output. Retry once with
@@ -455,12 +463,13 @@ export function startCompactionProxy(options: {
             poolSelection = replacement; headers = replacement.headers;
             headers.delete("content-encoding"); body = JSON.stringify(replacement.body);
             event = { ...event, requestId: nextId, accountRouting: replacement.route };
-            retryCount++; status = 0; receivedResponse = false; emit("started");
+            retryCount++; status = 0; receivedResponse = false; responseRequestIds = undefined; emit("started");
             response = await fetchCodexUpstream(upstreamFetch, `${UPSTREAM}${path}${url.search}`, {
               method: request.method, headers, body, redirect: "manual", signal: cancellation.signal,
             }, code => { retryCount++; transportCode = code; });
             receivedResponse = true;
             status = response.status;
+            responseRequestIds = upstreamRequestIds(response.headers);
             await recordPoolResponse(response);
           }
         }
@@ -480,7 +489,7 @@ export function startCompactionProxy(options: {
         responseHeaders.delete("content-encoding");
         // The native Responses Lite transport omits Content-Type even for SSE.
         // Use the request's stream control as a fallback, never conversation text.
-        observer = new ResponseCompletionObserver(response.headers.get("content-type") || (expectsSse ? "text/event-stream" : ""), event?.kind === "compaction");
+        observer = new ResponseCompletionObserver(response.headers.get("content-type") || (expectsSse ? "text/event-stream" : ""), event?.kind === "compaction", status);
         const ownership = response.ok && (response.headers.get("content-type") || (expectsSse ? "text/event-stream" : "")).includes("text/event-stream")
           ? new ResponseOwnershipGuard(requestIdentity(request.headers), entry => {
             options.onProvenance?.({ requestId: event?.requestId ?? "untracked", ...entry });
@@ -575,9 +584,15 @@ export function startCompactionProxy(options: {
         return new Response(`QuotaPie relay: ${code}`, { status: 502 });
       }
     },
-  });
+  };
+}
+
+export function startCompactionProxy(options: CompactionProxyOptions = {}) {
+  const handler = createCompactionHandler(options);
+  const server = Bun.serve({ hostname: "127.0.0.1", port: options.port ?? 0,
+    idleTimeout: 0, maxRequestBodySize: MAX_BODY_BYTES, fetch: handler.fetch });
   return {
-    baseUrl: `http://127.0.0.1:${server.port}${prefix}`,
+    baseUrl: `http://127.0.0.1:${server.port}${handler.prefix}`,
     stop: () => server.stop(true),
   };
 }

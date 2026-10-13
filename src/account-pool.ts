@@ -14,7 +14,15 @@ export interface PoolAccount {
   tokenExpiresAt: number; models: string[]; remaining: number | null; validUntil: number; observedAtMs?: number;
 }
 export interface PoolRoute { sourceAccount: string; account: string; accountLabel: string; reason: "new" | "pinned" | "existing" | "source_fallback" | "recovered" | "reserve"; previousAccountLabel?: string }
+const POOL_ERROR_BRAND = Symbol.for("quotapie.pool-error.v1");
 export class PoolError extends Error {
+  readonly [POOL_ERROR_BRAND] = true;
+  // A live pool can outlast the handler bundle that constructed its errors.
+  static [Symbol.hasInstance](value: unknown): boolean {
+    return value instanceof Error && (value as any)[POOL_ERROR_BRAND] === true &&
+      typeof (value as any).code === "string" && /^pool_[a-z0-9_]{1,100}$/.test((value as any).code) &&
+      Number.isInteger((value as any).status) && (value as any).status >= 400 && (value as any).status <= 599;
+  }
   constructor(readonly code: string, readonly status = 503, readonly retryAfterSeconds?: number) { super(code); }
 }
 export const poolPolicyPath = () => join(dataDirectory(), "account-pool.json");

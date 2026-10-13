@@ -1,3 +1,4 @@
+import { projectServerErrorDiagnostic, projectUpstreamRequestIds, type FailureOrigin, type ServerErrorDiagnostic, type UpstreamRequestIds } from "./codex-error-diagnostics.js";
 import type { SavingsReason } from "./task-savings.js";
 import { safeEffort } from "./codex-compaction-policy.js";
 import { transportFailure } from "./transport-failure.js";
@@ -19,6 +20,9 @@ export interface CompactionRequestEvent {
   at: string;
   durationMs: number;
   errorCode?: string;
+  failureOrigin?: FailureOrigin;
+  upstreamRequestIds?: UpstreamRequestIds;
+  serverError?: ServerErrorDiagnostic;
   transportCode?: string;
   retryCount?: number;
   upstreamBodyPresent?: boolean;
@@ -63,5 +67,8 @@ function project(value: any): CompactionRequestEvent | null {
     responseModel: typeof value.responseModel === "string" && label.test(value.responseModel) ? value.responseModel : null,
     usage: value.usage && [value.usage.input,value.usage.cachedInput,value.usage.output].every(n=>Number.isSafeInteger(n) && n>=0) && value.usage.cachedInput <= value.usage.input
       ? {input:value.usage.input,cachedInput:value.usage.cachedInput,output:value.usage.output} : null,
+    ...(["provider_http", "provider_protocol", "transport", "relay", "client"].includes(value.failureOrigin) ? { failureOrigin: value.failureOrigin } : {}),
+    ...(projectUpstreamRequestIds(value.upstreamRequestIds) ? { upstreamRequestIds: projectUpstreamRequestIds(value.upstreamRequestIds) } : {}),
+    ...(projectServerErrorDiagnostic(value.serverError) ? { serverError: projectServerErrorDiagnostic(value.serverError) } : {}),
     ...(typeof value.errorCode === "string" && label.test(value.errorCode) ? { errorCode: value.errorCode } : {}) };
 }

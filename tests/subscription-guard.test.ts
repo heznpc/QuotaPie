@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config";
-import { createSubscriptionGuard } from "../src/subscription-guard";
+import { createSubscriptionGuard, subscriptionGuardMemory } from "../src/subscription-guard";
 import { profileReference } from "../src/work-boundary";
 import { startCompactionProxy, type CompactionRequestEvent } from "../src/codex-compaction";
 import { PoolError } from "../src/account-pool";
@@ -572,4 +572,55 @@ test("real loopback HTTP proves admission zero, one source stream, connection ca
     expect(health.subscriptionGuard).toMatchObject({ blockedRequests: 2, abortedRequests: 1, ready: false });
     expect(health.accountPoolVersion).toBe(0); expect(health.activeRequests).toBe(0);
   } finally { clearTimeout(deadline); proxy.stop(); upstream.stop(true); f.close(); }
+});
+
+test("replacement guard retains a provider quota hold until every observed window is newer", () => {
+  for (const status of [429, 402]) {
+    const f = fixture();
+    try {
+      const memory = subscriptionGuardMemory();
+      const original = createSubscriptionGuard({ ...f.options, memory });
+      expect(original.check({ model }).ready).toBe(true);
+      original.observeResponse!(status);
+      const replacement = createSubscriptionGuard({ ...f.options, memory });
+      expect(replacement.check({ model })).toMatchObject({ ready: false, reason: "upstream-quota-hold" });
+      expect(replacement.checkIdentity({ headers: new Headers(f.headers()) }).ready).toBe(true);
+      f.advance(1);
+      f.state.generatedAtMs = f.now();
+      f.state.accounts[0]!.windows[0]!.observedAtMs = f.now(); f.write();
+      expect(replacement.check({ model }).reason).toBe("upstream-quota-hold");
+      for (const window of f.state.accounts[0]!.windows) window.observedAtMs = f.now();
+      f.write();
+      expect(replacement.check({ model })).toMatchObject({ ready: true, reason: "ready" });
+      // An old, still-streaming handler can establish a new hold after replacement.
+      original.observeResponse!(status);
+      expect(replacement.check({ model }).reason).toBe("upstream-quota-hold");
+    } finally { f.close(); }
+  }
+});
+
+test("replacement guard preserves previously observed same-login credentials and rejects a changed identity", () => {
+  const f = fixture();
+  try {
+    const memory = subscriptionGuardMemory();
+    const original = createSubscriptionGuard({ ...f.options, memory });
+    const previous = new Headers(f.headers());
+    expect(original.check({ headers: previous, model }).ready).toBe(true);
+    f.advance(2000);
+    f.auth.tokens.access_token = f.token("fixture-person"); f.writeAuth();
+    utimesSync(f.authPath, f.now() / 1000, f.now() / 1000);
+    const replacement = createSubscriptionGuard({ ...f.options, memory });
+    // The observation predates the refreshed auth file. Reloading must preserve
+    // both the original identity timestamp and the old, still-valid credential.
+    expect(replacement.check({ headers: previous, model })).toMatchObject({ ready: true, reason: "ready" });
+    expect(replacement.check({ headers: new Headers(f.headers()), model }).ready).toBe(true);
+    f.advance(1);
+    const unseen = new Headers({ ...f.headers(), authorization: `Bearer ${f.token("fixture-person")}` });
+    expect(replacement.check({ headers: unseen, model }).reason).toBe("request-identity-mismatch");
+    f.auth.tokens.access_token = f.token("different-person"); f.writeAuth();
+    const changed = createSubscriptionGuard({ ...f.options, memory });
+    expect(changed.check({ headers: new Headers(f.headers()), model }).reason).toBe("account-identity-changed");
+    expect(changed.checkIdentity({ headers: new Headers(f.headers()) }).reason).toBe("account-identity-changed");
+    expect(changed.checkIdentity({ headers: previous }).ready).toBe(false);
+  } finally { f.close(); }
 });

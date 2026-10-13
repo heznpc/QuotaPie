@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import secrets
 import shutil
 import socket
@@ -22,6 +23,12 @@ LABEL = "local.quotapie.compaction"
 BEGIN = "# BEGIN QuotaPie compaction relay\n"
 END = "# END QuotaPie compaction relay\n"
 GUARD_REVISION = 2
+RUNTIME_REVISION = 1
+UPGRADE_LABEL = LABEL + ".upgrade"
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def strip_managed_config(text):
@@ -71,10 +78,12 @@ def activate_generation(config_path, old_config, new_config, manifest_path, mani
     The previous service and its immutable files are never stopped or replaced.
     Rollback preserves unrelated edits that may have arrived during activation.
     """
+    published = False
     try:
         start()
         verify()
         atomic_write(config_path, new_config, expected=old_config if config_path.exists() else None)
+        published = True
         atomic_write(manifest_path, json.dumps(manifest, indent=2) + "\n")
     except Exception:
         candidate_url = tomllib.loads(new_config).get("openai_base_url")
@@ -85,7 +94,10 @@ def activate_generation(config_path, old_config, new_config, manifest_path, mani
             restored = enabled_config(rest, old_url) if old_url else rest
             # If this fails, keep the candidate alive: the config may still refer to it.
             atomic_write(config_path, restored, expected=current)
-        stop()
+        # Once advertised in config, another task may already have cached the
+        # candidate URL. Restoring config cannot revoke that request safely.
+        if not published:
+            stop()
         raise
 
 
@@ -179,6 +191,24 @@ class LocalRelay:
             raise RuntimeError("Bun is required")
         config_path = Path(args.codex_home or previous.get("codex_home", self.home / ".codex")).expanduser().resolve() / "config.toml"
         old_config = config_path.read_text() if config_path.exists() else ""
+        # Reuse the exact URL cached by existing conversations. Installation no
+        # longer creates a fresh endpoint when this profile already owns one.
+        if self.manifest:
+            configured = tomllib.loads(old_config).get("openai_base_url")
+            matching = [(path, settings) for path, _, settings in self.registered_entries()
+                        if Path(settings["codex_home"]).resolve() == config_path.parent
+                        and self.endpoint(settings) == configured]
+            if matching:
+                if getattr(args, "compact_model", None) or getattr(args, "compact_effort", None):
+                    self.configure(argparse.Namespace(compact_model=getattr(args, "compact_model", None),
+                                                       compact_effort=getattr(args, "compact_effort", None),
+                                                       codex_home=str(config_path.parent)))
+                self.install_manager()
+                result = self.upgrade(argparse.Namespace(source=str(source), codex_home=str(config_path.parent),
+                                                         watch=getattr(args, "watch", False)))
+                return {"installed": True, "configured": True, "endpoints_preserved": True,
+                        "restart_required": False, "upgrade": result,
+                        "settings_path": str(matching[0][0]), "pending": bool(result["deferred"])}
         self.runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
         # A new listener is staged beside the old one. Loaded desktop tasks keep
         # their old endpoint, so replacing a binary or killing that listener is unsafe.
@@ -202,9 +232,11 @@ class LocalRelay:
         new_config = enabled_config(old_config, self.endpoint(settings))
         candidate_path = release / "settings.json"
         binary = release / "relay.js"
-        subprocess.run([bun, "build", str(source / "src/codex-compaction-daemon.ts"), "--target=bun", "--outfile", str(binary)], check=True, capture_output=True)
         atomic_write(candidate_path, json.dumps(settings, indent=2) + "\n")
-        subprocess.run([bun, str(binary), "--check-policy", str(candidate_path)], check=True, capture_output=True)
+        descriptor = self.stage_runtime(candidate_path, settings, source)
+        os.replace(release / "relay-runtime-candidate.js", binary)
+        atomic_write(release / "runtime-current.json", json.dumps(descriptor, indent=2) + "\n")
+        (release / "pending-upgrade.json").unlink()
         manager = self.runtime / "manage.py"
         if Path(__file__).resolve() != manager:
             atomic_write(manager, Path(__file__).read_text())
@@ -311,16 +343,33 @@ class LocalRelay:
                 health = self.health(settings)
                 guard = health.get("subscriptionGuard", {})
                 profile_key = hashlib.sha256(str(target).encode()).hexdigest()
-                if (health.get("subscriptionGuardVersion") == 1 and health.get("subscriptionGuardRevision") == GUARD_REVISION
+                if (health.get("relayRuntimeRevision") == RUNTIME_REVISION and health.get("reloadSupported") is True
+                        and health.get("subscriptionGuardVersion") == 1 and health.get("subscriptionGuardRevision") == GUARD_REVISION
                         and guard.get("version") == 1
                         and guard.get("profileKey") == profile_key and guard.get("account")):
-                    return {"relayConnected": True, "restart_required": True}
-                # A healthy legacy relay is not proof of subscription protection.
-                # Stage a new guarded generation; loaded clients retain the old one.
+                    return {"relayConnected": True, "restart_required": False}
+                # Keep the loaded endpoint and stage its replacement safely.
                 break
         # Existing custom endpoints are rejected by enabled_config, never replaced.
-        self.install(args)
-        return {"relayConnected": True, "restart_required": True}
+        result = self.install(args)
+        connected = False
+        current_endpoint = tomllib.loads(config_path.read_text()).get("openai_base_url")
+        for _, _, settings in self.registered_entries():
+            if Path(settings["codex_home"]).resolve() != target or self.endpoint(settings) != current_endpoint:
+                continue
+            try:
+                current = self.health(settings)
+                guard = current.get("subscriptionGuard", {})
+                connected = (current.get("subscriptionGuardVersion") == 1
+                             and current.get("subscriptionGuardRevision") == GUARD_REVISION
+                             and guard.get("profileKey") == hashlib.sha256(str(target).encode()).hexdigest()
+                             and guard.get("version") == 1 and bool(guard.get("account")))
+            except (OSError, ValueError, RuntimeError):
+                pass
+        # Old historical listeners can still be pending even when the configured
+        # profile endpoint is healthy; keep those two observations separate.
+        return {"relayConnected": connected, "restart_required": result.get("restart_required", False),
+                "upgrade": result.get("upgrade"), "pending": result.get("pending", False)}
 
     def status(self):
         if not self.settings_path.exists():
@@ -343,90 +392,231 @@ class LocalRelay:
             pass
         return result
 
-    def repair_idle(self, args):
-        """Explicit repair of guarded listeners already loaded by desktop tasks.
+    def install_manager(self):
+        self.runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
+        manager = self.runtime / "manage.py"
+        if Path(__file__).resolve() != manager:
+            atomic_write(manager, Path(__file__).read_text())
+        return manager
 
-        Preserve the endpoint and settings. Never terminate an active request,
-        upgrade unguarded legacy relays, or publish a changed Codex config.
-        Keep a recoverable binary and roll back a failed restart.
-        """
-        source = Path(args.source or Path(__file__).resolve().parent.parent).resolve()
-        repaired, deferred = [], []
-        target = Path(args.codex_home).expanduser().resolve() if args.codex_home else None
+    def install_upgrade_watcher(self):
+        """Explicitly enrolled retry, never an implicit process termination."""
+        manager = self.install_manager()
+        agent = self.home / "Library/LaunchAgents" / (UPGRADE_LABEL + ".plist")
+        job = {"Label": UPGRADE_LABEL, "ProgramArguments": [sys.executable, str(manager), "apply-upgrades"],
+               "RunAtLoad": True, "StartInterval": 30, "ProcessType": "Background", "Umask": 0o077,
+               "StandardOutPath": str(self.runtime / "upgrade.log"), "StandardErrorPath": str(self.runtime / "upgrade.log")}
+        content = plistlib.dumps(job).decode()
+        if agent.exists():
+            if plistlib.loads(agent.read_bytes()).get("ProgramArguments") != job["ProgramArguments"]:
+                raise RuntimeError("Upgrade watcher ownership could not be verified")
+            atomic_write(agent, content, expected=agent.read_text())
+        else:
+            atomic_write(agent, content)
+        loaded = subprocess.run(["launchctl", "print", self.domain + "/" + UPGRADE_LABEL], capture_output=True)
+        if loaded.returncode != 0:
+            subprocess.run(["launchctl", "bootstrap", self.domain, str(agent)], check=True, capture_output=True)
+        return {"installed": True, "interval_seconds": 30}
+
+    def owned_agent(self, path, settings):
+        agent = self.agent_path(settings)
+        if not agent.exists():
+            agent = path.parent / "retired-launch-agent.plist"
+        job = plistlib.loads(agent.read_bytes())
+        if (job.get("Label") != settings.get("label", LABEL)
+                or job.get("ProgramArguments") != [settings["bun"], str(path.parent / "relay.js"), str(path)]):
+            raise RuntimeError("Relay launch agent ownership could not be verified")
+        return agent
+
+    def stage_runtime(self, path, settings, source):
+        directory = path.parent
+        bootstrap = directory / "relay-runtime-candidate.js"
+        runtime = directory / "relay-runtime-build.js"
+        try:
+            for entry, output in (("codex-compaction-daemon.ts", bootstrap), ("codex-relay-runtime.ts", runtime)):
+                subprocess.run([settings["bun"], "build", str(source / "src" / entry), "--target=bun", "--outfile", str(output)],
+                               check=True, capture_output=True)
+            subprocess.run([settings["bun"], str(bootstrap), "--check-policy", str(path)], check=True, capture_output=True)
+            source_hash = digest(runtime)
+            immutable = directory / ("relay-runtime-" + source_hash + ".js")
+            if immutable.exists():
+                if immutable.is_symlink() or digest(immutable) != source_hash:
+                    raise RuntimeError("Immutable runtime hash mismatch")
+                runtime.unlink()
+            else:
+                os.replace(runtime, immutable)
+            descriptor = {"schemaVersion": 1, "sourceHash": source_hash, "candidatePath": str(immutable)}
+            atomic_write(directory / "runtime-candidate.json", json.dumps(descriptor, indent=2) + "\n")
+            pending = {"schemaVersion": 1, "sourceHash": source_hash, "bootstrapSourceHash": digest(bootstrap),
+                       "settingsHash": digest(path), "stagedAt": int(time.time() * 1000)}
+            atomic_write(directory / "pending-upgrade.json", json.dumps(pending, indent=2) + "\n")
+            return descriptor
+        except Exception:
+            bootstrap.unlink(missing_ok=True)
+            raise
+        finally:
+            runtime.unlink(missing_ok=True)
+
+    def pending_runtime(self, path):
+        directory = path.parent
+        pending = json.loads((directory / "pending-upgrade.json").read_text())
+        descriptor = json.loads((directory / "runtime-candidate.json").read_text())
+        if not isinstance(pending, dict) or not isinstance(descriptor, dict):
+            raise RuntimeError("Staged runtime descriptor is invalid")
+        source_hash = descriptor.get("sourceHash")
+        if (pending.get("schemaVersion") != 1 or descriptor.get("schemaVersion") != 1
+                or not isinstance(source_hash, str) or not re.fullmatch(r"[a-f0-9]{64}", source_hash)
+                or pending.get("sourceHash") != source_hash or pending.get("settingsHash") != digest(path)):
+            raise RuntimeError("Staged runtime identity changed")
+        runtime = directory / ("relay-runtime-" + source_hash + ".js")
+        bootstrap = directory / "relay-runtime-candidate.js"
+        if (descriptor.get("candidatePath") != str(runtime) or runtime.is_symlink() or bootstrap.is_symlink()
+                or digest(runtime) != source_hash or digest(bootstrap) != pending.get("bootstrapSourceHash")):
+            raise RuntimeError("Staged runtime integrity failed")
+        return pending, descriptor, bootstrap
+
+    def upgrade(self, args):
+        """Keep endpoints stable; legacy listeners change only on natural restart."""
+        target = Path(args.codex_home).expanduser().resolve() if getattr(args, "codex_home", None) else None
+        staged, deferred = [], []
         for path, raw, settings in self.registered_entries():
             if target is not None and Path(settings["codex_home"]).resolve() != target:
                 continue
             generation = path.parent.name
             try:
+                self.owned_agent(path, settings)
+            except (OSError, ValueError, RuntimeError, plistlib.InvalidFileException):
+                deferred.append({"generation": generation, "reason": "ownership-unverified"})
+                continue
+            source = Path(getattr(args, "source", None) or settings.get("source") or Path(__file__).resolve().parent.parent).resolve()
+            self.stage_runtime(path, settings, source)
+            if path.read_text() != raw:
+                raise RuntimeError("Relay settings changed during staging")
+            staged.append(generation)
+        result = self.apply_upgrades(args)
+        result["staged"] = staged
+        result["deferred"] = deferred + result["deferred"]
+        return result
+
+    def apply_upgrades(self, args=None):
+        target = Path(args.codex_home).expanduser().resolve() if args and getattr(args, "codex_home", None) else None
+        applied, deferred = [], []
+        for path, _, settings in self.registered_entries():
+            if target is not None and Path(settings["codex_home"]).resolve() != target:
+                continue
+            directory, generation = path.parent, path.parent.name
+            marker = directory / "pending-upgrade.json"
+            if not marker.exists():
+                continue
+            try:
+                self.owned_agent(path, settings)
+                pending, descriptor, bootstrap = self.pending_runtime(path)
+            except (OSError, ValueError, RuntimeError, plistlib.InvalidFileException):
+                deferred.append({"generation": generation, "reason": "upgrade-state-unverified"})
+                continue
+            try:
                 health = self.health(settings)
             except (OSError, ValueError, RuntimeError):
-                deferred.append({"generation": generation, "reason": "health-unavailable"})
+                health = {}
+            modern = health.get("relayRuntimeRevision") == RUNTIME_REVISION and health.get("reloadSupported") is True
+            if modern and health.get("runtimeSourceHash") == descriptor["sourceHash"]:
+                # The listener itself proves the staged version has taken over.
+                os.replace(bootstrap, directory / "relay.js")
+                marker.unlink()
+                applied.append({"generation": generation, "method": "natural-restart" if pending.get("phase") == "legacy-awaiting-natural-restart" else "verified-reload",
+                                "sourceHash": descriptor["sourceHash"]})
                 continue
-            revision = health.get("subscriptionGuardRevision")
-            if health.get("subscriptionGuardVersion") != 1 or (type(revision) is int and revision >= GUARD_REVISION):
-                continue
-            if revision is not None and (type(revision) is not int or revision < 0):
-                deferred.append({"generation": generation, "reason": "revision-unverified"})
-                continue
-            if type(health.get("activeRequests")) is not int or health["activeRequests"] != 0:
-                deferred.append({"generation": generation, "reason": "active-requests"})
-                continue
-            binary = path.parent / "relay.js"
-            candidate = path.parent / "relay-repair-candidate.js"
-            backup = path.parent / "relay-before-repair.js"
-            if candidate.exists() or backup.exists():
-                raise RuntimeError("A previous repair needs inspection before retrying")
-            # Verify ownership before replacing any executable or signaling it.
-            agent = self.agent_path(settings)
-            if not agent.exists():
-                agent = path.parent / "retired-launch-agent.plist"
-            job = plistlib.loads(agent.read_bytes())
-            if job.get("Label") != settings.get("label") or job.get("ProgramArguments") != [settings["bun"], str(binary), str(path)]:
-                raise RuntimeError("Relay launch agent ownership could not be verified")
+            binary = directory / "relay.js"
             try:
-                subprocess.run([settings["bun"], "build", str(source / "src/codex-compaction-daemon.ts"),
-                                "--target=bun", "--outfile", str(candidate)], check=True, capture_output=True)
-                subprocess.run([settings["bun"], str(candidate), "--check-policy", str(path)], check=True, capture_output=True)
-                if path.read_text() != raw:
-                    raise RuntimeError("Relay settings changed during repair")
-                request = urllib.request.Request(self.endpoint(settings) + "/quotapie-drain", method="POST")
-                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                with opener.open(request, timeout=2) as response:
-                    drain = json.load(response)
-                if (not isinstance(drain, dict) or drain.get("draining") is not True
-                        or type(drain.get("activeRequests")) is not int or drain["activeRequests"] < 0):
-                    raise RuntimeError("Relay drain could not be verified")
-                # A request may have arrived during the build. Leave it running;
-                # a later repair can finish after that request completes.
-                if drain["activeRequests"]:
-                    deferred.append({"generation": generation, "reason": "draining-active-requests"})
-                    continue
-                shutil.copy2(binary, backup)
-                os.replace(candidate, binary)
+                if binary.is_symlink():
+                    raise RuntimeError("Relay executable ownership is invalid")
+                previous_hash = digest(binary)
+                backup = directory / ("relay-before-upgrade-" + previous_hash + ".js")
+                if backup.exists():
+                    if backup.is_symlink() or digest(backup) != previous_hash:
+                        raise RuntimeError("Relay backup integrity failed")
+                else:
+                    shutil.copy2(binary, backup)
+            except (OSError, RuntimeError):
+                deferred.append({"generation": generation, "reason": "bootstrap-unverified"})
+                continue
+            if modern:
                 try:
-                    subprocess.run(["launchctl", "kickstart", "-k", self.domain + "/" + settings["label"]],
-                                   check=True, capture_output=True)
-                    checked = self.wait_healthy(settings)
-                    if checked.get("subscriptionGuardRevision") != GUARD_REVISION or checked.get("subscriptionGuardVersion") != 1:
-                        raise RuntimeError("Repaired relay did not acknowledge the policy revision")
-                except Exception:
-                    shutil.copy2(backup, binary)
-                    subprocess.run(["launchctl", "kickstart", "-k", self.domain + "/" + settings["label"]],
-                                   check=True, capture_output=True)
-                    self.wait_healthy(settings)
-                    raise
-                repaired.append({"generation": generation, "revision": GUARD_REVISION,
-                                 "ready": checked.get("subscriptionGuard", {}).get("ready"),
-                                 "reason": checked.get("subscriptionGuard", {}).get("reason")})
-            finally:
-                candidate.unlink(missing_ok=True)
-        return {"repaired": repaired, "deferred": deferred, "endpoints_preserved": True}
+                    request = urllib.request.Request(self.endpoint(settings) + "/quotapie-reload", method="POST")
+                    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                    with opener.open(request, timeout=15) as response:
+                        acknowledged = json.load(response)
+                    checked = self.health(settings)
+                    if (not isinstance(acknowledged, dict) or acknowledged.get("runtimeSourceHash") != descriptor["sourceHash"]
+                            or checked.get("runtimeSourceHash") != descriptor["sourceHash"]):
+                        raise RuntimeError("Runtime reload acknowledgement mismatch")
+                    os.replace(bootstrap, binary)
+                    marker.unlink()
+                    applied.append({"generation": generation, "method": "reload", "sourceHash": descriptor["sourceHash"]})
+                except (OSError, ValueError, RuntimeError):
+                    try:
+                        observed = self.health(settings).get("runtimeSourceHash")
+                    except (OSError, ValueError, RuntimeError):
+                        observed = None
+                    pending.update(phase="reload-unverified", observedRuntimeSourceHash=observed if isinstance(observed, str) and re.fullmatch(r"[a-f0-9]{64}", observed) else None)
+                    atomic_write(marker, json.dumps(pending, indent=2) + "\n")
+                    deferred.append({"generation": generation, "reason": "reload-unverified",
+                                     "runtime_change_observed": observed == descriptor["sourceHash"]})
+                continue
+            # A legacy listener cannot hand off its socket. Never infer that a
+            # request gap permits a restart: its task may be executing a tool.
+            # Stage startup files only; the current process keeps serving, and
+            # a future natural restart loads the new runtime at this same URL.
+            if pending.get("phase") == "legacy-awaiting-natural-restart":
+                deferred.append({"generation": generation, "reason": "legacy-awaiting-natural-restart"})
+                continue
+            current = directory / "runtime-current.json"
+            previous = current.read_text() if current.exists() else None
+            agent = self.agent_path(settings)
+            archived = directory / "retired-launch-agent.plist"
+            restored_agent = False
+            try:
+                if not agent.exists():
+                    # Retired endpoints must remain reachable after login too.
+                    # Copy owned launch metadata; never bootstrap or kickstart.
+                    atomic_write(agent, archived.read_text())
+                    restored_agent = True
+                atomic_write(current, json.dumps(descriptor, indent=2) + "\n")
+                replacement = directory / "relay-upgrade-replacement.js"
+                shutil.copy2(bootstrap, replacement)
+                os.replace(replacement, binary)
+                pending.update(phase="legacy-awaiting-natural-restart", previousBootstrapPath=str(backup), previousRuntimeDescriptor=previous)
+                atomic_write(marker, json.dumps(pending, indent=2) + "\n")
+                deferred.append({"generation": generation, "reason": "legacy-awaiting-natural-restart"})
+            except Exception:
+                # Roll back disk preparation only. Never signal the live daemon.
+                replacement = directory / "relay-upgrade-rollback.js"
+                shutil.copy2(backup, replacement)
+                os.replace(replacement, binary)
+                if previous is None:
+                    current.unlink(missing_ok=True)
+                else:
+                    atomic_write(current, previous)
+                if restored_agent:
+                    agent.unlink(missing_ok=True)
+                deferred.append({"generation": generation, "reason": "upgrade-staging-rolled-back"})
+        result = {"applied": applied, "deferred": deferred, "endpoints_preserved": True}
+        if args and getattr(args, "watch", False):
+            result["watcher"] = self.install_upgrade_watcher()
+        return result
+
+    def repair_idle(self, args):
+        # Compatibility alias: request-idle drain/restart was unsafe during tool work.
+        return self.upgrade(args)
 
     def configure(self, args):
         changes = []
+        target = Path(args.codex_home).expanduser().resolve() if getattr(args, "codex_home", None) else None
         # Match the dashboard: update every compatible live generation, including
         # endpoints retained by loaded tasks and separately registered profiles.
         for path, old, settings in self.registered_entries():
+            if target is not None and Path(settings["codex_home"]).resolve() != target:
+                continue
             try:
                 compatible = self.health(settings).get("schemaVersion", 1) >= 2
             except (OSError, ValueError, RuntimeError):
@@ -555,7 +745,8 @@ class LocalRelay:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["install", "ensure-profile", "status", "configure", "disable", "stop", "retire", "repair-idle"])
+    parser.add_argument("action", choices=["install", "ensure-profile", "status", "configure", "disable", "stop", "retire", "repair-idle", "upgrade", "apply-upgrades"])
+    parser.add_argument("--watch", action="store_true", help="Enroll pending upgrade verification without restarting listeners")
     parser.add_argument("--source")
     parser.add_argument("--bun")
     parser.add_argument("--codex-home")
@@ -568,7 +759,7 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX)
         # Another manager may have activated a generation while we waited.
         relay = LocalRelay()
-        if args.action in ["install", "configure", "ensure-profile", "disable", "repair-idle"]:
+        if args.action in ["install", "configure", "ensure-profile", "disable", "repair-idle", "upgrade", "apply-upgrades"]:
             result = getattr(relay, args.action.replace("-", "_"))(args)
         else:
             result = getattr(relay, args.action)()
