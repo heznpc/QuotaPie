@@ -8,6 +8,7 @@ import { notificationAllowed, type NotificationPreferencesPatch } from "./notifi
 import { buildWorkBoundary, defaultWorkBoundaryPath, writeWorkBoundary } from "./work-boundary";
 import { JobStore } from "./storage/job-store";
 import { ManagedJobRunner } from "./jobs/runner";
+import { ResetTimingStore } from "./storage/reset-timing-store";
 import { resetOpportunities } from "./signals/opportunities";
 import { buildResetTracking } from "./signals/correlation";
 import { codexContextChange } from "./domain/codex-context";
@@ -120,6 +121,8 @@ export class QuotaPieService {
   private jobsEnabled = false;
   private jobNotifications: Promise<void> | null = null;
   readonly resetSignals: ResetSignalStore;
+  readonly resetTiming: ResetTimingStore;
+  private resetTimingError: string | null = null;
   readonly signalCollector: ResetSignalCollector;
   private signalTimer: ReturnType<typeof setInterval> | null = null;
   private signalWork: Promise<void> | null = null;
@@ -174,6 +177,7 @@ export class QuotaPieService {
     });
     this.locale = resolveLocale(config.profile.locale);
     this.resetSignals = new ResetSignalStore(this.storage);
+    this.resetTiming = new ResetTimingStore(this.storage);
     this.signalCollector = new ResetSignalCollector(this.resetSignals, config.resetSignals);
     if (!config.alerts.enabled || !config.alerts.macOSNotifications) {
       this.alerts.cancelAllAppNotifications();
@@ -1052,7 +1056,39 @@ export class QuotaPieService {
   }
 
   resetOpportunities(provider: Provider, account: string, nowMs = Date.now()) {
-    return resetOpportunities(this.resetSignals.list(1000), this.db.recentEvents(2000), provider, account, nowMs);
+    const saved = this.resetTimingStatus().cases.filter(r=>r.provider===provider&&r.account===account&&r.status==="pending");
+    return resetOpportunities(this.resetSignals.list(1000), this.db.recentEvents(2000), provider, account, nowMs).map(o=>{
+      const row = saved.find(r=>r.signalId===o.signalId);
+      if (!row) return o;
+      const forecast = row.forecast;
+      return { ...o, forecast: forecast ? { earliestMs:forecast.earliestMs, latestMs:forecast.latestMs,
+        sampleCount:forecast.sampleCount, basis:"observed-recovery-proximity" as const } : null };
+    });
+  }
+
+  resetTimingStatus() {
+    try { return { ...this.resetTiming.summary(), error: this.resetTimingError }; }
+    catch { return { cases: [], evaluation: null, error: "timing-history-unavailable" }; }
+  }
+
+  refreshResetTiming(nowMs = Date.now()): void {
+    try {
+    const contexts = this.storage.db.query<{provider:Provider; account:string; at:number}, []>(
+      "SELECT provider,account,MAX(occurred_at_ms) AS at FROM events WHERE kind IN ('account_changed','plan_changed') GROUP BY provider,account"
+    ).all();
+    const accounts = [...new Map(this.db.latestAll().map(o => [`${o.provider}:${o.account}`, { provider: o.provider, account: o.account,
+      contextAtMs: contexts.find(c=>c.provider===o.provider&&c.account===o.account)?.at ?? 0 }])).values()];
+    const events = this.storage.db.query<{provider: Provider; account: string; bucket: string; kind: QuotaEvent["kind"]; occurred_at_ms: number; details_json: string}, [number]>(
+      "SELECT provider,account,bucket,kind,occurred_at_ms,details_json FROM events WHERE kind IN ('external_relief','allowance_relief') AND occurred_at_ms >= ? ORDER BY occurred_at_ms DESC LIMIT 5000"
+    ).all(nowMs - 365 * 86400000).map(r => ({ provider:r.provider, account:r.account, bucket:r.bucket, kind:r.kind,
+      occurredAtMs:r.occurred_at_ms, details:JSON.parse(r.details_json), severity:"info" as const, confidence:"high" as const, displayText:"" }));
+    this.resetTiming.sync(this.resetSignals.list(1000), events, accounts, nowMs);
+    this.resetTimingError = null;
+    } catch {
+      // Advisory measurement must not interrupt collection, quota publication or work.
+      this.resetTimingError = "timing-history-update-failed";
+      console.error("[quotapie] reset timing history update failed");
+    }
   }
 
   applyNotificationPreferences(patch: NotificationPreferencesPatch): void {
@@ -1350,6 +1386,7 @@ export class QuotaPieService {
     }
     events = events.concat(await this.pollClaudeOAuth(nowMs));
     const collected = this.anyProviderCollectedRecently(nowMs);
+    this.refreshResetTiming(Date.now());
     this.db.maybePrune(nowMs, this.config.profile.historyDays);
     this.resumeTasks.pruneTerminal(nowMs - this.config.profile.historyDays * 86_400_000);
     // One analysis pass per tick. It feeds the triggers, the boundary file, and
@@ -1432,6 +1469,7 @@ export class QuotaPieService {
     this.signalWork = (async () => {
       await this.signalCollector.poll();
       if (this.closing || !this.config.resetSignals.enabled) return;
+      this.refreshResetTiming(Date.now());
       for (const signal of this.resetSignals.pending(Date.now())) {
         if (this.closing) break;
         const remaining = this.accountStates(Date.now(), this.currentQuotaWindows(Date.now()))
