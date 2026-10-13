@@ -691,3 +691,56 @@ test("discovery-cache refresh cannot interrupt an active known-model stream whil
     expect(events.at(-1)).toMatchObject({ errorCode: "subscription_reserve_reached", failureOrigin: "relay" });
   } finally { proxy.stop(); f.close(); }
 });
+
+test("a quota snapshot published during config reads is evaluated at the end of the read", () => {
+  const f = fixture(); let publishDuringRead = false;
+  const guard = createSubscriptionGuard({ ...f.options, config: () => {
+    if (publishDuringRead) {
+      publishDuringRead = false;
+      f.advance(1);
+      f.state.generatedAtMs = f.now();
+      for (const window of f.state.accounts[0]!.windows) window.observedAtMs = f.now();
+      f.write();
+    }
+    return f.config;
+  } });
+  try {
+    publishDuringRead = true;
+    const before = f.now();
+    expect(guard.check({ headers: new Headers(f.headers()), model })).toMatchObject({
+      ready: true, reason: "ready", checkedAtMs: before + 1,
+    });
+    // A real future timestamp is still invalid; no tolerance is added.
+    f.state.generatedAtMs = f.now() + 1; f.write();
+    expect(guard.check({ model }).reason).toBe("quota-stale");
+    f.state.generatedAtMs = f.now();
+    f.state.accounts[0]!.windows[0]!.observedAtMs = f.now() + 1; f.write();
+    expect(guard.check({ model }).reason).toBe("quota-stale");
+  } finally { f.close(); }
+});
+
+test("expiry, reset and cutoff decisions use the final snapshot-read time without a grace period", () => {
+  for (const condition of ["document", "window", "reset", "token", "cutoff"] as const) {
+    const f = fixture(); let advanceDuringPolicyRead = false;
+    try {
+      const start = f.now();
+      if (condition === "document") f.state.expiresAtMs = start + 1;
+      if (condition === "window") f.state.accounts[0]!.windows[0]!.validUntilMs = start + 1;
+      if (condition === "reset") f.state.accounts[0]!.windows[0]!.resetsAtMs = start + 1;
+      if (condition === "token") {
+        f.auth.tokens.access_token = `fixture.${Buffer.from(JSON.stringify({ sub: "fixture-person", exp: (start + 30001) / 1000 })).toString("base64url")}.fixture`;
+        f.writeAuth();
+      }
+      if (condition === "cutoff") { f.reserve(10); f.state.accounts[0]!.windows[0]!.remainingPercent = 10; }
+      f.write();
+      const guard = createSubscriptionGuard({ ...f.options, poolPolicy: () => {
+        if (advanceDuringPolicyRead) { advanceDuringPolicyRead = false; f.advance(1); }
+        return f.options.poolPolicy();
+      } });
+      advanceDuringPolicyRead = true;
+      const reason = condition === "token" ? "subscription-auth-unavailable"
+        : condition === "reset" ? "reset-unconfirmed" : condition === "cutoff" ? "reserve-reached" : "quota-stale";
+      expect(guard.check({ headers: new Headers(f.headers()), model })).toMatchObject({ ready: false, reason, checkedAtMs: start + 1 });
+    } finally { f.close(); }
+  }
+});

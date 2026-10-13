@@ -85,7 +85,7 @@ export function createSubscriptionGuard(options: {
   const memory = options.memory ?? subscriptionGuardMemory();
   const knownCredentials = memory.knownCredentials;
   function checkState(request: { headers?: Headers; model?: string } = {}, identityOnly = false): SubscriptionGuardState {
-    const at = now();
+    let at = now();
     const state: SubscriptionGuardState = { version: 1, account: options.sourceAccount ?? null,
       profileKey, ready: false, reason: "account-unavailable", checkedAtMs: at, windows: [] };
     const hold = (reason: string) => ({ ...state, ready: false, reason });
@@ -102,6 +102,7 @@ export function createSubscriptionGuard(options: {
           typeof token !== "string" || typeof upstreamAccount !== "string" || !upstreamAccount || /[\r\n]/.test(token + upstreamAccount))
         return hold("subscription-auth-required");
       const claims = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"));
+      at = now(); state.checkedAtMs = at;
       if (typeof claims.sub !== "string" || !claims.sub || !Number.isFinite(claims.exp) ||
           !identityOnly && claims.exp * 1000 <= at + 30000)
         return hold("subscription-auth-unavailable");
@@ -127,6 +128,18 @@ export function createSubscriptionGuard(options: {
       if (request.model !== undefined && !SUBSCRIPTION_MODELS.has(request.model))
         return hold("model-unverified");
       const boundary = readJSON(options.boundaryPath ?? defaultWorkBoundaryPath(), 16 * 1024 * 1024);
+      const poolReserve = explicitAccountReserve(options.sourceAccount, (options.poolPolicy ?? readPoolPolicy)());
+      // A separate collector can publish while config/auth/boundary files are
+      // being read. Evaluate the captured snapshot against the time after all
+      // inputs were read, not the time before that snapshot existed.
+      at = now(); state.checkedAtMs = at;
+      // File/policy reads may also cross a credential expiry boundary. Never
+      // admit a token that was valid only at the start of this check.
+      if (claims.exp * 1000 <= at + 30000) return hold("subscription-auth-unavailable");
+      if (request.headers && !equal(request.headers.get("authorization") ?? "", `Bearer ${token}`)) {
+        const remembered = knownCredentials.get(digest(request.headers.get("authorization") ?? "").toString("hex"));
+        if (remembered == null || remembered <= at) return hold("request-identity-mismatch");
+      }
       if (boundary?.schemaVersion !== 1 || !Number.isFinite(boundary.generatedAtMs) || boundary.generatedAtMs > at ||
           !Number.isFinite(boundary.expiresAtMs) || boundary.expiresAtMs <= at || !Array.isArray(boundary.accounts))
         return hold("quota-stale");
@@ -143,7 +156,6 @@ export function createSubscriptionGuard(options: {
       if (hasBudget && (relevant.length !== budgetKeys.length || relevant.some((w: any) =>
           !Object.hasOwn(baselineResets, w.bucket) || w.resetsAtMs !== baselineResets[w.bucket])))
         return hold("budget-baseline-changed");
-      const poolReserve = explicitAccountReserve(options.sourceAccount, (options.poolPolicy ?? readPoolPolicy)());
       const windows: WindowAnalysis[] = relevant.map((w: any): WindowAnalysis => {
         return { provider: "codex", account: options.sourceAccount!, bucket: w.bucket,
           quality: w.quality, freshness: w.freshness, observedAtMs: w.observedAtMs,
