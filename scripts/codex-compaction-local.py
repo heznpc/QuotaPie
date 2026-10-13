@@ -419,6 +419,11 @@ class LocalRelay:
         return {"installed": True, "interval_seconds": 30}
 
     def owned_agent(self, path, settings):
+        # Older registrations may lack the executable identity. They cannot be
+        # upgraded safely, but must not prevent verified generations upgrading.
+        if (not isinstance(settings, dict) or not isinstance(settings.get("bun"), str)
+                or not settings["bun"].strip()):
+            raise RuntimeError("Relay launch agent ownership could not be verified")
         agent = self.agent_path(settings)
         if not agent.exists():
             agent = path.parent / "retired-launch-agent.plist"
