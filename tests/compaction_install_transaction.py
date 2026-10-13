@@ -56,7 +56,10 @@ def exercise(failure):
         assert previous_binary.read_text() == "old running generation"
         if failure:
             assert manifest.read_text() == '{"settings_path":"old"}\n'
-            assert calls[-1] == "stop-new"
+            if failure == "manifest":
+                assert "stop-new" not in calls, "a published endpoint may already serve a loaded task"
+            else:
+                assert calls[-1] == "stop-new"
         if failure in ["manifest", "concurrent-edit"]:
             assert "# concurrent user edit" in config.read_text()
 

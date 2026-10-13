@@ -24,6 +24,17 @@ export interface SubscriptionGuard {
   observeResponse?(status: number): void;
 }
 
+/** In-memory identity and quota holds survive a handler update; never persisted. */
+export interface SubscriptionGuardMemory {
+  boundIdentity: string | null;
+  boundAuthAtMs: number | null;
+  knownCredentials: Map<string, number>;
+  deniedAtMs: number | null;
+}
+export function subscriptionGuardMemory(): SubscriptionGuardMemory {
+  return { boundIdentity: null, boundAuthAtMs: null, knownCredentials: new Map(), deniedAtMs: null };
+}
+
 const digest = (value: string) => createHash("sha256").update(value).digest();
 const equal = (a: string, b: string) => timingSafeEqual(digest(a), digest(b));
 // Catalog membership alone includes internal/reserve-only models and does not
@@ -40,6 +51,7 @@ function readJSON(path: string, maxBytes: number): any {
  * The cutoff follows observed quota; provider-side accounting may arrive later. */
 export function createSubscriptionGuard(options: {
   codexHome: string;
+  memory?: SubscriptionGuardMemory;
   sourceAccount?: string;
   config: () => AppConfig;
   boundaryPath?: string;
@@ -68,10 +80,8 @@ export function createSubscriptionGuard(options: {
   const profileKey = root ? profileReference(root) : null;
   // A login replacement requires a new relay generation. Token refresh for
   // the same subject and workspace does not change this identity.
-  let boundIdentity: string | null = null;
-  let boundAuthAtMs: number | null = null;
-  const knownCredentials = new Map<string, number>();
-  let deniedAtMs: number | null = null;
+  const memory = options.memory ?? subscriptionGuardMemory();
+  const knownCredentials = memory.knownCredentials;
   function checkState(request: { headers?: Headers; model?: string } = {}, identityOnly = false): SubscriptionGuardState {
     const at = now();
     const state: SubscriptionGuardState = { version: 1, account: options.sourceAccount ?? null,
@@ -94,9 +104,9 @@ export function createSubscriptionGuard(options: {
           !identityOnly && claims.exp * 1000 <= at + 30000)
         return hold("subscription-auth-unavailable");
       const identity = digest(JSON.stringify([root, upstreamAccount, claims.sub])).toString("hex");
-      if (boundIdentity && boundIdentity !== identity) return hold("account-identity-changed");
-      boundIdentity ??= identity;
-      boundAuthAtMs ??= stamp.mtimeMs;
+      if (memory.boundIdentity && memory.boundIdentity !== identity) return hold("account-identity-changed");
+      memory.boundIdentity ??= identity;
+      memory.boundAuthAtMs ??= stamp.mtimeMs;
       // Accept an earlier still-valid token only if this relay actually read
       // it from the same local login. Self-asserted JWT claims are not proof.
       for (const [key, expires] of knownCredentials) if (expires <= at) knownCredentials.delete(key);
@@ -160,14 +170,14 @@ export function createSubscriptionGuard(options: {
       }
       if (new Set(windows.map(w => w.bucket)).size !== windows.length) return hold("quota-unknown");
       if (relevant.some((w: any) => !Number.isFinite(w.validUntilMs) || w.validUntilMs <= at ||
-          !Number.isFinite(w.observedAtMs) || w.observedAtMs < boundAuthAtMs!)) return hold("quota-stale");
-      if (deniedAtMs != null && windows.some(w => w.observedAtMs <= deniedAtMs!)) return hold("upstream-quota-hold");
+          !Number.isFinite(w.observedAtMs) || w.observedAtMs < memory.boundAuthAtMs!)) return hold("quota-stale");
+      if (memory.deniedAtMs != null && windows.some(w => w.observedAtMs <= memory.deniedAtMs!)) return hold("upstream-quota-hold");
       return { ...state, ready: true, reason: "ready" };
     } catch { return hold("guard-unavailable"); }
   }
   const guard: SubscriptionGuard = {
     intervalMs: Math.min(1000, Math.max(10, options.intervalMs ?? 500)),
-    observeResponse(status) { if (status === 429 || status === 402) deniedAtMs = now(); },
+    observeResponse(status) { if (status === 429 || status === 402) memory.deniedAtMs = now(); },
     checkIdentity(request = {}) { return checkState(request, true); },
     check(request = {}) { return checkState(request); },
   };

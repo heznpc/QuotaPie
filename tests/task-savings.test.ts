@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { TaskSavingsRouter, DEFAULT_TASK_SAVINGS, validateTaskSavings } from "../src/task-savings";
+import { TaskSavingsRouter, DEFAULT_TASK_SAVINGS, validateTaskSavings, type TaskState } from "../src/task-savings";
 import { startCompactionProxy, type CompactionRequestEvent } from "../src/codex-compaction";
 const policy={...DEFAULT_TASK_SAVINGS,enabled:true};
 const id="11111111-1111-4111-8111-111111111111";
@@ -60,4 +60,28 @@ test("real HTTP routing observes response model and usage separately, compaction
   const health=await(await fetch(proxy.baseUrl+'/quotapie-health')).json() as any;
   expect(health.attemptedCompactions).toBe(1);
  }finally{proxy.stop();}
+});
+
+test("replacement router preserves failure, manual choices and extended-work history through shared state", () => {
+ const failures=new Map<string,TaskState>();
+ const oldFailure=new TaskSavingsRouter(()=>true,failures);
+ expect(oldFailure.route(input(),policy,id).routed).toBe(true);
+ const replacementFailure=new TaskSavingsRouter(()=>true,failures);
+ // A pre-update response may fail after a replacement has been installed.
+ oldFailure.failed(id);
+ expect(replacementFailure.route(input(),policy,id).reason).toBe("failure_fallback");
+
+ const manual=new Map<string,TaskState>();
+ const oldManual=new TaskSavingsRouter(()=>true,manual);
+ oldManual.route(input(),policy,id);
+ expect(oldManual.route({...input(),reasoning:{effort:"high"}},policy,id).reason).toBe("manual_change");
+ const replacementManual=new TaskSavingsRouter(()=>true,manual);
+ expect(replacementManual.route(input('Change the title from "Old" to "New".'),policy,id).reason).toBe("manual_change");
+
+ const extended=new Map<string,TaskState>();
+ const oldExtended=new TaskSavingsRouter(()=>true,extended);
+ for(let i=0;i<8;i++) expect(oldExtended.route(input(),policy,id).routed).toBe(true);
+ const replacementExtended=new TaskSavingsRouter(()=>true,extended);
+ expect(replacementExtended.route(input(),policy,id).reason).toBe("extended_work");
+ expect(oldExtended.route(input(),policy,id).reason).toBe("extended_work");
 });

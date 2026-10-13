@@ -12,12 +12,12 @@ export function validateTaskSavings(value: unknown): TaskSavingsPolicy {
 }
 export type SavingsReason = "disabled" | "simple_text_edit" | "uncertain_task" | "keep_setting" | "manual_change" | "extended_work" | "failure_fallback" | "unsupported_model" | "unidentified_task" | "task_disabled";
 export interface SavingsDecision { body: unknown; routed: boolean; reason: SavingsReason }
-interface TaskState { prompt: string; setting: string; requests: number; fallback: SavingsReason | null }
+export interface TaskState { prompt: string; setting: string; requests: number; fallback: SavingsReason | null }
 
 /** Local, conservative pre-request classification. No extra model calls or saved prompts. */
 export class TaskSavingsRouter {
-  private tasks = new Map<string, TaskState>();
-  constructor(private supported: () => boolean = () => false) {}
+  constructor(private supported: () => boolean = () => false,
+    private tasks = new Map<string, TaskState>()) {}
 
   route(input: unknown, policy: TaskSavingsPolicy, threadId: string | null): SavingsDecision {
     const keep = (reason: SavingsReason): SavingsDecision => ({ body: input, routed: false, reason });
