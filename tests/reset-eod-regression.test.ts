@@ -45,3 +45,7 @@ test("questions, negation, history and unrelated deadlines do not become reset p
     expect(classify(text)?.state).not.toBe("reported");
   }
 });
+
+test("an aspirational perfection remark is not a new reset announcement", () => {
+  expect(classify("The day we reach perfection it will be resets from there onwards")).toBeNull();
+});
