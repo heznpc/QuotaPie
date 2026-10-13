@@ -316,12 +316,14 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
       }
       if (url.pathname === "/api/status") {
         const nowMs = Date.now();
+        const displayLocale = request.headers.get("x-quotapie-locale") === "ko" ? "ko" : request.headers.get("x-quotapie-locale") === "en" ? "en" : service.locale;
         const analysed = service.analyses(nowMs);
         const accounts = service.accountStates(nowMs, analysed);
+        const resetPlans = service.resetPlanning(accounts, nowMs);
         return json({
           nowMs,
           actionToken,
-          headline: headlineJson(buildHeadline(accounts, nowMs, service.locale)),
+          headline: headlineJson(buildHeadline(accounts, nowMs, displayLocale)),
           accounts,
           // File inventory is opt-in; quota-only clients do not start a scan.
           ...service.recentWorkStatus(nowMs, request.headers.get("x-quotapie-recent-work") === "1"),
@@ -330,12 +332,12 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           notificationPreferences: service.notificationPreferences(),
           resetSignals: (() => {
             const feed = service.signalCollector.status(nowMs);
-            const opportunities = accounts.flatMap(account => service.resetOpportunities(account.provider, account.account, nowMs));
+            const opportunities = resetPlans.flatMap(plan => plan.opportunities);
             const forecastText = (id: string) => {
               const entries = opportunities.filter(o => o.signalId === id);
               if (!entries.length) return null;
               const forecasts = entries.flatMap(o => o.forecast ? [o.forecast] : []);
-              const ko = service.locale === "ko";
+              const ko = displayLocale === "ko";
               if (!forecasts.length) return ko ? "패턴 근거 부족 · 승인된 작업은 예고부터 시작 가능" : "Insufficient history · reviewed work can start at announcement";
               const format = (ms: number) => new Intl.DateTimeFormat(ko ? "ko-KR" : "en-US", {
                 timeZone: service.config.profile.timeZone, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short",
@@ -343,15 +345,18 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
               const low = Math.min(...forecasts.map(f => f.earliestMs)), high = Math.max(...forecasts.map(f => f.latestMs));
               return `${ko ? "관측 기반 추정" : "Observed estimate"}: ${format(low)}–${format(high)} · ${ko ? "확정 아님" : "unconfirmed"}`;
             };
+            const closed = new Map(resetPlans.map(a => [a.provider + ":" + a.account, new Set(a.closedSignalIDs)]));
             return { ...feed, signals: feed.signals.map(signal => ({ ...signal,
+              preparationClosed: accounts.some(a => a.provider === (signal.provider ?? "codex")) && accounts
+                .filter(a => a.provider === (signal.provider ?? "codex"))
+                .every(a => closed.get(a.provider + ":" + a.account)!.has(signal.id)),
               forecastText: forecastText(signal.id),
-              localTimeText: localAnnouncementTime(signal, service.locale, service.config.profile.timeZone),
-              benefitText: benefitChangeText(signal, service.locale),
-              newsTitle: signalDecision(signal, service.locale, service.config.profile.timeZone).title,
+              localTimeText: localAnnouncementTime(signal, displayLocale, service.config.profile.timeZone),
+              benefitText: benefitChangeText(signal, displayLocale),
+              newsTitle: signalDecision(signal, displayLocale, service.config.profile.timeZone).title,
             })) };
           })(),
-          resetOpportunities: accounts.flatMap(account => service.resetOpportunities(account.provider, account.account, nowMs)
-            .map(opportunity => ({ ...opportunity, account: account.account }))),
+          resetOpportunities: resetPlans.flatMap(plan => plan.opportunities.map(opportunity => ({ ...opportunity, account: plan.account }))),
           resetTracking: service.resetTracking(nowMs, accounts),
           compaction: compaction.snapshot(nowMs),
           accountPool: (() => { try {

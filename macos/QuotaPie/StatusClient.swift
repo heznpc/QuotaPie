@@ -70,6 +70,7 @@ final class StatusClient {
     func fetch(completion: @escaping (Result<StatusPayload, Error>) -> Void) {
         let url = baseURL.appendingPathComponent("api/status")
         var request = URLRequest(url: url)
+        request.setValue(Strings.language.rawValue, forHTTPHeaderField: "x-quotapie-locale")
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("1", forHTTPHeaderField: "x-quotapie-recent-work")
         perform(request) { result in

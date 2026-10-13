@@ -147,3 +147,22 @@ describe("native recovery contract", () => {
     } finally { poll.mockRestore(); server.stop(true); await s.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+test("native status closes a standalone completion and honors the app display language", async () => {
+  const s = new QuotaPieService(config(), new QuotaDatabase(":memory:"));
+  const server = startDashboard(s, s.config, { compactionRoot: new URL("fixtures/no-relays", import.meta.url).pathname });
+  try {
+    const at = Date.now() - 60000;
+    const announcement = classifyPost({ id: "99901", author: "thsottiaux", text: "Global reset by EOD PST",
+      createdAtMs: at, conversationId: "99901", references: [] }, new Map())!;
+    const completion = classifyPost({ id: "99902", author: "thsottiaux", text: "What would you like with your side of reset? It's done.",
+      createdAtMs: at + 1000, conversationId: "99902", references: [] }, new Map())!;
+    s.resetSignals.save([announcement, completion], at + 2000);
+    const payload = await (await fetch(`http://127.0.0.1:${server.port}/api/status`, { headers: { "x-quotapie-locale": "ko" } })).json() as any;
+    const signal = payload.resetSignals.signals.find((v: any) => v.id === "99901");
+    expect(signal.preparationClosed).toBeTrue();
+    expect(signal.localTimeText).toContain("시각 미정");
+    expect(signal.localTimeText).not.toContain("latest");
+    expect(payload.resetOpportunities).toEqual([]);
+  } finally { server.stop(true); await s.close(); }
+});

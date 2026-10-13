@@ -25,11 +25,7 @@ export function resetOpportunities(signals: ResetSignal[], events: QuotaEvent[],
     Number(event.details.usedPercentAfter) <= 1 &&
     recoveryEvidence(event, [], now).reason === "no-public-match");
   const announcements = known.filter(s => s.state === "announced" && universal(s));
-  return announcements.filter(s => now - s.publishedAtMs < DAY &&
-    !observed.some(event => event.occurredAtMs >= s.publishedAtMs && event.occurredAtMs < s.publishedAtMs + DAY) && !known.some(other =>
-    other.publishedAtMs >= s.publishedAtMs && other.id !== s.id &&
-    (other.groupId === s.groupId || other.author.toLowerCase() === s.author.toLowerCase() && (universal(other) || other.state === "reported")) &&
-    ["reported", "withdrawn", "updated"].includes(other.state))).map(s => {
+  return announcements.filter(s => now - s.publishedAtMs < DAY && !resetSignalClosed(s, known, observed, now)).map(s => {
     const boundary = endOfDayBoundary(textOf(s), s.publishedAtMs);
     const samples = new Map<number, { low: number; high: number }>();
     const eod = /\bEOD\b|end of (?:the )?day/i;
@@ -61,4 +57,16 @@ export function resetOpportunities(signals: ResetSignal[], events: QuotaEvent[],
       actionableFromMs: s.publishedAtMs, expiresAtMs: s.publishedAtMs + DAY,
       calendarBoundaryMs: boundary?.targetAtMs ?? null, forecast };
   });
+}
+
+/** Account observation and public completion are separate from calendar expiry. */
+export function resetSignalClosed(s: ResetSignal, signals: ResetSignal[], events: QuotaEvent[], now: number): boolean {
+  return events.some(event => event.provider === (s.provider ?? "codex") &&
+    ["external_relief", "allowance_relief"].includes(event.kind) && event.occurredAtMs <= now &&
+    Number(event.details.usedPercentAfter) <= 1 && recoveryEvidence(event, [], now).reason === "no-public-match" &&
+    event.occurredAtMs >= s.publishedAtMs && event.occurredAtMs < s.publishedAtMs + DAY) || signals.some(other =>
+    reset(other) && (other.provider ?? "codex") === (s.provider ?? "codex") &&
+    other.publishedAtMs <= now && other.publishedAtMs >= s.publishedAtMs && other.publishedAtMs < s.publishedAtMs + DAY && other.id !== s.id &&
+    (other.groupId === s.groupId || other.author.toLowerCase() === s.author.toLowerCase() && (universal(other) || other.state === "reported")) &&
+    ["reported", "withdrawn", "updated"].includes(other.state));
 }
