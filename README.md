@@ -1034,3 +1034,23 @@ The bounded history scan uses up to 1,000 signals and 2,000 recent events over
 consumption and observation gaps over 30 minutes do not contribute.
 A completion, withdrawal, revision or observed near-full recovery retires
 the opportunity. A report alone is not treated as the actual reset time.
+
+### Reset timing history and evaluation
+
+EOD announcements retain a separate local timing ledger for 365 days, beyond
+public feed retention. The UI presents the original/local-time conversion first,
+then the estimate issued before recovery and actual account observation intervals.
+This is temporal association, not proof that a post caused the account's reset.
+The estimate uses the observed UTC clock range of the same author's EOD cases
+for the same provider/account context over 90 days, with at least two distinct
+recovery days. Duplicate posts/windows cannot increase that day count.
+New cases update later estimates; timestamps are formatted in the user's timezone.
+
+The first prospective estimate is frozen. `resetTiming` in `/api/status` exposes
+cases, observation bounds, interval misses and available lead time. Historical
+imports are useful training cases but never scored as successful predictions.
+A day without a qualifying observation is `unobserved`, not a claimed false alarm.
+Account/plan changes invalidate learning from the prior profile context. Scheduled
+resets, reset-card use, partial recoveries, source changes and observation gaps
+over 30 minutes do not become training evidence. Predictions are advisory and
+never alter proxy cutoffs, quota balances, or enable continuation policies.

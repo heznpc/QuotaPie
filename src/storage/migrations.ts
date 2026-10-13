@@ -23,6 +23,10 @@ function inTransaction(db: Database, work: () => void): void {
 }
 
 export function migrate(db: Database): void {
+    db.run(`CREATE TABLE IF NOT EXISTS reset_timing_cases (
+      provider TEXT NOT NULL, account TEXT NOT NULL, signal_id TEXT NOT NULL,
+      published_ms INTEGER NOT NULL, payload TEXT NOT NULL,
+      PRIMARY KEY(provider,account,signal_id))`);
     db.run(`CREATE TABLE IF NOT EXISTS account_binding_secret (id INTEGER PRIMARY KEY CHECK(id=1), secret TEXT NOT NULL)`);
     db.run(`CREATE TABLE IF NOT EXISTS account_bindings (scope TEXT NOT NULL, id TEXT NOT NULL, binding TEXT NOT NULL, PRIMARY KEY(scope,id))`);
     db.run(`CREATE TABLE IF NOT EXISTS model_notification_state (
@@ -139,6 +143,7 @@ export function migrate(db: Database): void {
         details_json TEXT NOT NULL DEFAULT '{}'
       )
     `);
+    db.run("CREATE INDEX IF NOT EXISTS events_kind_time ON events(kind,occurred_at_ms)");
     db.run(`
       CREATE TABLE IF NOT EXISTS alert_state (
         key TEXT PRIMARY KEY,

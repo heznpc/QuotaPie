@@ -1,3 +1,4 @@
+import { resetTimingPresentation } from "./signals/timing-presentation";
 import { profileDockIcon } from "./profile-dock-icon";
 import { localAnnouncementTime } from "./signals/time";
 import { benefitChangeText, signalDecision } from "./signals/presentation";
@@ -330,6 +331,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           notificationPreferences: service.notificationPreferences(),
           resetSignals: (() => {
             const feed = service.signalCollector.status(nowMs);
+            const timingCases = service.resetTimingStatus().cases;
             const opportunities = accounts.flatMap(account => service.resetOpportunities(account.provider, account.account, nowMs));
             const forecastText = (id: string) => {
               const entries = opportunities.filter(o => o.signalId === id);
@@ -344,7 +346,8 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
               return `${ko ? "관측 기반 추정" : "Observed estimate"}: ${format(low)}–${format(high)} · ${ko ? "확정 아님" : "unconfirmed"}`;
             };
             return { ...feed, signals: feed.signals.map(signal => ({ ...signal,
-              forecastText: forecastText(signal.id),
+              forecastText: resetTimingPresentation(signal, timingCases, service.locale, service.config.profile.timeZone, accounts).forecastText ?? forecastText(signal.id),
+              timingHistoryText: resetTimingPresentation(signal, timingCases, service.locale, service.config.profile.timeZone, accounts).timingHistoryText,
               localTimeText: localAnnouncementTime(signal, service.locale, service.config.profile.timeZone),
               benefitText: benefitChangeText(signal, service.locale),
               newsTitle: signalDecision(signal, service.locale, service.config.profile.timeZone).title,
@@ -352,6 +355,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           })(),
           resetOpportunities: accounts.flatMap(account => service.resetOpportunities(account.provider, account.account, nowMs)
             .map(opportunity => ({ ...opportunity, account: account.account }))),
+          resetTiming: service.resetTimingStatus(),
           resetTracking: service.resetTracking(nowMs, accounts),
           compaction: compaction.snapshot(nowMs),
           accountPool: (() => { try {
