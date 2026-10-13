@@ -7,6 +7,7 @@ import { codexProfileRoot, loadConfig } from "./config";
 import { DEFAULT_TASK_SAVINGS, validateTaskSavings, type TaskSavingsPolicy } from "./task-savings";
 import { createSavingsModelSupport } from "./savings-model-support";
 import { startCompactionProxy, validateCompactionRoute, type CompactionRoute } from "./codex-compaction";
+import { createSubscriptionGuard } from "./subscription-guard";
 
 if (process.argv[2] === "--check-policy") {
   const candidate = JSON.parse(readFileSync(process.argv[3]!, "utf8"));
@@ -37,6 +38,7 @@ const accountPool = sourceAccount ? new AccountPool({ sourceAccount, accounts: (
 const proxy = startCompactionProxy({
   ...settings,
   accountPool,
+  subscriptionGuard: createSubscriptionGuard({ codexHome: settings.codex_home ?? join(homedir(), ".codex"), sourceAccount, config }),
   onProvenance: event => console.log(JSON.stringify({ kind: "response_provenance", ...event })),
   savingsModelSupported: supportsSavings,
   onRequest: (event) => {

@@ -1,9 +1,10 @@
 # QuotaPie events for Dots
 
 This connection uses MCP Events to tell a Dot when an explicitly approved local
-Codex task can continue. It does not invoke a model, start a provider process,
-control the desktop through a second app-server, or create a scheduled chat.
-The Dot uses its native existing-task control after claiming one continuation.
+Codex task can continue. Events and claims never start a model. A separately
+reviewed `profile-managed` policy permits `execute_continuation` to run one
+read-only report in the original thread and profile through the bundled Codex
+CLI. Native-host continuation remains blocked until host verification exists.
 
 ## Connection
 
@@ -27,8 +28,8 @@ official manager. It verifies remote workspace membership with the runtime key
 before startup, preserves another application's aliases, and checks readiness
 after startup. Repeated connect does not launch a second process. The macOS
 settings expose connect, status and disconnect. Disconnect first pauses task
-policies, then stops only QuotaPie's runtime. This is not a cancellation of an
-already running task.
+policies, then stops only QuotaPie's runtime. This revokes managed execution;
+it does not cancel a task running independently in its native host.
 
 The initial Platform and ChatGPT approvals are separate from runtime management.
 The app links to their official screens and does not claim to have finished them
@@ -52,8 +53,10 @@ Private tunnel registration and Dot access must be reviewed before activation.
 
 In ChatGPT Plugins, add the custom MCP server using the tunnel, then verify
 that `quota.ready` and `quota.reset_approaching` appear in the event catalog.
-Connect the intended Dot to the computer and verify it can inspect the exact
-original Codex task. These are distinct from a local CLI plugin installation.
+Use `continuation_status` to verify the exact original Codex task in its
+configured profile. A Dot's default computer host may belong to another account.
+The profile reader is distinct from native-host access and from a local CLI
+plugin installation.
 The current environment's connection and real Dot execution must be verified;
 the implementation alone does not establish either.
 
@@ -67,6 +70,7 @@ original thread ID, and an expiry timestamp within seven days:
   "id": "approved-work",
   "threadId": "11111111-2222-3333-4444-555555555555",
   "account": "configured-account",
+  "executionMode": "profile-managed",
   "continuation": "The exact continuation the user reviewed.",
   "trigger": "quota.ready",
   "resetWithinMinutes": 30,
@@ -99,9 +103,16 @@ among eligible targets on the same account.
 `maxTurns` limits successful claims. `maxUsagePercent` bounds further
 admission based on measured percentage-point consumption since monitoring
 began. It also counts manual consumption and does not measure exact token
-cost. A single running turn may exceed that amount. An unresolved claim blocks
-other automatic work for that account. A policy expiry stops new claims, not
-an already-running task.
+cost. For managed execution, the proxy raises each window's reserve to at least
+its starting remaining percentage minus the budget. It requires the same windows
+and reset periods throughout execution and cancels the connection when the
+observed threshold is reached. Accounting delay can still exceed this amount;
+the provider may have processed work before cancellation. Managed mode requires
+`maxTurns: 1`, a read-only report and a 60-second limit. It forbids API-key and
+alternate-account routing, and pins request/stream retries to zero. An unresolved
+claim blocks other automatic work on the account. Disable, unsubscribe, policy
+expiry or transport shutdown revokes managed execution; native work remains
+host-owned.
 
 ## Delivery and continuation
 
@@ -120,11 +131,13 @@ subscription; 413 and other permanent errors stop delivery. There is no replay
 cursor. Policies without active subscriptions generate no events.
 
 On receipt the Dot follows the [continuation skill](../SKILL.md):
-inspect the task, check quota, claim once, send one native follow-up, and
-observe/record the result. Repeated claims never grant a second follow-up.
-Lost or ambiguous host results remain held for operator review.
-`quota-blocked` can re-arm within the original turn/usage/expiry limits;
-`completed` and `failed` disable the target.
+inspect the original profile, check quota, claim once, and call
+`execute_continuation` once for managed mode. The bridge saves a durable dispatch
+marker before starting its child, validates the returned thread ID and result,
+and disables the target after the attempt. External `finish_continuation` is
+rejected for managed mode. Duplicate dispatch and uncertain retries are blocked.
+Native-mode quota failures may re-arm within original limits; managed mode is
+always one attempt.
 
 ## Verification boundaries
 

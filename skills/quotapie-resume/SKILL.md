@@ -5,9 +5,9 @@ description: Connect an explicitly approved existing Codex task to Dots through 
 
 # QuotaPie continuation through Dots
 
-The Dot owns the native follow-up. QuotaPie supplies measured quota, event
-subscriptions and a single-use admission claim. Enrol only tasks the user has
-explicitly selected for automatic continuation.
+QuotaPie supplies measured quota, event subscriptions and a single-use admission
+claim. A reviewed policy chooses native-host or profile-managed execution.
+Enrol only tasks the user has explicitly selected for automatic continuation.
 
 Read the repository's [connection guide](references/connection.md) when
 preparing the private MCP connection. Register a disabled policy with
@@ -18,28 +18,38 @@ reserve, priority, expiry, turn count and observed usage budget. The current
 bridge supports existing local Codex tasks only.
 
 Connect the private MCP server to the intended ChatGPT account and Dot.
-Verify that this Dot has access to the computer and can inspect the original
-thread. Local Codex plugin configuration alone does not prove a Dot connection.
+Verify that `continuation_status` finds the exact original thread and matches
+its account/profile. A default computer host may belong to a different account;
+do not interpret its `thread not found` as missing local history. Local Codex
+plugin configuration alone does not prove a Dot connection.
 Ask the Dot to subscribe to the policy's event and target ID, with the user's
 approved objective and the following workflow:
 
-1. Read `continuation_status`; wait if blocked. Inspect the exact original
-   thread through the host. Stop if it is active, finished, inaccessible or
-   belongs to another account.
+1. Read `continuation_status`; wait if blocked. The profile reader's `notLoaded`
+   does not establish task idleness. Managed preflight checks the last completed
+   turn and absence of a writer lock, then the official CLI must acquire its
+   own lock at dispatch. Stop if active, inaccessible or account-mismatched.
 2. Immediately before a follow-up, call `claim_continuation` with the event's
    target and event ID. Proceed only on `granted: true`, before `startBeforeMs`.
-3. Send exactly one native follow-up to the returned thread ID using the
-   approved continuation text. Retain the thread's model, account and tools.
-   Do not create a chat, use `codex exec resume`, or route through another account.
-4. Observe the original task result. Record `completed` only when the approved
-   objective is finished, `quota-blocked` only for a witnessed quota failure,
-   or `failed` for another terminal failure. An uncertain send/result remains
-   claimed and requires review; never send it again just because a timer expired.
+3. For `executionMode: profile-managed`, call `execute_continuation` once with
+   the claim. QuotaPie runs the reviewed prompt in the original thread/profile
+   through the bundled CLI and a protected in-memory proxy. Do not also send a
+   native follow-up or run a CLI command yourself. The bridge records the result
+   and disables the one-turn policy; `finish_continuation` is not accepted here.
+4. Native mode requires verified original-host access and remains blocked until
+   that verification is implemented. When available, send one native follow-up
+   and record only its witnessed result. Never create another chat, substitute
+   an account, or retry an uncertain dispatch.
 
 An event receipt is not a task start or completion. A repeated claim grants
-nothing. If permission expires while work runs, no new claim is granted; stopping
-already-running work requires the host's native control and user authority.
-Quota checks cannot enforce an exact consumption ceiling within a running turn.
+nothing. Managed execution is limited to a read-only report, one child, 60 seconds
+and no request/stream retries. Disabling, unsubscribing, expiry or connection
+shutdown revokes its lease. The proxy checks permission and quota every 500ms,
+including reserves raised by the observed usage budget. It cancels the upstream
+connection and terminates only its own child. Unknown/stale quota or a changed
+reset period also stops it. Provider accounting delay and already-processed work
+mean this is not an exact consumption or billing ceiling. Native tasks remain
+host-owned and cannot be cancelled by this managed runner.
 
 For disabling, run `quotapie dots disable TARGET` and stop the matching Dot
 subscription. Do not create or unpause a heartbeat as a substitute for Dots.

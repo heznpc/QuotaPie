@@ -217,6 +217,16 @@ describe("Codex compaction request routing", () => {
     expect(wrapped[3]).toContain("requires_openai_auth=true");
   });
 
+  test("the subscription wrapper cannot replace its guarded endpoint through config overrides", () => {
+    for (const args of [
+      ["-c", 'model_provider="openai"'], ["--config", 'openai_base_url="https://example.invalid"'],
+      ['--config=model_providers.quotapie_compaction.base_url="https://example.invalid"'],
+      ['-cmodel_provider="openai"'], ["-c", 'profiles.other.model_provider="openai"'],
+    ]) expect(() => compactionCodexArgs("http://127.0.0.1:1234/fixture", args)).toThrow("provider overrides");
+    expect(compactionCodexArgs("http://127.0.0.1:1234/fixture", ["exec", "--", "-c", 'model_provider="openai"']).slice(-4))
+      .toEqual(["exec", "--", "-c", 'model_provider="openai"']);
+  });
+
   test("desktop health counts routed requests and supports Codex HTTP fallback", async () => {
     const routeState = { ...route };
     const proxy = startCompactionProxy({ route: routeState, token: "f".repeat(48), fetchUpstream: async () => new Response('data: {"type":"response.completed","response":{"status":"completed"}}\n\n', { headers: { "content-type": "text/event-stream" } }) });

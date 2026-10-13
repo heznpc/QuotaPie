@@ -40,8 +40,19 @@ The native settings window lets you select Sol, Luna, or Terra for future Astra 
 ## Automatic continuation through Dots
 
 QuotaPie supplies fresh quota admission and MCP Events for explicitly approved
-existing Codex tasks. Dots retains execution ownership and sends one native
-follow-up after a single-use claim. The [connection guide](skills/quotapie-resume/references/connection.md)
+existing Codex tasks. `continuation_status` reads the exact original thread in
+its configured local profile, rather than assuming the Dot's default computer
+host owns it. The returned metadata excludes transcript, credentials and local
+paths. A separate inspector's `notLoaded` does not establish native task idleness.
+Native execution-host and loaded-relay verification are not yet implemented;
+native-mode claims therefore fail closed even when quota is ready. An explicitly
+reviewed `profile-managed` policy can instead resume that same thread through
+the bundled Codex CLI in its original profile. This mode permits one read-only
+report, with a 60-second process limit and no automatic retries. Its in-memory
+proxy binds the original account and quota windows, rejects unguarded routes,
+and cancels the connection when permission or measured quota ends. Policies
+start disabled; live continuation still requires end-to-end verification.
+The [connection guide](skills/quotapie-resume/references/connection.md)
 covers the private tunnel, per-task policy, reserves, reset timing, priority,
 turn limits and observed usage budget. Registration starts disabled.
 
@@ -53,9 +64,12 @@ workspace; it never replaces another application's tunnel. Connection setup does
 not enable any task policy. `quotapie dots connection` exposes the same status.
 
 Initial account authorization and actual Dot availability must be established
-before creating the private connection. The account hosting the Dot and each
-task's execution account are separate: a task policy always retains its original
-account/profile. A local login or a ready tunnel does not prove Dot availability.
+before creating the private connection. A task policy retains its original
+account/profile. A Dot connected to another account's computer host cannot use
+that host's native thread tools to read or continue the original task. The
+profile-aware status reader and managed execution tool avoid that host's default
+profile; they do not switch the task to the Dot's account. A local login or a
+ready tunnel does not establish execution access.
 
 The [quotapie-resume skill](skills/quotapie-resume/SKILL.md) describes the Dot
 workflow. A local heartbeat is not created as a substitute. Real Dot connection
@@ -279,11 +293,21 @@ next request when either the short or weekly window has 30% or less remaining.
 The CLI equivalent is `quotapie pool reserve ACCOUNT 30`. The destination needs
 fresh quota above its own reserve, with up to five percentage points of headroom.
 If no eligible destination exists, or protected quota is unknown, the request
-pauses instead of spending the reserve. An already dispatched response completes;
-collection delay and concurrent requests can overshoot the threshold, so this is
-not a guaranteed hard spending cap. It applies only to requests through this
+pauses instead of spending the reserve. Collection delay and concurrent requests
+can overshoot the threshold, so this is not a guaranteed hard spending cap.
+It applies only to requests through this
 Mac's QuotaPie Codex relay. Transfers require the same portable history checks
-described above, and disabling automatic routing also disables reserve enforcement.
+described above. Current installed relays also enforce independent subscription
+protection: requests stay on the source profile, pool routing and 429 failover
+are bypassed, and disabling the pool does not disable the guard. Its reserve is
+the maximum of the configured quota-window reserve, per-account pool reserve,
+and a 1% minimum. Missing, stale (at most 120 seconds), reset-due or mismatched
+quota/auth observations stop requests before dispatch. API-key, unsupported
+model/route and background requests are rejected. While a response is running,
+the guard rechecks every 500ms and cancels the upstream connection if the latest
+observation no longer permits it. This does not refund already-processed work
+or establish an exact provider-side billing cap; concurrent usage and delayed
+provider accounting remain outside the relay's control.
 After first installing reserve support, finish active work and reopen Codex:
 already-loaded tasks may still use an older relay that does not enforce reserves.
 Use only accounts you are authorized to access, in accordance with the applicable

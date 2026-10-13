@@ -1,18 +1,37 @@
 import { createHash, randomUUID } from "node:crypto";
 import { DotStore, type DotPolicy, type DotEvent, type Subscription } from "./store";
-import { eligible } from "./policy";
+import { eligible, gateAllows as gateAllowsForDispatch } from "./policy";
 import type { ResumeGate } from "../resume-gate";
+import type { ProfileThreadStatus } from "./thread-reader";
 import { CallbackEndpointError, callbackURL, signingKey, verifyCallback, signedPost, postWebhook, type WebhookPost } from "./webhook";
 
 type GateReader = (policy: DotPolicy) => Promise<ResumeGate>;
+export interface ContinuationPreflight {
+  ready: boolean;
+  reason: string;
+  thread?: ProfileThreadStatus;
+  relay?: Record<string, unknown>;
+  managed?: Record<string, unknown>;
+}
+type PreflightReader = (policy: DotPolicy, purpose: "status" | "claim" | "event") => Promise<ContinuationPreflight>;
+export interface ManagedContinuationResult {
+  nativeThreadId: string;
+  outcome: "completed" | "quota-blocked" | "failed";
+  reason: string;
+  report?: string;
+  attempts: 0 | 1;
+}
+type ManagedRunner = (policy: DotPolicy, claimId: string, stillAuthorized: () => boolean) => Promise<ManagedContinuationResult>;
 const object = (properties: Record<string, unknown>, required = Object.keys(properties)) =>
   ({ type: "object", properties, required, additionalProperties: false });
 const str = { type: "string" };
-const instructions = "Only resume explicitly enabled targets. On a quota event, inspect the exact existing task first; do not start an active/completed task. Call claim_continuation immediately before a single native follow-up to its threadId. A claim never starts work. Do not substitute accounts, create tasks, use CLI resume, or send a second follow-up after an uncertain result. Record the observed result with finish_continuation. Stop on failure, expiry or disabled policy.";
+const instructions = "Use continuation_status to locate the original thread in its configured account profile. A default computer host may have a different profile; thread not found there does not mean the original thread is missing. notLoaded from a separate reader does not prove the original task is idle. Only act on explicitly enabled targets. Call claim_continuation immediately before one continuation. A claim never starts work. For executionMode profile-managed, call execute_continuation once with that claim; QuotaPie uses the original profile and thread with a guarded read-only execution, and records the result itself. Never send a native follow-up as well. For native mode, the original execution host must be verified and finish_continuation records its observed result. Do not substitute accounts, create tasks, run arbitrary CLI commands, or repeat an uncertain dispatch. Stop on failure, expiry or disabled policy.";
 
 export class DotBridge {
   constructor(readonly store: DotStore, readonly readGate: GateReader,
-    readonly post: WebhookPost = postWebhook, readonly now = Date.now) {}
+    readonly post: WebhookPost = postWebhook, readonly now = Date.now,
+    readonly preflight: PreflightReader = async () => ({ ready: false, reason: "execution-host-unverified" }),
+    readonly managedRunner?: ManagedRunner) {}
 
   private subscriptionID(name: string, targetId: string, url: string) {
     // This transport is a single authenticated tunnel principal.
@@ -45,8 +64,10 @@ export class DotBridge {
   async status(targetId: string) {
     try {
       const { state, gate, ready } = await this.snapshot(targetId, false);
-      return { targetId, threadId: state.policy.threadId, enabled: state.policy.enabled, ready,
-        reason: ready ? "ready" : gate.ready ? "policy-hold" : gate.reason,
+      const preflight = await this.preflight(state.policy, "status");
+      return { targetId, threadId: state.policy.threadId, executionMode: state.policy.executionMode ?? "native", enabled: state.policy.enabled, ready: ready && preflight.ready,
+        reason: !preflight.ready ? preflight.reason : ready ? "ready" : gate.ready ? "policy-hold" : gate.reason,
+        quotaReady: gate.ready, execution: preflight,
         turnsUsed: state.turns, maxTurns: state.policy.maxTurns,
         observedUsagePercent: state.spent, maxUsagePercent: state.policy.maxUsagePercent,
         expiresAtMs: state.policy.expiresAtMs, eventId: state.event?.eventId ?? null,
@@ -56,6 +77,8 @@ export class DotBridge {
   async claim(targetId: string, eventId: string) {
     const { state, gate, ready } = await this.snapshot(targetId);
     if (!ready) return { granted: false, reason: "policy-or-quota-hold" };
+    const preflight = await this.preflight(state.policy, "claim");
+    if (!preflight.ready) return { granted: false, reason: preflight.reason };
     const hasSubscription = () => this.store.subscriptions().some(s => s.targetId === targetId && s.expiresAtMs > this.now());
     if (!hasSubscription()) return { granted: false, reason: "subscription-inactive" };
     // Serialize work on this quota account; a different target cannot start a
@@ -74,16 +97,52 @@ export class DotBridge {
           this.store.targets().some(t => t.policy.account === current.policy.account && t.claimed))
         return { granted: false, reason: "expired-or-already-claimed" };
       current.claimed = randomUUID(); current.turns++; current.outcome = null;
+      current.claimExpiresAtMs = Math.min(now + 60000, current.policy.expiresAtMs);
       this.store.save(current);
       return { granted: true, claimId: current.claimed, threadId: current.policy.threadId,
-        continuation: current.policy.continuation, startBeforeMs: Math.min(now + 60000, current.policy.expiresAtMs),
+        executionMode: current.policy.executionMode ?? "native",
+        continuation: current.policy.continuation, startBeforeMs: current.claimExpiresAtMs,
         maxFollowups: 1, exactConsumptionCap: false };
     }).immediate();
   }
-  finish(targetId: string, claimId: string, outcome: string) {
+  async execute(targetId: string, claimId: string) {
+    const hasSubscription = () => this.store.subscriptions().some(s => s.targetId === targetId && s.expiresAtMs > this.now());
+    const initial = this.store.target(targetId);
+    if (!this.managedRunner || initial.policy.executionMode !== "profile-managed") throw new Error("managed-execution-unavailable");
+    if (initial.claimed !== claimId || initial.dispatchedClaim === claimId) throw new Error("claim-not-dispatchable");
+    const gate = await this.readGate(initial.policy);
+    if (!gateAllowsForDispatch(initial.policy, gate, this.now())) throw new Error("policy-or-quota-hold");
+    const preflight = await this.preflight(initial.policy, "claim");
+    if (!preflight.ready) throw new Error("execution-preflight-hold");
+    const policy = this.store.db.transaction(() => {
+      const current = this.store.target(targetId), now = this.now();
+      if (!hasSubscription() || !current.policy.enabled || current.policy.executionMode !== "profile-managed" ||
+          current.policy.maxTurns !== 1 || current.turns !== 1 || current.policy.expiresAtMs <= now ||
+          current.claimed !== claimId || current.dispatchedClaim === claimId ||
+          !current.claimExpiresAtMs || current.claimExpiresAtMs <= now || current.spent >= current.policy.maxUsagePercent)
+        throw new Error("claim-not-dispatchable");
+      // Persist before starting a child. An uncertain process outcome is never retried.
+      current.dispatchedClaim = claimId; this.store.save(current);
+      return current.policy;
+    }).immediate();
+    const stillAuthorized = () => {
+      const current = this.store.target(targetId);
+      return hasSubscription() && current.policy.enabled && current.policy.expiresAtMs > this.now() &&
+        current.claimed === claimId && current.dispatchedClaim === claimId;
+    };
+    let result: ManagedContinuationResult;
+    try { result = await this.managedRunner(policy, claimId, stillAuthorized); }
+    catch { result = { nativeThreadId: policy.threadId, outcome: "failed", reason: "managed-execution-failed", attempts: 1 }; }
+    if (result.nativeThreadId !== policy.threadId || !["completed", "quota-blocked", "failed"].includes(result.outcome))
+      result = { nativeThreadId: policy.threadId, outcome: "failed", reason: "execution-result-unverified", attempts: 1 };
+    this.finish(targetId, claimId, result.outcome, true);
+    return { ...result, report: result.report?.slice(0, 1000), targetId, enabled: false };
+  }
+  finish(targetId: string, claimId: string, outcome: string, managedResult = false) {
     if (!["completed", "quota-blocked", "failed"].includes(outcome)) throw new Error("invalid-outcome");
     return this.store.db.transaction(() => {
       const state = this.store.target(targetId);
+      if (state.policy.executionMode === "profile-managed" && !managedResult) throw new Error("managed-result-owned");
       if (!state.claimed || state.claimed !== claimId) throw new Error("claim-mismatch");
       state.outcome = outcome as typeof state.outcome; state.claimed = null; state.event = null;
       // Only a witnessed quota block may re-arm, within the original limits.
@@ -98,9 +157,11 @@ export class DotBridge {
     for (const current of this.store.targets()) {
       const subs = this.store.subscriptions().filter(s => s.targetId === current.policy.id);
       if (!subs.length || !current.policy.enabled || current.claimed) continue;
+      let executable = false;
+      try { executable = (await this.preflight(current.policy, "event")).ready; } catch { /* Hold on failed execution evidence. */ }
       let snapshot;
       try { snapshot = await this.snapshot(current.policy.id); } catch { continue; }
-      if (!snapshot.ready) {
+      if (!snapshot.ready || !executable) {
         this.store.db.transaction(() => {
           const state = this.store.target(current.policy.id);
           if (!state.claimed) { state.event = null; this.store.save(state); }
@@ -153,11 +214,14 @@ export class DotBridge {
     if (method === "ping") return {};
     if (method === "tools/list") return { tools: [
       { name: "continuation_status", title: "Check an approved continuation",
-        description: "Read current quota and limits for an explicitly configured target.",
+        description: "Read the original thread in its configured account profile, plus quota, relay protection and continuation readiness. notLoaded is not proof of an idle native task.",
         inputSchema: object({ targetId: str }), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
       { name: "claim_continuation", title: "Claim one continuation",
         description: "After checking the original task is idle and unfinished, reserve one follow-up. Never starts a task. A failed or repeated claim grants nothing.",
         inputSchema: object({ targetId: str, eventId: str }), annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false } },
+      { name: "execute_continuation", title: "Run one reviewed profile continuation",
+        description: "Execute an enabled profile-managed policy once after its claim. Resumes the original thread with its original subscription, a guarded proxy, read-only sandbox and 60-second limit. Records and disables the target after the attempt. Never retry an uncertain result.",
+        inputSchema: object({ targetId: str, claimId: str }), annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true } },
       { name: "finish_continuation", title: "Record the observed continuation result",
         description: "Record only a witnessed native task result. completed means the approved objective is finished; failed stops automatic continuation.",
         inputSchema: object({ targetId: str, claimId: str, outcome: { enum: ["completed", "quota-blocked", "failed"] } }),
@@ -169,6 +233,7 @@ export class DotBridge {
       let result;
       if (p.name === "continuation_status") result = await this.status(a.targetId);
       else if (p.name === "claim_continuation" && typeof a.eventId === "string") result = await this.claim(a.targetId, a.eventId);
+      else if (p.name === "execute_continuation" && typeof a.claimId === "string") result = await this.execute(a.targetId, a.claimId);
       else if (p.name === "finish_continuation" && typeof a.claimId === "string") result = this.finish(a.targetId, a.claimId, a.outcome);
       else throw new Error("invalid-tool");
       return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result };
