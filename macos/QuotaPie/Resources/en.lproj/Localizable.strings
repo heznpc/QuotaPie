@@ -881,3 +881,29 @@
 "automatic.defaultsExplanation" = "Applies budgets and planning preferences to new tasks only. Does not save the conversation, task, executor or activation.";
 "automatic.defaultsSaved" = "Account defaults saved. New tasks will use them.";
 "automatic.reason.forecastBucket" = "Choose a budgeted quota window for the forecast trigger.";
+
+"savings.tests" = "Use savings when running existing tests";
+
+"savings.testsScope" = "Applies to explicit test-only requests. Fixes and deployment keep the current model.";
+
+"savings.reason.test_only" = "This stage only runs existing tests and reports their results.";
+
+"savings.insight.repeated-failure" = "Same error %1$@ times in the last 30 minutes";
+
+"savings.insight.repeated-compaction" = "%1$@ compactions without a completed response";
+
+"savings.insight.review-provider-error" = "Provider responses repeatedly failed. Check completed tool effects and saved results before choosing where to continue.";
+
+"savings.insight.review-relay-error" = "The same relay error repeated. Review the error and this account’s settings first.";
+
+"savings.insight.review-disconnect" = "Repeated disconnections were observed. Check whether they were cancellations or connection failures.";
+
+"savings.insight.review-compaction" = "No completed response was observed after compaction. Review outstanding requirements, saved work and compaction settings.";
+
+"savings.insight.evidence" = "Observed request durations total %1$@ seconds. This may include waiting and overlapping requests; it is not measured waste or quota consumption.";
+
+"savings.insight.open" = "Review the original conversation";
+
+"savings.insight.review-connection" = "Transport failures repeated. Check the network and connection error before continuing.";
+
+"savings.insight.review-error" = "The same failure repeated. Review its cause and completed work in the original conversation.";

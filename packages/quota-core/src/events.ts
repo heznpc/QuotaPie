@@ -34,7 +34,7 @@ export interface CompactionRequestEvent {
   usage?: { input: number; cachedInput: number; output: number } | null;
 }
 
-const savingsReasons = new Set(["disabled", "simple_text_edit", "uncertain_task", "keep_setting", "manual_change", "extended_work", "failure_fallback", "unsupported_model", "unidentified_task", "task_disabled"]);
+const savingsReasons = new Set(["disabled", "simple_text_edit", "test_only", "uncertain_task", "keep_setting", "manual_change", "extended_work", "failure_fallback", "unsupported_model", "unidentified_task", "task_disabled"]);
 const phases = new Set(["started", "response_headers", "completed", "failed", "cancelled", "unverified"]);
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const label = /^[a-z0-9_.-]{1,80}$/i;

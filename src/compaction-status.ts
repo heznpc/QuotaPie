@@ -1,3 +1,4 @@
+import { sessionEfficiencyInsights } from "./session-efficiency";
 import { readdir, readFile, rename, writeFile, unlink } from "node:fs/promises";
 import { IncrementalJsonlReader } from "./incremental-jsonl";
 import { randomUUID } from "node:crypto";
@@ -115,7 +116,7 @@ export class CompactionStatusReader {
       subscriptionProtection: { ...cached.subscriptionProtection, reachable: 0, outOfDate: 0, revisionMismatch: false, activeRequests: 0,
         relays: cached.subscriptionProtection.relays.map(r => ({ ...r, reachable: false, ready: null, reason: "observer-state-stale",
           outOfDate: false, activeRequests: 0 })) },
-      savings: {policy: cached.savings.policy ? {...cached.savings.policy,configurable:false,applied:0} : null, active: [], recent: cached.savings.recent},
+      savings: {policy: cached.savings.policy ? {...cached.savings.policy,configurable:false,applied:0} : null, active: [], recent: cached.savings.recent, insights: []},
       policy: cached.policy ? { ...cached.policy, configurable: false, applied: 0 } : null,
       active: [], recent: [...cached.active.map(r => ({ ...r, active: false, phase: "unverified",
         errorCode: "observer_state_stale" })), ...cached.recent].slice(0, 50) };
@@ -175,6 +176,10 @@ export class CompactionStatusReader {
     }
     const activeIds = new Set(installed.flatMap(g => [...g.activeIds]));
     const { records, savingsRecords, retained, notificationEvidence } = summarizeRequestEvents([...merged.values()], activeIds, nowMs);
+    const insights = sessionEfficiencyInsights([...merged.values()], nowMs);
+    for (const id of insights.flatMap(i => i.requestIds).slice(-200)) {
+      const evidence = merged.get(id); if (evidence) retained.set(id, evidence);
+    }
     this.notificationEvidence = notificationEvidence;
     this.evidence = retained;
     const serialized = JSON.stringify([...retained.values()]);
@@ -191,7 +196,7 @@ export class CompactionStatusReader {
     return { checkedAtMs: nowMs, generations: installed.length, reachable: installed.filter(g => g.reachable).length,
       subscriptionProtection: subscriptionProtection(installed, nowMs),
       policy: validatedEntries ? await this.policy.status(healthByPath, validatedEntries) : null,
-      savings: {policy: validatedEntries ? await this.savingsPolicy.status(healthByPath, validatedEntries) : null, active: savingsRecords.filter(r=>r.active), recent: savingsRecords.filter(r=>!r.active)},
+      savings: {insights, policy: validatedEntries ? await this.savingsPolicy.status(healthByPath, validatedEntries) : null, active: savingsRecords.filter(r=>r.active), recent: savingsRecords.filter(r=>!r.active)},
       active: records.filter(r => r.active), recent: records.filter(r => !r.active) };
   }
 }

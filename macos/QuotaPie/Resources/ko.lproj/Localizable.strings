@@ -881,3 +881,29 @@
 "automatic.defaultsExplanation" = "예산·계획 선호를 새 작업에만 적용합니다. 대화·할 일·실행 주체·활성화 상태는 저장하지 않습니다.";
 "automatic.defaultsSaved" = "계정 기본 설정을 저장했습니다. 새 작업에 적용됩니다.";
 "automatic.reason.forecastBucket" = "확률 조건에 사용할 한도 구간을 선택하고 예산을 설정하세요.";
+
+"savings.tests" = "기존 테스트 실행에도 자동 절약 사용";
+
+"savings.testsScope" = "테스트만 실행하라는 명확한 요청에 적용합니다. 수정·배포가 포함되면 현재 모델을 유지합니다.";
+
+"savings.reason.test_only" = "기존 테스트 실행과 결과 보고만 요청한 단계입니다.";
+
+"savings.insight.repeated-failure" = "최근 30분에 같은 오류 %1$@회";
+
+"savings.insight.repeated-compaction" = "응답 완료 없이 압축 %1$@회";
+
+"savings.insight.review-provider-error" = "제공자 응답 오류가 반복됐습니다. 완료된 도구 작업과 저장된 결과를 확인한 뒤 이어갈 지점을 정하세요.";
+
+"savings.insight.review-relay-error" = "중계 단계의 같은 오류가 반복됐습니다. 오류 원인과 해당 계정 설정을 먼저 확인하세요.";
+
+"savings.insight.review-disconnect" = "연결 종료가 반복됐습니다. 사용자 취소인지 연결 문제인지 대화 기록에서 확인하세요.";
+
+"savings.insight.review-compaction" = "압축 뒤 정상 응답 완료가 관측되지 않았습니다. 빠진 요구와 현재 작업 결과를 확인하고 압축 설정을 검토하세요.";
+
+"savings.insight.evidence" = "관측된 요청 시간 합계 %1$@초입니다. 대기·동시 실행이 포함될 수 있으며 낭비량이나 한도 차감량을 뜻하지 않습니다.";
+
+"savings.insight.open" = "원본 대화에서 검토";
+
+"savings.insight.review-connection" = "전송 오류가 반복됐습니다. 네트워크 상태와 연결 오류를 확인한 뒤 이어가세요.";
+
+"savings.insight.review-error" = "같은 실패가 반복됐습니다. 원본 대화에서 오류 원인과 이미 끝난 작업을 검토하세요.";

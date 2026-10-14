@@ -241,7 +241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             quit: { NSApp.terminate(nil) },
             openAccount: { [weak self] account in self?.openAccount(account) },
             configureCompaction: { [weak self] model in self?.configureCompaction(model) },
-            configureSavings: { [weak self] enabled, thread in self?.configureSavings(enabled, thread) },
+            configureSavings: { [weak self] enabled, thread, tests in self?.configureSavings(enabled, thread, tests) },
             configurePool: { [weak self] enabled, account, reserve in self?.configurePool(enabled, account, reserve) },
             configureNotifications: { [weak self] key, enabled in self?.configureNotifications(key, enabled: enabled) },
             openRecentWork: { [weak self] item in self?.openRecentWork(item) }
@@ -368,11 +368,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
-    private func configureSavings(_ enabled: Bool?, _ thread: String?) {
+    private func configureSavings(_ enabled: Bool?, _ thread: String?, _ tests: Bool?) {
         guard !popoverModel.savingsSaving, let client, let token = currentActionToken else { return }
         popoverModel.savingsSaving = true
         popoverModel.savingsMessage = nil
-        client.configureSavings(enabled: enabled, bypassThread: thread, actionToken: token) { [weak self] result in
+        client.configureSavings(enabled: enabled, bypassThread: thread, testOnly: tests, actionToken: token) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.popoverModel.savingsSaving = false
@@ -381,6 +381,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     let acknowledged = response.policy.map { policy in
                         policy.applied > 0 && policy.applied == policy.compatible &&
                         (enabled == nil || policy.enabled == enabled) &&
+                        (tests == nil || policy.testOnly == tests) &&
                         (thread == nil || policy.bypassThreads?.contains(thread!) == true)
                     } ?? false
                     self.popoverModel.savingsMessage = Strings.t(acknowledged ? "savings.saved" : "savings.pending")

@@ -50,9 +50,11 @@ struct PopoverView: View {
                 Text(error).font(.caption).foregroundStyle(.orange)
                     .padding(.horizontal, 20).padding(.bottom, 12)
             }
-            if let savings = model.payload?.compaction?.savings, savings.policy?.enabled == true {
+            if let savings = model.payload?.compaction?.savings, savings.policy?.enabled == true || !(savings.insights ?? []).isEmpty {
                 Button { showDetails(.activity) } label: {
-                    Label(savings.latest?.summary ?? Strings.t("savings.waiting"), systemImage: "leaf")
+                    Label(savings.insights?.first.map { Strings.t("savings.insight." + $0.kind, String($0.count)) }
+                          ?? savings.latest?.summary ?? Strings.t("savings.waiting"),
+                          systemImage: (savings.insights ?? []).isEmpty ? "leaf" : "exclamationmark.bubble")
                         .font(.caption).frame(maxWidth: .infinity, alignment: .leading)
                 }.buttonStyle(.plain).padding(.horizontal, 20).padding(.bottom, 12)
             }

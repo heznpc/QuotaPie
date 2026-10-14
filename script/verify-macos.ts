@@ -13,6 +13,8 @@ interface Observation {
   viewRendered: boolean;
   detailSection?: string;
   recentWorkIDs?: string[];
+  efficiencyInsightIDs?: string[];
+  testOnlySavings?: boolean;
   automaticWorkLoadedPolicyIDs?: string[];
   profileDockIcons?: string[];
   pendingResetIDs?: string[];
@@ -91,6 +93,10 @@ async function run() {
           publishedAtMs: Date.now(), state: "reported", resetKind: "unknown", observedVia: "codexreset",
           benefitKind: "limits", change: { percent: 50, evidence: "Synthetic: 50% more usage for everyone." },
           benefitText: "Announced: +50% (1.5× previous allowance)", targetAtMs: null }] },
+    compaction: {checkedAtMs: Date.now(), generations: 1, reachable: 1, active: [], recent: [], policy: null,
+      savings: {policy: {enabled: true, configurable: true, supported: true, generations: 1, compatible: 1, applied: 1, testOnly: false, phaseConfigurable: true},
+        active: [], recent: [], insights: [{id: "fixture-repeated-error", threadId: "11111111-1111-4111-8111-111111111111", kind: "repeated-failure", count: 3,
+          observedDurationMs: 1500, suggestion: "review-provider-error", savingsApplied: false}]}},
     accountPool: {enabled:true, accounts:["default","second"], recent:[{sourceAccount:"default",account:"second",accountLabel:"Second",state:"completed",status:200,atMs:Date.now()}]} };
   const automaticPolicy = { id: "fixture-work", provider: "claude", account: "default", nativeSessionId: "fixture-session",
     model: "original-session-model", prompt: "Continue the selected work", objective: "Shared work fixture", completionCriteria: ["Evidence recorded"],
@@ -130,6 +136,7 @@ async function run() {
       { name: "nickname-settings", running: ["main"], frontmost: null, initialSection: "settings", expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "dock-icons", running: ["main"], frontmost: null, initialSection: "settings", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "excluded-posts", running: ["main"], frontmost: null, initialSection: "resets", expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "session-efficiency", running: ["main"], frontmost: null, initialSection: "activity", expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "recent-work", running: ["main"], frontmost: null, initialSection: "work", expected: { account: "codex/default", remaining: 18, label: "Main" } },
     ]) {
       malformed = scenario.expected == null;
@@ -149,6 +156,7 @@ async function run() {
           observed.recentWorkIDs?.join(",") !== payload.recentWork.map(item => item.id).join(","))) {
         failures.push("recent_work_not_rendered");
       }
+      if (scenario.name === "session-efficiency" && (observed.detailSection !== "activity" || observed.efficiencyInsightIDs?.join(",") !== "fixture-repeated-error" || observed.testOnlySavings !== false)) failures.push("session_review_not_loaded");
       if(scenario.name === "recent-work" && observed.automaticWorkLoadedPolicyIDs?.join(",") !== "fixture-work") failures.push("shared_work_not_loaded");
       console.log(JSON.stringify({ check: scenario.name, result: failures.length ? "fail" : "pass", failures }));
       if (failures.length) throw new Error(`Native verification failed: ${scenario.name}`);

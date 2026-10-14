@@ -116,6 +116,8 @@ struct AppVerification: Decodable {
             "menuVisible": item.isVisible,
             "viewRendered": rendered,
             "detailSection": model.detailSection?.rawValue as Any? ?? NSNull(),
+            "efficiencyInsightIDs": model.payload?.compaction?.savings?.insights?.map(\.id) ?? [],
+            "testOnlySavings": model.payload?.compaction?.savings?.policy?.testOnly as Any? ?? NSNull(),
             "recentWorkIDs": model.payload?.recentWork.map(\.id) ?? [],
             "automaticWorkLoadedPolicyIDs": model.automaticWorkLoadedPolicyIDs as Any? ?? NSNull(),
             "excludedPostIDs": model.payload?.resetSignals?.excludedPosts?.map(\.identity) ?? [],

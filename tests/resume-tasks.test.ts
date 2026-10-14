@@ -107,6 +107,47 @@ describe("resume task storage", () => {
 });
 
 describe("resume readiness", () => {
+  test("recovery, ready notifications and approval all respect the other quota window", async () => {
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.collection.codexEnabled = false;
+    config.alerts.enabled = false;
+    prepareAccounts(config);
+    const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
+    const weekly = { bucket: "codex:secondary:10080", label: "Codex weekly", windowSeconds: 604800, resetsAtMs: 900_000 };
+    try {
+      service.ingest([observation(1_000, 100), observation(1_000, 100, weekly)]);
+      const task = service.registerResumeTask({ provider: "codex", nativeId: SESSION_A, bucket: "codex:primary:300" }, 1_500);
+      service.ingest([observation(2_000, 0)]);
+      expect(await service.updateResumeReadiness(service.analyses(2_000), 2_000)).toEqual([]);
+      expect(service.resumeTasks.get(task.id)?.state).toBe("waiting");
+      service.ingest([observation(3_000, 20, weekly)]);
+      expect(await service.updateResumeReadiness(service.analyses(3_000), 3_000)).toHaveLength(1);
+      service.ingest([observation(4_000, 100, weekly)]);
+      await service.updateResumeReadiness(service.analyses(4_000), 4_000);
+      expect(service.resumeTasks.get(task.id)?.state).toBe("waiting");
+      service.resumeTasks.markReady(task.id, 4_100);
+      await expect(service.approveResumeTask(task.id, 4_200)).rejects.toThrow("fresh quota is no longer available");
+      expect(service.resumeTasks.get(task.id)?.state).toBe("waiting");
+    } finally { await service.close(); }
+  });
+
+  test("an expired secondary snapshot cannot authorize a recovered primary window", async () => {
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.collection.codexEnabled = false;
+    config.alerts.enabled = false;
+    prepareAccounts(config);
+    const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
+    const weekly = { bucket: "codex:secondary:10080", windowSeconds: 604800, resetsAtMs: 900_000 };
+    try {
+      service.ingest([observation(1_000, 100), observation(1_000, 20, weekly)]);
+      const task = service.registerResumeTask({ provider: "codex", nativeId: SESSION_A }, 1_500);
+      const now = config.collection.staleAfterSeconds * 1000 + 2_000;
+      service.ingest([observation(now, 0, { resetsAtMs: now + 100_000 })]);
+      expect(await service.updateResumeReadiness(service.analyses(now), now)).toEqual([]);
+      expect(service.resumeTasks.get(task.id)?.state).toBe("waiting");
+    } finally { await service.close(); }
+  });
+
   test("same profile with a different login cannot signal recovery or approve resume", async () => {
     const config = structuredClone(DEFAULT_CONFIG);
     config.collection.codexEnabled = false;

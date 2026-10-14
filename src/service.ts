@@ -12,7 +12,7 @@ import { AccountBindingStore } from "./storage/account-binding-store";
 import { readPoolPolicy } from "./account-pool";
 import { explicitAccountReserve } from "./subscription-policy";
 import { RecentWorkIndex, type RecentWorkSummary } from "./recent-work";
-import { evaluateResumeGate, resumeProfileKey } from "./resume-gate";
+import { evaluateResumeGate, evaluateResumeWindows, resumeProfileKey } from "./resume-gate";
 import { codexAccountDisplay } from "./account-display";
 import { notificationAllowed, type NotificationPreferencesPatch } from "./notification-preferences";
 import { buildWorkBoundary, defaultWorkBoundaryPath, writeWorkBoundary } from "./work-boundary";
@@ -1027,17 +1027,7 @@ export class QuotaPieService {
     nowMs = Date.now(),
   ): Promise<ResumeTaskSummary[]> {
     for (const task of this.resumeTasks.active().filter((item) => item.state === "ready")) {
-      const current = windows.find((window) =>
-        window.provider === task.provider &&
-        window.account === task.account &&
-        window.bucket === task.bucket
-      );
-      if (
-        this.resumeAccountMatches(task) && current?.freshness === "fresh" &&
-        current.observedAtMs > task.registeredAtMs &&
-        current.remainingPercent != null &&
-        current.remainingPercent > 0
-      ) continue;
+      if (this.resumeAccountMatches(task) && this.hasFreshResumeCapacity(task, nowMs, windows)) continue;
       try {
         this.resumeTasks.markWaiting(task.id, nowMs);
         this.rearmResumeReadyNotification(task, nowMs);
@@ -1070,7 +1060,7 @@ export class QuotaPieService {
           throw error;
         }
       }
-      const recovered = this.resumeAccountMatches(task) && current?.freshness === "fresh" &&
+      const recovered = this.hasFreshResumeCapacity(task, nowMs, windows) && current?.freshness === "fresh" &&
         current.observedAtMs > task.registeredAtMs &&
         current.remainingPercent != null &&
         current.remainingPercent > task.registeredRemainingPercent + 0.01;
@@ -1448,15 +1438,17 @@ export class QuotaPieService {
     }, nowMs);
   }
 
-  private hasFreshResumeCapacity(task: ResumeTask, nowMs: number): boolean {
-    return this.analyses(nowMs, task.provider).some((window) =>
-      window.account === task.account &&
-      window.bucket === task.bucket &&
-      window.freshness === "fresh" &&
-      window.observedAtMs > task.registeredAtMs &&
-      window.remainingPercent != null &&
-      window.remainingPercent > 0
-    );
+  private hasFreshResumeCapacity(task: ResumeTask, nowMs: number, windows = this.analyses(nowMs, task.provider)): boolean {
+    let reserve = 0;
+    if (task.provider === "codex") {
+      try { reserve = explicitAccountReserve(task.account, readPoolPolicy()); }
+      catch { return false; }
+    }
+    const scoped = windows.filter(w => w.provider === task.provider && w.account === task.account)
+      .map(w => ({ ...w, reservePercent: reserve }));
+    const gate = evaluateResumeWindows(scoped, task.provider, task.account, nowMs,
+      this.config.collection.staleAfterSeconds * 1000, task.bucket);
+    return gate.ready && gate.windows.some(w => w.bucket === task.bucket && w.observedAtMs > task.registeredAtMs);
   }
 
   recentEvents(limit = 50): QuotaEvent[] {

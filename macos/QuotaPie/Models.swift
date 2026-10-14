@@ -315,7 +315,8 @@ struct LocalizedMessagePayload: Decodable {
         }
 
         switch key {
-        case "model.notice.compaction", "model.notice.savings", "model.notice.original", "model.notice.unknown":
+        case "model.notice.compaction", "model.notice.savings", "model.notice.original", "model.notice.unknown",
+             "alert.work.notice.message", "alert.work.forecastUnavailable.message":
             return []
         case "model.notice.request":
             return required("fromLabel", "toLabel")

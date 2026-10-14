@@ -20,6 +20,16 @@ final class TaskSavingsTests: XCTestCase {
         XCTAssertTrue(rendered.contains("luna"))
     }
 
+    func testStageChoiceAndReviewEvidenceDecodeWithoutChangingSettings() throws {
+        let json = #"{"policy":{"enabled":true,"configurable":true,"supported":true,"generations":1,"compatible":1,"applied":1,"testOnly":false,"phaseConfigurable":true},"active":[],"recent":[],"insights":[{"id":"i","threadId":"t","kind":"repeated-failure","count":3,"observedDurationMs":1234,"suggestion":"review-relay-error","savingsApplied":false}]}"#
+        let payload = try JSONDecoder().decode(TaskSavingsPayload.self, from: Data(json.utf8))
+        XCTAssertEqual(payload.policy?.testOnly, false)
+        XCTAssertEqual(payload.policy?.phaseConfigurable, true)
+        XCTAssertEqual(payload.insights?.first?.count, 3)
+        XCTAssertEqual(payload.insights?.first?.savingsApplied, false)
+        XCTAssertNotEqual(Strings.t("savings.insight.review-relay-error"), "savings.insight.review-relay-error")
+    }
+
     func testOlderCompactionPayloadKeepsBackwardCompatibility() throws {
         let json = #"{"checkedAtMs":0,"generations":1,"reachable":1,"active":[],"recent":[],"policy":null}"#
         let value = try JSONDecoder().decode(CompactionPayload.self, from: Data(json.utf8))

@@ -12,6 +12,7 @@ import { failureOrigin, upstreamRequestIds, type UpstreamRequestIds } from "../p
 import { ResponseCompletionObserver } from "./codex-compaction-stream";
 import { AccountPool, PoolError, poolAccounts, readPoolPolicy, type PoolRoute } from "./account-pool";
 import { codexRequestIdentity } from "./codex-request-identity";
+import { createSavingsModelSupport } from "./savings-model-support";
 import { createSubscriptionGuard, type SubscriptionGuard } from "./subscription-guard";
 import { codexProfileRoot, loadConfig } from "./config";
 import { readCodexForkParent } from "./account-pool-lineage";
@@ -160,7 +161,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
     try { options.onRequest?.(update); } catch { /* Never log callback errors. */ }
   };
   const upstreamFetch = options.fetchUpstream ?? fetch;
-  const snapshot = () => ({ service: "quotapie-compaction", schemaVersion: 3, serverErrorDiagnosticsVersion: 1, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolReserveVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 3 : 0, accountPoolRecoveryVersion: options.accountPool ? 2 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, responseOwnershipVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
+  const snapshot = () => ({ service: "quotapie-compaction", schemaVersion: 3, serverErrorDiagnosticsVersion: 1, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolReserveVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 3 : 0, accountPoolRecoveryVersion: options.accountPool ? 2 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, responseOwnershipVersion: 1, taskSavingsPhasesVersion: 1, nativeImageRoutesVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
           subscriptionGuardVersion: options.subscriptionGuard ? 1 : 0,
           subscriptionGuardRevision: options.subscriptionGuard ? 2 : 0,
           subscriptionGuard: options.subscriptionGuard ? { ...options.subscriptionGuard.check(),
@@ -627,18 +628,27 @@ export function startCompactionProxy(options: CompactionProxyOptions = {}) {
 }
 
 export function compactionCodexArgs(baseUrl: string, args: string[]): string[] {
-  for (let i = 0; i < args.length && args[i] !== "--"; i++) {
+  const overrides: string[] = [], forwarded: string[] = [];
+  for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
+    if (arg === "--") { forwarded.push(...args.slice(i)); break; }
     const override = arg === "-c" || arg === "--config" ? args[++i]
       : arg.startsWith("--config=") ? arg.slice(9) : arg.startsWith("-c") && arg !== "-c" ? arg.slice(2) : undefined;
     const key = override?.split("=", 1)[0]?.replace(/["'\s]/g, "");
     if (key && /(?:^|\.)(?:model_provider|model_providers|openai_base_url)(?:\.|$)/.test(key))
       throw new Error("QuotaPie controls the subscription-protected provider endpoint; provider overrides are not supported.");
+    if (override !== undefined) overrides.push("-c", override);
+    else {
+      if (arg === "-c" || arg === "--config") throw new Error("Missing Codex configuration value");
+      forwarded.push(arg);
+    }
   }
-  // A custom provider named OpenAI retains Codex's remote compaction protocol.
-  // HTTP lets each complete request choose a model without WS session reuse conflicts.
+  // The installed CLI's exec-local -c vector replaces root-level overrides.
+  // Keep every override in one scope so a later effort option cannot silently
+  // remove this invocation's provider, endpoint or retry controls.
   const provider = `model_providers.quotapie_compaction={name="OpenAI",base_url=${JSON.stringify(baseUrl)},wire_api="responses",requires_openai_auth=true,supports_websockets=false}`;
-  return ["-c", 'model_provider="quotapie_compaction"', "-c", provider, ...args];
+  return [...overrides, "-c", 'model_provider="quotapie_compaction"', "-c", provider,
+    "-c", `openai_base_url=${JSON.stringify(baseUrl)}`, ...forwarded];
 }
 
 export async function runCompactionCodex(args: string[], defaultCommand: string): Promise<number> {
@@ -675,6 +685,7 @@ export async function runCompactionCodex(args: string[], defaultCommand: string)
   const proxy = startCompactionProxy({
     route,
     accountPool,
+    savingsModelSupported: createSavingsModelSupport(join(codexHome, "models_cache.json")),
     subscriptionGuard: createSubscriptionGuard({ codexHome, sourceAccount, config, quotaObservationMode: "advisory" }),
     onProvenance: event => console.error(JSON.stringify({ service: "quotapie-compaction", kind: "response_provenance", ...event })),
     onRequest: (event) => {

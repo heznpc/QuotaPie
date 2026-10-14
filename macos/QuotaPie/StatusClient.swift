@@ -268,13 +268,14 @@ final class StatusClient {
         } catch { completion(.failure(error)) }
     }
 
-    func configureSavings(enabled: Bool?, bypassThread: String?, actionToken: String,
+    func configureSavings(enabled: Bool?, bypassThread: String?, testOnly: Bool? = nil, actionToken: String,
                           completion: @escaping (Result<TaskSavingsPolicyResponse, Error>) -> Void) {
         do {
             var request = try authenticatedPOST(pathComponents: ["api", "task-savings", "policy"], actionToken: actionToken)
             var body: [String: Any] = [:]
             if let enabled { body["enabled"] = enabled }
             if let bypassThread { body["bypassThread"] = bypassThread }
+            if let testOnly { body["testOnly"] = testOnly }
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             request.setValue(nil, forHTTPHeaderField: "content-length")
             request.setValue("application/json", forHTTPHeaderField: "content-type")

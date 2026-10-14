@@ -85,3 +85,16 @@ test("replacement router preserves failure, manual choices and extended-work his
  expect(replacementExtended.route(input(),policy,id).reason).toBe("extended_work");
  expect(oldExtended.route(input(),policy,id).reason).toBe("extended_work");
 });
+
+test("test-only selection is opt-in, uses the shared phase selector and retains mixed work", () => {
+ const requested = input('Run npm test and report results.');
+ expect(new TaskSavingsRouter(()=>true).route(requested,policy,id).routed).toBeFalse();
+ for(const text of ['Run npm test and report results.','기존 테스트만 실행해줘. 결과 알려줘']) {
+  const result=new TaskSavingsRouter(()=>true).route(input(text),{...policy,testOnly:true},id);
+  expect(result).toMatchObject({routed:true,reason:'test_only',body:{model:policy.model,reasoning:{effort:'low'}}});
+ }
+ for(const text of ['Run npm test and fix failures.','Run tests then deploy.','Run npm test; rm -rf foo','테스트만 실행해줘. 실패하면 수정해'])
+  expect(new TaskSavingsRouter(()=>true).route(input(text),{...policy,testOnly:true},id).routed).toBeFalse();
+ expect(new TaskSavingsRouter(()=>false).route(requested,{...policy,testOnly:true},id).reason).toBe('unsupported_model');
+ expect(()=>validateTaskSavings({...policy,testOnly:'yes'})).toThrow();
+});

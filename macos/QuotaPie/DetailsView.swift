@@ -83,7 +83,7 @@ struct DetailsView: View {
                               onOpen: actions.openRecentWork)
         case .activity:
             if let savings = model.payload?.compaction?.savings {
-                TaskSavingsHistory(payload: savings, busy: model.savingsSaving, undo: { actions.configureSavings(nil, $0) })
+                TaskSavingsHistory(payload: savings, busy: model.savingsSaving, undo: { actions.configureSavings(nil, $0, nil) })
                 Divider()
             }
             if let id = model.focusedResumeTaskID {
@@ -160,7 +160,7 @@ struct DetailsView: View {
             Divider()
             AccountPoolSettingsView(model: model, save: actions.configurePool)
             Divider()
-            TaskSavingsSettingsView(model: model, save: { actions.configureSavings($0, nil) })
+            TaskSavingsSettingsView(model: model, save: { actions.configureSavings($0, nil, nil) }, saveTests: { actions.configureSavings(nil, nil, $0) })
             Divider()
             CompactionSettingsView(model: model, save: actions.configureCompaction)
             Divider()

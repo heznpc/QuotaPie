@@ -1,4 +1,4 @@
-import type { AccountState, Provider } from "./types";
+import type { AccountState, Provider, WindowAnalysis } from "./types";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { codexProfileRoot, resolveUserPath, type AppConfig } from "./config";
@@ -41,14 +41,27 @@ export function evaluateResumeGate(
   const result: ResumeGate = { schemaVersion: 1, provider, account: accountId,
     profileKey: null, ready: false, reason: "account-unavailable", checkedAtMs: nowMs, retryAtMs: null, windows: [] };
   if (!account?.enabled || account.provider !== provider || account.account !== accountId) return result;
-  const general = account.windows.filter(w => provider === "codex" ? w.bucket.startsWith("codex:")
+  const quota = evaluateResumeWindows(account.windows, provider, accountId, nowMs, maxAgeMs, requiredBucket);
+  if (account.collection.health !== "recent-success" || account.collection.errorCategory != null) {
+    return { ...quota, ready: false, reason: "collection-unavailable", retryAtMs: null };
+  }
+  return quota;
+}
+
+/** Shared by approved legacy resumes and unattended host continuations. The
+ * caller supplies its execution reserves; forecast reserves do not grant or
+ * remove permission to run. Collection and account identity are checked by the host. */
+export function evaluateResumeWindows(
+  windows: WindowAnalysis[], provider: Provider, accountId: string, nowMs: number,
+  maxAgeMs: number, requiredBucket?: string,
+): ResumeGate {
+  const result: ResumeGate = { schemaVersion: 1, provider, account: accountId,
+    profileKey: null, ready: false, reason: "quota-unknown", checkedAtMs: nowMs, retryAtMs: null, windows: [] };
+  const general = windows.filter(w => provider === "codex" ? w.bucket.startsWith("codex:")
     : w.bucket === "five_hour" || w.bucket === "seven_day");
-  const scoped = account.windows.filter(w => general.includes(w) || w.bucket === requiredBucket);
+  const scoped = windows.filter(w => general.includes(w) || w.bucket === requiredBucket);
   result.windows = scoped.map(w => ({ bucket: w.bucket, remainingPercent: w.remainingPercent,
     reservePercent: w.reservePercent, observedAtMs: w.observedAtMs, resetsAtMs: w.resetsAtMs }));
-  if (account.collection.health !== "recent-success" || account.collection.errorCategory != null) {
-    result.reason = "collection-unavailable"; return result;
-  }
   if (!general.length || (requiredBucket != null && !scoped.some(w => w.bucket === requiredBucket)) ||
     scoped.some(w => w.provider !== provider || w.account !== accountId ||
     w.quality !== "authoritative" || w.freshness === "unknown" ||
