@@ -42,6 +42,9 @@ struct AutomaticWorkBucketPerformance: Decodable {
     let beforeResetTargetMet: String?
     let targetUsagePercent: Double?
     let maxUsagePercent: Double
+    let resetUncertaintyMs: Double?
+    let maxObservationGapMs: Double?
+    let unusedBeforeResetPercent: Double?
 }
 struct AutomaticWorkPerformance: Decodable {
     let policyRevision: Int
@@ -51,11 +54,22 @@ struct AutomaticWorkPerformance: Decodable {
     let limitsRespected: Bool
     let limitsAssessment: String
     let attributionAvailable: Bool
+    let usefulWorkBeforeReset: String?
 }
 
 struct AutomaticWorkAdmission: Decodable {
     let ready: Bool
     let reason: String
+    let planning: AutomaticWorkPlanning?
+}
+struct AutomaticWorkPlanning: Decodable {
+    let horizonAtMs: Double
+    let expectedWorkMinutes: Double
+    let expectedWorkSource: String
+    let deadlineAtMs: Double?
+    let deadlineSource: String?
+    let finishAtMs: Double?
+    let startByAtMs: Double?
 }
 
 enum AutomaticWorkReason {
@@ -72,10 +86,16 @@ enum AutomaticWorkReason {
         case "usage-budget-ended", "turn-budget-ended", "time-budget-ended": key = "budget"
         case "expired": key = "expired"
         case "activity-paused": key = "schedule"
+        case "notification-only": key = "notifyOnly"
+        case "forecast-unavailable", "forecast-unavailable-notify": key = "forecastUnknown"
+        case "awaiting-planned-start", "forecast-personal-deadline-required": key = "plannedStart"
+        case "awaiting-forecast-probability": key = "forecastProbability"
+        case "work-invalid-planning", "work-invalid-probability", "work-personal-deadline-required": key = "settings"
         case "awaiting-announcement": key = "announcement"
         case "awaiting-reset-window": key = "resetWindow"
         case "needs-user-input": key = "input"
         case "work-needs-review", "uncertain", "execution-record-unavailable": key = "review"
+        case "work-forecast-bucket-required": key = "forecastBucket"
         case "work-general-budget-required", "work-budgets-required": key = "buckets"
         case "work-target-exceeds-limit", "work-invalid-percent", "work-invalid-limit", "work-invalid-turn-limit", "work-invalid-schedule", "work-completion-criteria-required": key = "settings"
         case "forbidden": return Strings.t("client.missingActionToken")
@@ -121,10 +141,22 @@ struct AutomaticWorkPolicy: Decodable, Identifiable {
     var expiresAtMs: Double
     var priority: Double
     var activitySchedule: AutomaticWorkSchedule?
+    var activityMode: String?
+    var expectedWorkMinutes: Double?
+    var finishBufferMinutes: Double?
+    var earlyResetQuantile: Double?
+    var startProbability: Double?
+    var unknownForecastAction: String?
+    var personalDeadline: Double?
+    var usePersonalDeadlineForPlanning: Bool?
+    var opportunityMaxAgeMinutes: Double?
+    var timingHistoryDays: Double?
     var workDeadline: Double?
     var onReset: String
     var revision: Int?
     var state: AutomaticWorkState?
+    var preferenceSources: [String: String]?
+    var localPreferenceSnapshot: String?
     var performance: AutomaticWorkPerformance?
     var admission: AutomaticWorkAdmission?
 
@@ -152,6 +184,16 @@ struct AutomaticWorkPolicy: Decodable, Identifiable {
             }, "maxTurns": maxTurns, "maxDurationSeconds": maxDurationSeconds,
             "maxTotalDurationSeconds": maxTotalDurationSeconds, "expiresAtMs": expiresAtMs,
             "priority": priority, "onReset": onReset]
+        if let activityMode { value["activityMode"] = activityMode }
+        if let expectedWorkMinutes { value["expectedWorkMinutes"] = expectedWorkMinutes }
+        if let finishBufferMinutes { value["finishBufferMinutes"] = finishBufferMinutes }
+        if let earlyResetQuantile { value["earlyResetQuantile"] = earlyResetQuantile }
+        if let startProbability { value["startProbability"] = startProbability }
+        if let unknownForecastAction { value["unknownForecastAction"] = unknownForecastAction }
+        if let personalDeadline { value["personalDeadline"] = personalDeadline }
+        if let usePersonalDeadlineForPlanning { value["usePersonalDeadlineForPlanning"] = usePersonalDeadlineForPlanning }
+        if let opportunityMaxAgeMinutes { value["opportunityMaxAgeMinutes"] = opportunityMaxAgeMinutes }
+        if let timingHistoryDays { value["timingHistoryDays"] = timingHistoryDays }
         if let resetBucket { value["resetBucket"] = resetBucket }
         if let workDeadline { value["workDeadline"] = workDeadline }
         if let schedule = activitySchedule {
@@ -194,3 +236,74 @@ struct AutomaticWorkResponse: Decodable {
 }
 struct AutomaticWorkTargetsResponse: Decodable { let targets: [AutomaticWorkTarget] }
 struct AutomaticWorkSaveResponse: Decodable { let policy: AutomaticWorkPolicy }
+
+struct AutomaticWorkPreferenceValues: Decodable {
+    var budgetByBucket: [String: AutomaticWorkBudget]?
+    var maxTurns: Int?
+    var maxDurationSeconds: Double?
+    var maxTotalDurationSeconds: Double?
+    var priority: Double?
+    var activityMode: String?
+    var activitySchedule: AutomaticWorkSchedule?
+    var expectedWorkMinutes: Double?
+    var finishBufferMinutes: Double?
+    var earlyResetQuantile: Double?
+    var startProbability: Double?
+    var unknownForecastAction: String?
+    var personalDeadline: Double?
+    var usePersonalDeadlineForPlanning: Bool?
+    var opportunityMaxAgeMinutes: Double?
+    var timingHistoryDays: Double?
+}
+struct AutomaticWorkPreferences: Decodable {
+    let scope: String
+    let provider: String?
+    let account: String?
+    let revision: Int
+    let values: AutomaticWorkPreferenceValues
+}
+struct AutomaticWorkPreferencesResponse: Decodable { let preferences: [AutomaticWorkPreferences] }
+struct AutomaticWorkPreferenceSaveResponse: Decodable { let preference: AutomaticWorkPreferences }
+extension AutomaticWorkPolicy {
+    var registrationInput: [String: Any] {
+        var result = input
+        if revision == nil, let snapshot = localPreferenceSnapshot?.data(using: .utf8),
+           let inherited = (try? JSONSerialization.jsonObject(with: snapshot)) as? [String: Any] {
+            for (key, value) in inherited {
+                if let current = result[key], NSDictionary(dictionary: [key: current]).isEqual(to: [key: value]) { result.removeValue(forKey: key) }
+            }
+        }
+        return result
+    }
+    var preferenceInput: [String: Any] {
+        let allowed: Set<String> = ["budgetByBucket", "maxTurns", "maxDurationSeconds", "maxTotalDurationSeconds", "priority", "activityMode", "activitySchedule", "expectedWorkMinutes", "finishBufferMinutes", "earlyResetQuantile", "startProbability", "unknownForecastAction", "personalDeadline", "usePersonalDeadlineForPlanning", "opportunityMaxAgeMinutes", "timingHistoryDays"]
+        return input.filter { allowed.contains($0.key) }
+    }
+    mutating func applyPreferences(_ preferences: [AutomaticWorkPreferences]) {
+        localPreferenceSnapshot = nil
+        var appliedKeys = Set<String>()
+        let order = ["global": 0, "provider": 1, "account": 2]
+        for preference in preferences.filter({ $0.scope == "global" || $0.provider == provider && ($0.scope == "provider" || $0.account == account) }).sorted(by: { (order[$0.scope] ?? 0) < (order[$1.scope] ?? 0) }) {
+            let values = preference.values
+            if let value = values.budgetByBucket { for (bucket, budget) in value where budgetByBucket[bucket] != nil { budgetByBucket[bucket] = budget } }
+            if let value = values.maxTurns { maxTurns = value; appliedKeys.insert("maxTurns") }
+            if let value = values.maxDurationSeconds { maxDurationSeconds = value; appliedKeys.insert("maxDurationSeconds") }
+            if let value = values.maxTotalDurationSeconds { maxTotalDurationSeconds = value; appliedKeys.insert("maxTotalDurationSeconds") }
+            if let value = values.priority { priority = value; appliedKeys.insert("priority") }
+            if let value = values.activityMode { activityMode = value; appliedKeys.insert("activityMode") }
+            if let value = values.activitySchedule { activitySchedule = value; appliedKeys.insert("activitySchedule") }
+            if let value = values.expectedWorkMinutes { expectedWorkMinutes = value; appliedKeys.insert("expectedWorkMinutes") }
+            if let value = values.finishBufferMinutes { finishBufferMinutes = value; appliedKeys.insert("finishBufferMinutes") }
+            if let value = values.earlyResetQuantile { earlyResetQuantile = value; appliedKeys.insert("earlyResetQuantile") }
+            if let value = values.startProbability { startProbability = value; appliedKeys.insert("startProbability") }
+            if let value = values.unknownForecastAction { unknownForecastAction = value; appliedKeys.insert("unknownForecastAction") }
+            if let value = values.personalDeadline { personalDeadline = value; appliedKeys.insert("personalDeadline") }
+            if let value = values.usePersonalDeadlineForPlanning { usePersonalDeadlineForPlanning = value; appliedKeys.insert("usePersonalDeadlineForPlanning") }
+            if let value = values.opportunityMaxAgeMinutes { opportunityMaxAgeMinutes = value; appliedKeys.insert("opportunityMaxAgeMinutes") }
+            if let value = values.timingHistoryDays { timingHistoryDays = value; appliedKeys.insert("timingHistoryDays") }
+        }
+        if let data = try? JSONSerialization.data(withJSONObject: input.filter { appliedKeys.contains($0.key) }, options: .sortedKeys) {
+            localPreferenceSnapshot = String(data: data, encoding: .utf8)
+        }
+    }
+}

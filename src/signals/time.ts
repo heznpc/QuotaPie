@@ -44,6 +44,9 @@ function instant(wall: number[], zone: number | string): number | null {
 }
 
 function sourceTimeZone(text: string): string | null {
+  text = text.replace(/\bPacific\s+Standard\s+Time\b/gi,"PST").replace(/\bPacific\s+Daylight\s+Time\b/gi,"PDT")
+    .replace(/\bEastern\s+Standard\s+Time\b/gi,"EST").replace(/\bEastern\s+Daylight\s+Time\b/gi,"EDT")
+    .replace(/\bPacific(?:\s+(?:time|timezone))?\b/gi, "PT").replace(/\bEastern(?:\s+(?:time|timezone))?\b/gi, "ET");
   const zoneNames = [...text.matchAll(/\b(PST|PDT|PT|EST|EDT|ET|UTC|GMT|KST|JST|CET|CEST)\b/gi)].map(m => m[1]!.toUpperCase());
   return new Set(zoneNames).size === 1 ? zoneNames[0]! : null;
 }

@@ -17,8 +17,11 @@ function fixture() {
   config.accounts.codex = [{ id: "original", label: "Original", enabled: true, codexHome: home }];
   let started = false, ready = true, remoteWorkspace = workspaceId, collision = false;
   const calls: string[][] = [];
+  const sharedPolicies: any[] = [], paused: string[] = [];
   const connection = new DotsConnection({ root, config: () => config, binary: () => "/fixture/tunnel-client",
     command: "'/fixture/quotapie' 'dots' 'mcp'",
+    sharedWork: () => ({ preferences: async () => ({}), savePreferences: async () => ({}), list: async () => ({policies: sharedPolicies}), targets: async () => ({}), save: async () => ({}), execute: async () => ({}),
+      setEnabled: async (input: any) => { paused.push(input.id); return {}; } }),
     runner: async (_binary, args, env) => {
       calls.push(args);
       if (args[0] === "admin") {
@@ -34,7 +37,7 @@ function fixture() {
         healthy: started, ready, process: { target_value: "'/fixture/quotapie' 'dots' 'mcp'" } };
       throw new Error("unexpected operation");
     } });
-  return { root, home, binding, config, key, connection, calls,
+  return { root, home, binding, config, key, connection, calls, sharedPolicies, paused,
     setRemote: (value: string) => { remoteWorkspace = value; },
     setCollision: () => { collision = true; }, setReady: (value: boolean) => { ready = value; },
     close: () => rmSync(root, { recursive: true, force: true }) };
@@ -128,4 +131,17 @@ test("discover official manager's executable outside PATH without executing its 
     expect(commandExecutable("/bin/sh -c 'something'")).toBeNull();
     expect(commandExecutable("$(touch /tmp/unwanted)" )).toBeNull();
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+
+test("disconnect pauses shared Dots policies through the common API and leaves local execution enabled", async () => {
+  const f = fixture();
+  try {
+    f.sharedPolicies.push({id:"dots-work",dispatchOwner:"dots",enabled:true,revision:2,expiresAtMs:Date.now()+60000},
+      {id:"local-work",dispatchOwner:"local",enabled:true,revision:3,expiresAtMs:Date.now()+60000});
+    f.connection.save(f.binding); await f.connection.connect();
+    expect((await f.connection.status()).enabledTargets).toBe(1);
+    await f.connection.disconnect();
+    expect(f.paused).toEqual(["dots-work"]);
+  } finally { f.close(); }
 });

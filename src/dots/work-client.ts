@@ -3,6 +3,8 @@ import type { WorkPolicy } from "../work/types";
 export type SharedWorkPolicy = WorkPolicy & { admission: { ready: boolean; reason: string } };
 export interface SharedWorkClient {
   list(): Promise<{ policies: SharedWorkPolicy[]; [key: string]: unknown }>;
+  preferences(): Promise<unknown>;
+  savePreferences(input: unknown): Promise<unknown>;
   targets(provider: string, account: string): Promise<unknown>;
   save(input: unknown): Promise<unknown>;
   setEnabled(input: unknown): Promise<unknown>;
@@ -34,6 +36,8 @@ export function createSharedWorkClient(config: AppConfig, fetcher: typeof fetch 
     return value;
   }
   return { list: () => request("/api/work"),
+    preferences: () => request("/api/work/preferences"),
+    savePreferences: input => request("/api/work/preferences", input),
     targets: (provider, account) => request("/api/work/targets?" + new URLSearchParams({ provider, account })),
     save: input => request("/api/work", { ...(input as object), action: "save" }),
     setEnabled: input => request("/api/work", { ...(input as object), action: "enabled" }),

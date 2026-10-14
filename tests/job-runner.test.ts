@@ -337,3 +337,26 @@ test("queued legacy work can drain beside an enabled shared policy without deadl
   expect(calls).toBe(1);expect(f.service.work.store.executions()).toHaveLength(0);
   await runner.close();
 });
+
+test("legacy running work observes reserve changes and resumes its exact session only after an owned stop and fresh quota", async () => {
+  const f=fixture();let attempts=0;
+  const session="11111111-1111-4111-8111-111111111111";
+  const runner=new ManagedJobRunner(f.service.jobs,f.config,{now:f.now,authorizationIntervalMs:5,execute:async input=>{
+    attempts++;
+    if(attempts===1){
+      expect(input.verifyOwnedStop).toBeTrue();
+      expect(input.timeoutMs).toBeLessThanOrEqual(f.spec.policy.expiresAtMs-f.now());
+      runner.evaluate([f.window(10,{reservePercent:10})],f.advance());
+      await new Promise(resolve=>input.signal!.addEventListener("abort",resolve,{once:true}));
+      return {kind:"uncertain",reason:"aborted",sessionId:session,ownedProcessStopped:true};
+    }
+    expect(input.sessionId).toBe(session);
+    return {kind:"succeeded",reason:"completed",sessionId:session};
+  }});
+  runner.tick([f.window()],f.now());await runner.settle();
+  expect(f.service.jobs.get(f.job.id)?.state).toBe("waiting");
+  expect(f.service.jobs.get(f.job.id)?.reason).toBe("quota-reserve-wait");
+  runner.tick([f.window(10,{reservePercent:10})],f.now());await runner.settle();expect(attempts).toBe(1);
+  f.advance();runner.tick([f.window(50,{reservePercent:10})],f.now());await runner.settle();expect(attempts).toBe(2);
+  await runner.close();
+});

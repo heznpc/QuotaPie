@@ -2,13 +2,16 @@ import {randomUUID} from "node:crypto";
 import type { AppConfig } from "../config";
 import type { WindowAnalysis } from "../types";
 import { WorkStore } from "./store";
-import type { WorkPolicy, WorkPolicyInput, WorkResult, WorkOwner } from "./types";
+import type { WorkPolicy, WorkPolicyInput, WorkResult, WorkOwner, WorkForecast } from "./types";
 import { evaluateWorkAdmission, workObservation, workWindows } from "./admission";
 
 export interface WorkControllerDependencies {
   windows(): WindowAnalysis[];
   inspect(input: WorkPolicyInput): Promise<{profileKey:string;accountKey:string;cwd:string;model?:string}>;
   execute(policy: WorkPolicy, executionId: string, authorized: () => boolean, signal: AbortSignal): Promise<WorkResult>;
+  forecast?(policy: WorkPolicy, nowMs: number): WorkForecast | null;
+  announcementPublishedAtMs?(policy: WorkPolicy): number | undefined;
+  minimumReserveByBucket?(policy: WorkPolicy): Record<string,number>;
   announcement(policy: WorkPolicy): boolean;
   legacyBusy(policy: WorkPolicyInput): boolean;
   now?: () => number;
@@ -34,26 +37,58 @@ export class WorkController {
     if (this.closed || this.deps.legacyBusy(policy)) return {ready:false,reason:"legacy-work-active",timeoutSeconds:0};
     const hold=this.holds.get(policy.id);
     if(!running && hold && this.now()-hold.atMs<30000) return {ready:false,reason:hold.reason,timeoutSeconds:0};
-    return evaluateWorkAdmission(policy, this.deps.windows(), this.now(), {
+    const execution=running&&policy.state.activeExecutionId?this.store.getExecution(policy.state.activeExecutionId):null;
+    const effective=execution?.dispatchedAtMs!==undefined?{...policy,state:{...policy.state,totalDurationSeconds:policy.state.totalDurationSeconds+Math.max(0,(this.now()-execution.dispatchedAtMs)/1000)}}:policy;
+    return evaluateWorkAdmission(effective, this.deps.windows(), this.now(), {
       maxAgeMs:this.config.collection.staleAfterSeconds*1000,
       publicAnnouncementEligible:this.deps.announcement(policy), ignoreTrigger:running, running,
-      minimumReserveByBucket:Object.fromEntries(this.deps.windows().filter(w=>w.provider==="codex"&&w.account===policy.account).map(w=>[w.bucket,w.reservePercent])),
+      minimumReserveByBucket:this.deps.minimumReserveByBucket?.(policy) ?? {},
+      forecast:execution?.planning ? undefined : this.deps.forecast?.(policy,this.now()),
+      frozenPlanning:execution?.planning,
+      announcementPublishedAtMs:this.deps.announcementPublishedAtMs?.(policy),
+      estimatedWorkMinutes:this.estimatedWorkMinutes(policy),
+      inheritedActivitySchedules:this.inheritedActivitySchedules(),
     });
+  }
+  estimatedWorkMinutes(policy:WorkPolicy):number|undefined {
+    const samples=this.store.executions(policy.id).filter(e=>e.status==="finished"&&e.dispatchedAtMs!==undefined&&e.finishedAtMs!==undefined&&e.result?.status!=="failed")
+      .map(e=>Math.max(0,(e.finishedAtMs!-e.dispatchedAtMs!)/60000)).filter(n=>n>0).sort((a,b)=>a-b);
+    return samples.length?samples[Math.floor(samples.length/2)]:undefined;
+  }
+  private inheritedActivitySchedules() {
+    return (["weekday","weekend"] as const).flatMap(kind=>this.config.profile.workSchedule[kind].map(range=>({
+      ...range,timeZone:this.config.profile.timeZone,days:kind==="weekday"?[1,2,3,4,5]:[0,6],
+    })));
   }
   list() {
     this.observe();
-    return this.store.list().map(p => ({...p, admission:this.admission(p)}));
+    return this.store.list().map(p => ({...p, admission:this.admission(p), effectivePreferences:{
+      activityMode:p.activityMode??(p.activitySchedule?"custom":"unrestricted"),
+      activitySource:p.activityMode==="inherit"?"profile.workSchedule":"task",
+      activitySchedules:p.activityMode==="inherit"?this.inheritedActivitySchedules():p.activitySchedule?[p.activitySchedule]:[],
+      reserveSource:p.preferenceSources?.budgetByBucket??"task",fieldSources:p.preferenceSources??{},minimumReserveByBucket:this.deps.minimumReserveByBucket?.(p)??{},
+    }}));
   }
   async save(input: WorkPolicyInput, expectedRevision:number|null, requestId:string) {
+    const prior=this.store.get(input.id);
+    // Resolve the original session model before choosing model-specific defaults.
+    // The submitted model is never an override, including when inspection has no
+    // model to report: it must not select defaults for an unrelated quota lane.
     const binding = await this.deps.inspect(input);
-    const resolved = {...input, ...binding};
+    const trusted = {...input,...binding,model:binding.model};
+    // Defaults are copied at registration. Editing or clearing a saved preference
+    // must not silently reintroduce it from a newer global/account default.
+    const inherited=expectedRevision===null?this.store.resolvePreferences(trusted):{input:trusted,effectivePreferences:Object.fromEntries(Object.keys(trusted).map(key=>[
+      key,prior && JSON.stringify(prior[key as keyof WorkPolicy])===JSON.stringify(trusted[key as keyof WorkPolicyInput])?prior.preferenceSources?.[key]??"task":"task",
+    ]))};
+    const resolved = {...inherited.input, ...binding,model:binding.model};
     if (resolved.enabled && this.deps.legacyBusy(resolved)) throw new Error("legacy-work-active");
     // Account-wide limits apply to every selected model. A policy must budget
     // each observed window so unbudgeted usage cannot evade the common ledger.
     const windows = this.deps.windows().filter(w=>w.provider===input.provider && w.account===input.account);
     const general = workWindows(resolved,windows);
-    if (!general.length || general.some(w=>!input.budgetByBucket?.[w.bucket])) throw new Error("work-general-budget-required");
-    const policy = this.store.save(resolved,expectedRevision,requestId);
+    if (!general.length || general.some(w=>!resolved.budgetByBucket?.[w.bucket])) throw new Error("work-general-budget-required");
+    const policy = this.store.save(resolved,expectedRevision,requestId,inherited.effectivePreferences);
     this.holds.delete(policy.id);
     this.observe();
     return this.store.get(policy.id)!;
@@ -103,6 +138,8 @@ export class WorkController {
     const execution=claimed.execution;
     if(execution && !claimed.created) return execution;
     if(!execution) throw new Error("work-already-claimed-or-held");
+    const planned=admission;
+    if ("planning" in planned && planned.planning) this.store.recordPlanning(execution.id,planned.planning,this.now(),Object.fromEntries(Object.entries(latest.budgetByBucket).map(([bucket,budget])=>[bucket,Math.max(budget.reservePercent,this.deps.minimumReserveByBucket?.(latest)[bucket]??0)])));
     const controller=new AbortController();
     const authorized=()=>{
       this.observe();
@@ -118,7 +155,9 @@ export class WorkController {
         else {
           this.store.markDispatched(execution.id,this.now());
           dispatched=true;
-          result=await this.deps.execute(this.store.get(id)!,execution.id,authorized,controller.signal);
+          const executionPolicy=this.store.get(id)!;
+          const limit=this.admission(executionPolicy,true).timeoutSeconds;
+          result=await this.deps.execute({...executionPolicy,maxDurationSeconds:Math.min(executionPolicy.maxDurationSeconds,limit)},execution.id,authorized,controller.signal);
         }
       } catch { result={status:dispatched?"uncertain":"activity-paused",reason:"execution-result-unverified"}; }
       this.observe();

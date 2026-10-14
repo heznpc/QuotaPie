@@ -325,6 +325,8 @@ const CATALOG = {
   "model.notice.confirmed": { en: p => `Request: ${p.toLabel}. Response model: ${p.label}. Effort is the requested value.`, ko: p => `요청 설정: ${p.toLabel}. 응답 모델: ${p.label}. 추론 단계는 요청에 지정한 값입니다.` },
   "model.notice.completed": { en: p => `${p.toLabel} request completed in ${p.detail}s. Response model: ${p.label === "?" ? "unconfirmed" : p.label}. Composer unchanged.`, ko: p => `${p.toLabel} 압축 요청 완료 · ${p.detail}초. 응답 모델: ${p.label === "?" ? "미확인" : p.label}. 입력창 설정은 유지됩니다.` },
   "model.notice.failed": { en: p => `${p.toLabel} request did not establish completion (${p.detail}s). Open QuotaPie for evidence.`, ko: p => `${p.toLabel} 요청의 완료를 확인하지 못했습니다 · ${p.detail}초. QuotaPie에서 상태와 근거를 확인하세요.` },
+  "alert.work.notice.message": { en: () => "A reset opportunity is available. This policy is set to notify only.", ko: () => "리셋 전 작업 기회가 있습니다. 이 설정은 알림만 보냅니다." },
+  "alert.work.forecastUnavailable.message": { en: () => "The reset probability is not verified. Work is paused under your notification preference.", ko: () => "리셋 확률이 검증되지 않았습니다. 알림 설정에 따라 작업을 대기합니다." },
   "alert.jobs.title": { en: p => `${p.label} execution task`, ko: p => `${p.label} 실행 작업` },
   "alert.jobs.ready.message": { en: () => "Quota is available. The registered job is ready for approval.", ko: () => "한도가 확인됐습니다. 등록한 작업의 실행을 승인할 수 있습니다." },
   "alert.jobs.succeeded.message": { en: () => "All registered steps completed.", ko: () => "등록한 모든 단계가 완료됐습니다." },

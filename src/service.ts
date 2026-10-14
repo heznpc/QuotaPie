@@ -1,5 +1,5 @@
 import { inspectManagedSession } from "./dots/managed-continuation";
-import { workWindows as scopedWorkWindows } from "./work/admission";
+import { planWork, workWindows as scopedWorkWindows } from "./work/admission";
 import { evaluateWorkPerformance } from "./work/performance";
 import { realpathSync, existsSync } from "node:fs";
 import { Database } from "bun:sqlite";
@@ -7,7 +7,7 @@ import { WorkStore } from "./work/store";
 import { WorkController } from "./work/controller";
 import { inspectWorkTarget, executeWorkTurn } from "./work/runtime";
 import { executeCodexWork } from "./work/codex";
-import type { WorkPolicyInput, WorkPolicy } from "./work/types";
+import type { WorkPolicyInput, WorkPolicy, WorkForecast } from "./work/types";
 import { AccountBindingStore } from "./storage/account-binding-store";
 import { readPoolPolicy } from "./account-pool";
 import { explicitAccountReserve } from "./subscription-policy";
@@ -19,6 +19,7 @@ import { buildWorkBoundary, defaultWorkBoundaryPath, writeWorkBoundary } from ".
 import { JobStore } from "./storage/job-store";
 import { ManagedJobRunner } from "./jobs/runner";
 import { resetOpportunities, resetSignalClosed } from "./signals/opportunities";
+import { ResetTimingStore } from "./storage/reset-timing-store";
 import { buildResetTracking } from "./signals/correlation";
 import { codexContextChange } from "./domain/codex-context";
 import { ResetSignalStore } from "./storage/reset-signal-store";
@@ -131,6 +132,9 @@ export class QuotaPieService {
   private jobsEnabled = false;
   private jobNotifications: Promise<void> | null = null;
   readonly resetSignals: ResetSignalStore;
+  readonly resetTiming: ResetTimingStore;
+  private resetTimingError: string | null = null;
+  private readonly workForecastCache = new Map<string, { expiresAtMs: number; forecast: WorkForecast | null }>();
   readonly signalCollector: ResetSignalCollector;
   private signalTimer: ReturnType<typeof setInterval> | null = null;
   private signalWork: Promise<void> | null = null;
@@ -183,10 +187,21 @@ export class QuotaPieService {
     this.work = new WorkController(new WorkStore(this.storage), config, {
       windows: () => this.workWindows(),
       inspect: p => this.inspectWork(p),
-      execute: (p,id,authorized,signal) => p.provider === "claude"
-        ? executeWorkTurn(config,p,{claimId:id,policyRevision:p.revision,timeoutMs:p.maxDurationSeconds*1000,signal,stillAuthorized:authorized})
-        : executeCodexWork(config,p,id,authorized,()=>this.workGate(p)),
-      announcement: p => this.resetOpportunities(p.provider,p.account).some(o=>o.actionableFromMs<=Date.now()&&o.expiresAtMs>Date.now()),
+      execute: (p,id,authorized,signal) => {
+        const planning = this.work.store.executions().find(e => e.id === id)?.planning;
+        if (planning?.forecastId) this.resetTiming.recordExecutionDecision(planning.forecastId, p.revision, Date.now());
+        return p.provider === "claude"
+          ? executeWorkTurn(config,p,{claimId:id,policyRevision:p.revision,timeoutMs:p.maxDurationSeconds*1000,signal,stillAuthorized:authorized})
+          : executeCodexWork(config,p,id,authorized,()=>this.workGate(p));
+      },
+      announcement: p => this.workOpportunity(p) !== undefined,
+      announcementPublishedAtMs: p => {
+        const opportunity = this.workOpportunity(p);
+        return opportunity?.calendarBoundaryMs != null ? undefined : opportunity?.publishedAtMs;
+      },
+      forecast: (p, now) => this.workForecast(p, now),
+      minimumReserveByBucket: p => Object.fromEntries(this.workWindows().filter(w => w.provider === p.provider && w.account === p.account)
+        .map(w => [w.bucket, p.provider === "codex" ? explicitAccountReserve(p.account, readPoolPolicy()) : 0])),
       legacyBusy: p => this.legacyWorkBusy(p),
     });
     this.jobRunner = new ManagedJobRunner(this.jobs, config, {
@@ -196,6 +211,7 @@ export class QuotaPieService {
     });
     this.locale = resolveLocale(config.profile.locale);
     this.resetSignals = new ResetSignalStore(this.storage);
+    this.resetTiming = new ResetTimingStore(this.storage);
     this.signalCollector = new ResetSignalCollector(this.resetSignals, config.resetSignals);
     if (!config.alerts.enabled || !config.alerts.macOSNotifications) {
       this.alerts.cancelAllAppNotifications();
@@ -1137,14 +1153,83 @@ export class QuotaPieService {
   resetPlanning(accounts: Array<{ provider: Provider; account: string }>, nowMs = Date.now()) {
     const signals = this.resetSignals.list(1000), events = this.db.recentEvents(2000);
     return accounts.map(account => ({ ...account,
-      opportunities: resetOpportunities(signals, events, account.provider, account.account, nowMs),
+      opportunities: this.resetOpportunities(account.provider, account.account, nowMs),
       closedSignalIDs: signals.filter(s => (s.provider ?? "codex") === account.provider &&
         resetSignalClosed(s, signals, events.filter(e => e.account === account.account), nowMs)).map(s => s.id),
     }));
   }
 
-  resetOpportunities(provider: Provider, account: string, nowMs = Date.now()) {
-    return this.resetPlanning([{ provider, account }], nowMs)[0]!.opportunities;
+  resetOpportunities(provider: Provider, account: string, nowMs = Date.now(), options: {maxAgeMinutes?: number; bucket?: string} = {}) {
+    return resetOpportunities(this.resetSignals.list(1000), this.db.recentEvents(2000), provider, account, nowMs,
+      {...options, cases: this.resetTimingStatus().cases});
+  }
+
+  private workOpportunity(policy: WorkPolicy, nowMs = Date.now()) {
+    return this.resetOpportunities(policy.provider, policy.account, nowMs,
+      {maxAgeMinutes: policy.opportunityMaxAgeMinutes, bucket: policy.resetBucket})
+      .filter(o => o.actionableFromMs <= nowMs && o.expiresAtMs > nowMs)
+      .sort((a,b) => b.publishedAtMs - a.publishedAtMs)[0];
+  }
+
+  private workForecast(policy: WorkPolicy, nowMs: number): WorkForecast | null {
+    const opportunity = this.workOpportunity(policy, nowMs);
+    if (!opportunity || !policy.resetBucket) return null;
+    const key = `${policy.id}:${policy.revision}:${opportunity.signalId}`;
+    const cached = this.workForecastCache.get(key);
+    if (cached && cached.expiresAtMs > nowMs) return cached.forecast;
+    const estimatedWorkMinutes = this.work.estimatedWorkMinutes(policy);
+    const horizonAtMs = planWork(policy, nowMs, {estimatedWorkMinutes}).horizonAtMs;
+    if (horizonAtMs <= nowMs) return null;
+    const signal = this.resetSignals.list(1000).find(s => s.id === opportunity.signalId);
+    const publication = this.resetTiming.issueForecast({signalId: signal?.sourcePostId ?? opportunity.signalId,
+      provider: policy.provider, account: policy.account, bucket: policy.resetBucket, horizonAtMs, now: nowMs,
+      policyId: policy.id, policyVersion: policy.revision, earlyResetQuantile: policy.earlyResetQuantile, historyDays: policy.timingHistoryDays});
+    const forecast: WorkForecast | null = publication ? {id: publication.id, eventId: publication.eventId,
+      actionProbabilityEstimate: publication.actionProbabilityEstimate, quantileAtMs: publication.actionProbabilityEstimate === null ? null : publication.quantileAtMs,
+      horizonAtMs: publication.horizonAtMs, calibrationStatus: publication.calibrationStatus} : null;
+    for (const [id,value] of this.workForecastCache) if (value.expiresAtMs <= nowMs) this.workForecastCache.delete(id);
+    this.workForecastCache.set(key, {expiresAtMs: Math.min(horizonAtMs, nowMs + 60_000), forecast});
+    return forecast;
+  }
+
+  resetTimingStatus() {
+    try { return { ...this.resetTiming.summary(), error: this.resetTimingError }; }
+    catch { return { cases: [], evaluation: null, error: "timing-history-unavailable" }; }
+  }
+
+  refreshResetTiming(nowMs = Date.now()): void {
+    try {
+    const contexts = this.storage.db.query<{provider:Provider; account:string; at:number}, []>(
+      "SELECT provider,account,MAX(occurred_at_ms) AS at FROM events WHERE kind IN ('account_changed','plan_changed') GROUP BY provider,account"
+    ).all();
+    const accounts = [...new Map(this.db.latestAll().map(o => [`${o.provider}:${o.account}`, { provider: o.provider, account: o.account,
+      contextAtMs: contexts.find(c=>c.provider===o.provider&&c.account===o.account)?.at ?? 0 }])).values()];
+    const policyDays = this.work.store.list().map(p => p.timingHistoryDays ?? 365);
+    // A task learning window must never shorten the shared application history.
+    const retentionDays = Math.max(365, ...policyDays);
+    const events = this.storage.db.query<{provider: Provider; account: string; bucket: string; kind: QuotaEvent["kind"]; occurred_at_ms: number; details_json: string}, [number]>(
+      "SELECT provider,account,bucket,kind,occurred_at_ms,details_json FROM events WHERE kind IN ('external_relief','allowance_relief') AND occurred_at_ms >= ? ORDER BY occurred_at_ms DESC LIMIT 5000"
+    ).all(nowMs - retentionDays * 86400000).map(r => ({ provider:r.provider, account:r.account, bucket:r.bucket, kind:r.kind,
+      occurredAtMs:r.occurred_at_ms, details:JSON.parse(r.details_json), severity:"info" as const, confidence:"high" as const, displayText:"" }));
+    this.resetTiming.setRetentionDays(retentionDays);
+    for (const observation of this.db.latestAll()) {
+      this.resetTiming.recordCoverage({id: `${observation.provider}:${observation.account}:${observation.bucket}:${observation.observedAtMs}`,
+        provider: observation.provider, account: observation.account, bucket: observation.bucket, observedAtMs: observation.observedAtMs,
+        success: observation.quality === "authoritative", resetDetectable: false});
+    }
+    for (const state of this.collection.sourceStates()) if (state.lastAttemptMs != null && state.lastError) {
+      for (const observation of this.db.latestAll().filter(o => o.provider === state.provider && o.account === state.account))
+        this.resetTiming.recordCoverage({id: `failure:${state.provider}:${state.account}:${state.source}:${state.lastAttemptMs}:${observation.bucket}`,
+          provider: state.provider, account: state.account, bucket: observation.bucket, observedAtMs: state.lastAttemptMs,
+          success: false, resetDetectable: false});
+    }
+    this.resetTiming.sync(this.resetSignals.list(1000), events, accounts, nowMs);
+    this.resetTimingError = null;
+    } catch {
+      // Advisory measurement must not interrupt collection, quota publication or work.
+      this.resetTimingError = "timing-history-update-failed";
+      console.error("[quotapie] reset timing history update failed");
+    }
   }
 
   applyNotificationPreferences(patch: NotificationPreferencesPatch): void {
@@ -1162,6 +1247,7 @@ export class QuotaPieService {
   claimNextAppNotification(nowMs = Date.now()): AppNotificationClaim | null {
     this.cancelMutedNotifications(nowMs);
     this.cancelObsoleteJobNotifications(nowMs);
+    this.cancelObsoleteWorkNotifications(nowMs);
     if (!this.config.alerts.enabled || !this.config.alerts.macOSNotifications) {
       this.alerts.cancelAllAppNotifications(nowMs);
       return null;
@@ -1204,6 +1290,7 @@ export class QuotaPieService {
   renewAppNotification(id: string, claimToken: string, nowMs = Date.now()): boolean {
     this.cancelMutedNotifications(nowMs);
     this.cancelObsoleteJobNotifications(nowMs);
+    this.cancelObsoleteWorkNotifications(nowMs);
     return this.alerts.renewAppNotification(id, claimToken, nowMs);
   }
 
@@ -1309,6 +1396,46 @@ export class QuotaPieService {
       }
     })().finally(() => { this.jobNotifications = null; });
     return this.jobNotifications;
+  }
+
+  /** A notification policy never claims a model turn. The durable outbox keeps
+   * polling and restarts from repeating the same policy/event notification. */
+  async deliverWorkNotifications(): Promise<void> {
+    if (!this.work.store.list().length) return;
+    this.cancelObsoleteWorkNotifications();
+    const undelivered = new Set(this.alerts.suppressedThresholdKeys(true));
+    for (const policy of this.work.list()) {
+      if (!policy.enabled) continue;
+      const reason = policy.admission.reason;
+      if (!["notification-only", "forecast-unavailable-notify"].includes(reason)) continue;
+      const opportunity = this.workOpportunity(policy);
+      if (!opportunity) continue;
+      const messageKey = reason === "notification-only" ? "alert.work.notice.message" : "alert.work.forecastUnavailable.message";
+      const decision: TriggerDecision = {
+        key: `work:${policy.id}:${policy.revision}:${opportunity.signalId}:${reason}`,
+        title: t("alert.jobs.title", {label: policy.objective}, this.locale), message: t(messageKey, {}, this.locale),
+        presentation: {title: {key: "alert.jobs.title", params: {label: policy.objective}}, message: {key: messageKey, params: {}}}, severity: "info",
+      };
+      if (!notificationAllowed(decision, this.config.alerts)) continue;
+      if (undelivered.has(decision.key)) this.rearmAlertNotification(decision.key, 0);
+      const claim = this.alerts.claim(decision.key, Date.now(), 0);
+      if (!claim) continue;
+      try {
+        const result = await this.deliverDecision(decision, `threshold:${decision.key}:${claim.generation}`);
+        if (result.complete) this.alerts.completeClaim(decision.key, claim.token, Date.now(), result.suppressed ? "suppressed" : "delivered");
+        else this.alerts.releaseClaim(decision.key, claim.token);
+      } catch { this.alerts.releaseClaim(decision.key, claim.token); }
+    }
+  }
+
+  private cancelObsoleteWorkNotifications(nowMs = Date.now()): void {
+    const policies = this.work.store.list().length ? this.work.list() : [];
+    const validKeys = new Set(policies.filter(p => p.enabled).flatMap(p => {
+      const opportunity = this.workOpportunity(p, nowMs);
+      return opportunity && ["notification-only", "forecast-unavailable-notify"].includes(p.admission.reason)
+        ? [`work:${p.id}:${p.revision}:${opportunity.signalId}:${p.admission.reason}`] : [];
+    }));
+    this.alerts.cancelAppNotificationsWhere(item => item.alertKey.startsWith("work:") && !validKeys.has(item.alertKey), nowMs);
   }
 
   private cancelObsoleteJobNotifications(nowMs = Date.now()): void {
@@ -1442,6 +1569,7 @@ export class QuotaPieService {
     }
     events = events.concat(await this.pollClaudeOAuth(nowMs));
     const collected = this.anyProviderCollectedRecently(nowMs);
+    this.refreshResetTiming(Date.now());
     this.db.maybePrune(nowMs, this.config.profile.historyDays);
     this.resumeTasks.pruneTerminal(nowMs - this.config.profile.historyDays * 86_400_000);
     // One analysis pass per tick. It feeds the triggers, the boundary file, and
@@ -1454,6 +1582,7 @@ export class QuotaPieService {
     if (this.jobsEnabled) this.jobRunner.tick(windows, jobsNowMs);
     else this.jobRunner.evaluate(windows, jobsNowMs);
     await this.deliverJobNotifications();
+    await this.deliverWorkNotifications();
     const triggers = await this.evaluateTriggers(nowMs, windows);
     await this.publishBoundary(nowMs, windows);
     return { events, triggers, windows, collected };
@@ -1524,6 +1653,7 @@ export class QuotaPieService {
     this.signalWork = (async () => {
       await this.signalCollector.poll();
       if (this.closing || !this.config.resetSignals.enabled) return;
+      this.refreshResetTiming(Date.now());
       for (const signal of this.resetSignals.pending(Date.now())) {
         if (this.closing) break;
         const remaining = this.accountStates(Date.now(), this.currentQuotaWindows(Date.now()))

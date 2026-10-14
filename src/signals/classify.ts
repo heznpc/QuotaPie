@@ -13,6 +13,7 @@ export interface ResetSignal {
   observedVia: "x-api" | "public-feed" | "codexreset" | "claudereset" | "resetradar"; targetAtMs: number | null;
   detectedAtMs?: number;
   sourcePostId?: string;
+  relatedSourceIds?: string[];
   provider?: "codex" | "claude";
   benefitKind?: BenefitKind;
   change?: BenefitChange;
@@ -132,7 +133,7 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>,
   const normalized = text.replace(/https?:\/\/\S+/g, "").replace(/@\w+/g, "").trim();
   const fingerprint = createHash("sha256").update(JSON.stringify([groupId, state, resetKind, timeHint, scopeHint,
     state === "updated" || state === "withdrawn" || !["reset", "resetCredits"].includes(benefitKind) ? normalized : null])).digest("hex").slice(0, 24);
-  return { id: post.id, groupId, fingerprint, author: post.author,
+  return { id: post.id, groupId, fingerprint, author: post.author, relatedSourceIds: post.references.map(ref => ref.id),
     sourceUrl: `https://x.com/${post.author}/status/${post.id}`, text, contextText: parentText.slice(0, 3000) || null,
     publishedAtMs: post.createdAtMs, state, resetKind, provider: providerForAuthor(post.author), benefitKind,
     ...(change ? { change } : {}), ...(visibleBenefits.length > 1 ? { benefits: visibleBenefits } : {}),

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { QuotaStorage } from "../storage/database";
-import type { LegacyWorkFence, WorkExecution, WorkObservation, WorkOwner, WorkPolicy, WorkPolicyInput, WorkResult } from "./types";
+import type { LegacyWorkFence, WorkExecution, WorkObservation, WorkOwner, WorkPolicy, WorkPolicyInput, WorkResult, WorkPreferences, WorkPreferenceValues } from "./types";
 
 export class WorkRevisionConflict extends Error {
   constructor(readonly current: WorkPolicy | null) { super("work-revision-conflict"); }
@@ -10,6 +10,7 @@ export class WorkRevisionConflict extends Error {
 export class WorkStore {
   constructor(private readonly storage: QuotaStorage) {
     storage.db.exec(`
+      CREATE TABLE IF NOT EXISTS work_preferences (id TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS work_policies (id TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS work_executions (id TEXT PRIMARY KEY, policy_id TEXT NOT NULL, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS work_requests (id TEXT PRIMARY KEY, payload TEXT NOT NULL, response TEXT NOT NULL);
@@ -17,6 +18,51 @@ export class WorkStore {
       CREATE TABLE IF NOT EXISTS work_fences (id TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS work_execution_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, execution_id TEXT NOT NULL, value TEXT NOT NULL);
     `);
+  }
+  preferences(): WorkPreferences[] {
+    return this.storage.db.query<{value:string},[]>("SELECT value FROM work_preferences ORDER BY id").all().map(row=>JSON.parse(row.value));
+  }
+  savePreferences(scope: WorkPreferences["scope"], provider: WorkPreferences["provider"], account: string|undefined, values:WorkPreferenceValues, expectedRevision:number|null):WorkPreferences {
+    if (!["global","provider","account"].includes(scope) || (scope!=="global" && !["codex","claude"].includes(provider??"")) || (scope==="account"&&!account?.trim())) throw new Error("work-invalid-preference-scope");
+    const allowed=["budgetByBucket","maxTurns","maxDurationSeconds","maxTotalDurationSeconds","priority","activityMode","activitySchedule","expectedWorkMinutes","finishBufferMinutes","earlyResetQuantile","startProbability","unknownForecastAction","personalDeadline","usePersonalDeadlineForPlanning","opportunityMaxAgeMinutes","timingHistoryDays"];
+    if (!values || Object.keys(values).some(key=>!allowed.includes(key))) throw new Error("work-invalid-preferences");
+    // Reuse policy validation so defaults cannot introduce values a task would reject.
+    validate({...{id:"preferences",provider:"codex",account:"default",profileKey:"default",accountKey:"default",nativeSessionId:"default",cwd:"/",prompt:"default",objective:"default",completionCriteria:["default"],dispatchOwner:"local",enabled:false,trigger:"quota-ready",resetWithinMinutes:60,budgetByBucket:{default:{reservePercent:0,maxUsagePercent:1}},maxTurns:1,maxDurationSeconds:1,maxTotalDurationSeconds:1,expiresAtMs:1,priority:0,onReset:"stop"} as WorkPolicyInput,...values});
+    const id=JSON.stringify([scope,scope==="global"?null:provider,scope==="account"?account:null]);
+    return this.storage.transaction(()=>{
+      const row=this.storage.db.query<{value:string},[string]>("SELECT value FROM work_preferences WHERE id=?").get(id);
+      const prior:WorkPreferences|null=row?JSON.parse(row.value):null;
+      if ((prior?.revision??null)!==expectedRevision) throw new Error("work-revision-conflict");
+      const preference:WorkPreferences={scope,provider:scope==="global"?undefined:provider,account:scope==="account"?account:undefined,revision:(prior?.revision??0)+1,values:structuredClone(values)};
+      this.storage.db.query("INSERT INTO work_preferences(id,value) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value").run(id,JSON.stringify(preference));
+      return preference;
+    });
+  }
+  resolvePreferences(input:WorkPolicyInput):{input:WorkPolicyInput;effectivePreferences:Record<string,string>} {
+    const applicable=this.preferences().filter(p=>p.scope==="global" || p.provider===input.provider&&(p.scope==="provider"||p.account===input.account))
+      .sort((a,b)=>["global","provider","account"].indexOf(a.scope)-["global","provider","account"].indexOf(b.scope));
+    let resolved:Record<string,unknown>={};const effectivePreferences:Record<string,string>={};
+    for(const preference of applicable) for(const [key,value] of Object.entries(preference.values)) {
+      if(key==="budgetByBucket") {
+        const budgets=Object.fromEntries(Object.entries(value as NonNullable<WorkPreferenceValues["budgetByBucket"]>).filter(([bucket])=>{
+          if(preference.scope!=="global" || Object.hasOwn(input.budgetByBucket??{},bucket)) return true;
+          // Global defaults share a table across providers, not a quota namespace.
+          // Unknown/legacy bucket names require an explicit task bucket or a
+          // provider/account-scoped default; never add a foreign required lane.
+          if(input.provider==="claude") return ["five_hour","seven_day"].includes(bucket) ||
+            bucket.startsWith("seven_day_") && !!input.model && ["opus","sonnet","haiku"].some(family=>input.model!.toLowerCase().includes(family)&&bucket.includes(family));
+          return bucket.startsWith("codex:") || !!input.model && bucket.startsWith(input.model+":");
+        }));
+        if(!Object.keys(budgets).length) continue;
+        resolved[key]={...(resolved[key] as object??{}),...budgets};
+      } else resolved[key]=value;
+      effectivePreferences[key]=preference.scope;
+    }
+    for(const [key,value] of Object.entries(input)) if(value!==undefined) {
+      if(key==="budgetByBucket") resolved[key]={...(resolved[key] as object??{}),...(value as object)};else resolved[key]=value;
+      effectivePreferences[key]="task";
+    }
+    return {input:resolved as unknown as WorkPolicyInput,effectivePreferences};
   }
   get(id: string): WorkPolicy | null {
     const row = this.storage.db.query<{ value: string }, [string]>("SELECT value FROM work_policies WHERE id=?").get(id);
@@ -42,7 +88,7 @@ export class WorkStore {
       return policy;
     });
   }
-  save(input: WorkPolicyInput, expectedRevision: number | null, requestId: string): WorkPolicy {
+  save(input: WorkPolicyInput, expectedRevision: number | null, requestId: string, preferenceSources?: Record<string,string>): WorkPolicy {
     validate(input);
     return this.request(requestId, { action: "save", input, expectedRevision }, () => {
       const prior = this.get(input.id);
@@ -52,7 +98,7 @@ export class WorkStore {
         if (keys.some(key => JSON.stringify(input[key]) !== JSON.stringify(prior[key]))) throw new Error("work-active-binding-change");
       }
       if (prior?.state.status === "objective-completed" && input.enabled) throw new Error("work-objective-already-completed");
-      const policy: WorkPolicy = { ...input, revision: (prior?.revision ?? 0) + 1,
+      const policy: WorkPolicy = { ...input, preferenceSources:preferenceSources ?? prior?.preferenceSources, revision: (prior?.revision ?? 0) + 1,
         state: prior?.state ?? { spentByBucket: {}, baselines: {}, turns: 0, totalDurationSeconds: 0, status: "waiting", activeExecutionId: null } };
       this.write(policy);
       return policy;
@@ -133,6 +179,13 @@ export class WorkStore {
       return execution;
     });
   }
+  recordPlanning(id: string, planning: import("./types").WorkPlanning, nowMs = Date.now(), effectiveReserveByBucket?: Record<string,number>): void {
+    const execution = this.getExecution(id);
+    if (!execution || execution.status !== "claimed") throw new Error("work-execution-not-claimable");
+    execution.planning = structuredClone(planning);
+    execution.effectiveReserveByBucket = effectiveReserveByBucket ? structuredClone(effectiveReserveByBucket) : undefined;
+    this.writeExecution(execution, "planned", nowMs);
+  }
   markDispatched(id: string, nowMs = Date.now()): WorkExecution {
     return this.storage.transaction(() => {
       const execution = this.getExecution(id);
@@ -209,16 +262,28 @@ export class WorkStore {
         const chargeUsage = active || (policy.enabled && policy.state.turns > 0) || pendingThrough !== undefined;
         const reset = prior && (prior.epoch !== sample.epoch || sample.remainingPercent > prior.remainingPercent);
         const decrement = prior && !reset ? prior.remainingPercent - sample.remainingPercent : 0;
+        if (chargeUsage) {
+          const execution = active ? this.getExecution(policy.state.activeExecutionId!) : pendingThrough !== undefined ? this.executions(policy.id).filter(e=>e.dispatchedAtMs!==undefined).at(-1) : null;
+          if (execution?.dispatchedAtMs!==undefined && atMs>=execution.dispatchedAtMs) {
+            const minima=execution.minimumRemainingByBucket??={};
+            if (minima[bucket]===undefined || sample.remainingPercent<minima[bucket]!) {
+              minima[bucket]=sample.remainingPercent;
+              this.writeExecution(execution,"quota-observed",atMs);
+            }
+          }
+        }
         if (chargeUsage) policy.state.spentByBucket[bucket] = (policy.state.spentByBucket[bucket] ?? 0) + decrement;
         if (chargeUsage) {
           const coverage = policy.state.observationCoverageByBucket ??= {};
           const row = coverage[bucket] ??= { firstObservationAtMs: prior?.atMs ?? atMs, lastObservationAtMs: atMs,
             minimumRemainingPercent: Math.min(prior?.remainingPercent ?? sample.remainingPercent, sample.remainingPercent) };
+          row.observationCount = (row.observationCount ?? 0) + 1;
+          row.maxObservationGapMs = Math.max(row.maxObservationGapMs ?? 0, atMs - (prior?.atMs ?? atMs));
           row.lastObservationAtMs = atMs;
           row.minimumRemainingPercent = Math.min(row.minimumRemainingPercent, sample.remainingPercent);
           if (active) row.lastActiveObservationAtMs = atMs;
           if (reset && prior) {
-            row.lastReset = { afterMs: prior.atMs, beforeOrAtMs: atMs, preResetRemainingPercent: prior.remainingPercent,
+            row.lastReset = { evidence:sample.remainingPercent>prior.remainingPercent ? sample.remainingPercent>=99?"quota-recovery":"allowance-change":"epoch-change", afterMs: prior.atMs, beforeOrAtMs: atMs, preResetRemainingPercent: prior.remainingPercent,
               preResetAccountUsage: row.currentEpochAccountUsage ?? 0 };
             row.currentEpochAccountUsage = 0;
           } else row.currentEpochAccountUsage = (row.currentEpochAccountUsage ?? 0) + decrement;
@@ -261,7 +326,7 @@ function validate(input: WorkPolicyInput) {
     if (typeof input[key] !== "string" || !input[key].trim()) throw new Error(`work-required-${key}`);
   }
   if (!["codex", "claude"].includes(input.provider) || !["local", "dots"].includes(input.dispatchOwner)
-    || !["quota-ready", "public-announcement", "scheduled"].includes(input.trigger) || !["stop", "continue"].includes(input.onReset)
+    || !["quota-ready", "public-announcement", "scheduled", "forecast-probability", "notify-only"].includes(input.trigger) || !["stop", "continue"].includes(input.onReset)
     || typeof input.enabled !== "boolean") throw new Error("work-invalid-policy");
   if (!Array.isArray(input.completionCriteria) || !input.completionCriteria.length || input.completionCriteria.some(c => typeof c !== "string" || !c.trim())) throw new Error("work-completion-criteria-required");
   if (!Number.isInteger(input.maxTurns) || input.maxTurns < 1) throw new Error("work-invalid-turn-limit");
@@ -269,10 +334,24 @@ function validate(input: WorkPolicyInput) {
   if (!Number.isFinite(input.priority) || !Number.isFinite(input.resetWithinMinutes) || input.resetWithinMinutes < 0) throw new Error("work-invalid-policy");
   if (input.workDeadline !== undefined && (!Number.isFinite(input.workDeadline) || input.workDeadline <= 0)) throw new Error("work-invalid-deadline");
   if (!input.budgetByBucket || !Object.keys(input.budgetByBucket).length) throw new Error("work-budgets-required");
+  if (input.trigger === "forecast-probability" && (!input.resetBucket || !Object.hasOwn(input.budgetByBucket,input.resetBucket))) throw new Error("work-forecast-bucket-required");
   for (const budget of Object.values(input.budgetByBucket)) {
     percent(budget.reservePercent); percent(budget.maxUsagePercent);
     if (budget.targetUsagePercent !== undefined) { percent(budget.targetUsagePercent); if (budget.targetUsagePercent > budget.maxUsagePercent) throw new Error("work-target-exceeds-limit"); }
   }
+  for (const key of ["expectedWorkMinutes", "finishBufferMinutes", "opportunityMaxAgeMinutes", "timingHistoryDays"] as const) {
+    if (input[key] !== undefined && (!Number.isFinite(input[key]) || input[key]! < (key === "finishBufferMinutes" ? 0 : 1) || input[key]! > (key === "timingHistoryDays" ? 3650 : 525600))) throw new Error("work-invalid-planning");
+  }
+  if (input.timingHistoryDays !== undefined && !Number.isInteger(input.timingHistoryDays)) throw new Error("work-invalid-planning");
+  if (input.earlyResetQuantile !== undefined && input.earlyResetQuantile >= 1) throw new Error("work-invalid-probability");
+  for (const key of ["earlyResetQuantile", "startProbability"] as const) if (input[key] !== undefined && (!Number.isFinite(input[key]) || input[key]! <= 0 || input[key]! > 1)) throw new Error("work-invalid-probability");
+  if (input.personalDeadline !== undefined && (!Number.isFinite(input.personalDeadline) || input.personalDeadline <= 0)) throw new Error("work-invalid-deadline");
+  if (input.usePersonalDeadlineForPlanning !== undefined && typeof input.usePersonalDeadlineForPlanning !== "boolean") throw new Error("work-invalid-planning");
+  if (input.unknownForecastAction === "personal-deadline" && (!input.usePersonalDeadlineForPlanning || input.personalDeadline === undefined)) throw new Error("work-personal-deadline-required");
+  if (input.usePersonalDeadlineForPlanning && input.personalDeadline === undefined) throw new Error("work-personal-deadline-required");
+  if (input.activityMode !== undefined && !["unrestricted", "inherit", "custom"].includes(input.activityMode)) throw new Error("work-invalid-schedule");
+  if (input.activityMode === "custom" && !input.activitySchedule) throw new Error("work-invalid-schedule");
+  if (input.unknownForecastAction !== undefined && !["wait", "notify", "announcement", "personal-deadline"].includes(input.unknownForecastAction)) throw new Error("work-invalid-planning");
   if (input.activitySchedule) {
     const schedule = input.activitySchedule;
     if (!Array.isArray(schedule.days) || schedule.days.some(d => !Number.isInteger(d) || d < 0 || d > 6)

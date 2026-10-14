@@ -27,7 +27,7 @@ test("two independent observed recovery days produce an interval; report timesta
 test("withdrawn, completed, speculative, banked and scoped announcements cannot start work", () => {
   const a = announcement(0);
   for (const state of ["reported", "withdrawn", "updated"] as const)
-    expect(resetOpportunities([a, { ...a, id: "next", state }], [], "codex", "fixture", now)).toEqual([]);
+    expect(resetOpportunities([a, { ...a, id: "next", relatedSourceIds:[a.id], state }], [], "codex", "fixture", now)).toEqual([]);
   for (const a2 of [{ ...a, state: "possible" as const }, { ...a, resetKind: "banked" as const },
     { ...a, change: { evidence: "Global reset for Plus only" } }])
     expect(resetOpportunities([a2], [], "codex", "fixture", now)).toEqual([]);
@@ -54,10 +54,10 @@ test("an observed full recovery closes the opportunity even before the public co
   expect(resetOpportunities([a], [observed], "codex", "fixture", observed.occurredAtMs)).toEqual([]);
 });
 
-test("an older EOD without a timezone contributes observed clock evidence without inventing its timezone", () => {
+test("an older EOD without a timezone stays out of the civil-deadline cohort", () => {
   const older = { ...announcement(2), timeHint: "Global reset by EOD", change: { evidence: "Global reset by EOD" } };
   const result = resetOpportunities([announcement(0), older, announcement(4)], [event(2), event(4)], "codex", "fixture", now);
-  expect(result[0]!.forecast?.sampleCount).toBe(2);
+  expect(result[0]!.forecast).toBeNull();
 });
 
 test("posting before UTC midnight does not move the learned recovery clock a day late", () => {

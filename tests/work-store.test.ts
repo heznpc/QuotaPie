@@ -203,3 +203,15 @@ describe("shared work policy and execution ledger", () => {
     expect(s.get("work")?.state.turns).toBe(0);
   });
 });
+test("observations freeze per-execution minima and distinguish epoch changes from actual recoveries",()=>{
+ const s=store();s.save(input({onReset:"continue"}),null,"save");
+ s.observe("work",{id:"before",atMs:100,buckets:{weekly:{remainingPercent:50,epoch:"old"}}});
+ const e=s.claim("work","local",1,101)!;s.markDispatched(e.id,102);
+ s.observe("work",{id:"spent",atMs:110,buckets:{weekly:{remainingPercent:45,epoch:"old"}}});
+ expect(s.getExecution(e.id)!.minimumRemainingByBucket?.weekly).toBe(45);
+ s.observe("work",{id:"epoch",atMs:120,buckets:{weekly:{remainingPercent:45,epoch:"changed"}}});
+ expect(s.get("work")!.state.observationCoverageByBucket!.weekly!.lastReset!.evidence).toBe("epoch-change");
+ s.observe("work",{id:"recovery",atMs:130,buckets:{weekly:{remainingPercent:100,epoch:"changed"}}});
+ expect(s.get("work")!.state.observationCoverageByBucket!.weekly!.lastReset!.evidence).toBe("quota-recovery");
+ expect(s.getExecution(e.id)!.minimumRemainingByBucket?.weekly).toBe(45);
+});

@@ -100,6 +100,16 @@ final class StatusClient {
         workRequest(actionToken: actionToken, completion: completion)
     }
 
+    func automaticWorkPreferences(actionToken: String, completion: @escaping (Result<AutomaticWorkPreferencesResponse, Error>) -> Void) {
+        workRequest(path: ["api", "work", "preferences"], actionToken: actionToken, completion: completion)
+    }
+    func saveAutomaticWorkPreferences(_ policy: AutomaticWorkPolicy, revision: Int?, actionToken: String,
+                                      completion: @escaping (Result<AutomaticWorkPreferenceSaveResponse, Error>) -> Void) {
+        workRequest(path: ["api", "work", "preferences"], body: ["scope": "account", "provider": policy.provider,
+            "account": policy.account, "values": policy.preferenceInput, "expectedRevision": revision.map { $0 as Any } ?? NSNull()],
+            actionToken: actionToken, completion: completion)
+    }
+
     func automaticWorkTargets(provider: String, account: String, actionToken: String,
                               completion: @escaping (Result<AutomaticWorkTargetsResponse, Error>) -> Void) {
         workRequest(path: ["api", "work", "targets"], query: [URLQueryItem(name: "provider", value: provider),
@@ -108,7 +118,7 @@ final class StatusClient {
 
     func saveAutomaticWork(_ policy: AutomaticWorkPolicy, actionToken: String,
                            completion: @escaping (Result<AutomaticWorkSaveResponse, Error>) -> Void) {
-        let body: [String: Any] = ["action": "save", "policy": policy.input,
+        let body: [String: Any] = ["action": "save", "policy": policy.registrationInput,
             "expectedRevision": policy.revision.map { $0 as Any } ?? NSNull(), "requestId": UUID().uuidString]
         workRequest(body: body, actionToken: actionToken, completion: completion)
     }

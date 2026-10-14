@@ -116,6 +116,11 @@ export class DotStore {
     this.db.query("INSERT INTO subscriptions(id,value) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value")
       .run(sub.id, JSON.stringify(sub));
   }
+  expireSubscription(id: string) {
+    // Keep delivery identity across a late host renewal. The same event must
+    // not be re-delivered merely because its callback subscription expired.
+    this.db.query("DELETE FROM subscriptions WHERE id=?").run(id);
+  }
   unsubscribe(id: string) {
     this.db.transaction(() => {
       this.db.query("DELETE FROM subscriptions WHERE id=?").run(id);

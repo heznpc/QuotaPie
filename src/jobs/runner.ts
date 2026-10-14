@@ -64,6 +64,7 @@ export interface JobRunnerDependencies {
   execute?: typeof executeJobStep;
   now?: () => number;
   changed?: () => void;
+  authorizationIntervalMs?: number;
 }
 
 /** One runner per collector; SQLite claims arbitrate additional CLI/daemon processes. */
@@ -123,7 +124,23 @@ export class ManagedJobRunner {
           try { if (!this.store.heartbeat(claim.token, this.now())) controller.abort(); }
           catch { controller.abort(); }
         }, 15_000);
-        let executionStarted = false;
+        let executionStarted = false, stoppedFor: string | null = null;
+        const checkAuthorization = () => {
+          if (controller.signal.aborted) return;
+          try {
+            const current = this.store.get(claim.job.id);
+            if (!current || current.state !== "running" || current.spec.policy.expiresAtMs <= this.now())
+              stoppedFor = "job-authorization-ended";
+            const profile = jobProfile(this.config, claim.job.spec);
+            if (profile.key !== claim.job.spec.profileKey ||
+                (claim.job.spec.provider === "codex" && !this.store.accountBindings.matches("job", claim.job.id, profile.root)))
+              stoppedFor = "account-binding-changed";
+            const capacity = jobCapacity(claim.job, this.windows, this.now(), this.config.collection.staleAfterSeconds * 1000);
+            if (!capacity.ready) stoppedFor ??= capacity.reason;
+          } catch { stoppedFor = "execution-authorization-unverified"; }
+          if (stoppedFor) controller.abort();
+        };
+        const authorization = setInterval(checkAuthorization, this.deps.authorizationIntervalMs ?? 500);
         try {
           const profile = jobProfile(this.config, claim.job.spec);
           if ((claim.job.spec.provider === "codex" && !this.store.accountBindings.matches("job", claim.job.id, profile.root)) ||
@@ -135,11 +152,20 @@ export class ManagedJobRunner {
           }
           const step = claim.job.spec.steps[claim.step.index]!;
           executionStarted = true;
-          const result = await (this.deps.execute ?? executeJobStep)({
+          let result = await (this.deps.execute ?? executeJobStep)({
             provider: claim.job.spec.provider, executable: profile.executable,
             profileRoot: profile.root, cwd: claim.job.spec.cwd, prompt: step.prompt,
             model: claim.job.spec.model, sessionId: claim.step.nativeSessionId, signal: controller.signal,
+            timeoutMs: Math.max(1, Math.min(20 * 60_000, claim.job.spec.policy.expiresAtMs - this.now())), verifyOwnedStop: true,
           });
+          if (stoppedFor) {
+            const resumable = result.ownedProcessStopped && result.sessionId &&
+              ["quota-wait", "quota-reserve-wait", "quota-collection-wait"].includes(stoppedFor);
+            result = { ...result, kind: resumable ? "quota" : "uncertain", reason: stoppedFor,
+              // A new observation is still required by blockedAtMs. This does
+              // not claim a reset occurred or select another allowance.
+              ...(resumable ? { retryAtMs: this.now() + 1 } : {}) };
+          }
           // An unscoped 429 with positive subscription windows does not establish
           // which allowance must recover. Do not spin on a still-positive reading.
           const mappedQuota = jobCapacity(claim.job, this.windows, this.now(),
@@ -162,6 +188,7 @@ export class ManagedJobRunner {
           } catch { /* lost claim remains fenced */ }
         } finally {
           clearInterval(heartbeat);
+          clearInterval(authorization);
           try { this.deps.changed?.(); } catch { /* notification delivery is retried by the collector */ }
         }
       })().finally(() => { this.running = null; this.controller = null; });

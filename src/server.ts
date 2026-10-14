@@ -1,3 +1,4 @@
+import { resetTimingPresentation } from "./signals/timing-presentation";
 import { profileDockIcon } from "./profile-dock-icon";
 import { localAnnouncementTime } from "./signals/time";
 import { benefitChangeText, signalDecision } from "./signals/presentation";
@@ -85,12 +86,18 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
         if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token"))) return json({error:"forbidden"},403);
         try {
           if(request.method === "GET" && url.pathname === "/api/work") return json(service.workStatus());
+          if(request.method === "GET" && url.pathname === "/api/work/preferences") return json({preferences:service.work.store.preferences()});
           if(request.method === "GET" && url.pathname === "/api/work/targets")
             return json(await service.workTargets(url.searchParams.get("provider")??"",url.searchParams.get("account")??""));
           if(request.method !== "POST") return json({error:"method_not_allowed"},405);
           const body=await request.text();
           if(body.length>65536) return json({error:"work-policy-too-large"},400);
           const input=JSON.parse(body);
+          if(url.pathname === "/api/work/preferences") {
+            if(input.scope === "account" && !config.accounts[input.provider as "codex"|"claude"]?.some(a => a.id === input.account && a.enabled))
+              return json({error:"account-unavailable"},409);
+            return json({preference:service.work.store.savePreferences(input.scope,input.provider,input.account,input.values,input.expectedRevision)});
+          }
           if(url.pathname === "/api/work/execute") return json({execution:await service.work.dispatch(input.id,"dots",input.expectedRevision,input.requestId)});
           if(url.pathname !== "/api/work") return json({error:"not_found"},404);
           if(input.action === "save") return json({policy:await service.work.save(input.policy,input.expectedRevision,input.requestId)});
@@ -352,6 +359,9 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           notificationPreferences: service.notificationPreferences(),
           resetSignals: (() => {
             const feed = service.signalCollector.status(nowMs);
+            const timingStatus = service.resetTimingStatus();
+            const timingCases = timingStatus.cases;
+            const publications = "publications" in timingStatus ? timingStatus.publications : [];
             const opportunities = resetPlans.flatMap(plan => plan.opportunities);
             const forecastText = (id: string) => {
               const entries = opportunities.filter(o => o.signalId === id);
@@ -370,13 +380,15 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
               preparationClosed: accounts.some(a => a.provider === (signal.provider ?? "codex")) && accounts
                 .filter(a => a.provider === (signal.provider ?? "codex"))
                 .every(a => closed.get(a.provider + ":" + a.account)!.has(signal.id)),
-              forecastText: forecastText(signal.id),
+              forecastText: resetTimingPresentation(signal, timingCases, displayLocale, service.config.profile.timeZone, accounts, publications).forecastText ?? forecastText(signal.id),
+              timingHistoryText: resetTimingPresentation(signal, timingCases, displayLocale, service.config.profile.timeZone, accounts, publications).timingHistoryText,
               localTimeText: localAnnouncementTime(signal, displayLocale, service.config.profile.timeZone),
               benefitText: benefitChangeText(signal, displayLocale),
               newsTitle: signalDecision(signal, displayLocale, service.config.profile.timeZone).title,
             })) };
           })(),
           resetOpportunities: resetPlans.flatMap(plan => plan.opportunities.map(opportunity => ({ ...opportunity, account: plan.account }))),
+          resetTiming: service.resetTimingStatus(),
           resetTracking: service.resetTracking(nowMs, accounts),
           compaction: compaction.snapshot(nowMs),
           accountPool: (() => { try {

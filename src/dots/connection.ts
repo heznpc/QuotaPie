@@ -3,6 +3,7 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { codexProfileRoot, configPath, dataDirectory, loadConfig, type AppConfig } from "../config";
 import { DotStore } from "./store";
+import { createSharedWorkClient, type SharedWorkClient } from "./work-client";
 
 const alias = "quotapie-dots";
 export const connectionSetupURL = "https://platform.openai.com/settings/organization/tunnels";
@@ -82,10 +83,12 @@ export class DotsConnection {
   private busy = false;
   constructor(private readonly options: {
     root?: string; config?: () => AppConfig; binary?: () => string | null; runner?: Runner; command?: string;
+    sharedWork?: () => SharedWorkClient;
   } = {}) {}
   private get root() { return this.options.root ?? dataDirectory(); }
   private get path() { return join(this.root, "dots-connection.json"); }
   private config() { return (this.options.config ?? loadConfig)(); }
+  private sharedWork() { return this.options.sharedWork?.() ?? createSharedWorkClient(this.config()); }
   private binary() { return (this.options.binary ?? findTunnelClient)(); }
   private invoke(binary: string, args: string[], env?: NodeJS.ProcessEnv) { return (this.options.runner ?? run)(binary, args, env); }
   private binding() { return validateBinding(readObject(this.path), this.config()); }
@@ -154,6 +157,8 @@ export class DotsConnection {
         result.activeSubscriptions = store.subscriptions().filter(s => s.expiresAtMs > Date.now()).length;
         result.enabledTargets = store.targets().filter(s => s.policy.enabled && s.policy.expiresAtMs > Date.now()).length;
       } finally { store.close(); }
+      const shared = await this.sharedWork().list();
+      result.enabledTargets += shared.policies.filter(p => p.dispatchOwner === "dots" && p.enabled && p.expiresAtMs > Date.now()).length;
       result.state = !result.processRunning ? "stopped" : !result.ready ? "starting" :
         !result.discoveryObserved ? "plugin-required" : !result.activeSubscriptions ? "subscription-required" : "subscribed";
       result.nextURL = result.state === "plugin-required" ? pluginsURL : null;
@@ -196,7 +201,15 @@ export class DotsConnection {
         throw new Error("connection-unverified");
       const store = new DotStore(join(this.root, "dots.sqlite"));
       try { for (const state of store.targets()) store.setEnabled(state.policy.id, false); } finally { store.close(); }
+      let pauseFailed = false;
+      try {
+        const shared = this.sharedWork();
+        for (const policy of (await shared.list()).policies.filter(p => p.dispatchOwner === "dots" && p.enabled))
+          await shared.setEnabled({ id: policy.id, enabled: false, expectedRevision: policy.revision,
+            requestId: "disconnect-" + policy.id + "-" + policy.revision });
+      } catch { pauseFailed = true; }
       await this.invoke(binary, ["runtimes", "stop", alias]);
+      if (pauseFailed) throw new Error("shared-work-pause-unverified");
       return await this.status();
     } finally { this.busy = false; }
   }

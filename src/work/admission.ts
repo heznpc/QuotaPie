@@ -1,8 +1,13 @@
 import type { WindowAnalysis } from "../types";
-import type { WorkObservation, WorkPolicy, WorkPolicyInput } from "./types";
+import type { WorkObservation, WorkPolicy, WorkPolicyInput, WorkForecast, WorkPlanning } from "./types";
 
 export interface WorkAdmissionOptions {
   maxAgeMs?: number;
+  forecast?: WorkForecast | null;
+  frozenPlanning?: WorkPlanning;
+  estimatedWorkMinutes?: number;
+  announcementPublishedAtMs?: number;
+  inheritedActivitySchedules?: NonNullable<WorkPolicyInput["activitySchedule"]>[];
   publicAnnouncementEligible?: boolean;
   /** A started execution keeps its quota/activity checks, not a past start trigger. */
   ignoreTrigger?: boolean;
@@ -10,7 +15,7 @@ export interface WorkAdmissionOptions {
   /** Explicit hard account floors, distinct from editable reserve preferences. */
   minimumReserveByBucket?: Record<string, number>;
 }
-export interface WorkAdmission { ready: boolean; reason: string; windows: WindowAnalysis[]; timeoutSeconds: number }
+export interface WorkAdmission { ready: boolean; reason: string; windows: WindowAnalysis[]; timeoutSeconds: number; planning: WorkPlanning }
 
 function general(policy: WorkPolicyInput, window: WindowAnalysis): boolean {
   return policy.provider === "codex" ? window.bucket.startsWith("codex:") : ["five_hour", "seven_day"].includes(window.bucket);
@@ -25,9 +30,10 @@ export function workWindows(policy: WorkPolicyInput, windows: WindowAnalysis[]):
 
 export function evaluateWorkAdmission(policy: WorkPolicy, windows: WindowAnalysis[], nowMs = Date.now(), options: WorkAdmissionOptions = {}): WorkAdmission {
   const scoped = workWindows(policy, windows);
+  const planning = options.frozenPlanning ?? planWork(policy, nowMs, options);
   const timeoutSeconds = Math.max(0, Math.min(policy.maxDurationSeconds, policy.maxTotalDurationSeconds - policy.state.totalDurationSeconds,
-    (policy.expiresAtMs - nowMs) / 1000, policy.workDeadline === undefined ? Infinity : (policy.workDeadline - nowMs) / 1000));
-  const answer = (reason: string): WorkAdmission => ({ ready: reason === "ready", reason, windows: scoped, timeoutSeconds });
+    (policy.expiresAtMs - nowMs) / 1000, planning.finishAtMs === null ? Infinity : (planning.finishAtMs - nowMs) / 1000));
+  const answer = (reason: string): WorkAdmission => ({ ready: reason === "ready", reason, windows: scoped, timeoutSeconds, planning });
   if (!policy.enabled) return answer("disabled");
   if (policy.expiresAtMs <= nowMs || (policy.workDeadline !== undefined && policy.workDeadline <= nowMs)) return answer("expired");
   if (policy.state.totalDurationSeconds >= policy.maxTotalDurationSeconds || timeoutSeconds <= 0) return answer("time-budget-ended");
@@ -36,7 +42,8 @@ export function evaluateWorkAdmission(policy: WorkPolicy, windows: WindowAnalysi
   if (!options.running && policy.state.activeExecutionId) return answer("work-already-claimed");
   if (["objective-completed", "needs-user-input", "uncertain", "failed", "time-budget-ended"].includes(policy.state.status)) return answer(policy.state.status);
   if (policy.state.status === "quota-blocked") return answer("awaiting-quota-recovery");
-  if (!withinActivitySchedule(policy, nowMs)) return answer("activity-paused");
+  if (policy.activityMode === "inherit" && !(options.inheritedActivitySchedules ?? []).some(schedule => withinActivitySchedule({activitySchedule:schedule}, nowMs))) return answer("activity-paused");
+  if (policy.activityMode !== "unrestricted" && policy.activityMode !== "inherit" && !withinActivitySchedule(policy, nowMs)) return answer("activity-paused");
   if (!scoped.some(window => general(policy, window)) || Object.keys(policy.budgetByBucket).some(bucket => !scoped.some(window => window.bucket === bucket))) return answer("quota-unknown");
   // Providers can introduce another general/model window after registration.
   // Never apply it as an unbudgeted lane while an existing run keeps going.
@@ -59,13 +66,44 @@ export function evaluateWorkAdmission(policy: WorkPolicy, windows: WindowAnalysi
     if (window.remainingPercent! <= reserve) return answer("reserve-reached");
     if (budget && (policy.state.spentByBucket[window.bucket] ?? 0) >= budget.maxUsagePercent) return answer("usage-budget-ended");
   }
-  if (!options.ignoreTrigger && policy.trigger === "public-announcement" && !options.publicAnnouncementEligible) return answer("awaiting-announcement");
+  const announcementEligible = !!options.publicAnnouncementEligible && (policy.opportunityMaxAgeMinutes === undefined || options.announcementPublishedAtMs === undefined || nowMs - options.announcementPublishedAtMs <= policy.opportunityMaxAgeMinutes * 60_000);
+  if (!options.ignoreTrigger && policy.trigger === "notify-only") return answer("notification-only");
+  if (!options.ignoreTrigger && policy.trigger === "forecast-probability") {
+    const probability = options.forecast?.actionProbabilityEstimate;
+    if (probability == null || !Number.isFinite(probability) || probability < 0 || probability > 1) {
+      if (policy.unknownForecastAction === "personal-deadline") {
+        if (!policy.usePersonalDeadlineForPlanning || policy.personalDeadline === undefined || planning.startByAtMs === null) return answer("forecast-personal-deadline-required");
+        if (nowMs < planning.startByAtMs) return answer("awaiting-planned-start");
+      } else if (policy.unknownForecastAction !== "announcement" || !announcementEligible) return answer(policy.unknownForecastAction === "notify" ? "forecast-unavailable-notify" : "forecast-unavailable");
+    } else if (probability < (policy.startProbability ?? 0.8)) return answer("awaiting-forecast-probability");
+  }
+  if (!options.ignoreTrigger && policy.trigger === "public-announcement" && !announcementEligible) return answer("awaiting-announcement");
   if (!options.ignoreTrigger && policy.trigger === "scheduled") {
     const reset = scoped.find(window => window.bucket === policy.resetBucket);
     if (!reset || reset.resetsAtMs === null) return answer("quota-unknown");
     if (reset.resetsAtMs - nowMs > policy.resetWithinMinutes * 60_000) return answer("awaiting-reset-window");
   }
   return answer("ready");
+}
+
+/** Planning changes a deadline, never the forecast probability or quota entitlement. */
+export function planWork(policy: WorkPolicyInput, nowMs: number, options: WorkAdmissionOptions = {}): WorkPlanning {
+  const expectedWorkMinutes = policy.expectedWorkMinutes ?? options.estimatedWorkMinutes ?? policy.maxDurationSeconds / 60;
+  const expectedWorkSource = policy.expectedWorkMinutes !== undefined ? "user" : options.estimatedWorkMinutes !== undefined ? "execution-history" : "turn-limit";
+  const horizonAtMs = options.forecast?.horizonAtMs ?? Math.min(policy.workDeadline ?? Infinity, nowMs + (expectedWorkMinutes + (policy.finishBufferMinutes ?? 0)) * 60_000);
+  let deadlineAtMs: number | null = policy.workDeadline ?? null;
+  let deadlineSource: WorkPlanning["deadlineSource"] = deadlineAtMs === null ? null : "work-deadline";
+  // New planning preferences are opt-in. Existing policies keep their original deadline.
+  const candidates:Array<{at:number|undefined|null;source:WorkPlanning["deadlineSource"]}> = [
+    {at:policy.usePersonalDeadlineForPlanning?policy.personalDeadline:undefined,source:"personal-assumption"},
+    {at:policy.earlyResetQuantile!==undefined?options.forecast?.quantileAtMs:undefined,source:"forecast"},
+  ];
+  for(const candidate of candidates) if(candidate.at!=null&&Number.isFinite(candidate.at)&&(deadlineAtMs===null||candidate.at<deadlineAtMs)) {
+    deadlineAtMs=candidate.at;deadlineSource=candidate.source;
+  }
+  const finishAtMs = deadlineAtMs === null ? null : deadlineAtMs - (policy.finishBufferMinutes ?? 0) * 60_000;
+  return {forecastId:options.forecast?.id,eventId:options.forecast?.eventId,horizonAtMs,expectedWorkMinutes,expectedWorkSource,
+    deadlineAtMs,deadlineSource,finishAtMs,startByAtMs:finishAtMs === null ? null : finishAtMs - expectedWorkMinutes * 60_000};
 }
 
 export function withinActivitySchedule(policy: Pick<WorkPolicyInput, "activitySchedule">, nowMs: number): boolean {

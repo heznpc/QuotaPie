@@ -102,3 +102,47 @@ test("observation mapping keeps each bucket timestamp and ignores other accounts
   w[0]!.observedAtMs = NOW + 1;
   expect(workObservation(p, w, NOW)?.buckets.five_hour).toBeUndefined();
 });
+
+test("forecast triggers use only verified action probabilities and explicit unknown behavior", () => {
+  const p=policy(), w=windows();p.trigger="forecast-probability";p.startProbability=0.7;
+  expect(evaluateWorkAdmission(p,w,NOW).reason).toBe("forecast-unavailable");
+  expect(evaluateWorkAdmission(p,w,NOW,{forecast:{actionProbabilityEstimate:0.69,horizonAtMs:NOW+1000}}).reason).toBe("awaiting-forecast-probability");
+  expect(evaluateWorkAdmission(p,w,NOW,{forecast:{actionProbabilityEstimate:0.7,horizonAtMs:NOW+1000}}).ready).toBe(true);
+  p.unknownForecastAction="announcement";
+  expect(evaluateWorkAdmission(p,w,NOW,{publicAnnouncementEligible:true}).ready).toBe(true);
+  p.opportunityMaxAgeMinutes=1;
+  expect(evaluateWorkAdmission(p,w,NOW,{publicAnnouncementEligible:true,announcementPublishedAtMs:NOW-60001}).ready).toBe(false);
+  p.unknownForecastAction="notify";
+  expect(evaluateWorkAdmission(p,w,NOW).reason).toBe("forecast-unavailable-notify");
+});
+test("planning preserves probability facts and bounds runtime by selected deadline and buffer", () => {
+  const p=policy(),w=windows();p.expectedWorkMinutes=10;p.finishBufferMinutes=5;p.earlyResetQuantile=0.2;
+  const answer=evaluateWorkAdmission(p,w,NOW,{forecast:{id:"f",actionProbabilityEstimate:null,horizonAtMs:NOW+900000,quantileAtMs:NOW+330000}});
+  expect(answer.planning).toMatchObject({forecastId:"f",expectedWorkMinutes:10,expectedWorkSource:"user",horizonAtMs:NOW+900000,finishAtMs:NOW+30000,startByAtMs:NOW-570000,deadlineSource:"forecast"});
+  expect(answer.timeoutSeconds).toBe(30);
+  p.trigger="public-announcement";
+  expect(evaluateWorkAdmission(p,w,NOW,{publicAnnouncementEligible:true}).ready).toBe(true); // no probability hold
+  p.trigger="forecast-probability";p.unknownForecastAction="personal-deadline";p.personalDeadline=NOW+1800000;p.usePersonalDeadlineForPlanning=true;
+  expect(evaluateWorkAdmission(p,w,NOW).reason).toBe("awaiting-planned-start");
+  p.personalDeadline=NOW+900000;
+  expect(evaluateWorkAdmission(p,w,NOW).ready).toBe(true);
+});
+test("activity inheritance is explicit and notification-only never dispatches",()=>{
+  const p=policy(),w=windows();p.activityMode="inherit";
+  expect(evaluateWorkAdmission(p,w,NOW).reason).toBe("activity-paused");
+  const schedule={timeZone:"UTC",days:[0,1,2,3,4,5,6],start:"00:00",end:"00:00"};
+  expect(evaluateWorkAdmission(p,w,NOW,{inheritedActivitySchedules:[schedule]}).ready).toBe(true);
+  p.activityMode="unrestricted";p.activitySchedule={...schedule,days:[]};
+  expect(evaluateWorkAdmission(p,w,NOW).ready).toBe(true);
+  p.trigger="notify-only";
+  expect(evaluateWorkAdmission(p,w,NOW).reason).toBe("notification-only");
+});
+test("a cached forecast retains the horizon actually published",()=>{
+ const p=policy();p.expectedWorkMinutes=20;
+ expect(evaluateWorkAdmission(p,windows(),NOW,{forecast:{id:"f",horizonAtMs:NOW+1000,actionProbabilityEstimate:0.8}}).planning.horizonAtMs).toBe(NOW+1000);
+});
+test("planning uses the earliest opted-in forecast, personal assumption and hard deadline",()=>{
+ const p=policy();p.expectedWorkMinutes=5;p.usePersonalDeadlineForPlanning=true;p.personalDeadline=NOW+1200000;p.earlyResetQuantile=0.2;
+ const result=evaluateWorkAdmission(p,windows(),NOW,{forecast:{actionProbabilityEstimate:0.8,horizonAtMs:NOW+300000,quantileAtMs:NOW+600000}});
+ expect(result.planning.deadlineAtMs).toBe(NOW+600000);expect(result.planning.deadlineSource).toBe("forecast");
+});
