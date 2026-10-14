@@ -59,10 +59,14 @@ describe("provider session discovery", () => {
       cursor?: string | null;
       archived?: boolean | null;
       useStateDbOnly?: boolean;
+      sourceKinds?: string[];
+      modelProviders?: string[];
     }> = [];
     const target = await findCodexResumeTarget({
       async listThreads(params = {}) {
         calls.push(params);
+        // App Server excludes exec-created work unless explicitly requested.
+        if (!params.sourceKinds?.includes("exec") || params.modelProviders?.length !== 0) return {data:[],nextCursor:null};
         if (!params.archived && params.cursor == null) {
           return {
             data: [{ id: "44444444-4444-4444-8444-444444444444", cwd: "/other", name: null }],
@@ -83,5 +87,7 @@ describe("provider session discovery", () => {
       [true, null],
     ]);
     expect(calls.every((call) => call.useStateDbOnly === true)).toBeTrue();
+    expect(calls.every((call) => Array.isArray(call.modelProviders) && call.modelProviders.length === 0)).toBeTrue();
+    expect(calls.every((call) => JSON.stringify(call.sourceKinds) === JSON.stringify(["cli", "vscode", "exec", "appServer"]))).toBeTrue();
   });
 });
