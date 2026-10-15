@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { inspectRelaySettings } from "../src/relay-settings";
 import { relayHealth } from "../src/compaction-policy-settings";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config";
+import { macOSSourceHash } from "./macos-source-identity";
 import { runtimeSourceHash } from "../src/runtime-identity";
 
 try {
@@ -25,6 +26,39 @@ try {
   if (!passed) process.exitCode = 1;
 } catch {
   console.error("Service runtime verification failed: installation or running identity is unavailable. Restarting or copying files was not attempted.");
+  process.exitCode = 1;
+}
+
+// Verify installed helpers as well as the service. They are intentionally not
+// part of the collector hash, so compare their installed bytes explicitly.
+try {
+  const root = resolve(import.meta.dir, ".."), installed = join(homedir(), ".local/lib/quotapie");
+  const mismatches: string[] = [];
+  function compare(relative: string) {
+    for (const entry of readdirSync(join(root, relative), { withFileTypes: true })) {
+      if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.name === "__pycache__") continue;
+      const file = `${relative}/${entry.name}`;
+      if (entry.isDirectory()) compare(file);
+      else if (/\.(ts|html|sh|py)$/.test(entry.name)) {
+        try { if (!readFileSync(join(root, file)).equals(readFileSync(join(installed, file)))) mismatches.push(file); }
+        catch { mismatches.push(file); }
+      }
+    }
+  }
+  compare("script"); compare("scripts");
+  console.log(JSON.stringify({component:"installed-helpers",result:mismatches.length ? "fail" : "pass",mismatches}));
+  if (mismatches.length) process.exitCode = 1;
+  const app = join(homedir(), "Applications/QuotaPie.app");
+  const identity = JSON.parse(readFileSync(join(app, "Contents/Resources/source-identity.json"), "utf8"));
+  const sourceMatches = identity.schemaVersion === 1 && identity.sourceHash === macOSSourceHash(root);
+  const signature = Bun.spawnSync(["/usr/bin/codesign", "--verify", "--deep", "--strict", app], {stdout:"pipe",stderr:"pipe"});
+  const running = Bun.spawnSync(["/bin/ps", "-axo", "comm="], {stdout:"pipe",stderr:"pipe"});
+  const runningInstalled = running.exitCode === 0 && running.stdout.toString().split("\n").some(line => line.trim() === join(app, "Contents/MacOS/QuotaPie"));
+  const passed = sourceMatches && signature.exitCode === 0 && runningInstalled;
+  console.log(JSON.stringify({component:"macos-app",result:passed?"pass":"fail",sourceMatches,signatureValid:signature.exitCode===0,runningInstalled}));
+  if (!passed) process.exitCode = 1;
+} catch {
+  console.error("Installed app/helper verification failed: rebuild and install to establish its source identity.");
   process.exitCode = 1;
 }
 
