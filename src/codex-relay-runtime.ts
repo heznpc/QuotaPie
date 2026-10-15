@@ -46,10 +46,17 @@ export const createRelayRuntime: RuntimeFactory = (settings, memory) => {
   memory.savings ??= new Map();
   // Reopening the same SQLite pool during a stream can block the event loop on
   // another process's write lock. Its connection and bindings outlive handlers.
-  if (sourceAccount && !memory.accountPool) {
+  if (sourceAccount && (!memory.accountPool || typeof memory.accountPool.assertSourceContinuationAsync !== "function")) {
+    // Older bundles retain a synchronous pool across hot reloads. Keep its
+    // connection alive for retiring streams, but give new requests the new reader.
+    const previousPool = memory.accountPool;
     memory.accountPool = new AccountPool({ sourceAccount, accounts: () => poolAccounts(config()),
-      policy: readPoolPolicy, forkParent: thread => readCodexForkParent(home, thread) });
-    memory.dispose = () => memory.accountPool?.close();
+      policy: readPoolPolicy, forkParentAsync: thread => readCodexForkParent(home, thread) });
+    const currentPool = memory.accountPool;
+    memory.dispose = () => {
+      currentPool.close();
+      previousPool?.close();
+    };
   }
   const accountPool = memory.accountPool;
   const handler = createCompactionHandler({ ...settings, accountPool, savingsState: memory.savings,

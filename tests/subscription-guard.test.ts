@@ -507,7 +507,7 @@ test("stale quota cancels a pending upstream fetch before headers arrive", async
 test("a guarded source never selects the pool or recovers a 429 onto another account", async () => {
   const f = fixture(); let calls = 0, poolCalls = 0;
   const proxy = startCompactionProxy({ subscriptionGuard: f.guard,
-    accountPool: { assertSourceContinuation() {}, selectAsync() { poolCalls++; throw new Error("no selection allowed"); }, canRecoverAsync() { poolCalls++; return true; } } as any,
+    accountPool: { async assertSourceContinuationAsync() {}, selectAsync() { poolCalls++; throw new Error("no selection allowed"); }, canRecoverAsync() { poolCalls++; return true; } } as any,
     fetchUpstream: async (_url, init) => { calls++; expect(new Headers(init.headers).get("authorization")).toBe(f.headers().authorization);
       return new Response("subscription blocked", { status: 429 }); } });
   try {
@@ -524,7 +524,7 @@ test("a guarded source never selects the pool or recovers a 429 onto another acc
 test("source continuation rejection stops a guarded request before dispatch", async () => {
   const f = fixture(); let calls = 0;
   const proxy = startCompactionProxy({ subscriptionGuard: f.guard,
-    accountPool: { assertSourceContinuation() { throw new PoolError("pool_bound_identity_changed", 409); } } as any,
+    accountPool: { async assertSourceContinuationAsync() { throw new PoolError("pool_bound_identity_changed", 409); } } as any,
     fetchUpstream: async () => { calls++; return new Response("wrong"); } });
   try {
     const response = await fetch(proxy.baseUrl + "/responses", { method: "POST", headers: f.headers(), body: JSON.stringify(input) });

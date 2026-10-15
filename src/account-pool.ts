@@ -149,7 +149,7 @@ export class AccountPool {
   private closed = false;
   private readonly pendingWrites = new Map<string, Promise<void>>();
   constructor(private options: {
-    path?: string; sourceAccount: string; accounts: () => PoolAccount[]; policy: () => PoolPolicy; now?: () => number; contentionWaitMs?: number; forkParent?: (threadId: string) => CodexForkParentResult;
+    path?: string; sourceAccount: string; accounts: () => PoolAccount[]; policy: () => PoolPolicy; now?: () => number; contentionWaitMs?: number; forkParent?: (threadId: string) => CodexForkParentResult; forkParentAsync?: (threadId: string) => Promise<CodexForkParentResult>;
   }) {
     const path = options.path ?? poolDatabasePath();
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -225,8 +225,31 @@ export class AccountPool {
     }).catch(() => {});
     return pending;
   }
-  selectAsync(input: PoolSelectInput, signal?: AbortSignal): Promise<ReturnType<AccountPool["select"]>> {
-    return this.withContentionRetry(() => this.select(input), signal);
+  // Resolve disk/compressed metadata before entering synchronous SQLite transactions.
+  // Each request owns its snapshot; concurrent requests never share temporary ancestry.
+  private async forkSnapshot(input: SourceContinuationInput, signal?: AbortSignal) {
+    if (!this.options.forkParentAsync) return this.options.forkParent;
+    const records = new Map<string, CodexForkParentResult>();
+    const claim = codexRequestIdentity(input.headers);
+    let thread = input.threadId;
+    for (let depth = 0; thread && depth < 33 && !records.has(thread); depth++) {
+      signal?.throwIfAborted();
+      const result = await this.options.forkParentAsync(thread);
+      records.set(thread, result);
+      if (result.status === "known") thread = result.parentId;
+      else if (depth === 0 && result.status === "missing" && claim.fork.status === "claimed") thread = claim.fork.parentId;
+      else break;
+    }
+    signal?.throwIfAborted();
+    return (id: string): CodexForkParentResult => records.get(id) ?? { status: "unknown" };
+  }
+  async selectAsync(input: PoolSelectInput, signal?: AbortSignal): Promise<ReturnType<AccountPool["select"]>> {
+    const lineage = await this.forkSnapshot(input, signal);
+    return this.withContentionRetry(() => this.select(input, lineage), signal);
+  }
+  async assertSourceContinuationAsync(input: SourceContinuationInput, signal?: AbortSignal): Promise<void> {
+    const lineage = await this.forkSnapshot(input, signal);
+    this.assertSourceContinuation(input, lineage);
   }
   canRecoverAsync(account: string, model: string, body: unknown, signal?: AbortSignal): Promise<boolean> {
     return this.withContentionRetry(() => this.canRecover(account, model, body), signal);
@@ -244,8 +267,9 @@ export class AccountPool {
   /** Validate the original login without routing, rewriting history or changing
    * durable bindings. Subscription-only relays must not bypass older pool
    * provenance just because new account selection is disabled. */
-  assertSourceContinuation(input: SourceContinuationInput): void {
+  assertSourceContinuation(input: SourceContinuationInput, forkParent = this.options.forkParent): void {
     if (this.closed) throw new PoolError("pool_closed");
+    if (this.options.forkParentAsync && !forkParent) throw new PoolError("pool_lineage_unavailable", 409);
     const sourceID = this.options.sourceAccount, source = this.options.accounts().find(a => a.id === sourceID);
     if (!source || source.tokenExpiresAt <= this.now() + 30_000) throw new PoolError("pool_source_auth_unavailable", 401);
     const bearer = input.headers.get("authorization");
@@ -283,14 +307,14 @@ export class AccountPool {
       // Subscription-only mode never repairs or replays that history itself.
       if (this.foreignReasoning(sourceID, thread) !== undefined)
         throw new PoolError("pool_source_history_unverified", 409);
-      const lineage = this.options.forkParent?.(thread);
+      const lineage = forkParent?.(thread);
       if (depth === 0 && claim.fork.status === "claimed") {
         if (lineage?.status === "known" && lineage.parentId !== claim.fork.parentId)
           throw new PoolError("pool_lineage_conflict", 409);
         if (lineage?.status !== "known") {
           // An ephemeral child may be absent, but its claimed parent must be
           // verified in this profile before consulting the parent's binding.
-          if (lineage?.status !== "missing" || this.options.forkParent?.(claim.fork.parentId).status !== "known")
+          if (lineage?.status !== "missing" || forkParent?.(claim.fork.parentId).status !== "known")
             throw new PoolError("pool_lineage_unavailable", 409);
           thread = claim.fork.parentId;
           continue;
@@ -364,14 +388,14 @@ export class AccountPool {
           .run(source.id, source.identity, credentialDigest(source.accessToken), source.tokenExpiresAt);
     }).immediate();
   }
-  private inheritedBinding(source: string, thread: string, body: unknown, headers: Headers, sourceAccount?: PoolAccount): Binding | SourceOnlyReplay | null {
-    if (!this.options.forkParent) return null;
+  private inheritedBinding(source: string, thread: string, body: unknown, headers: Headers, sourceAccount: PoolAccount | undefined, forkParent = this.options.forkParent): Binding | SourceOnlyReplay | null {
+    if (!forkParent) return null;
     const claim = codexRequestIdentity(headers);
     if (claim.fork.status === "invalid" || claim.fork.status === "claimed" && claim.threadId !== thread)
       throw new PoolError("pool_lineage_invalid", 409);
     const seen = new Set([thread]);
     for (let depth = 0; depth < 32; depth++) {
-      const lineage = this.options.forkParent(thread);
+      const lineage = forkParent(thread);
       if (depth === 0 && claim.fork.status === "claimed") {
         if (lineage.status === "known" && lineage.parentId !== claim.fork.parentId)
           throw new PoolError("pool_lineage_conflict", 409);
@@ -381,7 +405,7 @@ export class AccountPool {
           // with a real parent in this profile AND an existing source binding.
           // A header alone must never create ancestry or select another login.
           const parent = claim.fork.parentId;
-          if (this.options.forkParent(parent).status !== "known")
+          if (forkParent(parent).status !== "known")
             throw new PoolError("pool_lineage_parent_unavailable", 409);
           const binding = this.db.query<Binding, [string,string]>("SELECT * FROM bindings WHERE source=? AND thread=?").get(source, parent);
           if (!binding) throw new PoolError("pool_lineage_binding_unavailable", 409);
@@ -412,7 +436,8 @@ export class AccountPool {
     }
     throw new PoolError("pool_lineage_invalid", 409);
   }
-  select(input: PoolSelectInput): { route: PoolRoute; headers: Headers; identity: string; credentialDigest: string; body: unknown } | null {
+  select(input: PoolSelectInput, forkParent = this.options.forkParent): { route: PoolRoute; headers: Headers; identity: string; credentialDigest: string; body: unknown } | null {
+    if (this.options.forkParentAsync && !forkParent) throw new PoolError("pool_lineage_unavailable", 409);
     const policy = this.options.policy(), sourceID = this.options.sourceAccount, thread = input.threadId;
     if (!thread) { if (policy.enabled && policy.accounts.includes(sourceID)) throw new PoolError("pool_thread_identity_required", 409); return null; }
     const now = this.now(), accounts = this.options.accounts(), source = accounts.find(a => a.id === sourceID);
@@ -424,9 +449,9 @@ export class AccountPool {
       let sourceReplay: SourceOnlyReplay["sourceReplay"] | undefined;
       // Resolve forks even with new assignment disabled: inherited remote state
       // must remain on the account that created it.
-      if (!saved && this.options.forkParent && (policy.accounts.includes(sourceID) ||
+      if (!saved && forkParent && (policy.accounts.includes(sourceID) ||
           this.db.query("SELECT 1 FROM bindings WHERE source=? LIMIT 1").get(sourceID))) {
-        const inherited = this.inheritedBinding(sourceID, thread, input.body, input.headers, source);
+        const inherited = this.inheritedBinding(sourceID, thread, input.body, input.headers, source, forkParent);
         if (inherited && "sourceReplay" in inherited) sourceReplay = inherited.sourceReplay;
         else saved = inherited;
       }

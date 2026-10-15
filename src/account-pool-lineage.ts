@@ -1,5 +1,7 @@
 import { Database } from "bun:sqlite";
-import { closeSync, constants, fstatSync, openSync, readSync, readdirSync, realpathSync } from "node:fs";
+import { constants, readdirSync, realpathSync } from "node:fs";
+import { open, type FileHandle } from "node:fs/promises";
+import { createZstdDecompress, constants as zstd } from "node:zlib";
 import { isAbsolute, join, relative, sep } from "node:path";
 
 export type CodexForkParentResult =
@@ -9,6 +11,37 @@ export type CodexForkParentResult =
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_METADATA_BYTES = 1024 * 1024;
+const MAX_COMPRESSED_BYTES = 16 * 1024 * 1024;
+
+async function firstRecord(file: FileHandle, compressed: boolean): Promise<string | null> {
+  const source = file.createReadStream({ autoClose: false, highWaterMark: 8192,
+    start: 0, end: (compressed ? MAX_COMPRESSED_BYTES : MAX_METADATA_BYTES) - 1 });
+  const decoder = compressed ? createZstdDecompress({ chunkSize: 8192,
+    params: { [zstd.ZSTD_d_windowLogMax]: 23 } }) : null;
+  const stream = decoder ?? source;
+  source.on("error", error => decoder?.destroy(error));
+  const timer = setTimeout(() => stream.destroy(new Error("Metadata read timed out")), 2000);
+  if (decoder) source.pipe(decoder);
+  try {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for await (const data of stream) {
+      const chunk = Buffer.from(data);
+      const newline = chunk.indexOf(10);
+      const part = newline >= 0 ? chunk.subarray(0, newline) : chunk;
+      total += part.length;
+      if (total >= MAX_METADATA_BYTES) return null;
+      chunks.push(part);
+      // Stop decoding here: later records are conversation content, not ancestry.
+      if (newline >= 0) return Buffer.concat(chunks).toString("utf8");
+    }
+    return null;
+  } finally {
+    clearTimeout(timer);
+    source.destroy();
+    decoder?.destroy();
+  }
+}
 
 function within(root: string, path: string): boolean {
   const child = relative(root, path);
@@ -18,10 +51,10 @@ function within(root: string, path: string): boolean {
 // Reads only the first, bounded session_meta record. Never scan conversation
 // entries, and do not cache absence: a new thread may still be flushing its DB
 // row or rollout metadata when its first request reaches the relay.
-export function readCodexForkParent(codexHome: string, threadId: string): CodexForkParentResult {
+export async function readCodexForkParent(codexHome: string, threadId: string): Promise<CodexForkParentResult> {
   if (!UUID.test(threadId)) return { status: "unknown" };
   let db: Database | undefined;
-  let fd: number | undefined;
+  let file: FileHandle | undefined;
   try {
     const root = realpathSync(codexHome);
     const name = readdirSync(root).filter(name => /^state_\d+\.sqlite$/.test(name))
@@ -34,24 +67,22 @@ export function readCodexForkParent(codexHome: string, threadId: string): CodexF
       .get(threadId.toLowerCase());
     if (!row) return { status: "missing" };
     if (typeof row.rollout_path !== "string" || !isAbsolute(row.rollout_path)) return { status: "unknown" };
-    const path = realpathSync(row.rollout_path);
-    if (!within(root, path)) return { status: "unknown" };
-    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    if (!fstatSync(fd).isFile()) return { status: "unknown" };
-    const chunks: Buffer[] = [];
-    let total = 0, complete = false;
-    while (total < MAX_METADATA_BYTES) {
-      const chunk = Buffer.alloc(Math.min(8192, MAX_METADATA_BYTES - total));
-      const count = readSync(fd, chunk, 0, chunk.length, null);
-      if (count === 0) break;
-      const newline = chunk.subarray(0, count).indexOf(10);
-      chunks.push(chunk.subarray(0, newline >= 0 ? newline : count));
-      total += count;
-      if (newline >= 0) { complete = true; break; }
+    let candidate = row.rollout_path;
+    let path: string;
+    try { path = realpathSync(candidate); }
+    catch (error: any) {
+      // Codex can retain the original JSONL path after compressing its rollout.
+      // Only absence permits fallback; a present partial/invalid file must fail closed.
+      if (error?.code !== "ENOENT" || !candidate.endsWith(".jsonl")) throw error;
+      candidate += ".zst";
+      path = realpathSync(candidate);
     }
-    // A newline is the writer's evidence that the record was fully flushed.
-    if (!complete) return { status: "unknown" };
-    const record = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (!within(root, path)) return { status: "unknown" };
+    file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    if (!(await file.stat()).isFile()) return { status: "unknown" };
+    const line = await firstRecord(file, candidate.endsWith(".zst"));
+    if (line === null) return { status: "unknown" };
+    const record = JSON.parse(line);
     const meta = record?.payload;
     if (record?.type !== "session_meta" || typeof meta?.id !== "string" ||
         meta.id.toLowerCase() !== threadId.toLowerCase()) return { status: "unknown" };
@@ -69,7 +100,7 @@ export function readCodexForkParent(codexHome: string, threadId: string): CodexF
   } catch {
     return { status: "unknown" };
   } finally {
-    if (fd !== undefined) closeSync(fd);
+    await file?.close();
     db?.close();
   }
 }

@@ -59,6 +59,11 @@ function subscriptionError(reason: string) {
     "profile-mismatch": "The quota observation belongs to a different account profile.",
     "model-unverified": "This model has not been verified for the configured subscription.",
     "route-unsupported": "This request route is not supported by subscription protection.",
+    "pool_lineage_unavailable": "This task's parent conversation metadata could not be read. Restore access to its original Codex history before retrying.",
+    "pool_lineage_invalid": "This task's parent conversation metadata is invalid. Its account ownership could not be verified.",
+    "pool_lineage_conflict": "This task's reported parent does not match its saved Codex history. Its account ownership could not be verified.",
+    "pool_source_history_unverified": "This request contains history whose original account could not be verified. Continue from the original task and account profile.",
+    "pool_source_continuation_mismatch": "This task's saved history belongs to a different account. Reopen it in its original account profile.",
     "request-unsupported": "This request format is not supported by subscription protection.",
   };
   return { type: "quotapie_subscription_guard",
@@ -293,10 +298,13 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
                   // Keep the source login, but retain the pool's history and
                   // fork ownership checks. A former foreign binding cannot be
                   // replayed against this source merely because routing is off.
-                  options.accountPool?.assertSourceContinuation({ threadId: event.threadId, body: outgoing, headers });
+                  await options.accountPool?.assertSourceContinuationAsync({ threadId: event.threadId, body: outgoing, headers }, request.signal);
                 } catch (error) {
                   throw new SubscriptionRequestError(error instanceof PoolError ? error.code : "source-continuation-unverified");
                 }
+                request.signal.throwIfAborted();
+                const currentGuard = options.subscriptionGuard.check({ headers, model: guardModel });
+                if (!currentGuard.ready) throw new SubscriptionRequestError(currentGuard.reason);
               }
               if (options.accountPool && !options.subscriptionGuard) {
                 selectingAccount = true;
@@ -681,7 +689,7 @@ export async function runCompactionCodex(args: string[], defaultCommand: string)
     catch { return false; }
   })?.id;
   const accountPool = sourceAccount ? new AccountPool({ sourceAccount, accounts: () => poolAccounts(config()), policy: readPoolPolicy,
-    forkParent: thread => readCodexForkParent(codexHome, thread) }) : undefined;
+    forkParentAsync: thread => readCodexForkParent(codexHome, thread) }) : undefined;
   const proxy = startCompactionProxy({
     route,
     accountPool,

@@ -157,7 +157,7 @@ function environment(root: string, reportOnly: boolean): NodeJS.ProcessEnv {
 }
 function startProxy(config: AppConfig, root: string, policy: DotPolicy, guard: SubscriptionGuard) {
   const pool = new AccountPool({ sourceAccount: policy.account, accounts: () => poolAccounts(config), policy: readPoolPolicy,
-    forkParent: threadId => readCodexForkParent(root, threadId) });
+    forkParentAsync: threadId => readCodexForkParent(root, threadId) });
   try {
     const proxy = startCompactionProxy({ accountPool: pool, subscriptionGuard: guard, reportOnly: policy.executionPurpose !== "continue-work",
       route: { from: "gpt-6-astra", to: "gpt-6-astra" }, taskSavings: { enabled: false, model: "gpt-5.6-luna", effort: "low" } });

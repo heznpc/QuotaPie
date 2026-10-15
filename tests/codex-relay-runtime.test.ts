@@ -37,6 +37,23 @@ test("a disabled historical profile cannot shadow the enabled profile sharing it
     const health = runtime.snapshot!() as any;
     expect(health.subscriptionGuard).toMatchObject({ account: "current", ready: true, reason: "ready" });
     expect(health.subscriptionGuard.windows[0].remainingPercent).toBe(9);
+    const oldPool = memory.accountPool!;
+    Object.defineProperty(oldPool, "assertSourceContinuationAsync", { value: undefined });
+    const oldGuard = memory.guard, oldSavings = memory.savings;
+    const next = createRelayRuntime({ port: 45000, token: "a".repeat(48), codex_home: home,
+      route: { from: "gpt-6-astra", to: "gpt-6-astra", effort: "low" } }, memory);
+    expect(memory.accountPool).not.toBe(oldPool);
+    expect(typeof memory.accountPool!.assertSourceContinuationAsync).toBe("function");
+    expect(memory.guard).toBe(oldGuard); expect(memory.savings).toBe(oldSavings);
+    // Retiring handlers retain their connection until the host shuts down.
+    expect(() => oldPool.assertSourceContinuation({ threadId: null,
+      headers: new Headers({ authorization: `Bearer ${token}`, "chatgpt-account-id": "fixture-workspace" }),
+      body: { input: [{ role: "user", content: "synthetic" }] } }, () => ({ status: "unknown" }))).not.toThrow();
+    const currentPool = memory.accountPool;
+    const same = createRelayRuntime({ port: 45000, token: "a".repeat(48), codex_home: home,
+      route: { from: "gpt-6-astra", to: "gpt-6-astra", effort: "low" } }, memory);
+    expect(memory.accountPool).toBe(currentPool);
+    same.close(); next.close();
   } finally {
     runtime?.close(); memory.dispose?.();
     if (previousHome === undefined) delete process.env.QUOTAPIE_HOME; else process.env.QUOTAPIE_HOME = previousHome;
