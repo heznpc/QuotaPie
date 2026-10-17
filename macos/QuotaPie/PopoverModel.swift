@@ -43,7 +43,8 @@ final class PopoverModel: ObservableObject {
 
     func showDetails(_ section: DetailSection, taskID: String? = nil) {
         focusedResumeTaskID = taskID
-        detailSection = section
+        // Keep existing task links useful after moving work out of Activity.
+        detailSection = taskID == nil ? section : .work
     }
 
     func showOverview() {
@@ -139,6 +140,12 @@ final class PopoverModel: ObservableObject {
             if $0.isApproved != $1.isApproved { return $0.isApproved }
             return $0.registeredAtMs > $1.registeredAtMs
         }
+    }
+
+    var taskOverviewSummary: String {
+        let tasks = activeTasks
+        return Strings.t("overview.taskCounts", String(tasks.filter(\.isReady).count),
+                         String(tasks.filter(\.isApproved).count), String(tasks.filter(\.isWaiting).count))
     }
 
     var canActOnTasks: Bool { lastError == nil && !(payload?.actionToken?.isEmpty ?? true) }

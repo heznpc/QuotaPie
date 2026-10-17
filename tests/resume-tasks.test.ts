@@ -1,5 +1,5 @@
 import { fakeCodexLogin } from "./helpers/account";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -107,6 +107,130 @@ describe("resume task storage", () => {
 });
 
 describe("resume readiness", () => {
+  for (const provider of ["codex", "claude"] as const) {
+    const primary = provider === "codex" ? "codex:primary:300" : "five_hour";
+    const secondary = provider === "codex" ? "codex:secondary:10080" : "seven_day";
+    const modelLane = provider === "codex" ? "codex_spark:primary:300" : "seven_day_opus";
+
+    test(`${provider} recovery waits for every observed general limit, not unrelated lanes or accounts`, async () => {
+      const config = structuredClone(DEFAULT_CONFIG);
+      config.collection.codexEnabled = false;
+      config.alerts.enabled = false;
+      prepareAccounts(config);
+      const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
+      const sample = (at: number, used: number, bucket: string, account = "default") =>
+        observation(at, used, { provider, bucket, account, quality: provider === "claude" ? "derived" : "authoritative" });
+      try {
+        service.ingest([sample(1_000, 100, primary), sample(1_000, 100, secondary)]);
+        const task = service.registerResumeTask({ provider, nativeId: SESSION_A, bucket: primary }, 1_500);
+        service.ingest([
+          sample(2_000, 10, primary), sample(2_000, 100, secondary),
+          sample(2_000, 100, modelLane), sample(2_000, 100, primary, "other"),
+        ]);
+        expect(await service.updateResumeReadiness(service.analyses(2_000), 2_000)).toEqual([]);
+        expect(service.resumeTasks.get(task.id)?.state).toBe("waiting");
+
+        service.ingest([sample(3_000, 50, secondary)]);
+        expect(await service.updateResumeReadiness(service.analyses(3_000), 3_000)).toHaveLength(1);
+        expect(service.resumeTasks.get(task.id)?.state).toBe("ready");
+
+        service.ingest([sample(4_000, 100, secondary)]);
+        await service.updateResumeReadiness(service.analyses(4_000), 4_000);
+        expect(service.resumeTasks.get(task.id)?.state).toBe("waiting");
+      } finally { await service.close(); }
+    });
+
+    test(`${provider} model-lane recovery needs an observed general limit`, async () => {
+      const config = structuredClone(DEFAULT_CONFIG);
+      config.collection.codexEnabled = false;
+      config.alerts.enabled = false;
+      prepareAccounts(config);
+      const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
+      try {
+        service.ingest([observation(1_000, 100, { provider, bucket: modelLane })]);
+        const task = service.registerResumeTask({ provider, nativeId: SESSION_A, bucket: modelLane }, 1_500);
+        service.ingest([observation(2_000, 10, { provider, bucket: modelLane })]);
+        expect(await service.updateResumeReadiness(service.analyses(2_000), 2_000)).toEqual([]);
+        service.ingest([observation(3_000, 50, { provider, bucket: primary })]);
+        expect(await service.updateResumeReadiness(service.analyses(3_000), 3_000)).toHaveLength(1);
+        expect(service.resumeTasks.get(task.id)?.state).toBe("ready");
+      } finally { await service.close(); }
+    });
+  }
+
+  test.each([
+    ["stale", { observedAtMs: 0 }],
+    ["reset due", { resetsAtMs: 3_000 }],
+    ["unknown", { remainingPercent: null }],
+    ["future", { observedAtMs: 3_001 }],
+  ])("revokes readiness when another general limit is %s", async (_label, override) => {
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.collection.codexEnabled = false;
+    config.collection.staleAfterSeconds = 2;
+    config.alerts.enabled = false;
+    prepareAccounts(config);
+    const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
+    try {
+      service.ingest([observation(1_000, 100)]);
+      const task = service.registerResumeTask({ provider: "codex", nativeId: SESSION_A }, 1_500);
+      service.ingest([
+        observation(2_000, 10),
+        observation(2_000, 20, { bucket: "codex:secondary:10080" }),
+      ]);
+      await service.updateResumeReadiness(service.analyses(2_000), 2_000);
+      expect(service.resumeTasks.get(task.id)?.state).toBe("ready");
+      const windows = service.analyses(3_000).map(window => window.bucket === "codex:secondary:10080"
+        ? { ...window, ...override } : window);
+      await service.updateResumeReadiness(windows, 3_000);
+      expect(service.resumeTasks.get(task.id)?.state).toBe("waiting");
+    } finally { await service.close(); }
+  });
+
+  test("approval rechecks general limits before resolving the session", async () => {
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.collection.codexEnabled = false;
+    config.alerts.enabled = false;
+    prepareAccounts(config);
+    const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
+    try {
+      service.ingest([observation(1_000, 100)]);
+      const task = service.registerResumeTask({ provider: "codex", nativeId: SESSION_A }, 1_500);
+      service.ingest([
+        observation(2_000, 10),
+        observation(2_000, 20, { bucket: "codex:secondary:10080" }),
+      ]);
+      await service.updateResumeReadiness(service.analyses(2_000), 2_000);
+      service.ingest([observation(2_100, 100, { bucket: "codex:secondary:10080" })]);
+      await expect(service.approveResumeTask(task.id, 2_200)).rejects.toThrow("fresh quota is no longer available");
+      expect(service.resumeTasks.get(task.id)?.state).toBe("waiting");
+    } finally { await service.close(); }
+  });
+
+  test("a normal collection tick evaluates recovery after asynchronous observations arrive", async () => {
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.collection.codexEnabled = false;
+    config.alerts.enabled = false;
+    prepareAccounts(config);
+    const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
+    let clockMs = 2_000;
+    const clock = spyOn(Date, "now").mockImplementation(() => clockMs);
+    try {
+      service.ingest([observation(1_000, 100)]);
+      const task = service.registerResumeTask({ provider: "codex", nativeId: SESSION_A }, 1_500);
+      service.pollCodex = async () => {
+        clockMs = 3_000;
+        return service.ingest([observation(clockMs, 10)]);
+      };
+      service.pollClaudeOAuth = async () => [];
+      service.publishBoundary = async () => {};
+      await service.tick();
+      expect(service.resumeTasks.get(task.id)?.state).toBe("ready");
+    } finally {
+      clock.mockRestore();
+      await service.close();
+    }
+  });
+
   test("same profile with a different login cannot signal recovery or approve resume", async () => {
     const config = structuredClone(DEFAULT_CONFIG);
     config.collection.codexEnabled = false;
@@ -309,7 +433,7 @@ describe("resume readiness", () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
-  test("quota that disappears during async discovery prevents approval", async () => {
+  test("a general limit exhausted during async discovery prevents approval", async () => {
     const directory = mkdtempSync(resolve(tmpdir(), "quotapie-codex-capacity-race-"));
     const cwd = resolve(directory, "project");
     const codexHome = resolve(directory, "codex-home");
@@ -323,7 +447,10 @@ describe("resume readiness", () => {
     const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
     service.ingest([observation(1_000, 100)]);
     const task = service.registerResumeTask({ provider: "codex", nativeId: SESSION_A }, 1_500);
-    service.ingest([observation(1_900, 80, { resetsAtMs: 40_000 })]);
+    service.ingest([
+      observation(1_900, 80, { resetsAtMs: 40_000 }),
+      observation(1_900, 80, { bucket: "codex:secondary:10080", resetsAtMs: 40_000 }),
+    ]);
     await service.updateResumeReadiness(service.analyses(2_000), 2_000);
 
     let releaseDiscovery!: () => void;
@@ -340,7 +467,7 @@ describe("resume readiness", () => {
     });
     const approval = service.approveResumeTask(task.id, 2_100);
     await discoveryStarted;
-    service.ingest([observation(2_050, 100, { resetsAtMs: 40_000 })]);
+    service.ingest([observation(2_050, 100, { bucket: "codex:secondary:10080", resetsAtMs: 40_000 })]);
     releaseDiscovery();
     await expect(approval).rejects.toThrow("fresh quota is no longer available");
     expect(service.resumeTasks.get(task.id)?.state).toBe("waiting");

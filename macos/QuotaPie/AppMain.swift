@@ -151,8 +151,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         verification?.armTimeout()
 
-        if popoverModel.focusedResumeTaskID != nil {
-            popoverModel.detailSection = .activity
+        if !isFixturePreview, popoverModel.focusedResumeTaskID != nil {
+            popoverModel.detailSection = .work
             showPopover()
         }
 
@@ -173,7 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let route = urls.compactMap({ QuotaPieRoute(url: $0) }).first else { return }
         if case .resume(let id) = route {
-            popoverModel.showDetails(.activity, taskID: id)
+            popoverModel.showDetails(.work, taskID: id)
             showPopover()
         }
     }

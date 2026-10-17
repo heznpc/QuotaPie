@@ -66,7 +66,7 @@ struct PopoverView: View {
             }
             if let feed = model.payload?.resetSignals, feed.enabled {
                 Divider().padding(.horizontal, 20)
-                ResetSignalSummary(feed: feed, openHistory: { showDetails(.resets) }, openWork: { showDetails(.activity) })
+                ResetSignalSummary(feed: feed, openHistory: { showDetails(.resets) }, openWork: { showDetails(.work) })
                     .padding(.horizontal, 20).padding(.vertical, 16)
             }
             if awake.enabled || model.notificationsAllowed == false {
@@ -209,16 +209,13 @@ struct PopoverView: View {
 
     private var taskOverview: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(Strings.t("resume.sectionTitle")).font(.system(size: 12, weight: .semibold))
-                Spacer()
-                Text(Strings.t("overview.taskCounts",
-                               String(model.activeTasks.filter(\.isReady).count),
-                               String(model.activeTasks.filter { !$0.isReady }.count)))
+                Text(model.taskOverviewSummary)
                     .font(.caption).foregroundStyle(.secondary)
             }
             ForEach(Array(model.activeTasks.prefix(3))) { task in
-                Button { showDetails(.activity, taskID: task.id) } label: {
+                Button { showDetails(.work, taskID: task.id) } label: {
                     HStack(spacing: 10) {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(task.projectLabel).font(.system(size: 13, weight: .medium))
@@ -239,7 +236,7 @@ struct PopoverView: View {
                 .help("\(task.projectLabel) · \(task.shortReference)")
             }
             if model.activeTasks.count > 3 {
-                detailButton("overview.allTasks", section: .activity)
+                detailButton("overview.allTasks", section: .work)
             }
         }
     }

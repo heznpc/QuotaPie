@@ -7,7 +7,7 @@ final class OverviewTests: XCTestCase {
         let model = PopoverModel()
         model.selectedAccountID = "codex/work"
         model.showDetails(.activity, taskID: "paused-task")
-        XCTAssertEqual(model.detailSection, .activity)
+        XCTAssertEqual(model.detailSection, .work)
         XCTAssertEqual(model.focusedResumeTaskID, "paused-task")
         model.showOverview()
         XCTAssertNil(model.detailSection)
@@ -18,6 +18,24 @@ final class OverviewTests: XCTestCase {
             XCTAssertEqual(model.detailSection, section)
             XCTAssertNil(model.focusedResumeTaskID)
         }
+    }
+
+    func testInterruptedLaunchIsNotCountedAsWaitingForQuota() throws {
+        let model = PopoverModel()
+        model.payload = try JSONDecoder().decode(StatusPayload.self, from: Data(#"""
+        {"resumeTasks":[
+          {"id":"ready","provider":"codex","account":"default","accountLabel":"Main",
+           "projectLabel":"Ready task","state":"ready","registeredAtMs":1000},
+          {"id":"approved","provider":"codex","account":"default","accountLabel":"Main",
+           "projectLabel":"Interrupted launch","state":"approved","registeredAtMs":2000},
+          {"id":"waiting","provider":"codex","account":"default","accountLabel":"Main",
+           "projectLabel":"Blocked task","state":"waiting","registeredAtMs":3000},
+          {"id":"dismissed","provider":"codex","account":"default","accountLabel":"Main",
+           "projectLabel":"Dismissed task","state":"dismissed","registeredAtMs":4000}]}
+        """#.utf8))
+        XCTAssertEqual(model.activeTasks.map(\.id), ["ready", "approved", "waiting"])
+        XCTAssertEqual(model.taskOverviewSummary, Strings.t("overview.taskCounts", "1", "1", "1"))
+        XCTAssertNotEqual(model.taskOverviewSummary, Strings.t("overview.taskCounts", "1", "0", "2"))
     }
 
     func testMenuBarFollowsManualSelectionAcrossRefreshAndCodexFocusChanges() throws {

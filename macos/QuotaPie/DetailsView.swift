@@ -73,6 +73,11 @@ struct DetailsView: View {
                 Button(Strings.t("action.openSettings"), action: actions.openConfig)
             }
         case .work:
+            pausedWork
+            if let jobs = model.payload?.jobs, !jobs.isEmpty {
+                ManagedJobsSection(jobs: jobs)
+                Divider()
+            }
             RecentWorkSection(items: model.payload?.recentWork ?? [],
                               supportsRecentWork: model.payload?.supportsRecentWork ?? true,
                               state: model.payload?.recentWorkState ?? "loading",
@@ -84,40 +89,13 @@ struct DetailsView: View {
                 TaskSavingsHistory(payload: savings, busy: model.savingsSaving, undo: { actions.configureSavings(nil, $0) })
                 Divider()
             }
-            if let id = model.focusedResumeTaskID {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(Strings.t("resume.linkedTask")).font(.headline)
-                    if let task = model.activeTasks.first(where: { $0.id == id }) {
-                        PausedWorkSection(tasks: [task], hasActionToken: model.canActOnTasks,
-                            activities: model.resumeActivities, onResume: actions.resumeTask,
-                            onRetry: actions.retryTask, onDismiss: actions.dismissTask)
-                    } else {
-                        Text(Strings.t("resume.linkedUnavailable")).foregroundStyle(.secondary)
-                    }
-                    Button(Strings.t("resume.showAll")) { model.focusedResumeTaskID = nil }
-                        .buttonStyle(.link)
-                }
-                Divider()
-            }
             if !model.recentRecoveries.isEmpty {
                 RecentRecoveriesView(recoveries: model.recentRecoveries)
-                Divider()
-            }
-            if let jobs = model.payload?.jobs, !jobs.isEmpty {
-                ManagedJobsSection(jobs: jobs)
                 Divider()
             }
             if let compaction = model.payload?.compaction, compaction.generations > 0 {
                 CompactionHistory(payload: compaction)
                 Divider()
-            }
-            if !model.activeTasks.isEmpty && model.focusedResumeTaskID == nil {
-                PausedWorkSection(tasks: model.activeTasks, hasActionToken: model.canActOnTasks,
-                                  activities: model.resumeActivities, onResume: actions.resumeTask,
-                                  onRetry: actions.retryTask, onDismiss: actions.dismissTask)
-                Divider()
-            } else if model.activeTasks.isEmpty && model.focusedResumeTaskID == nil {
-                Text(Strings.t("detail.noPausedTasks")).foregroundStyle(.secondary)
             }
             Text(Strings.t("popover.recentChanges")).font(.headline)
             if let events = model.payload?.events, !events.isEmpty {
@@ -132,6 +110,30 @@ struct DetailsView: View {
         case .settings:
             settingsContent
         }
+    }
+
+    @ViewBuilder private var pausedWork: some View {
+        if let id = model.focusedResumeTaskID {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(Strings.t("resume.linkedTask")).font(.headline)
+                if let task = model.activeTasks.first(where: { $0.id == id }) {
+                    PausedWorkSection(tasks: [task], hasActionToken: model.canActOnTasks,
+                        activities: model.resumeActivities, onResume: actions.resumeTask,
+                        onRetry: actions.retryTask, onDismiss: actions.dismissTask)
+                } else {
+                    Text(Strings.t("resume.linkedUnavailable")).foregroundStyle(.secondary)
+                }
+                Button(Strings.t("resume.showAll")) { model.focusedResumeTaskID = nil }
+                    .buttonStyle(.link)
+            }
+        } else if !model.activeTasks.isEmpty {
+            PausedWorkSection(tasks: model.activeTasks, hasActionToken: model.canActOnTasks,
+                              activities: model.resumeActivities, onResume: actions.resumeTask,
+                              onRetry: actions.retryTask, onDismiss: actions.dismissTask)
+        } else {
+            Text(Strings.t("detail.noPausedTasks")).foregroundStyle(.secondary)
+        }
+        Divider()
     }
 
     private var orderedAccounts: [AccountState] {

@@ -10,6 +10,7 @@ struct AppVerification: Decodable {
     let runningProfileIDs: [String]
     let frontmostProfileID: String?
     let initialSection: String?
+    let focusedResumeTaskID: String?
     let contentHeight: Double?
 
     static let current: AppVerification? = {
@@ -39,7 +40,9 @@ struct AppVerification: Decodable {
     func selectInitialAccount(in model: PopoverModel) {
         model.selectInitialCodexAccount(frontmost: frontmostProfileID.flatMap(identity),
                                         running: runningProfileIDs.compactMap(identity), profiles: profiles)
-        if let initialSection, let section = DetailSection(rawValue: initialSection) { model.showDetails(section) }
+        if let initialSection, let section = DetailSection(rawValue: initialSection) {
+            model.showDetails(section, taskID: focusedResumeTaskID)
+        }
     }
 
     func armTimeout() {
@@ -63,7 +66,8 @@ struct AppVerification: Decodable {
         }
         if let content {
             let window = NSWindow(contentViewController: content)
-            window.setContentSize(NSSize(width: model.detailSection == nil ? 380 : 460, height: min(1200, max(560, contentHeight ?? 560))))
+            let height = contentHeight ?? (model.detailSection == nil ? 560 : Double(model.popoverDetailHeight))
+            window.setContentSize(NSSize(width: model.detailSection == nil ? 380 : 460, height: min(1200, max(560, height))))
             content.view.layoutSubtreeIfNeeded()
             if let selector = findSelector(content.view) {
                 let focused = window.makeFirstResponder(selector)
@@ -105,6 +109,9 @@ struct AppVerification: Decodable {
             "menuVisible": item.isVisible,
             "viewRendered": rendered,
             "detailSection": model.detailSection?.rawValue as Any? ?? NSNull(),
+            "focusedResumeTaskID": model.focusedResumeTaskID as Any? ?? NSNull(),
+            "activeTaskIDs": model.activeTasks.map(\.id),
+            "managedJobIDs": model.payload?.jobs.map(\.id) ?? [],
             "recentWorkIDs": model.payload?.recentWork.map(\.id) ?? [],
             "excludedPostIDs": model.payload?.resetSignals?.excludedPosts?.map(\.identity) ?? [],
             "pendingResetIDs": model.payload?.resetSignals?.pendingResets(nowMs: Date().timeIntervalSince1970 * 1000).map(\.id) ?? [],

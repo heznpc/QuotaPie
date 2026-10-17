@@ -900,16 +900,8 @@ export class QuotaPieService {
     nowMs = Date.now(),
   ): Promise<ResumeTaskSummary[]> {
     for (const task of this.resumeTasks.active().filter((item) => item.state === "ready")) {
-      const current = windows.find((window) =>
-        window.provider === task.provider &&
-        window.account === task.account &&
-        window.bucket === task.bucket
-      );
       if (
-        this.resumeAccountMatches(task) && current?.freshness === "fresh" &&
-        current.observedAtMs > task.registeredAtMs &&
-        current.remainingPercent != null &&
-        current.remainingPercent > 0
+        this.resumeAccountMatches(task) && this.hasFreshResumeCapacity(task, nowMs, windows)
       ) continue;
       try {
         this.resumeTasks.markWaiting(task.id, nowMs);
@@ -943,9 +935,8 @@ export class QuotaPieService {
           throw error;
         }
       }
-      const recovered = this.resumeAccountMatches(task) && current?.freshness === "fresh" &&
-        current.observedAtMs > task.registeredAtMs &&
-        current.remainingPercent != null &&
+      const recovered = this.resumeAccountMatches(task) && this.hasFreshResumeCapacity(task, nowMs, windows) &&
+        current?.remainingPercent != null &&
         current.remainingPercent > task.registeredRemainingPercent + 0.01;
       if (!recovered) continue;
       try {
@@ -1170,14 +1161,26 @@ export class QuotaPieService {
     }, nowMs);
   }
 
-  private hasFreshResumeCapacity(task: ResumeTask, nowMs: number): boolean {
-    return this.analyses(nowMs, task.provider).some((window) =>
-      window.account === task.account &&
-      window.bucket === task.bucket &&
+  private hasFreshResumeCapacity(
+    task: ResumeTask,
+    nowMs: number,
+    windows = this.analyses(nowMs, task.provider),
+  ): boolean {
+    const account = windows.filter(window => window.provider === task.provider && window.account === task.account);
+    const current = account.find(window => window.bucket === task.bucket);
+    const general = account.filter(window => task.provider === "codex"
+      ? window.bucket.startsWith("codex:")
+      : window.bucket === "five_hour" || window.bucket === "seven_day");
+    // A recovered lane cannot establish capacity while an account-wide limit
+    // still blocks it. Model-only observations do not establish general quota;
+    // unrelated model lanes and other accounts do not constrain this task.
+    if (!current || current.observedAtMs <= task.registeredAtMs || !general.length) return false;
+    return [current, ...general].every(window =>
       window.freshness === "fresh" &&
-      window.observedAtMs > task.registeredAtMs &&
-      window.remainingPercent != null &&
-      window.remainingPercent > 0
+      Number.isFinite(window.observedAtMs) && window.observedAtMs <= nowMs &&
+      nowMs - window.observedAtMs <= this.config.collection.staleAfterSeconds * 1_000 &&
+      window.resetsAtMs != null && Number.isFinite(window.resetsAtMs) && window.resetsAtMs > nowMs &&
+      window.remainingPercent != null && Number.isFinite(window.remainingPercent) && window.remainingPercent > 0
     );
   }
 
@@ -1276,12 +1279,13 @@ export class QuotaPieService {
     return delivered;
   }
 
-  async tick(nowMs = Date.now()): Promise<{
+  async tick(evaluationTimeMs?: number): Promise<{
     events: QuotaEvent[];
     triggers: TriggerDecision[];
     windows: WindowAnalysis[];
     collected: boolean;
   }> {
+    const collectionStartedAtMs = evaluationTimeMs ?? Date.now();
     let events: QuotaEvent[] = [];
     try {
       events = await this.pollCodex();
@@ -1289,7 +1293,11 @@ export class QuotaPieService {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[quotapie] Codex refresh failed: ${message}`);
     }
-    events = events.concat(await this.pollClaudeOAuth(nowMs));
+    events = events.concat(await this.pollClaudeOAuth(collectionStartedAtMs));
+    // Asynchronous provider reads timestamp their observations when they finish.
+    // Evaluate against the post-read clock, preserving an explicitly supplied
+    // clock for deterministic callers.
+    const nowMs = evaluationTimeMs ?? Date.now();
     const collected = this.anyProviderCollectedRecently(nowMs);
     this.db.maybePrune(nowMs, this.config.profile.historyDays);
     this.resumeTasks.pruneTerminal(nowMs - this.config.profile.historyDays * 86_400_000);

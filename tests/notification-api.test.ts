@@ -297,6 +297,7 @@ describe("notification service integration", () => {
         hasFreshResumeCapacity: () => boolean;
         buildResumePlan: () => Promise<ResumePlan>;
       };
+      const originalCapacity = internals.hasFreshResumeCapacity;
       internals.hasFreshResumeCapacity = () => true;
       internals.buildResumePlan = async () => ({
         executable: "claude",
@@ -306,6 +307,7 @@ describe("notification service integration", () => {
       });
       await service.approveResumeTask(approved, 2_200);
       expect(service.alerts.pendingAppNotifications()).toEqual([]);
+      internals.hasFreshResumeCapacity = originalCapacity;
 
       const rearmed = create("ready");
       const key = `resume:${rearmed}:ready`;

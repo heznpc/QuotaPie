@@ -12,6 +12,9 @@ interface Observation {
   menuAccessibleLabel: string;
   viewRendered: boolean;
   detailSection?: string;
+  focusedResumeTaskID?: string | null;
+  activeTaskIDs?: string[];
+  managedJobIDs?: string[];
   recentWorkIDs?: string[];
   profileDockIcons?: string[];
   pendingResetIDs?: string[];
@@ -69,9 +72,17 @@ async function run() {
       usedPercent: 100 - remaining, remainingPercent: remaining, freshness: "fresh", quality: "authoritative",
       resetsAtMs: Date.now() + 3_600_000, observedAtMs: Date.now(), riskLevel: "none" }],
     collection: { health: "recent-success", sources: [] } });
+  const pausedTasks = ["ready", "approved", "waiting"].map((state, index) => ({
+    id: `00000000-0000-4000-8000-00000000000${index + 1}`, provider: "codex", account: "default",
+    accountLabel: "Main", projectLabel: ["Review changes", "Check interrupted launch", "Continue implementation"][index],
+    state, registeredAtMs: Date.now() - 3_600_000, expectedResetAtMs: Date.now() + 3_600_000,
+  }));
+  const managedJobs = [{ id: "fixture-job", label: "Registered verification job", provider: "codex", account: "default",
+    state: "waiting", completedSteps: 1, totalSteps: 3, reason: "quota-unavailable", policy: {mode: "manual"} }];
   // Independent expected values: no production account-selection or headline code.
   let payload = { actionToken: "isolated-fixture", headline: { kind: "normal", provider: "codex", account: "second", remainingPercent: 100 },
-    accounts: [account("default", "Main", 18), account("second", "Second", 100)], events: [], resumeTasks: [],
+    accounts: [account("default", "Main", 18), account("second", "Second", 100)], events: [],
+    resumeTasks: pausedTasks.slice(0, 0), jobs: managedJobs.slice(0, 0),
     recentWorkState: "ready", recentWork: [
       { id: "a".repeat(64), provider: "codex", account: "default", accountLabel: "Main", projectLabel: "Example project", tokenCount: 12400, lastActiveAtMs: Date.now() - 60_000 },
       { id: "b".repeat(64), provider: "claude", account: "default", accountLabel: "Main", projectLabel: "Another project", tokenCount: 8300, lastActiveAtMs: Date.now() - 3_600_000 },
@@ -120,13 +131,19 @@ async function run() {
       { name: "dock-icons", running: ["main"], frontmost: null, initialSection: "settings", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "excluded-posts", running: ["main"], frontmost: null, initialSection: "resets", expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "recent-work", running: ["main"], frontmost: null, initialSection: "work", expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "paused-overview", running: ["main"], frontmost: null, withTasks: true, contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "paused-work", running: ["main"], frontmost: null, withTasks: true, initialSection: "work", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "linked-work", running: ["main"], frontmost: null, withTasks: true, initialSection: "activity", focusedResumeTaskID: pausedTasks[0]!.id, expected: { account: "codex/default", remaining: 18, label: "Main" } },
     ]) {
       malformed = scenario.expected == null;
+      payload.resumeTasks = "withTasks" in scenario ? pausedTasks : [];
+      payload.jobs = "withTasks" in scenario ? managedJobs : [];
       const reportPath = join(stage, scenario.name + ".json");
       const request = join(stage, "request.json");
       await writeFile(request, JSON.stringify({ endpoint: `http://127.0.0.1:${server.port}`, reportPath, profiles,
         runningProfileIDs: scenario.running, frontmostProfileID: scenario.frontmost,
         contentHeight: "contentHeight" in scenario ? scenario.contentHeight : undefined,
+        focusedResumeTaskID: "focusedResumeTaskID" in scenario ? scenario.focusedResumeTaskID : undefined,
         initialSection: "initialSection" in scenario ? scenario.initialSection : undefined }));
       await exec(["/usr/bin/open", "-W", "-n", "-g", app, "--args", "--verification", request], 20_000);
       const observed = JSON.parse(await readFile(reportPath, "utf8")) as Observation;
@@ -138,6 +155,11 @@ async function run() {
           observed.recentWorkIDs?.join(",") !== payload.recentWork.map(item => item.id).join(","))) {
         failures.push("recent_work_not_rendered");
       }
+      if ("withTasks" in scenario && (observed.activeTaskIDs?.join(",") !== pausedTasks.map(task => task.id).join(",") ||
+          observed.managedJobIDs?.join(",") !== "fixture-job")) failures.push("registered_work_missing");
+      if (scenario.name === "paused-work" && observed.detailSection !== "work") failures.push("wrong_work_section");
+      if (scenario.name === "linked-work" && (observed.detailSection !== "work" ||
+          observed.focusedResumeTaskID !== pausedTasks[0]!.id)) failures.push("task_link_not_routed_to_work");
       console.log(JSON.stringify({ check: scenario.name, result: failures.length ? "fail" : "pass", failures }));
       if (failures.length) throw new Error(`Native verification failed: ${scenario.name}`);
     }
