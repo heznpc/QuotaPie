@@ -63,7 +63,8 @@ class LifecycleTests(unittest.TestCase):
     def healthy(self, settings):
         return {"service": "quotapie-compaction", "schemaVersion": 3, "route": settings["route"],
                 "relayRuntimeRevision": 1, "reloadSupported": True,
-                "subscriptionGuardVersion": 1, "subscriptionGuardRevision": 2, "subscriptionGuard": {"version": 1, "account": "fixture",
+                "nativeRequestPolicyVersion": 1, "nativeRequestPolicy": "source-origin", "sourceContinuationRevision": 3, "executionMode": "interactive",
+                "subscriptionGuardVersion": 1, "subscriptionGuardRevision": 3, "subscriptionGuard": {"version": 1, "account": "fixture",
                 "profileKey": hashlib.sha256(str(Path(settings["codex_home"]).resolve()).encode()).hexdigest()}}
 
     def add_unreadable_retired(self):

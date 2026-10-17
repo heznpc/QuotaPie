@@ -19,6 +19,7 @@ test("savings policy is independent, acknowledges compatible relays, and undo pe
    return Response.json({service:'quotapie-compaction',schemaVersion:old?2:3,savingsModelSupported:true,taskSavingsPhasesVersion:phaseSupport?1:0,taskSavings:settings.taskSavings??DEFAULT_TASK_SAVINGS});
   }) as typeof fetch;
   const store=new TaskSavingsSettings(root,fetcher);
+  expect((await store.status())?.enabled).toBe(false);
   const status=await store.configure({enabled:true});
   expect(status).toMatchObject({enabled:true,compatible:1,applied:1,generations:2});
   expect(JSON.stringify(status)).not.toContain('abab');

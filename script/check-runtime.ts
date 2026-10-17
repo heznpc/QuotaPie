@@ -78,12 +78,16 @@ if (existsSync(join(relayRoot, "current.json"))) {
       try {
         const health = await relayHealth(settings, fetch);
         return { required, reachable: true, runningMatches: health.runtimeSourceHash === expected,
+          nativePolicy: health.nativeRequestPolicyVersion === 1 && health.nativeRequestPolicy === "source-origin"
+            && health.executionMode === "interactive" && health.subscriptionGuardRevision === 3
+            && health.sourceContinuationRevision === 3 && health.subscriptionGuard?.sourceHistoryPolicy === "authenticated-source",
+          listenerPolicy: health.listenerPolicyVersion === 2,
           imageRoutes: health.nativeImageRoutesVersion === 1, taskPhases: health.taskSavingsPhasesVersion === 1,
           retiringRuntimes: Number(health.retiringRuntimes) || 0 };
-      } catch { return { required, reachable: false, runningMatches: false, imageRoutes: false, taskPhases: false, retiringRuntimes: 0 }; }
+      } catch { return { required, reachable: false, runningMatches: false, nativePolicy: false, listenerPolicy: false, imageRoutes: false, taskPhases: false, retiringRuntimes: 0 }; }
     });
     const passed = generations.length > 0 && generations.every(g => (!g.required && !g.reachable) ||
-      g.reachable && g.runningMatches && g.imageRoutes && g.taskPhases);
+      g.reachable && g.runningMatches && g.nativePolicy && g.listenerPolicy && g.imageRoutes && g.taskPhases);
     console.log(JSON.stringify({ component: "relays", result: passed ? "pass" : "fail", expectedRuntimeHash: expected,
       generations: generations.map((g, index) => ({ generation: index + 1, ...g })) }));
     if (!passed) process.exitCode = 1;

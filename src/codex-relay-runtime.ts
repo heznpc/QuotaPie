@@ -2,11 +2,13 @@ import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { readCodexForkParent } from "./account-pool-lineage";
-import { AccountPool, poolAccounts, readPoolPolicy } from "./account-pool";
+import type { AccountPool } from "./account-pool";
+import { createSourceHistoryGuard } from "./source-history-guard";
+import { interactiveRelayPolicy } from "./interactive-relay-policy";
 import { codexProfileRoot, loadConfig } from "./config";
-import { DEFAULT_TASK_SAVINGS, validateTaskSavings, type TaskSavingsPolicy, type TaskState } from "./task-savings";
+import { type TaskSavingsPolicy, type TaskState } from "./task-savings";
 import { createSavingsModelSupport } from "./savings-model-support";
-import { createCompactionHandler, validateCompactionRoute, type CompactionRoute } from "./codex-compaction";
+import { createCompactionHandler, type CompactionRoute } from "./codex-compaction";
 import { createSubscriptionGuard, subscriptionGuardMemory, type SubscriptionGuardMemory } from "./subscription-guard";
 
 export const relayRuntimeApiVersion = 1;
@@ -31,9 +33,9 @@ export type RuntimeFactory = (settings: RuntimeSettings, memory: RuntimeMemory) 
 
 /** A runtime owns its resources, while account identity and task decisions span updates. */
 export const createRelayRuntime: RuntimeFactory = (settings, memory) => {
-  validateCompactionRoute(settings.route);
-  const savings = validateTaskSavings(settings.taskSavings ?? DEFAULT_TASK_SAVINGS);
-  settings.taskSavings ??= savings;
+  const resolved = interactiveRelayPolicy(settings.route, settings.taskSavings);
+  settings.route = resolved.route;
+  settings.taskSavings = resolved.taskSavings;
   const home = settings.codex_home ?? join(homedir(), ".codex");
   const config = () => loadConfig();
   const sourceAccount = config().accounts.codex.find(profile => {
@@ -44,27 +46,15 @@ export const createRelayRuntime: RuntimeFactory = (settings, memory) => {
   memory.sourceAccount = sourceAccount ?? null;
   memory.guard ??= subscriptionGuardMemory();
   memory.savings ??= new Map();
-  // Reopening the same SQLite pool during a stream can block the event loop on
-  // another process's write lock. Its connection and bindings outlive handlers.
-  if (sourceAccount && (!memory.accountPool || memory.accountPool.sourceContinuationRevision !== 2 ||
-      typeof memory.accountPool.assertSourceContinuationAsync !== "function")) {
-    // Older bundles retain their pool implementation across hot reloads. Keep
-    // it alive for retiring streams; new requests need the current policy too.
-    const previousPool = memory.accountPool;
-    const previousDispose = memory.dispose;
-    memory.accountPool = new AccountPool({ sourceAccount, accounts: () => poolAccounts(config()),
-      policy: readPoolPolicy, forkParentAsync: thread => readCodexForkParent(home, thread) });
-    const currentPool = memory.accountPool;
-    memory.dispose = () => {
-      currentPool.close();
-      if (previousDispose) previousDispose(); else previousPool?.close();
-    };
-  }
-  const accountPool = memory.accountPool;
-  const handler = createCompactionHandler({ ...settings, accountPool, savingsState: memory.savings,
+  // Historical pool connections belong to retiring handlers. New interactive
+  // requests never initialize a routing DB or repeat source authentication there.
+  const handler = createCompactionHandler({ ...settings, savingsState: memory.savings,
+      executionMode: "interactive",
+      sourceHistoryGuard: createSourceHistoryGuard({ forkParent: thread => readCodexForkParent(home, thread) }),
       sourceHistoryPolicy: "authenticated-source",
-      subscriptionGuard: createSubscriptionGuard({ codexHome: home, sourceAccount, config, memory: memory.guard, quotaObservationMode: "advisory" }),
+      subscriptionGuard: createSubscriptionGuard({ codexHome: home, sourceAccount, config, memory: memory.guard, quotaObservationMode: "advisory", executionMode: "interactive" }),
       savingsModelSupported: createSavingsModelSupport(join(home, "models_cache.json")),
+      onNativeRequest: event => console.log(JSON.stringify(event)),
       onProvenance: event => console.log(JSON.stringify({ kind: "response_provenance", ...event })),
       onRequest: event => { if (event.kind === "compaction" || event.kind === "response") console.log(JSON.stringify(event)); },
   });

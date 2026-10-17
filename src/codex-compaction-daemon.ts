@@ -3,6 +3,7 @@ import { DEFAULT_TASK_SAVINGS, validateTaskSavings } from "./task-savings";
 import { validateCompactionRoute } from "./codex-compaction";
 import { createRelayRuntime, type RuntimeSettings } from "./codex-relay-runtime";
 import { startRelayRuntimeHost } from "./relay-runtime-host";
+import { interactiveRelayPolicy } from "./interactive-relay-policy";
 
 if (process.argv[2] === "--check-policy") {
   const candidate = JSON.parse(readFileSync(process.argv[3]!, "utf8"));
@@ -14,15 +15,16 @@ const settingsPath = process.argv[2];
 if (!settingsPath) throw new Error("Relay settings path required");
 const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as RuntimeSettings;
 if (!Number.isInteger(settings.port) || settings.port < 1024 || settings.port > 65535) throw new Error("Invalid relay port");
-settings.taskSavings = validateTaskSavings(settings.taskSavings ?? DEFAULT_TASK_SAVINGS);
+Object.assign(settings, interactiveRelayPolicy(settings.route, settings.taskSavings));
 const host = await startRelayRuntimeHost({ settingsPath, settings, initialFactory: createRelayRuntime });
 watchFile(settingsPath, { interval: 500 }, () => {
   try {
     const next = JSON.parse(readFileSync(settingsPath, "utf8")) as RuntimeSettings;
     if (next.port !== settings.port || next.token !== settings.token || next.codex_home !== settings.codex_home) return;
-    Object.assign(settings.route, validateCompactionRoute(next.route));
-    Object.assign(settings.taskSavings!, validateTaskSavings(next.taskSavings ?? DEFAULT_TASK_SAVINGS));
-  } catch { console.error("Relay settings reload failed; retaining current route"); }
+    const resolved = interactiveRelayPolicy(next.route, next.taskSavings);
+    Object.assign(settings.route, resolved.route);
+    Object.assign(settings.taskSavings!, resolved.taskSavings);
+  } catch { console.error("Relay settings reload failed; retaining current policy"); }
 });
 let stopping = false;
 const stop = async () => {

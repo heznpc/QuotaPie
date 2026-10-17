@@ -5,7 +5,7 @@ import { createHmac, randomBytes } from "node:crypto";
 const key = randomBytes(32);
 const digest = (value: string | Uint8Array) => createHmac("sha256", key).update(value).digest("hex");
 const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
-export type OwnershipIdentity = { threadId: string | null; turnId: string | null };
+export type OwnershipIdentity = { threadId: string | null; turnId: string | null; sessionId?: string | null };
 export type OwnershipProvenance = {
   ordinal: number; bytes: number; digest: string;
   stage: "validated" | "queued" | "blocked";
@@ -32,7 +32,7 @@ export class ResponseOwnershipGuard {
   private beginning = true;
   constructor(private identity: OwnershipIdentity,
     private provenance: (entry: OwnershipProvenance) => void = () => {},
-    private maxBytes = 4 * 1024 * 1024) {}
+    private maxBytes = 4 * 1024 * 1024, private tolerateUnknownFrames = false) {}
 
   private report(entry: OwnershipProvenance) {
     try { this.provenance(entry); } catch { /* Telemetry must not affect delivery. */ }
@@ -82,7 +82,8 @@ export class ResponseOwnershipGuard {
       // text, arbitrary user metadata, previous_response_id, or root_turn_id.
       const meta = value.internal_chat_message_metadata_passthrough;
       if (!record(meta)) return;
-      for (const [field, expected] of [["turn_id", this.identity.turnId], ["thread_id", this.identity.threadId], ["session_id", this.identity.threadId]] as const) {
+      for (const [field, expected] of [["turn_id", this.identity.turnId], ["thread_id", this.identity.threadId],
+        ["session_id", this.identity.sessionId === undefined ? this.identity.threadId : this.identity.sessionId]] as const) {
         if (expected && meta[field] != null) {
           if (typeof meta[field] !== "string" || (meta[field] as string).toLowerCase() !== expected.toLowerCase()) failure = "response_ownership_mismatch";
           else matched = true;
@@ -92,7 +93,7 @@ export class ResponseOwnershipGuard {
     const data = this.data.join("\n");
     if (data && data !== "[DONE]") {
       let value: unknown;
-      try { value = JSON.parse(data); } catch { failure = "response_ownership_invalid_json"; }
+      try { value = JSON.parse(data); } catch { if (!this.tolerateUnknownFrames) failure = "response_ownership_invalid_json"; }
       if (record(value)) {
         check(value);
         const response = record(value.response) ? value.response : null;
@@ -121,5 +122,42 @@ export class ResponseOwnershipGuard {
     // Flush a terminal CR as its actual one-byte line ending.
     this.push(new Uint8Array(), deliver, true);
     if (this.pending || this.frame) this.reject("response_ownership_truncated_event");
+  }
+}
+
+/** Native clients own protocol compatibility. Preserve explicit ownership
+ * mismatch checks, but an inspection limit/new SSE format must not become a
+ * local content filter. Raw buffered bytes survive structural parse failures. */
+export class NativeResponseOwnershipGuard {
+  private guard: ResponseOwnershipGuard;
+  private pending: Uint8Array[] = [];
+  private transparent = false;
+  constructor(identity: OwnershipIdentity, provenance: (entry: OwnershipProvenance) => void = () => {}) {
+    this.guard = new ResponseOwnershipGuard(identity, provenance, 4 * 1024 * 1024, true);
+  }
+  private consume(count: number) {
+    while (count && this.pending.length) {
+      const first = this.pending[0]!;
+      if (count >= first.length) { this.pending.shift(); count -= first.length; }
+      else { this.pending[0] = first.subarray(count); count = 0; }
+    }
+  }
+  private recover(error: unknown, deliver: (bytes: Uint8Array) => void) {
+    if (!(error instanceof ResponseOwnershipError) ||
+        ["response_ownership_mismatch", "response_ownership_response_changed"].includes(error.code)) throw error;
+    this.transparent = true;
+    for (const chunk of this.pending) deliver(chunk);
+    this.pending = [];
+  }
+  push(bytes: Uint8Array, deliver: (bytes: Uint8Array) => void) {
+    if (this.transparent) { deliver(bytes); return; }
+    this.pending.push(bytes);
+    try { this.guard.push(bytes, frame => { this.consume(frame.length); deliver(frame); }); }
+    catch (error) { this.recover(error, deliver); }
+  }
+  finish(deliver: (bytes: Uint8Array) => void) {
+    if (this.transparent) return;
+    try { this.guard.finish(frame => { this.consume(frame.length); deliver(frame); }); }
+    catch (error) { this.recover(error, deliver); }
   }
 }

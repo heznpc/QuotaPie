@@ -111,7 +111,7 @@ export async function startRelayRuntimeHost(options: {
     retired.add(previous); collect();
   }
   const server = Bun.serve({ hostname: "127.0.0.1", port: settings.port, idleTimeout: 0,
-    maxRequestBodySize: 64 * 1024 * 1024,
+    maxRequestBodySize: Infinity,
     async fetch(request): Promise<Response> {
       const pathname = new URL(request.url).pathname;
       if (!pathname.startsWith(`${prefix}/`) || request.headers.has("origin")) return new Response("Not found", { status: 404 });
@@ -119,7 +119,7 @@ export async function startRelayRuntimeHost(options: {
         try {
           if (!updating) updating = reload().finally(() => { updating = undefined; });
           await updating;
-          return Response.json({ reloaded: true, relayRuntimeRevision: 1, reloadSupported: true, runtimeSourceHash: sourceHash, runtimeReloadScope: "request-handler",
+          return Response.json({ reloaded: true, relayRuntimeRevision: 1, listenerPolicyVersion: 2, reloadSupported: true, runtimeSourceHash: sourceHash, runtimeReloadScope: "request-handler",
             activeRequests: activeCount(), retiringRuntimes: retired.size });
         } catch { return Response.json({ reloaded: false, error: "runtime_reload_failed" }, { status: 409 }); }
       }
@@ -128,7 +128,7 @@ export async function startRelayRuntimeHost(options: {
         const totals = combine([archived, ...[...retired].map(item => item.runtime.snapshot?.() ?? {}), health]);
         return Response.json({ ...health, ...totals,
           subscriptionGuard: health.subscriptionGuard ? { ...health.subscriptionGuard as object, ...totals.subscriptionGuard } : null,
-          relayRuntimeRevision: 1, reloadSupported: true, runtimeSourceHash: sourceHash, runtimeReloadScope: "request-handler",
+          relayRuntimeRevision: 1, listenerPolicyVersion: 2, reloadSupported: true, runtimeSourceHash: sourceHash, runtimeReloadScope: "request-handler",
           activeRequests: activeCount(), draining, retiringRuntimes: retired.size });
       }
       if (pathname === `${prefix}/quotapie-drain` && request.method === "POST") {

@@ -1,4 +1,4 @@
-import { ResponseOwnershipGuard, ResponseOwnershipError, type OwnershipProvenance } from "./codex-response-ownership";
+import { ResponseOwnershipGuard, NativeResponseOwnershipGuard, ResponseOwnershipError, type OwnershipProvenance } from "./codex-response-ownership";
 import { fetchCodexUpstream, transportFailure } from "./codex-transport";
 import { randomBytes, randomUUID } from "node:crypto";
 import { gunzipSync, inflateSync } from "node:zlib";
@@ -10,18 +10,25 @@ import { DEFAULT_COMPACTION_ROUTE, isCompaction, object, routeCompaction, safeEf
 import { DEFAULT_TASK_SAVINGS, TaskSavingsRouter, validateTaskSavings, type TaskSavingsPolicy, type SavingsReason, type TaskState } from "./task-savings";
 import { failureOrigin, upstreamRequestIds, type UpstreamRequestIds } from "../packages/quota-core/src/codex-error-diagnostics.js";
 import { ResponseCompletionObserver } from "./codex-compaction-stream";
-import { AccountPool, PoolError, poolAccounts, readPoolPolicy, type PoolRoute, type SourceHistoryPolicy } from "./account-pool";
+import { AccountPool, PoolError, type PoolRoute, type SourceHistoryPolicy } from "./account-pool";
 import { codexRequestIdentity } from "./codex-request-identity";
 import { createSavingsModelSupport } from "./savings-model-support";
 import { createSubscriptionGuard, type SubscriptionGuard } from "./subscription-guard";
 import { codexProfileRoot, loadConfig } from "./config";
 import { readCodexForkParent } from "./account-pool-lineage";
+import { createSourceHistoryGuard, type SourceHistoryGuard } from "./source-history-guard";
+import { inspectNativeBody, nativeRequestPathAllowed } from "./native-request";
+import { interactiveRelayPolicy } from "./interactive-relay-policy";
 export { DEFAULT_COMPACTION_ROUTE, routeCompaction, validateCompactionRoute, type CompactionRoute } from "./codex-compaction-policy";
 
 import type { CompactionRequestEvent as CoreRequestEvent } from "../packages/quota-core/src/events.js";
 export interface CompactionRequestEvent extends CoreRequestEvent {
   accountRouting?: PoolRoute;
   inlineImageCount?: number;
+}
+export interface NativeRequestEvent {
+  kind: "native_request"; requestId: string; method: string; routeFamily: string;
+  status: number; origin: "relay" | "provider" | "client"; reason: string; at: string;
 }
 
 function requestIdentity(headers: Headers) {
@@ -123,6 +130,7 @@ export interface CompactionProxyOptions {
   port?: number;
   token?: string;
   onRequest?: (event: CompactionRequestEvent) => void;
+  onNativeRequest?: (event: NativeRequestEvent) => void;
   onProvenance?: (event: OwnershipProvenance & { requestId: string }) => void;
   taskSavings?: TaskSavingsPolicy;
   savingsModelSupported?: () => boolean;
@@ -130,6 +138,8 @@ export interface CompactionProxyOptions {
   fetchUpstream?: (url: string, init: RequestInit) => Promise<Response>;
   accountPool?: AccountPool;
   subscriptionGuard?: SubscriptionGuard;
+  executionMode?: "interactive" | "managed";
+  sourceHistoryGuard?: SourceHistoryGuard;
   /** Only interactive callers opt into source-authenticated native history. */
   sourceHistoryPolicy?: SourceHistoryPolicy;
   /** A reviewed managed report may not invoke inherited or future tools. */
@@ -138,10 +148,13 @@ export interface CompactionProxyOptions {
 
 export function createCompactionHandler(options: CompactionProxyOptions = {}) {
   if (options.reportOnly && !options.subscriptionGuard) throw new Error("Report-only execution requires a subscription guard");
-  const sourceHistoryPolicy = options.reportOnly ? "strict" : options.sourceHistoryPolicy ?? "strict";
-  const route = options.route ?? { ...DEFAULT_COMPACTION_ROUTE };
-  validateCompactionRoute(route);
-  const savingsPolicy = options.taskSavings ?? { ...DEFAULT_TASK_SAVINGS };
+  const interactive = options.executionMode === "interactive" && !options.reportOnly;
+  if (interactive && !options.subscriptionGuard) throw new Error("Interactive relay requires source authentication");
+  const sourceHistoryPolicy = options.reportOnly ? "strict" : interactive ? "authenticated-source" : options.sourceHistoryPolicy ?? "strict";
+  const nativePolicy = interactiveRelayPolicy(options.route, options.taskSavings);
+  const route = options.route ?? (interactive ? nativePolicy.route : { ...DEFAULT_COMPACTION_ROUTE });
+  if (!interactive) validateCompactionRoute(route);
+  const savingsPolicy = options.taskSavings ?? (interactive ? nativePolicy.taskSavings : { ...DEFAULT_TASK_SAVINGS });
   const savingsRouter = new TaskSavingsRouter(options.savingsModelSupported, options.savingsState);
   const token = options.token ?? randomBytes(24).toString("hex");
   if (!/^[a-f0-9]{48}$/.test(token)) throw new Error("Invalid relay token");
@@ -158,6 +171,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
   const abortedByReason: Record<string, number> = {};
   const active = new Map<string, CompactionRequestEvent>();
   const recent: CompactionRequestEvent[] = [];
+  const recentNativeRequests: NativeRequestEvent[] = [];
   const record = (update: CompactionRequestEvent) => {
     lastRequest = update;
     if (update.phase === "started" || update.phase === "response_headers") active.set(update.requestId, update);
@@ -171,17 +185,27 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
     try { options.onRequest?.(update); } catch { /* Never log callback errors. */ }
   };
   const upstreamFetch = options.fetchUpstream ?? fetch;
-  const snapshot = () => ({ service: "quotapie-compaction", schemaVersion: 3, serverErrorDiagnosticsVersion: 1, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolReserveVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 3 : 0, accountPoolRecoveryVersion: options.accountPool ? 2 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, responseOwnershipVersion: 1, taskSavingsPhasesVersion: 1, nativeImageRoutesVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
+  const publicGuardState = () => {
+    const state = options.subscriptionGuard?.check();
+    if (!state) return undefined;
+    const { sourceIdentity, sourceAccountHeader, ...publicState } = state;
+    return publicState;
+  };
+  const snapshot = () => ({ service: "quotapie-compaction", schemaVersion: 3, serverErrorDiagnosticsVersion: 1, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolReserveVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 3 : 0, accountPoolRecoveryVersion: options.accountPool ? 2 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, responseOwnershipVersion: 1, taskSavingsPhasesVersion: 1, nativeImageRoutesVersion: 1, taskSavings: interactive ? interactiveRelayPolicy(route, savingsPolicy).taskSavings : validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
           subscriptionGuardVersion: options.subscriptionGuard ? 1 : 0,
-          subscriptionGuardRevision: options.subscriptionGuard ? 2 : 0,
-          sourceContinuationRevision: options.accountPool?.sourceContinuationRevision ?? 0,
+          subscriptionGuardRevision: options.subscriptionGuard ? 3 : 0,
+          nativeRequestPolicyVersion: 1,
+          nativeRequestPolicy: interactive ? "source-origin" : "managed-allowlist",
+          recentNativeRequests,
+          executionMode: interactive ? "interactive" : "managed",
+          sourceContinuationRevision: interactive ? 3 : options.accountPool?.sourceContinuationRevision ?? 0,
           nativeSearchRoutesVersion: 1,
-          subscriptionGuard: options.subscriptionGuard ? { ...options.subscriptionGuard.check(),
+          subscriptionGuard: options.subscriptionGuard ? { ...publicGuardState(),
             sourceHistoryPolicy,
             blockedRequests: guardBlockedRequests, abortedRequests: guardAbortedRequests,
             blockedByReason, abortedByReason } : null,
           accountPoolLineageVersion: options.accountPool ? 3 : 0,
-          route: validateCompactionRoute(route), requests, rejectedRequests, compactions, attemptedCompactions,
+          route: interactive ? interactiveRelayPolicy(route, savingsPolicy).route : validateCompactionRoute(route), requests, rejectedRequests, compactions, attemptedCompactions,
           failedCompactions, cancelledCompactions, unverifiedCompactions, activeRequests, draining,
           active: [...active.values()], recent, lastRequest });
   return {
@@ -193,6 +217,20 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
         return new Response("Not found", { status: 404 });
       }
       const path = url.pathname.slice(prefix.length);
+      const nativeRequestId = randomUUID();
+      let nativeRecorded = false;
+      const recordNative = (status: number, origin: NativeRequestEvent["origin"], reason: string) => {
+        if (!interactive || nativeRecorded) return;
+        nativeRecorded = true;
+        // Retain no query, resource ID, payload, token or arbitrary error text.
+        const family = path.split("/")[1] ?? "";
+        const item: NativeRequestEvent = { kind: "native_request", requestId: nativeRequestId, method: request.method,
+          routeFamily: ["responses", "models", "alpha", "images", "files", "audio"].includes(family) ? family : "other",
+          status, origin, reason, at: new Date().toISOString() };
+        recentNativeRequests.push(item);
+        if (recentNativeRequests.length > 32) recentNativeRequests.shift();
+        try { options.onNativeRequest?.(item); } catch { /* Diagnostic only. */ }
+      };
       if (path === "/quotapie-health" && request.method === "GET") {
         return Response.json(snapshot());
       }
@@ -206,10 +244,14 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
       if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
         return new Response("Use streaming HTTP", { status: 426 });
       }
-      if (!/^\/[a-zA-Z0-9_/-]+$/.test(path) || !["GET", "POST"].includes(request.method)) {
+      if (interactive ? !nativeRequestPathAllowed(path) || !["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"].includes(request.method)
+        : !/^\/[a-zA-Z0-9_/-]+$/.test(path) || !["GET", "POST"].includes(request.method)) {
         return new Response("Unsupported route", { status: 400 });
       }
+      // Management endpoints are local-only, including unknown future names.
+      if (path.startsWith("/quotapie-")) return new Response("Not found", { status: 404 });
       const rejectGuard = (reason: string) => {
+        recordNative(400, "relay", reason);
         guardBlockedRequests++; rejectedRequests++;
         blockedByReason[reason] = (blockedByReason[reason] ?? 0) + 1;
         // A local hold is not a transient provider conflict. Codex retries 409,
@@ -220,7 +262,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
       const imageRequest = request.method === "POST" && IMAGE_ROUTES.has(path);
       const searchRequest = request.method === "POST" && path === SEARCH_ROUTE;
       const nativeToolRequest = imageRequest || searchRequest;
-      if (options.subscriptionGuard && (request.method === "POST"
+      if (!interactive && options.subscriptionGuard && (request.method === "POST"
         ? !["/responses", "/responses/compact"].includes(path) && !nativeToolRequest : path !== "/models"))
         return rejectGuard("route-unsupported");
       if (nativeToolRequest && options.reportOnly) return rejectGuard("request-unsupported");
@@ -228,7 +270,8 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
       let headers = transportHeaders(request.headers);
       // Bun fetch decompresses upstream responses; request identity to keep streaming simple.
       headers.set("accept-encoding", "identity");
-      let body: Uint8Array<ArrayBuffer> | string | undefined;
+      let body: BodyInit | undefined;
+      let nativeParsed: Record<string, unknown> | undefined;
       let expectsSse = false;
       let event: Omit<CompactionRequestEvent, "phase" | "status" | "at" | "durationMs"> | undefined;
       let poolSelection: ReturnType<AccountPool["select"]> = null;
@@ -238,21 +281,47 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
       const started = performance.now();
       // Freeze the policy for this request. A live policy update cannot change
       // its target, effort, or attribution after the request has been sent.
-      const policy = validateCompactionRoute(route);
-      const taskPolicy = validateTaskSavings(savingsPolicy);
+      const resolved = interactive ? interactiveRelayPolicy(route, savingsPolicy) : null;
+      const policy = resolved?.route ?? validateCompactionRoute(route);
+      const taskPolicy = resolved?.taskSavings ?? validateTaskSavings(savingsPolicy);
       // Include uploads in drain accounting, before the first body-read await.
       activeRequests++;
       try {
-        if (nativeToolRequest && options.subscriptionGuard) {
+        if (interactive) {
+          const guard = metadataRequest ? options.subscriptionGuard!.checkIdentity({ headers }) : options.subscriptionGuard!.check({ headers });
+          if (!guard.ready) throw new SubscriptionRequestError(guard.reason);
+          if (!headers.has("chatgpt-account-id") && guard.sourceAccountHeader)
+            headers.set("chatgpt-account-id", guard.sourceAccountHeader);
+          if (options.sourceHistoryGuard && guard.account && guard.sourceIdentity) {
+            try {
+              await options.sourceHistoryGuard({ account: guard.account, identity: guard.sourceIdentity, headers, signal: request.signal });
+            } catch (error) {
+              if (error instanceof PoolError) throw new SubscriptionRequestError(error.code);
+              request.signal.throwIfAborted();
+            }
+          }
+          // Inspect only Responses payloads for configured optimizations. Every
+          // other native method, media type and route streams through unchanged.
+          if (request.method === "POST" && ["/responses", "/responses/compact"].includes(path)) {
+            const inspected = await inspectNativeBody(request, MAX_BODY_BYTES);
+            body = inspected.body;
+            if (inspected.bytes && headers.get("content-encoding")?.toLowerCase() !== "zstd") try {
+              const decoded = decodeBody(inspected.bytes, headers.get("content-encoding"));
+              const parsed: unknown = decoded.byteLength <= MAX_BODY_BYTES ? JSON.parse(new TextDecoder().decode(decoded)) : null;
+              if (object(parsed) && typeof parsed.model === "string") nativeParsed = parsed;
+            } catch { /* Native payloads the optimizer cannot read remain intact. */ }
+          } else if (!["GET", "HEAD"].includes(request.method)) body = request.body ?? undefined;
+        }
+        if (!interactive && nativeToolRequest && options.subscriptionGuard) {
           // Native tools have their own payloads, not a Responses chat model.
           // Check the source and configured allowance before reading the body.
           const guard = options.subscriptionGuard.check({ headers });
           if (!guard.ready) throw new SubscriptionRequestError(guard.reason);
         }
-        if (request.method === "POST") {
-          body = new Uint8Array(await request.arrayBuffer());
-          if (nativeToolRequest) {
-            const decoded = decodeBody(body, headers.get("content-encoding"));
+        if (request.method === "POST" && (!interactive || nativeParsed)) {
+          if (!interactive) body = new Uint8Array(await request.arrayBuffer());
+          if (!interactive && nativeToolRequest) {
+            const decoded = decodeBody(body as Uint8Array, headers.get("content-encoding"));
             if (decoded.byteLength > MAX_BODY_BYTES) throw new SubscriptionRequestError("request-unsupported");
             const mediaType = headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
             // Keep the exact native JSON bytes. No model substitution, billing
@@ -268,22 +337,30 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
             }
           }
           if (path === "/responses" || path === "/responses/compact") {
-            const decoded = decodeBody(body, headers.get("content-encoding"));
-            if (decoded.byteLength > MAX_BODY_BYTES) {
+            const decoded = nativeParsed ? null : decodeBody(body as Uint8Array, headers.get("content-encoding"));
+            if (decoded && decoded.byteLength > MAX_BODY_BYTES) {
               activeRequests--;
               return new Response("Request too large", { status: 413 });
             }
-            const parsed: unknown = JSON.parse(new TextDecoder().decode(decoded));
+            const parsed: unknown = nativeParsed ?? JSON.parse(new TextDecoder().decode(decoded!));
             // Apply at the provider boundary as well as in CLI configuration.
             // Old rollout tool definitions cannot authorize a new tool call.
             const input = options.reportOnly && object(parsed) ? { ...parsed, tools: [], tool_choice: "none" } : parsed;
-            if (options.subscriptionGuard && (!object(input) || typeof input.model !== "string" || !input.model ||
+            if (!interactive && options.subscriptionGuard && (!object(input) || typeof input.model !== "string" || !input.model ||
                 input.background !== undefined && input.background !== false))
               throw new SubscriptionRequestError("request-unsupported");
             expectsSse = object(input) && (input.stream === true || (path === "/responses" && isCompaction(path, input)));
             const compact = object(input) && isCompaction(path, input);
-            const savings = !compact && path === "/responses" ? savingsRouter.route(input, taskPolicy, requestIdentity(headers).threadId) : null;
-            const routed = compact ? routeCompaction(path, input, policy) : savings ?? { body: input, routed: false };
+            let savings: ReturnType<TaskSavingsRouter["route"]> | null = null;
+            let routed: { body: unknown; routed: boolean } = { body: input, routed: false };
+            try {
+              savings = !compact && path === "/responses" ? savingsRouter.route(input, taskPolicy, requestIdentity(headers).threadId) : null;
+              routed = compact ? routeCompaction(path, input, policy) : savings ?? routed;
+            } catch (error) {
+              if (!interactive) throw error;
+              // Optional classification/catalog failures cannot deny admission.
+              // Preserve the original native body and its chosen model.
+            }
             if (object(input) && typeof input.model === "string") {
               const outgoing = object(routed.body) ? routed.body : input;
               guardModel = typeof outgoing.model === "string" ? outgoing.model : input.model;
@@ -307,7 +384,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
                   // Keep the source login and reject known foreign ownership.
                   // Interactive helpers need not persist a native rollout;
                   // managed work still requires strict history verification.
-                  await options.accountPool?.assertSourceContinuationAsync({ threadId: event.threadId, body: outgoing, headers,
+                  if (!interactive) await options.accountPool?.assertSourceContinuationAsync({ threadId: event.threadId, body: outgoing, headers,
                     historyPolicy: sourceHistoryPolicy }, request.signal);
                 } catch (error) {
                   throw new SubscriptionRequestError(error instanceof PoolError ? error.code : "source-continuation-unverified");
@@ -338,10 +415,11 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
             }
           }
         }
-        if (options.subscriptionGuard && request.method !== "POST") {
+        if (options.subscriptionGuard && (interactive || request.method !== "POST")) {
           // Model discovery is metadata needed for native login and collector
           // recovery. It cannot consume inference allowance.
-          const guard = options.subscriptionGuard.checkIdentity({ headers });
+          const guard = interactive && !metadataRequest ? options.subscriptionGuard.check({ headers, model: guardModel })
+            : options.subscriptionGuard.checkIdentity({ headers });
           if (!guard.ready) throw new SubscriptionRequestError(guard.reason);
         }
       } catch (error) {
@@ -413,6 +491,8 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
       const finish = (phase: "completed" | "failed" | "cancelled" | "unverified", errorCode?: string) => {
         if (finished) return;
         finished = true;
+        recordNative(status, guardFailure ? "relay" : phase === "cancelled" ? "client" : receivedResponse ? "provider" : "relay",
+          guardFailure ?? errorCode ?? (receivedResponse ? "provider-response" : phase));
         activeRequests--;
         clearInterval(guardTimer);
         request.signal.removeEventListener("abort", onAbort);
@@ -477,9 +557,12 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
           cancellation.signal.throwIfAborted();
           return upstreamFetch(target, init);
         };
-        let response = await fetchCodexUpstream(guardedFetch, `${UPSTREAM}${path}${url.search}`, {
-          method: request.method, headers, body, redirect: "manual", signal: cancellation.signal,
-        }, code => { retryCount++; transportCode = code; });
+        const target = `${UPSTREAM}${path}${url.search}`;
+        const init: RequestInit = { method: request.method, headers, body, redirect: "manual", signal: cancellation.signal };
+        // Streaming uploads and unknown native mutations must not be replayed.
+        let response = interactive && (!event || body instanceof ReadableStream)
+          ? await guardedFetch(target, init)
+          : await fetchCodexUpstream(guardedFetch, target, init, code => { retryCount++; transportCode = code; });
         receivedResponse = true;
         status = response.status;
         responseRequestIds = upstreamRequestIds(response.headers);
@@ -525,7 +608,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
         }
         if (finished) { await response.body?.cancel(); return guardFailure
           ? Response.json({ error: subscriptionError(guardFailure) }, { status: 400 }) : new Response(null, { status: 499 }); }
-        if ([301, 302, 303, 307, 308].includes(status)) {
+        if (!interactive && [301, 302, 303, 307, 308].includes(status)) {
           await response.body?.cancel(); finish("failed", "upstream_redirect");
           return new Response("Unexpected Codex upstream redirect", { status: 502 });
         }
@@ -537,11 +620,22 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
         emit("response_headers");
         const responseHeaders = transportHeaders(response.headers);
         responseHeaders.delete("content-encoding");
+        if (interactive && [301, 302, 303, 307, 308].includes(status) && responseHeaders.has("location")) {
+          const destination = new URL(responseHeaders.get("location")!, target);
+          if (destination.origin !== "https://chatgpt.com" || !destination.pathname.startsWith("/backend-api/codex/")) {
+            await response.body?.cancel(); finish("failed", "upstream_redirect");
+            return new Response("Codex redirect leaves the source endpoint", { status: 502 });
+          }
+          // The client's redirect stays behind the same source guard. Never
+          // follow a redirect here or hand out a different credential target.
+          responseHeaders.set("location", prefix + destination.pathname.slice("/backend-api/codex".length) + destination.search);
+        }
         // The native Responses Lite transport omits Content-Type even for SSE.
         // Use the request's stream control as a fallback, never conversation text.
         observer = new ResponseCompletionObserver(response.headers.get("content-type") || (expectsSse ? "text/event-stream" : ""), event?.kind === "compaction", status);
-        const ownership = response.ok && (response.headers.get("content-type") || (expectsSse ? "text/event-stream" : "")).includes("text/event-stream")
-          ? new ResponseOwnershipGuard(requestIdentity(request.headers), entry => {
+        const ownership = (!interactive || event) && response.ok && (response.headers.get("content-type") || (expectsSse ? "text/event-stream" : "")).includes("text/event-stream")
+          ? new (interactive ? NativeResponseOwnershipGuard : ResponseOwnershipGuard)({ ...requestIdentity(request.headers),
+            ...(interactive ? { sessionId: request.headers.get("session_id") ?? request.headers.get("session-id") } : {}) }, entry => {
             options.onProvenance?.({ requestId: event?.requestId ?? "untracked", ...entry });
           }) : undefined;
         const reader = response.body?.getReader();
@@ -640,7 +734,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
 export function startCompactionProxy(options: CompactionProxyOptions = {}) {
   const handler = createCompactionHandler(options);
   const server = Bun.serve({ hostname: "127.0.0.1", port: options.port ?? 0,
-    idleTimeout: 0, maxRequestBodySize: MAX_BODY_BYTES, fetch: handler.fetch });
+    idleTimeout: 0, maxRequestBodySize: options.executionMode === "interactive" ? Infinity : MAX_BODY_BYTES, fetch: handler.fetch });
   return {
     baseUrl: `http://127.0.0.1:${server.port}${handler.prefix}`,
     stop: () => server.stop(true),
@@ -674,13 +768,13 @@ export function compactionCodexArgs(baseUrl: string, args: string[]): string[] {
 export async function runCompactionCodex(args: string[], defaultCommand: string): Promise<number> {
   if (args[0] === "--help" || args[0] === "-h") {
     console.log("Usage: quotapie codex [--codex-bin PATH] [--compact-from MODEL] [--compact-model MODEL] [--compact-effort low] -- [Codex arguments]");
-    console.log("Default: gpt-6-astra compaction requests use gpt-5.6-sol. Requires an existing ChatGPT login. Experimental; applies only to this launched process.");
+    console.log("Default: preserve the native model. Use --compact-model to enable compaction routing. Requires an existing ChatGPT login. Experimental; applies only to this launched process.");
     return 0;
   }
   const separator = args.indexOf("--");
   const wrapperArgs = separator < 0 ? args : args.slice(0, separator);
   const codexArgs = separator < 0 ? [] : args.slice(separator + 1);
-  const route = { ...DEFAULT_COMPACTION_ROUTE };
+  const route: CompactionRoute = interactiveRelayPolicy().route;
   let command = defaultCommand;
   for (let i = 0; i < wrapperArgs.length; i += 2) {
     const option = wrapperArgs[i];
@@ -700,14 +794,14 @@ export async function runCompactionCodex(args: string[], defaultCommand: string)
     try { return profile.enabled && realpathSync(codexProfileRoot(profile)) === realpathSync(codexHome); }
     catch { return false; }
   })?.id;
-  const accountPool = sourceAccount ? new AccountPool({ sourceAccount, accounts: () => poolAccounts(config()), policy: readPoolPolicy,
-    forkParentAsync: thread => readCodexForkParent(codexHome, thread) }) : undefined;
   const proxy = startCompactionProxy({
     route,
-    accountPool,
+    executionMode: "interactive",
+    sourceHistoryGuard: createSourceHistoryGuard({ forkParent: thread => readCodexForkParent(codexHome, thread) }),
     sourceHistoryPolicy: "authenticated-source",
     savingsModelSupported: createSavingsModelSupport(join(codexHome, "models_cache.json")),
-    subscriptionGuard: createSubscriptionGuard({ codexHome, sourceAccount, config, quotaObservationMode: "advisory" }),
+    subscriptionGuard: createSubscriptionGuard({ codexHome, sourceAccount, config, quotaObservationMode: "advisory", executionMode: "interactive" }),
+    onNativeRequest: event => console.error(JSON.stringify(event)),
     onProvenance: event => console.error(JSON.stringify({ service: "quotapie-compaction", kind: "response_provenance", ...event })),
     onRequest: (event) => {
       console.error(JSON.stringify({ service: "quotapie-compaction", ...event }));
@@ -727,6 +821,5 @@ export async function runCompactionCodex(args: string[], defaultCommand: string)
     process.off("SIGINT", interrupt);
     process.off("SIGTERM", terminate);
     proxy.stop();
-    accountPool?.close();
   }
 }

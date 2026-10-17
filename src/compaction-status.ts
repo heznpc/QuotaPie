@@ -12,7 +12,7 @@ import { inspectRelaySettings, type RelaySettingsEntry } from "./relay-settings"
 import { parseCompactionRequestEvent as event } from "../packages/quota-core/src/events.js";
 import { summarizeRequestEvents } from "../packages/quota-core/src/observations.js";
 const ongoing = (phase: string) => phase === "started" || phase === "response_headers";
-const EXPECTED_SUBSCRIPTION_GUARD_REVISION = 2;
+const EXPECTED_SUBSCRIPTION_GUARD_REVISION = 3;
 const guardReasons = new Set(["ready", "account-unavailable", "collection-unavailable", "quota-unknown", "quota-stale",
   "reset-unconfirmed", "reserve-reached", "quota-exhausted", "reserve-invalid", "budget-baseline-invalid", "budget-baseline-changed",
   "subscription-auth-required", "subscription-auth-unavailable", "account-identity-changed", "request-identity-mismatch",
@@ -46,6 +46,10 @@ function subscriptionProtection(generations: Array<{ reachable: boolean; health:
     const revision = Number.isSafeInteger(health?.subscriptionGuardRevision) && health.subscriptionGuardRevision >= 0
       ? health.subscriptionGuardRevision as number : null;
     return { generation: index + 1, reachable: generation.reachable, revision,
+      executionMode: health?.executionMode === "interactive" ? "interactive" : "managed",
+      enforcement: ["source-identity", "explicit-reserve", "managed-budget"].includes(guard?.enforcement) ? guard.enforcement : null,
+      nativePolicyCurrent: health?.nativeRequestPolicyVersion === 1 && health?.nativeRequestPolicy === "source-origin" && health?.sourceContinuationRevision === 3,
+      listenerPolicyCurrent: health?.listenerPolicyVersion === 2,
       outOfDate: generation.reachable && (revision !== EXPECTED_SUBSCRIPTION_GUARD_REVISION || !guard),
       account: typeof guard?.account === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(guard.account) ? guard.account as string : null,
       ready: typeof guard?.ready === "boolean" ? guard.ready as boolean : null,

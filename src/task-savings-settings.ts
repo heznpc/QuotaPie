@@ -7,7 +7,7 @@ export class TaskSavingsSettings {
   constructor(private root: string, private fetcher: typeof fetch = fetch) {}
   private async inspect(healthByPath?: Map<string, any>, validatedEntries?: RelaySettingsEntry[]) {
     const project = async ({ path, raw, settings, current }: RelaySettingsEntry) => {
-      const saved = validateTaskSavings(settings.taskSavings ?? DEFAULT_TASK_SAVINGS);
+      const saved = validateTaskSavings(settings.taskSavings ?? { ...DEFAULT_TASK_SAVINGS, enabled: false });
       let health: any = null;
       try { health = healthByPath ? healthByPath.get(path) : await relayHealth(settings,this.fetcher); } catch { /* No endpoint details in status. */ }
       const configurable = health?.schemaVersion >= 3 && !!health.taskSavings;

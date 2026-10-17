@@ -22,7 +22,7 @@ import urllib.request
 LABEL = "local.quotapie.compaction"
 BEGIN = "# BEGIN QuotaPie compaction relay\n"
 END = "# END QuotaPie compaction relay\n"
-GUARD_REVISION = 2
+GUARD_REVISION = 3
 RUNTIME_REVISION = 1
 UPGRADE_LABEL = LABEL + ".upgrade"
 
@@ -219,13 +219,13 @@ class LocalRelay:
         generation = str(time.time_ns())
         release = self.runtime / "releases" / generation
         release.mkdir(parents=True, mode=0o700)
-        policy = dict(previous.get("route", {"from": "gpt-6-astra", "to": "gpt-5.6-sol"}))
+        policy = dict(previous.get("route", {"from": "gpt-6-astra", "to": "gpt-6-astra"}))
         policy["effort"] = args.compact_effort or policy.get("effort", "low")
         if args.compact_model:
             policy["to"] = args.compact_model
         settings = {
             "port": port, "token": token, "route": policy,
-            "taskSavings": previous.get("taskSavings", {"enabled": True, "model": "gpt-5.6-luna", "effort": "low"}),
+            "taskSavings": previous.get("taskSavings", {"enabled": False, "model": "gpt-5.6-luna", "effort": "low"}),
             "label": LABEL + "." + generation, "bun": str(Path(bun).resolve()),
             "source": str(source), "codex_home": str(config_path.parent),
         }
@@ -345,6 +345,8 @@ class LocalRelay:
                 profile_key = hashlib.sha256(str(target).encode()).hexdigest()
                 if (health.get("relayRuntimeRevision") == RUNTIME_REVISION and health.get("reloadSupported") is True
                         and health.get("subscriptionGuardVersion") == 1 and health.get("subscriptionGuardRevision") == GUARD_REVISION
+                        and health.get("nativeRequestPolicyVersion") == 1 and health.get("nativeRequestPolicy") == "source-origin"
+                        and health.get("sourceContinuationRevision") == 3 and health.get("executionMode") == "interactive"
                         and guard.get("version") == 1
                         and guard.get("profileKey") == profile_key and guard.get("account")):
                     return {"relayConnected": True, "restart_required": False}
@@ -362,6 +364,8 @@ class LocalRelay:
                 guard = current.get("subscriptionGuard", {})
                 connected = (current.get("subscriptionGuardVersion") == 1
                              and current.get("subscriptionGuardRevision") == GUARD_REVISION
+                             and current.get("nativeRequestPolicyVersion") == 1 and current.get("nativeRequestPolicy") == "source-origin"
+                             and current.get("sourceContinuationRevision") == 3 and current.get("executionMode") == "interactive"
                              and guard.get("profileKey") == hashlib.sha256(str(target).encode()).hexdigest()
                              and guard.get("version") == 1 and bool(guard.get("account")))
             except (OSError, ValueError, RuntimeError):
@@ -439,8 +443,10 @@ class LocalRelay:
         runtime = directory / "relay-runtime-build.js"
         try:
             for entry, output in (("codex-compaction-daemon.ts", bootstrap), ("codex-relay-runtime.ts", runtime)):
+                # Bun includes source-relative paths in its output. A fixed cwd
+                # makes runtime identity independent of where the manager ran.
                 subprocess.run([settings["bun"], "build", str(source / "src" / entry), "--target=bun", "--outfile", str(output)],
-                               check=True, capture_output=True)
+                               cwd=source, check=True, capture_output=True)
             subprocess.run([settings["bun"], str(bootstrap), "--check-policy", str(path)], check=True, capture_output=True)
             source_hash = digest(runtime)
             immutable = directory / ("relay-runtime-" + source_hash + ".js")

@@ -303,49 +303,59 @@ fresh quota above its own reserve, with up to five percentage points of headroom
 If no eligible destination exists, or protected quota is unknown, the request
 pauses instead of spending the reserve. Collection delay and concurrent requests
 can overshoot the threshold, so this is not a guaranteed hard spending cap.
-It applies only to requests through this
-Mac's QuotaPie Codex relay. Transfers require the same portable history checks
-described above. Current installed relays also enforce independent subscription
-protection: requests stay on the source profile, pool routing and 429 failover
-are bypassed, and disabling the pool does not disable subscription exhaustion
-protection. Only an explicit enabled per-account reserve, or a separately reviewed
-continuation budget, stops execution above 0%. The forecast's default 10%/15%
-headroom is advisory; there is no hidden 1% execution minimum. Reset announcements
-do not create a cutoff. For interactive work without an explicit reserve or budget,
-missing or stale quota observations are advisory. Known subscription exhaustion
-and identity mismatches still stop requests. Reviewed automatic work requires
-fresh observations. API-key, unsupported
-model/route and background requests are rejected. While a response is running,
-the guard rechecks every 500ms and cancels the upstream connection if the latest
-observation no longer permits it. This does not refund already-processed work
-or establish an exact provider-side billing cap; concurrent usage and delayed
-provider accounting remain outside the relay's control. Model metadata remains
-available for quota/auth recovery, and local holds return a non-retryable 400
-with a specific reason. Previously observed, still-valid credentials survive
-same-login token refresh; replacing the login still stops execution.
-Interactive desktop and CLI requests use `authenticated-source` history policy:
-a missing or unreadable local rollout does not block an ephemeral helper, native
-compaction, or resumed request. Authentication must match the original profile;
-the relay forwards opaque history unchanged to that account, without account
-selection, credential replacement, or 429 failover. Known foreign bindings,
-prior cross-account replay state, and conflicting/cyclic ancestry still stop the
-request. Missing local metadata is not itself proof of foreign ownership.
-Managed continuations retain `strict` history verification. Relay health exposes
-`subscriptionGuard.sourceHistoryPolicy` and `sourceContinuationRevision` so the
-active behavior can be checked, including after a live handler update.
-Native web research is supported at `POST /alpha/search`, alongside the native
-image routes. These tool requests retain their source credentials and exact JSON
-body, never enter account selection or recovery, and honor explicit allowance
-checks. A search-service 429 is returned to its caller without creating a model
-quota hold. Report-only managed work cannot invoke these tool routes. Relay
-health advertises `nativeSearchRoutesVersion: 1` for this support.
-`/api/status` includes `compaction.subscriptionProtection` with live policy
-revisions, observation ages and reason-specific rejection counts, including
-ordinary requests. `quotapie-compaction repair-idle --source REPOSITORY` repairs
-older guarded listeners without changing loaded endpoint URLs; active requests
-are deferred and a failed restart restores the previous binary.
-After first installing reserve support, finish active work and reopen Codex:
-already-loaded tasks may still use an older relay that does not enforce reserves.
+It applies only to requests through this Mac's QuotaPie Codex relay.
+Interactive relays now use a source-account boundary: requests keep the original
+login, with no account selection, credential substitution, 429 failover, or paid
+API fallback. A missing or zero reserve does not enroll ordinary work in local
+quota enforcement. Provider expiry, entitlement, model and quota decisions are
+returned to the native client; stale collector data and previous 402/429 responses
+do not create local holds. Explicit enabled reserves still require fresh quota
+and are rechecked during execution. Reviewed managed continuations retain their
+strict route/model/history policy and frozen budgets.
+
+Interactive requests use `authenticated-source` history policy. Missing, locked,
+unreadable or incomplete local rollout/routing data does not strand ephemeral
+helpers, compaction, forks or resumed work. Readable bindings to another login
+still reject the request. Same-login token refresh is accepted only for credentials
+actually observed in the source profile; an unobserved credential, a different
+workspace or a replaced login still stops execution. Missing account headers are
+filled from the authenticated source, never from another account.
+
+Within the fixed ChatGPT Codex origin and namespace, native GET/HEAD/POST/PUT/
+PATCH/DELETE/OPTIONS routes pass through, including future routes, search, images,
+files and audio. Native payloads and provider errors retain their bytes. Inspection
+bounds limit optimization, not admission; unknown encodings, large uploads,
+background requests, new models and unfamiliar SSE frames pass through. Explicit
+foreign response attribution still stops that response. Redirects within the same
+Codex namespace remain behind the source guard; external redirects are rejected.
+The local capability, browser-origin isolation, management endpoint boundary and
+native WebSocket-to-HTTP fallback remain in place.
+
+Missing optional optimization settings default to disabled/pass-through. Invalid
+optimizer settings fall back to the native request. Existing valid saved optimizer
+choices are retained. Local admission and provider results are recorded separately
+as sanitized native request diagnostics; no body, token, query or resource ID is
+retained by that diagnostic record.
+
+Relay health exposes `executionMode`, `nativeRequestPolicyVersion`,
+`sourceContinuationRevision`, `subscriptionGuard.enforcement` and
+`listenerPolicyVersion`. `/api/status` includes these policy dimensions alongside
+reason-specific rejection counts. `check:runtime` verifies every reachable relay's
+actual handler hash and policy dimensions, not just the collector's version.
+`quotapie-compaction upgrade --source REPOSITORY` hot-swaps request handlers without
+interrupting streams or changing loaded endpoint URLs. Bootstrap/listener changes
+are staged for natural restart; the old listener's 64 MiB transport limit cannot
+be removed by a handler swap. Updated listeners have no local request-size cutoff.
+An idle HTTP gap is not permission to kill a session that may be running tools.
+
+The earlier audits missed these failures because tests encoded known route/model
+allowlists and expected their denials, rather than asserting native compatibility.
+They also conflated source identity with optional history/quota observations and
+verified isolated handlers more often than the installed interactive runtime.
+`tests/native-interactive-policy.test.ts` now covers future routes, methods, body
+shapes, missing account headers, refresh, stale holds, broken/locked optional
+storage, explicit reserves, foreign identity, oversized uploads and unfamiliar
+responses. Both permissive native behavior and retained boundaries are tested.
 Use only accounts you are authorized to access, in accordance with the applicable
 provider terms.
 
@@ -499,20 +509,21 @@ quotapie doctor               check collectors and connection state
 quotapie test-alert           hand a test alert to the configured channels
 quotapie launchd              print a plist for running as a resident service
 quotapie menubar-launchd      print a plist for launching the menu bar app
-quotapie codex -- -m gpt-6-astra
+quotapie codex --compact-model gpt-5.6-sol -- -m gpt-6-astra
                                run Codex with experimental Sol compaction routing
 ```
 
 ## Experimental Codex compaction routing
 
-`quotapie codex` launches a Codex process through a private loopback relay. By
-default, Astra performs the task and Sol handles only its compaction requests,
-including automatic compaction in the middle of a turn. The next ordinary
-request still uses Astra; QuotaPie does not interrupt or replay the turn.
+`quotapie codex` launches a Codex process through a private loopback relay and
+preserves its native model by default. With `--compact-model gpt-5.6-sol`, Astra
+performs the task and Sol handles only its compaction requests, including automatic
+compaction in the middle of a turn. The next ordinary request still uses Astra;
+QuotaPie does not interrupt or replay the turn.
 
 ```bash
-quotapie codex -- -m gpt-6-astra
-quotapie codex -- resume -m gpt-6-astra SESSION_UUID
+quotapie codex --compact-model gpt-5.6-sol -- -m gpt-6-astra
+quotapie codex --compact-model gpt-5.6-sol -- resume -m gpt-6-astra SESSION_UUID
 quotapie codex --codex-bin /path/to/codex -- app-server --stdio
 ```
 
@@ -520,7 +531,8 @@ From an uninstalled source checkout, replace `quotapie` with `bun run src/cli.ts
 The command uses `collection.codexCommand` unless `--codex-bin` is supplied, and
 inherits the current Codex login and `CODEX_HOME`. It requires a ChatGPT login;
 API-key providers are outside this experiment. `--compact-from` and
-`--compact-model` override the source and compaction model names. Other model
+`--compact-model` override the source and compaction model names. Without an
+explicit compaction target, the wrapper preserves the native model. Other model
 pairs require their own compatibility check.
 
 The relay recognizes the final `compaction_trigger` input control on

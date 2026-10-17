@@ -6,7 +6,7 @@ import { DEFAULT_CONFIG } from "../src/config";
 import { createRelayRuntime, type RelayRuntime, type RuntimeMemory } from "../src/codex-relay-runtime";
 import { profileReference } from "../src/work-boundary";
 
-test("a disabled historical profile cannot shadow the enabled profile sharing its directory", () => {
+test("a disabled historical profile cannot shadow the enabled profile sharing its directory", async () => {
   const root = mkdtempSync(join(tmpdir(), "qp-runtime-profile-"));
   const home = join(root, "profile"), data = join(root, "data"), configPath = join(root, "config.json");
   mkdirSync(home); mkdirSync(data);
@@ -14,6 +14,7 @@ test("a disabled historical profile cannot shadow the enabled profile sharing it
   process.env.QUOTAPIE_HOME = data; process.env.QUOTAPIE_CONFIG = configPath;
   const memory: RuntimeMemory = {};
   let runtime: RelayRuntime | undefined;
+  const originalFetch = globalThis.fetch;
   try {
     const config = structuredClone(DEFAULT_CONFIG);
     config.accounts.codex = [
@@ -30,33 +31,41 @@ test("a disabled historical profile cannot shadow the enabled profile sharing it
       accounts: [{ provider: "codex", account: "current", profileKey: profileReference(home), collectionState: "recent-success", collectionErrorCategory: null,
         windows: [{ bucket: "codex:primary:300", quality: "authoritative", freshness: "fresh", remainingPercent: 9,
           observedAtMs: now - 1000, resetsAtMs: now + 3600000, validUntilMs: now + 600000 }] }] }));
+    const sent: { url: string; body: string }[] = [];
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      sent.push({ url: String(url), body: await new Response(init?.body).text() });
+      return Response.json({ native: true });
+    }) as typeof fetch;
     runtime = createRelayRuntime({ port: 45000, token: "a".repeat(48), codex_home: home,
       route: { from: "gpt-6-astra", to: "gpt-6-astra", effort: "low" },
       taskSavings: { enabled: false, model: "gpt-5.6-luna", effort: "low" } }, memory);
     expect(memory.sourceAccount).toBe("current");
     const health = runtime.snapshot!() as any;
     expect(health.subscriptionGuard).toMatchObject({ account: "current", ready: true, reason: "ready" });
-    expect(health.subscriptionGuard.windows[0].remainingPercent).toBe(9);
+    expect(health.subscriptionGuard.enforcement).toBe("source-identity");
     expect(health.subscriptionGuard.sourceHistoryPolicy).toBe("authenticated-source");
-    expect(health.sourceContinuationRevision).toBe(2);
-    const oldPool = memory.accountPool!;
-    Object.defineProperty(oldPool, "sourceContinuationRevision", { value: 1 });
+    expect(health.sourceContinuationRevision).toBe(3);
+    expect(health.nativeRequestPolicy).toBe("source-origin");
+    expect(memory.accountPool).toBeUndefined();
+    const headers = { authorization: `Bearer ${token}`, "chatgpt-account-id": "fixture-workspace", "thread-id": "00000000-0000-0000-0000-000000000001" };
+    const body = '{"model":"future-model","background":true,"input":[]}';
+    const response = await runtime.fetch(new Request(`http://127.0.0.1/${"a".repeat(48)}/backend-api/codex/responses`, { method: "POST", headers, body }));
+    expect(response.status).toBe(200); await response.text();
+    expect(sent).toEqual([{ url: "https://chatgpt.com/backend-api/codex/responses", body }]);
+    // Reload must preserve an old handler's resources without invoking its old,
+    // stricter continuation checker for new interactive requests.
+    const oldPool = { assertSourceContinuationAsync() { throw new Error("legacy check invoked"); }, close() {} } as any;
+    memory.accountPool = oldPool;
     const oldGuard = memory.guard, oldSavings = memory.savings;
     const next = createRelayRuntime({ port: 45000, token: "a".repeat(48), codex_home: home,
       route: { from: "gpt-6-astra", to: "gpt-6-astra", effort: "low" } }, memory);
-    expect(memory.accountPool).not.toBe(oldPool);
-    expect(typeof memory.accountPool!.assertSourceContinuationAsync).toBe("function");
+    expect(memory.accountPool).toBe(oldPool);
     expect(memory.guard).toBe(oldGuard); expect(memory.savings).toBe(oldSavings);
-    // Retiring handlers retain their connection until the host shuts down.
-    expect(() => oldPool.assertSourceContinuation({ threadId: null,
-      headers: new Headers({ authorization: `Bearer ${token}`, "chatgpt-account-id": "fixture-workspace" }),
-      body: { input: [{ role: "user", content: "synthetic" }] } }, () => ({ status: "unknown" }))).not.toThrow();
-    const currentPool = memory.accountPool;
     const same = createRelayRuntime({ port: 45000, token: "a".repeat(48), codex_home: home,
       route: { from: "gpt-6-astra", to: "gpt-6-astra", effort: "low" } }, memory);
-    expect(memory.accountPool).toBe(currentPool);
     same.close(); next.close();
   } finally {
+    globalThis.fetch = originalFetch;
     runtime?.close(); memory.dispose?.();
     if (previousHome === undefined) delete process.env.QUOTAPIE_HOME; else process.env.QUOTAPIE_HOME = previousHome;
     if (previousConfig === undefined) delete process.env.QUOTAPIE_CONFIG; else process.env.QUOTAPIE_CONFIG = previousConfig;

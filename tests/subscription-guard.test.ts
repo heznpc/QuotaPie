@@ -111,7 +111,7 @@ test("the HTTP relay forwards 9 and 1 percent quota, then reports only the expli
     expect((await exhausted.json() as any).error.code).toBe("subscription_quota_exhausted");
     expect(calls).toBe(2);
     const health = await (await fetch(proxy.baseUrl + "/quotapie-health")).json() as any;
-    expect(health.subscriptionGuardRevision).toBe(2);
+    expect(health.subscriptionGuardRevision).toBe(3);
     expect(health.subscriptionGuard).toMatchObject({ blockedRequests: 2, abortedRequests: 0,
       blockedByReason: { "reserve-reached": 1, "quota-exhausted": 1 }, abortedByReason: {} });
   } finally { proxy.stop(); f.close(); }

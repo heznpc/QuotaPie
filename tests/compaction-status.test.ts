@@ -26,7 +26,7 @@ test("guard diagnostics expose repeated holds and mixed live revisions without t
       const index = Number(new URL(String(input)).port) - 45001;
       return Response.json({ service: "quotapie-compaction", schemaVersion: 3, route, taskSavings: DEFAULT_TASK_SAVINGS,
         subscriptionGuardVersion: index === 2 ? 0 : 1,
-        ...(index === 2 ? {} : { subscriptionGuardRevision: index === 0 ? 2 : 1 }), activeRequests: index,
+        ...(index === 2 ? {} : { subscriptionGuardRevision: index === 0 ? 3 : 1 }), activeRequests: index,
         subscriptionGuard: index === 2 ? null : { version: 1, account: index === 0 ? "primary" : "second",
           profileKey: "private-profile-key", email: "private@example.com", token, endpoint: "https://secret.example.com", path: root,
           ready: false, reason: index === 0 ? "quota-stale" : "reserve-reached", blockedRequests: index === 0 ? 24 : 3,
@@ -38,11 +38,12 @@ test("guard diagnostics expose repeated holds and mixed live revisions without t
           requestId: "22222222-2222-4222-8222-222222222222", errorCode: "subscription_reserve_reached" }] : [] });
     }) as unknown as typeof fetch);
     const status = await reader.status(now);
-    expect(status.subscriptionProtection).toMatchObject({ expectedRevision: 2, reachable: 3, outOfDate: 2,
+    expect(status.subscriptionProtection).toMatchObject({ expectedRevision: 3, reachable: 3, outOfDate: 2,
       revisionMismatch: true, blockedRequests: 27, abortedRequests: 2, activeRequests: 3,
       blockedByReason: { "quota-stale": 20, "collection-unavailable": 4, "reserve-reached": 3 },
       observedBlocksByReason: { "quota-stale": 1, "reserve-reached": 1 } });
-    expect(status.subscriptionProtection.relays[0]).toEqual({ generation: 1, reachable: true, revision: 2, outOfDate: false,
+    expect(status.subscriptionProtection.relays[0]).toEqual({ generation: 1, reachable: true, revision: 3, outOfDate: false,
+      executionMode: "managed", enforcement: null, nativePolicyCurrent: false, listenerPolicyCurrent: false,
       account: "primary", ready: false, reason: "quota-stale", blockedRequests: 24, abortedRequests: 2, activeRequests: 0,
       blockedByReason: { "quota-stale": 20, "collection-unavailable": 4 },
       windows: [{ bucket: "codex:primary:300", remainingPercent: 63, reservePercent: 0, observedAgeMs: 125000 }] });
@@ -69,7 +70,7 @@ test("guard diagnostics sanitize malformed fields and do not call an unreachable
     const reader = new CompactionStatusReader(root, (async () => {
       if (!reachable) throw new Error("https://secret.example.com/private-token");
       return Response.json({ service: "quotapie-compaction", schemaVersion: 3, route, activeRequests: -10,
-        subscriptionGuardVersion: 1, subscriptionGuardRevision: 2, subscriptionGuard: { version: 1,
+        subscriptionGuardVersion: 1, subscriptionGuardRevision: 3, subscriptionGuard: { version: 1,
           account: "private@example.com", reason: "https://secret.example.com/private-token", ready: "true",
           blockedRequests: -1, abortedRequests: "20", blockedByReason: { "private@example.com": 2, "quota-stale": -4 },
           windows: [{ bucket: "codex:primary:300", remainingPercent: 101, reservePercent: -1, observedAtMs: now + 1 }] } });

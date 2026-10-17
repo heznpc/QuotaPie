@@ -19,6 +19,11 @@ export interface SubscriptionGuardState {
   /** Advisory collector failure; the original authenticated request may proceed. */
   quotaObservationReason?: string;
   quotaObservationMode?: "required" | "advisory";
+  executionMode?: "interactive" | "managed";
+  enforcement?: "source-identity" | "explicit-reserve" | "managed-budget";
+  sourceIdentity?: string;
+  sourceAccountHeader?: string;
+  policyObservationReason?: string;
 }
 export interface SubscriptionGuard {
   intervalMs: number;
@@ -33,6 +38,7 @@ export interface SubscriptionGuardMemory {
   boundAuthAtMs: number | null;
   knownCredentials: Map<string, number>;
   deniedAtMs: number | null;
+  explicitReserve?: number;
 }
 export function subscriptionGuardMemory(): SubscriptionGuardMemory {
   return { boundIdentity: null, boundAuthAtMs: null, knownCredentials: new Map(), deniedAtMs: null };
@@ -40,7 +46,7 @@ export function subscriptionGuardMemory(): SubscriptionGuardMemory {
 
 const digest = (value: string) => createHash("sha256").update(value).digest();
 const equal = (a: string, b: string) => timingSafeEqual(digest(a), digest(b));
-// Only explicitly supported subscription models are admitted. The desktop's
+// Managed work admits only explicitly supported subscription models. The desktop's
 // discovery cache may be absent, incomplete or replaced during refresh; it is
 // neither an allowance authority nor a reason to interrupt a known model.
 // Catalog entries also cannot expand this set to internal/credit-only models.
@@ -64,10 +70,12 @@ export function createSubscriptionGuard(options: {
   now?: () => number;
   intervalMs?: number;
   quotaObservationMode?: "required" | "advisory";
+  executionMode?: "interactive" | "managed";
   minimumReserveByBucket?: Record<string, number>;
   baselineResetsAtByBucket?: Record<string, number>;
 }): SubscriptionGuard {
   const now = options.now ?? Date.now;
+  const interactive = options.executionMode === "interactive";
   const hasBudget = options.minimumReserveByBucket !== undefined || options.baselineResetsAtByBucket !== undefined;
   // A one-turn budget is frozen to the reviewed windows, including their reset
   // periods. A new period/bucket has no comparable consumption baseline.
@@ -91,7 +99,8 @@ export function createSubscriptionGuard(options: {
   function checkState(request: { headers?: Headers; model?: string } = {}, identityOnly = false): SubscriptionGuardState {
     let at = now();
     const state: SubscriptionGuardState = { version: 1, account: options.sourceAccount ?? null,
-      profileKey, ready: false, reason: "account-unavailable", checkedAtMs: at, windows: [], quotaObservationMode: options.quotaObservationMode ?? "required" };
+      profileKey, ready: false, reason: "account-unavailable", checkedAtMs: at, windows: [], quotaObservationMode: options.quotaObservationMode ?? "required",
+      executionMode: interactive ? "interactive" : "managed", enforcement: "source-identity" };
     const hold = (reason: string) => ({ ...state, ready: false, reason });
     if (!identityOnly && !validBudget) return hold("budget-baseline-invalid");
     if (!root || !profileKey || !options.sourceAccount) return state;
@@ -108,36 +117,55 @@ export function createSubscriptionGuard(options: {
       const claims = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"));
       at = now(); state.checkedAtMs = at;
       if (typeof claims.sub !== "string" || !claims.sub || !Number.isFinite(claims.exp) ||
-          !identityOnly && claims.exp * 1000 <= at + 30000)
+          !identityOnly && !interactive && claims.exp * 1000 <= at + 30000)
         return hold("subscription-auth-unavailable");
       const identity = digest(JSON.stringify([root, upstreamAccount, claims.sub])).toString("hex");
       if (memory.boundIdentity && memory.boundIdentity !== identity) return hold("account-identity-changed");
       memory.boundIdentity ??= identity;
       memory.boundAuthAtMs ??= stamp.mtimeMs;
-      // Accept an earlier still-valid token only if this relay actually read
-      // it from the same local login. Self-asserted JWT claims are not proof.
-      for (const [key, expires] of knownCredentials) if (expires <= at) knownCredentials.delete(key);
+      // Accept an earlier token only if this relay actually read
+      // it from the same local login. Native expiry is the provider's decision;
+      // managed work also requires local validity. Self-asserted claims are not proof.
+      if (!interactive) for (const [key, expires] of knownCredentials) if (expires <= at) knownCredentials.delete(key);
       knownCredentials.set(digest(`Bearer ${token}`).toString("hex"), claims.exp * 1000);
-      while (knownCredentials.size > 8) knownCredentials.delete(knownCredentials.keys().next().value!);
       if (request.headers) {
         const authorization = request.headers.get("authorization") ?? "";
         const remembered = knownCredentials.get(digest(authorization).toString("hex"));
-        if ((!equal(authorization, `Bearer ${token}`) && !(remembered != null && remembered > at)) ||
-            request.headers.get("chatgpt-account-id") !== upstreamAccount) return hold("request-identity-mismatch");
+        const suppliedAccount = request.headers.get("chatgpt-account-id");
+        if ((!equal(authorization, `Bearer ${token}`) && !(remembered != null && (interactive || remembered > at))) ||
+            (suppliedAccount !== upstreamAccount && !(interactive && suppliedAccount === null))) return hold("request-identity-mismatch");
       }
+      state.sourceIdentity = identity;
+      state.sourceAccountHeader = upstreamAccount;
       // Metadata is needed to initialize the collector that refreshes quota.
       // Keep its source identity fixed, but let the provider handle token expiry
       // so an expired/stale allowance cannot block its own recovery path.
       if (identityOnly) return { ...state, ready: true, reason: "ready" };
-      if (request.model !== undefined && !SUBSCRIPTION_MODELS.has(request.model))
+      if (!interactive && request.model !== undefined && !SUBSCRIPTION_MODELS.has(request.model))
         return hold("model-unverified");
-      const poolReserve = explicitAccountReserve(options.sourceAccount, (options.poolPolicy ?? readPoolPolicy)());
+      let poolReserve: number;
+      try {
+        poolReserve = explicitAccountReserve(options.sourceAccount, (options.poolPolicy ?? readPoolPolicy)());
+        memory.explicitReserve = poolReserve;
+      } catch (error) {
+        if (!interactive) throw error;
+        // A broken optional policy file cannot create a new cutoff. Preserve
+        // any explicit reserve already observed by this process across reloads.
+        poolReserve = memory.explicitReserve ?? 0;
+        state.policyObservationReason = "policy-unavailable";
+      }
+      // Interactive work is not enrolled in quota enforcement merely by using
+      // the relay. Native entitlement, expiry and quota errors belong to the
+      // provider unless the user enabled a reserve or a reviewed work budget.
+      if (interactive && !hasBudget && poolReserve === 0)
+        return { ...state, ready: true, reason: "ready" };
+      state.enforcement = hasBudget ? "managed-budget" : "explicit-reserve";
       // A collector outage cannot revoke an interactive user's valid login.
       // Only observation failures are advisory; auth/model/explicit budgets
       // and known quota exhaustion still use the ordinary rejection path.
       let knownExhaustion = false;
       const observationHold = (reason: string): SubscriptionGuardState =>
-        knownExhaustion ? hold("quota-exhausted") : memory.deniedAtMs != null ? hold("upstream-quota-hold") :
+        knownExhaustion ? hold("quota-exhausted") : !interactive && memory.deniedAtMs != null ? hold("upstream-quota-hold") :
         options.quotaObservationMode === "advisory" && !hasBudget && poolReserve === 0
           ? { ...state, ready: true, reason: "ready", quotaObservationReason: reason }
           : hold(reason);
@@ -150,10 +178,10 @@ export function createSubscriptionGuard(options: {
       at = now(); state.checkedAtMs = at;
       // File/policy reads may also cross a credential expiry boundary. Never
       // admit a token that was valid only at the start of this check.
-      if (claims.exp * 1000 <= at + 30000) return hold("subscription-auth-unavailable");
+      if (!interactive && claims.exp * 1000 <= at + 30000) return hold("subscription-auth-unavailable");
       if (request.headers && !equal(request.headers.get("authorization") ?? "", `Bearer ${token}`)) {
         const remembered = knownCredentials.get(digest(request.headers.get("authorization") ?? "").toString("hex"));
-        if (remembered == null || remembered <= at) return hold("request-identity-mismatch");
+        if (remembered == null || !interactive && remembered <= at) return hold("request-identity-mismatch");
       }
       // A bad second bucket must not erase a separately valid exhaustion
       // observation. Read only this verified profile's relevant windows.
@@ -207,14 +235,14 @@ export function createSubscriptionGuard(options: {
       if (new Set(windows.map(w => w.bucket)).size !== windows.length) return observationHold("quota-unknown");
       if (relevant.some((w: any) => !Number.isFinite(w.validUntilMs) || w.validUntilMs <= at ||
           !Number.isFinite(w.observedAtMs) || w.observedAtMs < memory.boundAuthAtMs!)) return observationHold("quota-stale");
-      if (memory.deniedAtMs != null && windows.some(w => w.observedAtMs <= memory.deniedAtMs!)) return hold("upstream-quota-hold");
+      if (!interactive && memory.deniedAtMs != null && windows.some(w => w.observedAtMs <= memory.deniedAtMs!)) return hold("upstream-quota-hold");
       memory.deniedAtMs = null;
       return { ...state, ready: true, reason: "ready" };
     } catch { return hold("guard-unavailable"); }
   }
   const guard: SubscriptionGuard = {
     intervalMs: Math.min(1000, Math.max(10, options.intervalMs ?? 500)),
-    observeResponse(status) { if (status === 429 || status === 402) memory.deniedAtMs = now(); },
+    observeResponse(status) { if (!interactive && (status === 429 || status === 402)) memory.deniedAtMs = now(); },
     checkIdentity(request = {}) { return checkState(request, true); },
     check(request = {}) { return checkState(request); },
   };

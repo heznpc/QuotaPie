@@ -34,7 +34,8 @@ with tempfile.TemporaryDirectory() as tmp:
     relay.settings_path=Path(paths[0]);relay.manifest={'settings_path':paths[0],'profile_settings':{str(root/'1'):paths[1]}}
     relay.health=lambda s: {'service':'quotapie-compaction','schemaVersion':3,'route':s['route'],
         'relayRuntimeRevision':1,'reloadSupported':True,
-        'subscriptionGuardVersion':1,'subscriptionGuardRevision':2,'subscriptionGuard':{'version':1,'account':'fixture',
+        'nativeRequestPolicyVersion':1,'nativeRequestPolicy':'source-origin','sourceContinuationRevision':3,'executionMode':'interactive',
+        'subscriptionGuardVersion':1,'subscriptionGuardRevision':3,'subscriptionGuard':{'version':1,'account':'fixture',
         'profileKey':hashlib.sha256(str(Path(s['codex_home']).resolve()).encode()).hexdigest()}}
     relay.install=lambda args: (_ for _ in ()).throw(AssertionError('duplicate generation installed'))
     assert relay.ensure_profile(SimpleNamespace(codex_home=str(root/'1')))['relayConnected']
