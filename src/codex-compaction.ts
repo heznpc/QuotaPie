@@ -34,6 +34,8 @@ const MAX_BODY_BYTES = 64 * 1024 * 1024;
 // Native Codex image operations use the same fixed ChatGPT subscription origin.
 // These are not the public /v1 Images API and must never use pool routing.
 const IMAGE_ROUTES = new Set(["/images/generations", "/images/edits"]);
+// Native web.run uses this Codex route, independently of /responses tools.
+const SEARCH_ROUTE = "/alpha/search";
 const HOP_HEADERS = [
   "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
   "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length",
@@ -173,6 +175,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
           subscriptionGuardVersion: options.subscriptionGuard ? 1 : 0,
           subscriptionGuardRevision: options.subscriptionGuard ? 2 : 0,
           sourceContinuationRevision: options.accountPool?.sourceContinuationRevision ?? 0,
+          nativeSearchRoutesVersion: 1,
           subscriptionGuard: options.subscriptionGuard ? { ...options.subscriptionGuard.check(),
             sourceHistoryPolicy,
             blockedRequests: guardBlockedRequests, abortedRequests: guardAbortedRequests,
@@ -215,10 +218,12 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
           ...(reason === "route-unsupported" ? { route: path, method: request.method } : {}) } }, { status: 400 });
       };
       const imageRequest = request.method === "POST" && IMAGE_ROUTES.has(path);
+      const searchRequest = request.method === "POST" && path === SEARCH_ROUTE;
+      const nativeToolRequest = imageRequest || searchRequest;
       if (options.subscriptionGuard && (request.method === "POST"
-        ? !["/responses", "/responses/compact"].includes(path) && !imageRequest : path !== "/models"))
+        ? !["/responses", "/responses/compact"].includes(path) && !nativeToolRequest : path !== "/models"))
         return rejectGuard("route-unsupported");
-      if (imageRequest && options.reportOnly) return rejectGuard("request-unsupported");
+      if (nativeToolRequest && options.reportOnly) return rejectGuard("request-unsupported");
       const metadataRequest = request.method === "GET" && path === "/models";
       let headers = transportHeaders(request.headers);
       // Bun fetch decompresses upstream responses; request identity to keep streaming simple.
@@ -238,16 +243,15 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
       // Include uploads in drain accounting, before the first body-read await.
       activeRequests++;
       try {
-        if (imageRequest && options.subscriptionGuard) {
-          // Authenticate and check allowance before accepting the image upload.
-          // The native image service selects its own image model; a chat-model
-          // allowlist is not an image entitlement or a reason to change models.
+        if (nativeToolRequest && options.subscriptionGuard) {
+          // Native tools have their own payloads, not a Responses chat model.
+          // Check the source and configured allowance before reading the body.
           const guard = options.subscriptionGuard.check({ headers });
           if (!guard.ready) throw new SubscriptionRequestError(guard.reason);
         }
         if (request.method === "POST") {
           body = new Uint8Array(await request.arrayBuffer());
-          if (imageRequest) {
+          if (nativeToolRequest) {
             const decoded = decodeBody(body, headers.get("content-encoding"));
             if (decoded.byteLength > MAX_BODY_BYTES) throw new SubscriptionRequestError("request-unsupported");
             const mediaType = headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
@@ -259,8 +263,8 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
             if (options.subscriptionGuard) {
               const guard = options.subscriptionGuard.check({ headers });
               if (!guard.ready) throw new SubscriptionRequestError(guard.reason);
-              // Images contain explicit uploads, not replayable conversation history.
-              // The guard pins the source identity; never enter the account pool.
+              // Native tool payloads are not Responses replay history.
+              // Pin the source identity and never enter the account pool.
             }
           }
           if (path === "/responses" || path === "/responses/compact") {
@@ -479,7 +483,9 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
         receivedResponse = true;
         status = response.status;
         responseRequestIds = upstreamRequestIds(response.headers);
-        if (!metadataRequest) options.subscriptionGuard?.observeResponse?.(status);
+        // A web-search service throttle is not evidence that model quota was
+        // exhausted. Forward its error without poisoning later model requests.
+        if (!metadataRequest && !searchRequest) options.subscriptionGuard?.observeResponse?.(status);
         const cooldownRecorded = await recordPoolResponse(response);
         // A rejected HTTP request has produced no model output. Retry once with
         // complete portable history; never retry a 200 stream or partial output.

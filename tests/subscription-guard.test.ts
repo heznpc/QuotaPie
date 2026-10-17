@@ -858,3 +858,87 @@ test('image quota protection remains active while awaiting the generated respons
     expect(response.status).toBe(400);expect((await response.json() as any).error.code).toBe('subscription_quota_exhausted');
   }finally{proxy.stop();f.close();}
 });
+
+
+test("native web search preserves source credentials and exact JSON bytes without routing", async () => {
+  const f = fixture(); const received: { url: string; body: Uint8Array; headers: Headers }[] = [];
+  const wire = new TextEncoder().encode(' { "search_query": [{"q":"synthetic search"}], "response_length": "short" } ');
+  const pool = { selectAsync() { throw new Error("search must not select an account"); },
+    assertSourceContinuationAsync() { throw new Error("search is not replay history"); } } as any;
+  const proxy = startCompactionProxy({ subscriptionGuard: f.guard, accountPool: pool,
+    fetchUpstream: async (url, init) => {
+      received.push({ url, body: new Uint8Array(await new Response(init.body).arrayBuffer()), headers: new Headers(init.headers) });
+      return Response.json({ results: [{ title: "fixture" }] });
+    } });
+  const request = (headers = f.headers(), path = "/alpha/search", body: BodyInit = wire) => fetch(proxy.baseUrl + path, {
+    method: "POST", headers: { ...headers, "content-type": "application/json" }, body });
+  try {
+    const response = await request(); expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ results: [{ title: "fixture" }] });
+    expect(received[0]!.url).toBe("https://chatgpt.com/backend-api/codex/alpha/search");
+    expect(received[0]!.body).toEqual(wire);
+    expect(received[0]!.headers.get("authorization")).toBe(f.headers().authorization);
+    expect(received[0]!.headers.get("chatgpt-account-id")).toBe(f.auth.tokens.account_id);
+    // web.run open/find and other operations share the same native endpoint.
+    const opening = await request(f.headers(), "/alpha/search", '{"open":[{"ref_id":"https://example.com"}]}');
+    expect(opening.status).toBe(200); await opening.text();
+    for (const path of ["/alpha/anything", "/alpha/search/extra", "/v1/search"])
+      expect((await request(f.headers(), path)).status).toBe(400);
+    expect((await fetch(proxy.baseUrl + "/alpha/search", { headers: f.headers() })).status).toBe(400);
+    expect((await request({ ...f.headers(), authorization: "Bearer foreign" })).status).toBe(400);
+    expect((await request({ ...f.headers(), "chatgpt-account-id": "foreign" })).status).toBe(400);
+    expect((await request(f.headers(), "/alpha/search", "[]")).status).toBe(400);
+    f.reserve(85); expect((await request()).status).toBe(400); f.reserve(0);
+    f.state.accounts[0]!.windows[0]!.remainingPercent = 0; f.write();
+    expect((await request()).status).toBe(400);
+    expect(received).toHaveLength(2);
+    const health = await (await fetch(proxy.baseUrl + "/quotapie-health")).json() as any;
+    expect(health.nativeSearchRoutesVersion).toBe(1);
+    expect(health.activeRequests).toBe(0);
+  } finally { proxy.stop(); f.close(); }
+});
+
+test("web search service limits cannot latch a model quota hold or trigger another-account retry", async () => {
+  const f = fixture(); let calls = 0;
+  const proxy = startCompactionProxy({ subscriptionGuard: f.guard,
+    accountPool: { selectAsync() { throw new Error("no routing"); }, canRecoverAsync() { throw new Error("no recovery"); } } as any,
+    fetchUpstream: async () => { calls++; return Response.json({ error: "search throttled" }, { status: 429 }); } });
+  try {
+    const response = await fetch(proxy.baseUrl + "/alpha/search", { method: "POST", headers: { ...f.headers(), "content-type": "application/json" }, body: "{}" });
+    expect(response.status).toBe(429); expect(await response.json()).toEqual({ error: "search throttled" });
+    expect(calls).toBe(1); expect(f.guard.check({ model }).ready).toBe(true);
+  } finally { proxy.stop(); f.close(); }
+});
+
+test("report-only managed work cannot invoke native web search", async () => {
+  const f = fixture(); let calls = 0;
+  const proxy = startCompactionProxy({ subscriptionGuard: f.guard, reportOnly: true,
+    fetchUpstream: async () => { calls++; return Response.json({}); } });
+  try {
+    const response = await fetch(proxy.baseUrl + "/alpha/search", { method: "POST", headers: { ...f.headers(), "content-type": "application/json" }, body: "{}" });
+    expect(response.status).toBe(400);
+    expect((await response.json() as any).error.code).toBe("subscription_request_unsupported");
+    expect(calls).toBe(0);
+  } finally { proxy.stop(); f.close(); }
+});
+
+test("native web search retains source identity and allowance checks while awaiting its response", async () => {
+  for (const change of ["identity", "reserve"] as const) {
+    const f = fixture(); let started!: () => void, aborted!: () => void;
+    const began = new Promise<void>(resolve => started = resolve), cancelled = new Promise<void>(resolve => aborted = resolve);
+    const proxy = startCompactionProxy({ subscriptionGuard: f.guard, fetchUpstream: async (_url, init) => {
+      started(); return new Promise<Response>((_resolve, reject) => init.signal!.addEventListener("abort", () => {
+        aborted(); reject(init.signal!.reason);
+      }, { once: true }));
+    } });
+    try {
+      const pending = fetch(proxy.baseUrl + "/alpha/search", { method: "POST", headers: { ...f.headers(), "content-type": "application/json" }, body: "{}" });
+      await began;
+      if (change === "identity") { f.auth.tokens.access_token = f.token("other-person"); f.writeAuth(); }
+      else f.reserve(85);
+      await cancelled;
+      const response = await pending; expect(response.status).toBe(400);
+      expect((await response.json() as any).error.code).toBe(change === "identity" ? "subscription_account_identity_changed" : "subscription_reserve_reached");
+    } finally { proxy.stop(); f.close(); }
+  }
+});

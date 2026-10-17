@@ -333,6 +333,12 @@ request. Missing local metadata is not itself proof of foreign ownership.
 Managed continuations retain `strict` history verification. Relay health exposes
 `subscriptionGuard.sourceHistoryPolicy` and `sourceContinuationRevision` so the
 active behavior can be checked, including after a live handler update.
+Native web research is supported at `POST /alpha/search`, alongside the native
+image routes. These tool requests retain their source credentials and exact JSON
+body, never enter account selection or recovery, and honor explicit allowance
+checks. A search-service 429 is returned to its caller without creating a model
+quota hold. Report-only managed work cannot invoke these tool routes. Relay
+health advertises `nativeSearchRoutesVersion: 1` for this support.
 `/api/status` includes `compaction.subscriptionProtection` with live policy
 revisions, observation ages and reason-specific rejection counts, including
 ordinary requests. `quotapie-compaction repair-idle --source REPOSITORY` repairs
