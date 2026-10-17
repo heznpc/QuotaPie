@@ -46,20 +46,23 @@ export const createRelayRuntime: RuntimeFactory = (settings, memory) => {
   memory.savings ??= new Map();
   // Reopening the same SQLite pool during a stream can block the event loop on
   // another process's write lock. Its connection and bindings outlive handlers.
-  if (sourceAccount && (!memory.accountPool || typeof memory.accountPool.assertSourceContinuationAsync !== "function")) {
-    // Older bundles retain a synchronous pool across hot reloads. Keep its
-    // connection alive for retiring streams, but give new requests the new reader.
+  if (sourceAccount && (!memory.accountPool || memory.accountPool.sourceContinuationRevision !== 2 ||
+      typeof memory.accountPool.assertSourceContinuationAsync !== "function")) {
+    // Older bundles retain their pool implementation across hot reloads. Keep
+    // it alive for retiring streams; new requests need the current policy too.
     const previousPool = memory.accountPool;
+    const previousDispose = memory.dispose;
     memory.accountPool = new AccountPool({ sourceAccount, accounts: () => poolAccounts(config()),
       policy: readPoolPolicy, forkParentAsync: thread => readCodexForkParent(home, thread) });
     const currentPool = memory.accountPool;
     memory.dispose = () => {
       currentPool.close();
-      previousPool?.close();
+      if (previousDispose) previousDispose(); else previousPool?.close();
     };
   }
   const accountPool = memory.accountPool;
   const handler = createCompactionHandler({ ...settings, accountPool, savingsState: memory.savings,
+      sourceHistoryPolicy: "authenticated-source",
       subscriptionGuard: createSubscriptionGuard({ codexHome: home, sourceAccount, config, memory: memory.guard, quotaObservationMode: "advisory" }),
       savingsModelSupported: createSavingsModelSupport(join(home, "models_cache.json")),
       onProvenance: event => console.log(JSON.stringify({ kind: "response_provenance", ...event })),

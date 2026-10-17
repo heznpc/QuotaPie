@@ -142,9 +142,15 @@ function hasUnverifiedAttachments(body: any): boolean {
 
 type Binding = { account: string; identity: string; source_identity: string; label: string; foreignReasoning?: string[] };
 type PoolSelectInput = { threadId: string | null; requestId: string; body: unknown; model: string; headers: Headers };
-export type SourceContinuationInput = { threadId: string | null; body: unknown; headers: Headers };
+export type SourceHistoryPolicy = "strict" | "authenticated-source";
+export type SourceContinuationInput = {
+  threadId: string | null; body: unknown; headers: Headers;
+  /** Internal caller policy, never accepted from request headers or body. */
+  historyPolicy?: SourceHistoryPolicy;
+};
 type SourceOnlyReplay = { sourceReplay: NonNullable<ReturnType<typeof portableReplay>> };
 export class AccountPool {
+  readonly sourceContinuationRevision = 2;
   private db: Database;
   private closed = false;
   private readonly pendingWrites = new Map<string, Promise<void>>();
@@ -237,7 +243,8 @@ export class AccountPool {
       const result = await this.options.forkParentAsync(thread);
       records.set(thread, result);
       if (result.status === "known") thread = result.parentId;
-      else if (depth === 0 && result.status === "missing" && claim.fork.status === "claimed") thread = claim.fork.parentId;
+      else if (depth === 0 && claim.fork.status === "claimed" &&
+          (result.status === "missing" || input.historyPolicy === "authenticated-source")) thread = claim.fork.parentId;
       else break;
     }
     signal?.throwIfAborted();
@@ -277,6 +284,12 @@ export class AccountPool {
       throw new PoolError("pool_source_identity_mismatch", 401);
     const claim = codexRequestIdentity(input.headers);
     if (claim.fork.status === "invalid") throw new PoolError("pool_lineage_invalid", 409);
+    // Interactive requests stay on the authenticated source, with their history
+    // unchanged. Missing local metadata (including ephemeral helpers) is not
+    // evidence of another account. The provider resolves its opaque handles.
+    // Known foreign bindings/replay and conflicting ancestry still veto below.
+    // Managed work retains the stricter default; this never authorizes routing.
+    const authenticatedSource = input.historyPolicy === "authenticated-source";
     // A portable body carries its complete text/tool history without handles
     // that might have been issued under another account. Never silently strip
     // encrypted reasoning, item IDs or compaction data in this assertion.
@@ -286,7 +299,7 @@ export class AccountPool {
         (input.body as { input: any[] }).input.every(item => item.id == null);
     };
     if (!input.threadId) {
-      if (claim.threadId || !portable()) throw new PoolError("pool_source_history_unverified", 409);
+      if (claim.threadId || !authenticatedSource && !portable()) throw new PoolError("pool_source_history_unverified", 409);
       return;
     }
     if (claim.threadId !== input.threadId) throw new PoolError("pool_thread_identity_required", 409);
@@ -312,15 +325,16 @@ export class AccountPool {
         if (lineage?.status === "known" && lineage.parentId !== claim.fork.parentId)
           throw new PoolError("pool_lineage_conflict", 409);
         if (lineage?.status !== "known") {
-          // An ephemeral child may be absent, but its claimed parent must be
-          // verified in this profile before consulting the parent's binding.
-          if (lineage?.status !== "missing" || forkParent?.(claim.fork.parentId).status !== "known")
+          // Always inspect a claimed parent's binding, including an ephemeral
+          // child. Strict managed work additionally requires native metadata.
+          if (!authenticatedSource && (lineage?.status !== "missing" || forkParent?.(claim.fork.parentId).status !== "known"))
             throw new PoolError("pool_lineage_unavailable", 409);
           thread = claim.fork.parentId;
           continue;
         }
       }
       if (lineage?.status !== "known") {
+        if (authenticatedSource) return;
         if (depth > 0) throw new PoolError("pool_lineage_unavailable", 409);
         if (sourceBound) return;
         break;

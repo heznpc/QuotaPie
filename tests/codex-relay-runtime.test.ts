@@ -37,8 +37,10 @@ test("a disabled historical profile cannot shadow the enabled profile sharing it
     const health = runtime.snapshot!() as any;
     expect(health.subscriptionGuard).toMatchObject({ account: "current", ready: true, reason: "ready" });
     expect(health.subscriptionGuard.windows[0].remainingPercent).toBe(9);
+    expect(health.subscriptionGuard.sourceHistoryPolicy).toBe("authenticated-source");
+    expect(health.sourceContinuationRevision).toBe(2);
     const oldPool = memory.accountPool!;
-    Object.defineProperty(oldPool, "assertSourceContinuationAsync", { value: undefined });
+    Object.defineProperty(oldPool, "sourceContinuationRevision", { value: 1 });
     const oldGuard = memory.guard, oldSavings = memory.savings;
     const next = createRelayRuntime({ port: 45000, token: "a".repeat(48), codex_home: home,
       route: { from: "gpt-6-astra", to: "gpt-6-astra", effort: "low" } }, memory);

@@ -10,7 +10,7 @@ import { DEFAULT_COMPACTION_ROUTE, isCompaction, object, routeCompaction, safeEf
 import { DEFAULT_TASK_SAVINGS, TaskSavingsRouter, validateTaskSavings, type TaskSavingsPolicy, type SavingsReason, type TaskState } from "./task-savings";
 import { failureOrigin, upstreamRequestIds, type UpstreamRequestIds } from "../packages/quota-core/src/codex-error-diagnostics.js";
 import { ResponseCompletionObserver } from "./codex-compaction-stream";
-import { AccountPool, PoolError, poolAccounts, readPoolPolicy, type PoolRoute } from "./account-pool";
+import { AccountPool, PoolError, poolAccounts, readPoolPolicy, type PoolRoute, type SourceHistoryPolicy } from "./account-pool";
 import { codexRequestIdentity } from "./codex-request-identity";
 import { createSavingsModelSupport } from "./savings-model-support";
 import { createSubscriptionGuard, type SubscriptionGuard } from "./subscription-guard";
@@ -128,12 +128,15 @@ export interface CompactionProxyOptions {
   fetchUpstream?: (url: string, init: RequestInit) => Promise<Response>;
   accountPool?: AccountPool;
   subscriptionGuard?: SubscriptionGuard;
+  /** Only interactive callers opt into source-authenticated native history. */
+  sourceHistoryPolicy?: SourceHistoryPolicy;
   /** A reviewed managed report may not invoke inherited or future tools. */
   reportOnly?: boolean;
 }
 
 export function createCompactionHandler(options: CompactionProxyOptions = {}) {
   if (options.reportOnly && !options.subscriptionGuard) throw new Error("Report-only execution requires a subscription guard");
+  const sourceHistoryPolicy = options.reportOnly ? "strict" : options.sourceHistoryPolicy ?? "strict";
   const route = options.route ?? { ...DEFAULT_COMPACTION_ROUTE };
   validateCompactionRoute(route);
   const savingsPolicy = options.taskSavings ?? { ...DEFAULT_TASK_SAVINGS };
@@ -169,7 +172,9 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
   const snapshot = () => ({ service: "quotapie-compaction", schemaVersion: 3, serverErrorDiagnosticsVersion: 1, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolReserveVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 3 : 0, accountPoolRecoveryVersion: options.accountPool ? 2 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, responseOwnershipVersion: 1, taskSavingsPhasesVersion: 1, nativeImageRoutesVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
           subscriptionGuardVersion: options.subscriptionGuard ? 1 : 0,
           subscriptionGuardRevision: options.subscriptionGuard ? 2 : 0,
+          sourceContinuationRevision: options.accountPool?.sourceContinuationRevision ?? 0,
           subscriptionGuard: options.subscriptionGuard ? { ...options.subscriptionGuard.check(),
+            sourceHistoryPolicy,
             blockedRequests: guardBlockedRequests, abortedRequests: guardAbortedRequests,
             blockedByReason, abortedByReason } : null,
           accountPoolLineageVersion: options.accountPool ? 3 : 0,
@@ -295,10 +300,11 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
                 const guard = options.subscriptionGuard.check({ headers, model: guardModel });
                 if (!guard.ready) throw new SubscriptionRequestError(guard.reason);
                 try {
-                  // Keep the source login, but retain the pool's history and
-                  // fork ownership checks. A former foreign binding cannot be
-                  // replayed against this source merely because routing is off.
-                  await options.accountPool?.assertSourceContinuationAsync({ threadId: event.threadId, body: outgoing, headers }, request.signal);
+                  // Keep the source login and reject known foreign ownership.
+                  // Interactive helpers need not persist a native rollout;
+                  // managed work still requires strict history verification.
+                  await options.accountPool?.assertSourceContinuationAsync({ threadId: event.threadId, body: outgoing, headers,
+                    historyPolicy: sourceHistoryPolicy }, request.signal);
                 } catch (error) {
                   throw new SubscriptionRequestError(error instanceof PoolError ? error.code : "source-continuation-unverified");
                 }
@@ -693,6 +699,7 @@ export async function runCompactionCodex(args: string[], defaultCommand: string)
   const proxy = startCompactionProxy({
     route,
     accountPool,
+    sourceHistoryPolicy: "authenticated-source",
     savingsModelSupported: createSavingsModelSupport(join(codexHome, "models_cache.json")),
     subscriptionGuard: createSubscriptionGuard({ codexHome, sourceAccount, config, quotaObservationMode: "advisory" }),
     onProvenance: event => console.error(JSON.stringify({ service: "quotapie-compaction", kind: "response_provenance", ...event })),

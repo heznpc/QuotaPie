@@ -311,8 +311,10 @@ are bypassed, and disabling the pool does not disable subscription exhaustion
 protection. Only an explicit enabled per-account reserve, or a separately reviewed
 continuation budget, stops execution above 0%. The forecast's default 10%/15%
 headroom is advisory; there is no hidden 1% execution minimum. Reset announcements
-do not create a cutoff. Missing, expired (`collection.staleAfterSeconds`), reset-due or mismatched
-quota/auth observations stop requests before dispatch. API-key, unsupported
+do not create a cutoff. For interactive work without an explicit reserve or budget,
+missing or stale quota observations are advisory. Known subscription exhaustion
+and identity mismatches still stop requests. Reviewed automatic work requires
+fresh observations. API-key, unsupported
 model/route and background requests are rejected. While a response is running,
 the guard rechecks every 500ms and cancels the upstream connection if the latest
 observation no longer permits it. This does not refund already-processed work
@@ -321,6 +323,16 @@ provider accounting remain outside the relay's control. Model metadata remains
 available for quota/auth recovery, and local holds return a non-retryable 400
 with a specific reason. Previously observed, still-valid credentials survive
 same-login token refresh; replacing the login still stops execution.
+Interactive desktop and CLI requests use `authenticated-source` history policy:
+a missing or unreadable local rollout does not block an ephemeral helper, native
+compaction, or resumed request. Authentication must match the original profile;
+the relay forwards opaque history unchanged to that account, without account
+selection, credential replacement, or 429 failover. Known foreign bindings,
+prior cross-account replay state, and conflicting/cyclic ancestry still stop the
+request. Missing local metadata is not itself proof of foreign ownership.
+Managed continuations retain `strict` history verification. Relay health exposes
+`subscriptionGuard.sourceHistoryPolicy` and `sourceContinuationRevision` so the
+active behavior can be checked, including after a live handler update.
 `/api/status` includes `compaction.subscriptionProtection` with live policy
 revisions, observation ages and reason-specific rejection counts, including
 ordinary requests. `quotapie-compaction repair-idle --source REPOSITORY` repairs

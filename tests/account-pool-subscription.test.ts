@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AccountPool, type PoolAccount, type SourceContinuationInput } from "../src/account-pool";
+import { createCompactionHandler } from "../src/codex-compaction";
 import type { CodexForkParentResult } from "../src/account-pool-lineage";
 
 const now = 2_000_000_000_000;
@@ -153,4 +154,120 @@ test("source continuation requires the current source credentials and a consiste
     f.source.tokenExpiresAt = now;
     expect(() => f.pool.assertSourceContinuation(f.input(thread))).toThrow("pool_source_auth_unavailable");
   } finally { f.close(); }
+});
+
+
+test("interactive source history can be ephemeral, unreadable or ID-less without edits or new bindings", () => {
+  const f = fixture(), thread = randomUUID();
+  try {
+    const before = f.state();
+    const histories = [opaque, { ...body, input: [{ type: "compaction", encrypted_content: "opaque" }] },
+      { ...body, input: [{ ...body.input[0], id: "native-item" }] },
+      { ...body, input: [{ type: "function_call_output", call_id: "native-call", output: "result" }] }];
+    for (const status of ["missing", "unknown"] as const) for (const history of histories) {
+      f.lineage.set(thread, { status });
+      for (const id of [thread, null]) {
+        const request = { ...f.input(id, history), historyPolicy: "authenticated-source" as const };
+        const bytes = JSON.stringify(request.body), headers = [...request.headers];
+        f.pool.assertSourceContinuation(request);
+        expect(JSON.stringify(request.body)).toBe(bytes); expect([...request.headers]).toEqual(headers);
+      }
+    }
+    expect(f.state()).toBe(before);
+  } finally { f.close(); }
+});
+
+test("interactive mode still checks claimed parents even when both rollouts are missing", () => {
+  for (const status of ["missing", "unknown"] as const) {
+    const f = fixture(), child = randomUUID(), parent = randomUUID();
+    try {
+      f.lineage.set(child, { status });
+      const request = { ...f.input(child, opaque), historyPolicy: "authenticated-source" as const };
+      request.headers.set("x-codex-turn-metadata", JSON.stringify({ thread_id: child, forked_from_thread_id: parent }));
+      f.pool.assertSourceContinuation(request);
+      f.bind(parent, "other", "other-identity");
+      expect(() => f.pool.assertSourceContinuation(request)).toThrow("pool_source_continuation_mismatch");
+    } finally { f.close(); }
+  }
+});
+
+test("interactive mode retains identity, replay and ancestry conflict protection", () => {
+  for (const conflict of ["identity", "binding", "replay", "fork", "cycle", "malformed"] as const) {
+    const f = fixture(), child = randomUUID(), parent = randomUUID();
+    try {
+      const request = { ...f.input(child, opaque), historyPolicy: "authenticated-source" as const };
+      if (conflict === "identity") request.headers.set("authorization", "Bearer other");
+      if (conflict === "binding") f.bind(child, "other", "other-identity");
+      if (conflict === "replay") f.replay(child);
+      if (conflict === "fork") {
+        f.lineage.set(child, { status: "known", parentId: parent });
+        request.headers.set("x-codex-turn-metadata", JSON.stringify({ thread_id: child, forked_from_thread_id: randomUUID() }));
+      }
+      if (conflict === "cycle") {
+        f.lineage.set(child, { status: "known", parentId: parent });
+        f.lineage.set(parent, { status: "known", parentId: child });
+      }
+      if (conflict === "malformed") request.headers.set("x-codex-turn-metadata", "invalid");
+      const before = f.state();
+      expect(() => f.pool.assertSourceContinuation(request)).toThrow();
+      expect(f.state()).toBe(before);
+    } finally { f.close(); }
+  }
+});
+
+test("interactive HTTP requests preserve native opaque history and credentials; managed requests remain strict", async () => {
+  const f = fixture(), child = randomUUID();
+  const ready = { version: 1 as const, ready: true, reason: "ready", checkedAtMs: now, account: "source", profileKey: "fixture", windows: [] };
+  let calls = 0, upstreamStatus = 200;
+  let dispatched: { url: string; init: RequestInit } | undefined;
+  try {
+    const make = (interactive: boolean, reportOnly = false) => createCompactionHandler({ accountPool: f.pool, reportOnly,
+      sourceHistoryPolicy: interactive ? "authenticated-source" : undefined,
+      subscriptionGuard: { intervalMs: 500, check: () => ready, checkIdentity: () => ready },
+      fetchUpstream: async (url, init) => {
+        calls++;
+        dispatched = { url, init };
+        return Response.json(upstreamStatus === 200
+          ? { id: `response-${calls}`, status: "completed", model: body.model, output: [] }
+          : { error: { message: "provider limit" } }, { status: upstreamStatus });
+      } });
+    const request = async (handler: ReturnType<typeof make>) => {
+      const input = f.input(child, opaque);
+      const response = await handler.fetch(new Request(`http://localhost${handler.prefix}/responses`, {
+        method: "POST", headers: input.headers, body: JSON.stringify(input.body) }));
+      await response.text(); return response.status;
+    };
+    const before = f.state(), interactive = make(true);
+    expect(await request(interactive)).toBe(200); expect(calls).toBe(1);
+    expect(dispatched!.url).toBe("https://chatgpt.com/backend-api/codex/responses");
+    expect(new Headers(dispatched!.init.headers).get("authorization")).toBe("Bearer fixture-token");
+    expect(new Headers(dispatched!.init.headers).get("chatgpt-account-id")).toBe("fixture-workspace");
+    expect(await new Response(dispatched!.init.body).json()).toEqual(opaque);
+    expect(interactive.snapshot().subscriptionGuard?.sourceHistoryPolicy).toBe("authenticated-source");
+    expect(await request(make(false))).toBe(400); expect(calls).toBe(1);
+    // A report-only managed caller cannot loosen its history checks.
+    expect(await request(make(true, true))).toBe(400); expect(calls).toBe(1);
+    upstreamStatus = 429;
+    expect(await request(interactive)).toBe(429); expect(calls).toBe(2);
+    expect(f.state()).toBe(before); // No cross-account recovery or history writes.
+    f.bind(child, "other", "other-identity");
+    expect(await request(interactive)).toBe(400); expect(calls).toBe(2);
+  } finally { f.close(); }
+});
+
+test("async interactive ancestry checks consult a claimed parent despite unreadable child metadata", async () => {
+  const f = fixture(), child = randomUUID(), parent = randomUUID();
+  const root = mkdtempSync(join(tmpdir(), "qp-async-source-"));
+  const seen: string[] = [];
+  const pool = new AccountPool({ path: join(root, "pool.sqlite3"), sourceAccount: "source", accounts: () => [f.source],
+    policy: () => ({ enabled: false, accounts: [] }), now: () => now,
+    forkParentAsync: async id => { seen.push(id); return { status: "unknown" }; } });
+  const db = new Database(join(root, "pool.sqlite3"));
+  try {
+    db.query("INSERT INTO bindings VALUES (?,?,?,?,?,?,?)").run("source", parent, "other", "other", "source-identity", "fixture", now);
+    const request = { ...f.input(child, opaque), historyPolicy: "authenticated-source" as const };
+    request.headers.set("x-codex-turn-metadata", JSON.stringify({ thread_id: child, forked_from_thread_id: parent }));
+    await expect(pool.assertSourceContinuationAsync(request)).rejects.toThrow("pool_source_continuation_mismatch");
+    expect(seen).toEqual([child, parent]);
+  } finally { db.close(); pool.close(); f.close(); rmSync(root, { recursive: true, force: true }); }
 });
