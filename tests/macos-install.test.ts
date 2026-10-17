@@ -97,6 +97,8 @@ function fixture(existing = true) {
       throw new Error(`Unexpected command ${command.join(" ")}`);
     },
     async json(url) {
+      if (url.endsWith("/api/status")) return { actionToken: "fixture-only-token", jobs: [], resumeTasks: [] };
+      if (url.endsWith("/api/work")) return { policies: [], executions: [] };
       if (url.endsWith("/health")) return { ok: false, accounts: [{ health: "never-attempted", errorCategory: "auth-required" }] };
       const pid = jobs.get(labels[0]!); if (!pid) throw new Error("offline");
       return { schemaVersion: 1, sourceHash: fail === "identity" && pid >= 200 ? "wrong" : runtimeSourceHash(runtime), pid, startedAt: new Date().toISOString() };
@@ -144,6 +146,146 @@ test("build failure leaves the running installation and exact plists intact", as
     expect(f.agents.map(path => readFileSync(path, "utf8"))).toEqual(before);
     expect(readFileSync(join(f.runtime, "src/cli.ts"), "utf8")).toBe("old-runtime");
     expect(readFileSync(join(f.app, "Contents/MacOS/QuotaPie"), "utf8")).toBe("old-app");
+    expect(f.jobs.get(labels[0]!)).toBe(100);
+  } finally { f.close(); }
+});
+
+test("a transient final identity timeout retries without stopping the newly verified installation", async () => {
+  const f = fixture(), read = f.deps.json!;
+  let stabilityReads = 0;
+  f.deps.json = async (url, options) => {
+    if (url.endsWith("/api/work")) expect(options?.headers?.["x-quotapie-action-token"]).toBe("fixture-only-token");
+    if (url.endsWith("/api/runtime") && (f.jobs.get(labels[1]!) ?? 0) >= 200) {
+      expect(options?.timeoutMs).toBe(5000);
+      if (++stabilityReads === 1) throw new DOMException("synthetic startup delay", "TimeoutError");
+    }
+    return read(url, options);
+  };
+  try {
+    const installed = await f.run();
+    expect(stabilityReads).toBe(2);
+    expect(f.jobs.get(labels[0]!)).toBe(installed.collectorPid);
+    expect(f.jobs.get(labels[1]!)).toBe(installed.menuPid);
+    expect(f.calls.filter(command => command[1] === "bootout")).toHaveLength(2);
+    expect(readFileSync(join(f.runtime, "src/cli.ts"), "utf8")).toBe("new-runtime");
+  } finally { f.close(); }
+});
+
+test("initial collector identity polling also permits the bounded five-second startup response", async () => {
+  const f = fixture(), read = f.deps.json!;
+  let startupReads = 0;
+  f.deps.json = async (url, options) => {
+    if (url.endsWith("/api/runtime") && (f.jobs.get(labels[0]!) ?? 0) >= 200 && !f.jobs.has(labels[1]!)) {
+      expect(options?.timeoutMs).toBe(5000);
+      if (++startupReads === 1) throw new DOMException("synthetic startup delay", "TimeoutError");
+    }
+    return read(url, options);
+  };
+  try {
+    expect((await f.run()).installed).toBe(true);
+    expect(startupReads).toBe(2);
+    expect(f.calls.filter(command => command[1] === "bootout")).toHaveLength(2);
+  } finally { f.close(); }
+});
+
+test("persistent final identity transport failures stop after three attempts and restore the prior runtime", async () => {
+  const f = fixture(), read = f.deps.json!;
+  let stabilityReads = 0;
+  f.deps.json = async (url, options) => {
+    if (url.endsWith("/api/runtime") && (f.jobs.get(labels[1]!) ?? 0) >= 200) {
+      stabilityReads++; throw new DOMException("synthetic startup delay", "TimeoutError");
+    }
+    return read(url, options);
+  };
+  try {
+    await expect(f.run()).rejects.toThrow("runtime identity during startup stability");
+    expect(stabilityReads).toBe(3);
+    expect(readFileSync(join(f.runtime, "src/cli.ts"), "utf8")).toBe("old-runtime");
+    expect(readFileSync(join(f.app, "Contents/MacOS/QuotaPie"), "utf8")).toBe("old-app");
+  } finally { f.close(); }
+});
+
+test("a returned wrong identity or a process change during the final read still rolls back immediately", async () => {
+  for (const failure of ["identity", "process"] as const) {
+    const f = fixture(), read = f.deps.json!;
+    let stabilityReads = 0;
+    f.deps.json = async (url, options) => {
+      const result = await read(url, options);
+      if (url.endsWith("/api/runtime") && (f.jobs.get(labels[1]!) ?? 0) >= 200) {
+        stabilityReads++;
+        if (failure === "identity") return { ...result, sourceHash: "foreign-runtime" };
+        f.jobs.set(labels[0]!, 999);
+      }
+      return result;
+    };
+    try {
+      await expect(f.run()).rejects.toThrow("exited during startup verification");
+      expect(stabilityReads).toBe(1);
+      expect(readFileSync(join(f.runtime, "src/cli.ts"), "utf8")).toBe("old-runtime");
+    } finally { f.close(); }
+  }
+});
+
+test("managed work that can run or has an unresolved claim prevents any service stop", async () => {
+  const cases = [
+    { policies: [{enabled:true,state:{activeExecutionId:null}}], executions: [] },
+    { policies: [{enabled:false,state:{activeExecutionId:"active-claim"}}], executions: [] },
+    ...["claimed", "dispatched", "uncertain"].map(status => ({policies:[],executions:[{status}]})),
+  ];
+  for (const work of cases) {
+    const f = fixture(), read = f.deps.json!;
+    f.deps.json = (url, options) => url.endsWith("/api/work") ? Promise.resolve(work) : read(url, options);
+    try {
+      await expect(f.run()).rejects.toThrow("Managed work is enabled");
+      expect(f.calls.some(command => command[1] === "bootout")).toBe(false);
+      expect(f.jobs.get(labels[0]!)).toBe(100);
+      expect(readFileSync(join(f.runtime, "src/cli.ts"), "utf8")).toBe("old-runtime");
+    } finally { f.close(); }
+  }
+});
+
+test("pending, running and uncertain legacy jobs prevent service stops, while host-owned resume registrations do not", async () => {
+  for (const state of ["waiting", "ready", "running", "review", "succeeded"]) {
+    const f = fixture(), read = f.deps.json!;
+    f.deps.json = async (url, options) => url.endsWith("/api/status")
+      ? {actionToken:"fixture-only-token",jobs:[{state}],resumeTasks:[{state:"approved"}]} : read(url, options);
+    try {
+      if (state === "succeeded") expect((await f.run()).installed).toBe(true);
+      else {
+        await expect(f.run()).rejects.toThrow("Managed work is enabled");
+        expect(f.calls.some(command => command[1] === "bootout")).toBe(false);
+      }
+    } finally { f.close(); }
+  }
+});
+
+test("missing, malformed or unavailable work admission cannot be mistaken for idle", async () => {
+  for (const failure of ["token", "shape", "transport"] as const) {
+    const f = fixture(), read = f.deps.json!;
+    let failedReads = 0;
+    f.deps.json = async (url, options) => {
+      if (failure === "token" && url.endsWith("/api/status")) return {jobs:[],resumeTasks:[]};
+      if (failure === "shape" && url.endsWith("/api/work")) return {policies:[{enabled:false}],executions:[]};
+      if (failure === "transport" && url.endsWith("/api/work")) { failedReads++; throw new Error("unavailable"); }
+      return read(url, options);
+    };
+    try {
+      await expect(f.run()).rejects.toThrow("Managed work state could not be verified");
+      expect(f.calls.some(command => command[1] === "bootout")).toBe(false);
+      expect(f.jobs.get(labels[0]!)).toBe(100);
+      if (failure === "transport") expect(failedReads).toBe(3);
+    } finally { f.close(); }
+  }
+});
+
+test("a full legacy-job page is insufficient evidence that no older managed job can run", async () => {
+  const f = fixture(), read = f.deps.json!;
+  f.deps.json = async (url, options) => url.endsWith("/api/status")
+    ? {actionToken:"fixture-only-token",jobs:Array.from({length:100},()=>({state:"succeeded"})),resumeTasks:[]}
+    : read(url, options);
+  try {
+    await expect(f.run()).rejects.toThrow("full legacy-job page");
+    expect(f.calls.some(command => command[1] === "bootout")).toBe(false);
     expect(f.jobs.get(labels[0]!)).toBe(100);
   } finally { f.close(); }
 });

@@ -233,7 +233,9 @@ export class QuotaPieService {
   }
 
   private workWindows(): WindowAnalysis[] {
-    return this.analyses(Date.now()).map(w => w.provider === "codex"
+    // Execution gates need the latest quota evidence, not historical burn-rate
+    // analysis. Re-read it on every check so new/stale limits still take effect.
+    return this.currentQuotaWindows(Date.now()).map(w => w.provider === "codex"
       ? {...w,reservePercent:Math.max(0,explicitAccountReserve(w.account,readPoolPolicy()))} : w);
   }
   private legacyWorkBusy(p: WorkPolicyInput): boolean {
@@ -266,11 +268,12 @@ export class QuotaPieService {
     return {profileKey,accountKey,cwd:original.cwd,model:original.model};
   }
   private workGate(p: WorkPolicy) {
-    const gate=this.resumeGate(p.provider,p.account);
+    const nowMs=Date.now();
+    const gate=this.resumeGate(p.provider,p.account,nowMs);
     const windows=scopedWorkWindows(p,this.workWindows());
-    const state=this.accountStates().find(s=>s.provider===p.provider&&s.account===p.account);
+    const state=this.accountStates(nowMs,windows).find(s=>s.provider===p.provider&&s.account===p.account);
     const scoped=state?{...state,windows:windows.map(w=>({...w,reservePercent:Math.max(w.reservePercent,p.budgetByBucket[w.bucket]?.reservePercent??0)}))}:undefined;
-    return {...evaluateResumeGate(scoped,p.provider,p.account,Date.now(),this.config.collection.staleAfterSeconds*1000),
+    return {...evaluateResumeGate(scoped,p.provider,p.account,nowMs,this.config.collection.staleAfterSeconds*1000),
       profileKey:gate.profileKey,accountKey:gate.accountKey,validUntilMs:gate.validUntilMs};
   }
   workStatus() {
@@ -1432,7 +1435,7 @@ export class QuotaPieService {
   }
 
   resumeGate(provider: Provider, account: string, nowMs = Date.now(), requiredBucket?: string) {
-    let state = this.accountStates(nowMs).find(item => item.provider === provider && item.account === account);
+    let state = this.accountStates(nowMs, this.currentQuotaWindows(nowMs)).find(item => item.provider === provider && item.account === account);
     const maxAgeMs = this.config.collection.staleAfterSeconds * 1000;
     if (state && provider === "codex") {
       let cutoff = NaN;
@@ -1457,16 +1460,20 @@ export class QuotaPieService {
 
   resetPlanning(accounts: Array<{ provider: Provider; account: string }>, nowMs = Date.now()) {
     const signals = this.resetSignals.list(1000), events = this.db.recentEvents(2000);
-    return accounts.map(account => ({ ...account,
-      opportunities: this.resetOpportunities(account.provider, account.account, nowMs),
-      closedSignalIDs: signals.filter(s => (s.provider ?? "codex") === account.provider &&
-        resetSignalClosed(s, signals, events.filter(e => e.account === account.account), nowMs)).map(s => s.id),
-    }));
+    const cases = this.resetTimingCases();
+    return accounts.map(account => {
+      const accountEvents = events.filter(e => e.account === account.account);
+      return { ...account,
+        opportunities: resetOpportunities(signals, events, account.provider, account.account, nowMs, {cases}),
+        closedSignalIDs: signals.filter(s => (s.provider ?? "codex") === account.provider &&
+          resetSignalClosed(s, signals, accountEvents, nowMs)).map(s => s.id),
+      };
+    });
   }
 
   resetOpportunities(provider: Provider, account: string, nowMs = Date.now(), options: {maxAgeMinutes?: number; bucket?: string} = {}) {
     return resetOpportunities(this.resetSignals.list(1000), this.db.recentEvents(2000), provider, account, nowMs,
-      {...options, cases: this.resetTimingStatus().cases});
+      {...options, cases: this.resetTimingCases()});
   }
 
   private workOpportunity(policy: WorkPolicy, nowMs = Date.now()) {
@@ -1477,8 +1484,9 @@ export class QuotaPieService {
   }
 
   private workForecast(policy: WorkPolicy, nowMs: number): WorkForecast | null {
+    if (!policy.resetBucket) return null;
     const opportunity = this.workOpportunity(policy, nowMs);
-    if (!opportunity || !policy.resetBucket) return null;
+    if (!opportunity) return null;
     const key = `${policy.id}:${policy.revision}:${opportunity.signalId}`;
     const cached = this.workForecastCache.get(key);
     if (cached && cached.expiresAtMs > nowMs) return cached.forecast;
@@ -1500,6 +1508,11 @@ export class QuotaPieService {
   resetTimingStatus() {
     try { return { ...this.resetTiming.summary(), error: this.resetTimingError }; }
     catch { return { cases: [], evaluation: null, error: "timing-history-unavailable" }; }
+  }
+
+  private resetTimingCases() {
+    try { return this.resetTiming.list(); }
+    catch { return []; }
   }
 
   refreshResetTiming(nowMs = Date.now()): void {

@@ -104,10 +104,14 @@ test("service history reaches the status API with local time and observed remain
     s.ingest([{...base,usedPercent:75,observedAtMs:today+5*HOUR-60000,resetsAtMs:today+4*DAY},
       {...base,usedPercent:0,observedAtMs:today+5*HOUR,resetsAtMs:today+7*DAY}]);
     s.refreshResetTiming(today+6*HOUR);
+    const summarize=s.resetTiming.summary.bind(s.resetTiming);
+    let summaries=0;
+    s.resetTiming.summary=()=>{summaries++;return summarize();};
     server=startDashboard(s,config);
     const response=await fetch(`http://127.0.0.1:${server.port}/api/status`);
     expect(response.status).toBe(200);
     const data=await response.json() as any;
+    expect(summaries).toBe(1);
     expect(data.resetTiming.cases[0].observation.remainingBefore).toBe(25);
     const row=data.resetSignals.signals.find((r:any)=>r.id===signal(0).id);
     expect(row.localTimeText).toContain("PST");

@@ -8,6 +8,31 @@ import type {WindowAnalysis} from "../src/types";
 const NOW=Date.now();
 const input=(owner:"local"|"dots"="local"):WorkPolicyInput=>({id:"work",provider:"claude",account:"default",profileKey:"profile",accountKey:"identity",nativeSessionId:"session",cwd:"/tmp",prompt:"work",objective:"task",completionCriteria:["proof"],dispatchOwner:owner,enabled:true,trigger:"quota-ready",budgetByBucket:{five_hour:{reservePercent:0,maxUsagePercent:20}},resetWithinMinutes:60,maxTurns:1,maxDurationSeconds:30,maxTotalDurationSeconds:60,expiresAtMs:NOW+3600000,priority:0,onReset:"stop"});
 const window=()=>({provider:"claude",account:"default",bucket:"five_hour",remainingPercent:50,reservePercent:10,resetsAtMs:NOW+3600000,observedAtMs:NOW,quality:"authoritative",freshness:"fresh"} as WindowAnalysis);
+test("announcement reads remain trigger-specific and never repeat for running authorization",async()=>{
+ const db=new QuotaStorage(":memory:"),store=new WorkStore(db);let reads=0,eligible=false;
+ const c=new WorkController(store,loadConfig(),{now:()=>NOW,windows:()=>[window()],announcement:()=>{reads++;return eligible;},
+ announcementPublishedAtMs:()=>NOW-1000,forecast:()=>null,legacyBusy:()=>false,
+ inspect:async()=>({profileKey:"profile",accountKey:"identity",cwd:"/tmp"}),execute:async()=>({status:"turn-finished",remainingWork:"more"})});
+ try {
+  const p=store.save(input(),null,"save");
+  expect(c.admission(p).ready).toBe(true);expect(reads).toBe(0);
+  expect(c.admission({...p,trigger:"public-announcement"}).reason).toBe("awaiting-announcement");expect(reads).toBe(1);
+  expect(c.admission({...p,trigger:"forecast-probability",unknownForecastAction:"announcement"}).reason).toBe("forecast-unavailable");expect(reads).toBe(2);
+  eligible=true;
+  expect(c.admission({...p,trigger:"public-announcement"}).ready).toBe(true);
+  expect(c.admission({...p,trigger:"forecast-probability",unknownForecastAction:"announcement"}).ready).toBe(true);
+  c.deps.announcementPublishedAtMs=()=>NOW-120_000;
+  expect(c.admission({...p,trigger:"forecast-probability",unknownForecastAction:"announcement",opportunityMaxAgeMinutes:1}).reason).toBe("forecast-unavailable");
+  c.deps.forecast=()=>({actionProbabilityEstimate:null,horizonAtMs:NOW+3600_000,quantileAtMs:NOW+120_000});
+  for(const trigger of ["quota-ready","scheduled"] as const) {
+   const result=c.admission({...p,trigger,resetBucket:"five_hour",earlyResetQuantile:0.2});
+   expect(result.ready).toBe(true);expect("planning" in result && result.planning.deadlineAtMs).toBe(NOW+120_000);
+  }
+  reads=0;
+  expect(c.admission({...p,trigger:"public-announcement"},true).ready).toBe(true);expect(reads).toBe(0);
+  expect(c.admission({...p,trigger:"forecast-probability",unknownForecastAction:"announcement"},true).ready).toBe(true);expect(reads).toBe(0);
+ } finally {await c.close();db.close();}
+});
 test("Dots and local share a durable single-use dispatch including racing HTTP retries",async()=>{
  const db=new QuotaStorage(":memory:"),store=new WorkStore(db); let calls=0;
  let release!:()=>void; const barrier=new Promise<void>(r=>release=r);

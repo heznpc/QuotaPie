@@ -58,6 +58,60 @@ function fixture(usedPercent = 20) {
 
 afterEach(async()=>{for(const close of cleanup.splice(0)) await close();});
 
+test("live execution checks re-read quota limits without scanning burn-rate or timing-report history",async()=>{
+  const f=fixture();
+  const now=Date.now();
+  f.service.collection.recordAttempt("codex","fixture","fixture",now,null,null);
+  const saved=await f.service.saveWorkPolicy({...f.policy,onReset:"continue",budgetByBucket:{"codex:primary:300":{reservePercent:10,maxUsagePercent:100}}},null,"fast-check");
+  f.service.db.analysisHistory=()=>{throw new Error("execution must not scan historical snapshots");};
+  f.service.resetTiming.summary=()=>{throw new Error("execution must not build the full timing report");};
+  expect(f.service.work.list()[0]!.admission.ready).toBe(true);
+  expect(f.service.resumeGate("codex","fixture",now).ready).toBe(true);
+  expect((f.service as any).workGate(saved.policy).ready).toBe(true);
+  await f.service.work.dispatch(saved.policy.id,"local",saved.policy.revision,"fast-turn");
+  await f.service.work.settle();
+  expect(f.runs()).toBe(1);
+  const sample={provider:"codex" as const,account:"fixture",bucket:"codex:primary:300",label:"5h",windowSeconds:18000,
+    usedPercent:95,observedAtMs:Date.now(),resetsAtMs:now+3600000,source:"fixture",quality:"authoritative" as const};
+  f.service.ingest([sample]);
+  expect(f.service.work.list()[0]!.admission.reason).toBe("reserve-reached");
+  expect((f.service as any).workGate(saved.policy).reason).toBe("reserve-reached");
+  expect(f.service.resumeGate("codex","fixture",sample.observedAtMs+f.config.collection.staleAfterSeconds*1000+1).ready).toBe(false);
+  f.service.ingest([{...sample,bucket:"codex:secondary:10080",windowSeconds:604800,usedPercent:0}]);
+  expect(f.service.work.list()[0]!.admission.reason).toBe("work-bucket-budget-required");
+});
+
+test("lightweight execution windows preserve quality, freshness, reset and collector-epoch exclusions",()=>{
+  for(const change of [
+    {quality:"derived" as const},
+    {observedAtMs:Date.now()+60_000},
+    {observedAtMs:Date.now()-600_000},
+    {resetsAtMs:Date.now()-1},
+  ]) {
+    const f=fixture();
+    const now=Date.now();
+    // Replace the fixture observation so an older invalid sample is the latest
+    // evidence rather than a historical row behind a still-valid observation.
+    f.service.storage.db.run("DELETE FROM snapshots");
+    f.service.ingest([{provider:"codex",account:"fixture",bucket:"codex:primary:300",label:"5h",windowSeconds:18000,
+      usedPercent:20,observedAtMs:now-1000,resetsAtMs:now+3600000,source:"fixture",quality:"authoritative",...change}]);
+    f.service.collection.recordAttempt("codex","fixture","fixture",now,null,null);
+    const full=f.service.analyses(now);
+    f.service.db.analysisHistory=()=>{throw new Error("unexpected history scan");};
+    const light=f.service.work.deps.windows();
+    expect(light.map(w=>[w.bucket,w.quality,w.freshness,w.observedAtMs,w.resetsAtMs,w.remainingPercent]))
+      .toEqual(full.map(w=>[w.bucket,w.quality,w.freshness,w.observedAtMs,w.resetsAtMs,w.remainingPercent]));
+    expect(f.service.resumeGate("codex","fixture",now).ready).toBe(false);
+  }
+  const f=fixture();const now=Date.now();
+  f.service.ingest([{provider:"codex",account:"fixture",bucket:"codex:secondary:10080",label:"Week",windowSeconds:604800,
+    usedPercent:0,observedAtMs:now,resetsAtMs:now+3600000,source:"fixture",quality:"authoritative",metadata:{collectorEpoch:"new"}}]);
+  f.service.db.analysisHistory=()=>{throw new Error("unexpected history scan");};
+  expect(f.service.work.deps.windows().map(w=>w.bucket)).toEqual(["codex:secondary:10080"]);
+  f.service.collection.recordAttempt("codex","fixture","fixture",now,"login required","auth-required");
+  expect(f.service.resumeGate("codex","fixture",now).reason).toBe("collection-unavailable");
+});
+
 async function saveAndRead(f:ReturnType<typeof fixture>, input:WorkPolicyInput, revision:number|null, id:string, linked?:boolean, objective?:string) {
   const saved=await f.service.saveWorkPolicy(input,revision,id,linked,objective);
   await f.service.refreshHostGoals(true);

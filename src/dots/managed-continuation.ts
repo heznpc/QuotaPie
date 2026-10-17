@@ -27,6 +27,7 @@ export interface ManagedPreparation {
 interface PreparationOptions {
   threadStatus?: ProfileThreadStatus;
   readThread?: typeof readConfiguredThread;
+  readGate?: (policy: DotPolicy) => Promise<ResumeGate>;
   now?: () => number;
 }
 export interface ManagedChild {
@@ -45,7 +46,6 @@ export interface ManagedRunOptions extends PreparationOptions {
   /** Resolved from the shared stored policy, never raw HTTP guard overrides. */
   budgetByBucket?: Record<string, {reservePercent:number;remainingUsagePercent:number}>;
   structuredWork?: boolean;
-  readGate?: (policy: DotPolicy) => Promise<ResumeGate>;
   binary?: () => string | null;
   readExecutionConfig?: typeof readExecutionConfiguration;
   guard?: typeof createSubscriptionGuard;
@@ -132,7 +132,7 @@ export async function prepareManagedContinuation(config: AppConfig, policy: DotP
     lastLifecycle: null, runtimeStateVerified: false, nativeWriterLockVerified: false };
   if (policy.executionMode !== "profile-managed" || !UUID.test(policy.threadId)) return result;
   try {
-    const thread = options.threadStatus ?? await (options.readThread ?? readConfiguredThread)(config, policy);
+    const thread = options.threadStatus ?? await (options.readThread ?? readConfiguredThread)(config, policy, { readGate: options.readGate });
     if (!thread.found || thread.threadId !== policy.threadId || thread.targetId !== policy.id || thread.account !== policy.account ||
         !thread.evidence.profileMatched || !thread.evidence.accountMatched || !thread.evidence.sessionMetadataMatched || !thread.evidence.rolloutPathMatched)
       throw new Error("thread-profile-unverified");
@@ -241,7 +241,7 @@ export async function runManagedContinuation(input: { config: AppConfig; policy:
   const binary = (options.binary ?? findBundledCodex)();
   if (!binary) return failed("bundled-codex-unavailable");
   let executionConfig: Awaited<ReturnType<typeof readExecutionConfiguration>>;
-  try { executionConfig = await (options.readExecutionConfig ?? readExecutionConfiguration)(config, policy, snapshot.cwd); }
+  try { executionConfig = await (options.readExecutionConfig ?? readExecutionConfiguration)(config, policy, snapshot.cwd, { readGate: options.readGate }); }
   catch { return failed("execution-config-unverified"); }
   const guardOptions = { codexHome: snapshot.root, sourceAccount: policy.account, config: () => config };
   const createGuard = options.guard ?? createSubscriptionGuard;

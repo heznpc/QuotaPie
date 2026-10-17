@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,7 +7,7 @@ import { DEFAULT_CONFIG } from "../src/config";
 import { resumeProfileKey, type ResumeGate } from "../src/resume-gate";
 import { prepareManagedContinuation, runManagedContinuation, spawnManagedChild, type ManagedRunOptions, type ManagedProcessPlan } from "../src/dots/managed-continuation";
 import type { DotPolicy } from "../src/dots/store";
-import type { ProfileThreadStatus } from "../src/dots/thread-reader";
+import { readConfiguredThread, readExecutionConfiguration, type ProfileThreadStatus, type ThreadReadTransport } from "../src/dots/thread-reader";
 import type { SubscriptionGuardState } from "../src/subscription-guard";
 
 const roots: string[] = [];
@@ -52,6 +52,65 @@ function fixture() {
   return { root, path, config, policy, input: { config, policy, claimId }, options, plans, prompts, kills, guardOptions, guardChecks, output,
     get stopped() { return stopped; }, setAllowed: (value: boolean) => { allowed = value; } };
 }
+
+function verifiedReaderFixture() {
+  const f = fixture();
+  const jwt = (claims: unknown) => "header." + Buffer.from(JSON.stringify(claims)).toString("base64url") + ".signature";
+  const claims = {sub:"fixture-user","https://api.openai.com/auth":{chatgpt_account_id:"fixture-account"}};
+  writeFileSync(join(f.root,"auth.json"), JSON.stringify({auth_mode:"chatgpt",OPENAI_API_KEY:null,tokens:{account_id:"fixture-account",
+    id_token:jwt({...claims,email:"fixture@example.test"}),
+    access_token:jwt({...claims,"https://api.openai.com/profile":{email:"fixture@example.test"}})}}));
+  const calls: string[] = [];
+  let closed = 0;
+  const transport = async (): Promise<ThreadReadTransport> => ({
+    async request(method) {
+      calls.push(method);
+      if (method === "account/read") return {account:{type:"chatgpt",email:"fixture@example.test",planType:"plus"}};
+      if (method === "thread/read") return {thread:{id:threadId,cwd:f.root,path:f.path,status:{type:"notLoaded"}}};
+      if (method === "config/read") return {config:{mcp_servers:{}},layers:[]};
+      return {};
+    },
+    async close() { closed++; },
+  });
+  delete f.options.threadStatus;
+  // Exercise the real profile/account/session readers; only their local
+  // app-server transport is fake, and the caller must supply its own gate.
+  f.options.readThread = (config, policy, options) => readConfiguredThread(config, policy, {...options,binary:f.options.binary,transport});
+  f.options.readExecutionConfig = (config, policy, cwd, options) => readExecutionConfiguration(config, policy, cwd, {...options,binary:f.options.binary,transport});
+  return {f,calls,get closed() { return closed; }};
+}
+
+test("managed preflight and config readers use the injected in-process gate without self HTTP", async () => {
+  const reader = verifiedReaderFixture(), {f} = reader;
+  const fetch = spyOn(globalThis, "fetch").mockRejectedValue(new Error("unexpected-self-http"));
+  const read = f.options.readGate!; let gateReads = 0;
+  f.options.readGate = async policy => { gateReads++; return read(policy); };
+  try {
+    expect(await runManagedContinuation(f.input, f.options)).toMatchObject({outcome:"completed",attempts:1});
+    expect(fetch).not.toHaveBeenCalled();
+    expect(gateReads).toBe(6);
+    expect(reader.calls).toEqual(["initialize","account/read","thread/read","account/read","initialize","account/read","config/read"]);
+    expect(reader.closed).toBe(2); expect(f.plans).toHaveLength(1);
+  } finally { fetch.mockRestore(); }
+});
+
+test("the injected gate still rejects account changes during thread and execution-config reads", async () => {
+  for (const changeAt of [2,5]) {
+    const reader = verifiedReaderFixture(), {f} = reader, read = f.options.readGate!;
+    let gateReads = 0;
+    f.options.readGate = async policy => {
+      const gate = await read(policy);
+      return ++gateReads >= changeAt ? {...gate,accountKey:"b".repeat(64)} : gate;
+    };
+    const fetch = spyOn(globalThis, "fetch").mockRejectedValue(new Error("unexpected-self-http"));
+    try {
+      expect(await runManagedContinuation(f.input, f.options)).toMatchObject({outcome:"failed",attempts:0,
+        reason:changeAt === 2 ? "account-profile-mismatch" : "execution-config-unverified"});
+      expect(fetch).not.toHaveBeenCalled(); expect(f.plans).toHaveLength(0);
+      expect(reader.closed).toBe(changeAt === 2 ? 1 : 2);
+    } finally { fetch.mockRestore(); }
+  }
+});
 
 test("preparation exposes only a terminal lifecycle snapshot, never a verified native lock", async () => {
   const f = fixture(); f.policy.enabled = false;

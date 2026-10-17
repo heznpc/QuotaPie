@@ -350,6 +350,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
         const analysed = service.analyses(nowMs);
         const accounts = service.accountStates(nowMs, analysed);
         const resetPlans = service.resetPlanning(accounts, nowMs);
+        const timingStatus = service.resetTimingStatus();
         return json({
           nowMs,
           actionToken,
@@ -364,7 +365,6 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           resetSignals: (() => {
             const feed = service.signalCollector.status(nowMs);
             const automation = service.resetAutomationStatus(nowMs);
-            const timingStatus = service.resetTimingStatus();
             const timingCases = timingStatus.cases;
             const publications = "publications" in timingStatus ? timingStatus.publications : [];
             const opportunities = resetPlans.flatMap(plan => plan.opportunities);
@@ -386,19 +386,21 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
               return `${ko ? "관측 기반 추정" : "Observed estimate"}: ${format(low)}–${format(high)} · ${ko ? "확정 아님" : "unconfirmed"}`;
             };
             const closed = new Map(resetPlans.map(a => [a.provider + ":" + a.account, new Set(a.closedSignalIDs)]));
-            return { ...feed, automation, signals: feed.signals.map(signal => ({ ...signal,
+            return { ...feed, automation, signals: feed.signals.map(signal => {
+              const presentation = resetTimingPresentation(signal, timingCases, displayLocale, service.config.profile.timeZone, accounts, publications);
+              return { ...signal,
               preparationClosed: accounts.some(a => a.provider === (signal.provider ?? "codex")) && accounts
                 .filter(a => a.provider === (signal.provider ?? "codex"))
                 .every(a => closed.get(a.provider + ":" + a.account)!.has(signal.id)),
-              forecastText: resetTimingPresentation(signal, timingCases, displayLocale, service.config.profile.timeZone, accounts, publications).forecastText ?? forecastText(signal.id),
-              timingHistoryText: resetTimingPresentation(signal, timingCases, displayLocale, service.config.profile.timeZone, accounts, publications).timingHistoryText,
+              forecastText: presentation.forecastText ?? forecastText(signal.id),
+              timingHistoryText: presentation.timingHistoryText,
               localTimeText: localAnnouncementTime(signal, displayLocale, service.config.profile.timeZone),
               benefitText: benefitChangeText(signal, displayLocale),
               newsTitle: signalDecision(signal, displayLocale, service.config.profile.timeZone).title,
-            })) };
+            }; }) };
           })(),
           resetOpportunities: resetPlans.flatMap(plan => plan.opportunities.map(opportunity => ({ ...opportunity, account: plan.account }))),
-          resetTiming: service.resetTimingStatus(),
+          resetTiming: timingStatus,
           resetTracking: service.resetTracking(nowMs, accounts),
           compaction: compaction.snapshot(nowMs),
           accountPool: (() => { try {

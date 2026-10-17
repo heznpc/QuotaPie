@@ -43,13 +43,17 @@ export class WorkController {
     if(!running && hold && this.now()-hold.atMs<30000) return {ready:false,reason:hold.reason,timeoutSeconds:0};
     const execution=running&&policy.state.activeExecutionId?this.store.getExecution(policy.state.activeExecutionId):null;
     const effective=execution?.dispatchedAtMs!==undefined?{...policy,state:{...policy.state,totalDurationSeconds:policy.state.totalDurationSeconds+Math.max(0,(this.now()-execution.dispatchedAtMs)/1000)}}:policy;
+    // A running turn has passed its start trigger. Quota-ready and scheduled
+    // work also do not use public announcements to decide admission.
+    const needsAnnouncement = !running && (policy.trigger === "public-announcement" ||
+      policy.trigger === "forecast-probability" && policy.unknownForecastAction === "announcement");
     return evaluateWorkAdmission(effective, this.deps.windows(), this.now(), {
       maxAgeMs:this.config.collection.staleAfterSeconds*1000,
-      publicAnnouncementEligible:this.deps.announcement(policy), ignoreTrigger:running, running,
+      publicAnnouncementEligible:needsAnnouncement && this.deps.announcement(policy), ignoreTrigger:running, running,
       minimumReserveByBucket:this.deps.minimumReserveByBucket?.(policy) ?? {},
       forecast:execution?.planning ? undefined : this.deps.forecast?.(policy,this.now()),
       frozenPlanning:execution?.planning,
-      announcementPublishedAtMs:this.deps.announcementPublishedAtMs?.(policy),
+      announcementPublishedAtMs:needsAnnouncement ? this.deps.announcementPublishedAtMs?.(policy) : undefined,
       estimatedWorkMinutes:this.estimatedWorkMinutes(policy),
       inheritedActivitySchedules:this.inheritedActivitySchedules(),
     });

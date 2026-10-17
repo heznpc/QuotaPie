@@ -9,13 +9,14 @@ import { runtimeSourceHash } from "../src/runtime-identity";
 
 type Result = { code: number; stdout: string; stderr: string };
 type Job = { loaded: boolean; pid: number | null };
+type JsonOptions = { timeoutMs?: number; headers?: Record<string, string> };
 export interface InstallDependencies {
   platform: string;
   uid: number;
   bun: string;
   env: Record<string, string | undefined>;
   run: (command: string[], env: Record<string, string | undefined>) => Promise<Result>;
-  json: (url: string) => Promise<any>;
+  json: (url: string, options?: JsonOptions) => Promise<any>;
   sleep: (ms: number) => Promise<void>;
   signal?: AbortSignal;
 }
@@ -34,8 +35,9 @@ const defaults: InstallDependencies = {
       return { code, stdout, stderr };
     } finally { clearTimeout(timer); }
   },
-  async json(url) {
-    const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(1500) });
+  async json(url, options) {
+    const response = await fetch(url, { redirect: "error", headers: options?.headers,
+      signal: AbortSignal.timeout(options?.timeoutMs ?? 1500) });
     if (![200, 503].includes(response.status)) throw new Error("Local service unavailable");
     return response.json();
   },
@@ -125,6 +127,54 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
   const stoppedPids = new Map<string, Set<number>>();
   let rollbackFailed = false;
   const checkCancelled = () => { if (deps.signal?.aborted) throw new Error("Installation interrupted; previous installation restored."); };
+  async function readInstallationState(url: string, options: JsonOptions = {}) {
+    // An otherwise healthy collector can be briefly occupied at startup. Retry
+    // transport failures only; callers still reject any returned wrong identity
+    // or unrecognized work state. At most three five-second requests are made.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      checkCancelled();
+      try {
+        const value = await deps.json(url, { ...options, timeoutMs: 5000 });
+        checkCancelled();
+        return value;
+      } catch (error) {
+        checkCancelled();
+        if (attempt === 2) throw error;
+        await deps.sleep(250);
+      }
+    }
+    throw new Error("Installation state could not be read.");
+  }
+  async function assertNoManagedWork(origin: string, expectedPid: number | null) {
+    try {
+      const status = await readInstallationState(origin + "/api/status");
+      if (typeof status?.actionToken !== "string" || !status.actionToken || status.actionToken.length > 256
+          || !Array.isArray(status.jobs) || !Array.isArray(status.resumeTasks)) throw new Error("invalid-status");
+      // The status endpoint exposes only the most recent 100 legacy jobs. A
+      // full page cannot prove that an older active job was not omitted.
+      if (status.jobs.length >= 100) throw new Error("incomplete-job-status");
+      const work = await readInstallationState(origin + "/api/work", { headers: { "x-quotapie-action-token": status.actionToken } });
+      if (!Array.isArray(work?.policies) || !Array.isArray(work.executions)
+          || work.policies.some((policy: any) => typeof policy?.enabled !== "boolean" || !policy.state
+            || !(policy.state.activeExecutionId === null || typeof policy.state.activeExecutionId === "string"))
+          || work.executions.some((execution: any) => !["claimed", "dispatched", "finished", "uncertain"].includes(execution?.status))
+          || status.jobs.some((job: any) => !["waiting", "ready", "running", "review", "succeeded", "failed", "cancelled"].includes(job?.state))
+          || status.resumeTasks.some((task: any) => !["waiting", "ready", "approved", "resumed", "dismissed"].includes(task?.state)))
+        throw new Error("invalid-work-state");
+      if (work.policies.some((policy: any) => policy.enabled || policy.state.activeExecutionId !== null)
+          || work.executions.some((execution: any) => execution.status !== "finished")
+          || status.jobs.some((job: any) => ["waiting", "ready", "running", "review"].includes(job.state)))
+        throw new Error("managed-work-active");
+      const collector = await job(LABELS[0]);
+      if (!expectedPid || collector.pid !== expectedPid) throw new Error("collector-changed");
+    } catch (error) {
+      if (error instanceof Error && error.message === "managed-work-active")
+        throw new Error("Managed work is enabled, pending, running or uncertain. Disable scheduling and wait for execution to finish before installing.");
+      if (error instanceof Error && error.message === "incomplete-job-status")
+        throw new Error("The collector returned a full legacy-job page; older work may be omitted. The running installation was not stopped.");
+      throw new Error("Managed work state could not be verified; the running installation was not stopped.");
+    }
+  }
   async function run(command: string[], customEnv = env) {
     const result = await deps.run(command, customEnv);
     if (result.code !== 0) throw new Error(`${basename(command[0]!)} failed: ${result.stderr.trim().slice(0, 2000) || result.stdout.trim().slice(0, 2000) || result.code}`);
@@ -255,6 +305,11 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
     const stagedCLI = join(dirname(cli), `.quotapie-install-${id}`);
     symlinkSync(join(runtime, "bin/quotapie"), stagedCLI);
     addSwap(runtime, stagedRuntime); addSwap(app, stagedApp); addSwap(cli, stagedCLI);
+    // Disabled policies cannot dispatch on a quota tick while services stop.
+    // This does not lock out another client explicitly enabling new work; run
+    // installation without concurrent work-policy changes.
+    if (priorJobs[0]!.loaded) await assertNoManagedWork(origin, priorJobs[0]!.pid);
+    checkCancelled();
     activationStarted = true;
     await stop(LABELS[1]); await stop(LABELS[0]);
     for (const swap of swaps) {
@@ -266,7 +321,7 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
     let verified: { collectorPid: number; menuPid: number } | null = null;
     for (let attempt = 0; attempt < (options.attempts ?? 40); attempt++) {
       checkCancelled();
-      const identity = await deps.json(origin + "/api/runtime").catch(() => null);
+      const identity = await deps.json(origin + "/api/runtime", { timeoutMs: 5000 }).catch(() => null);
       const collector = await job(LABELS[0]);
       if (identity?.schemaVersion === 1 && identity.sourceHash === expectedHash && collector.pid
           && identity.pid === collector.pid && identity.pid !== priorJobs[0]!.pid
@@ -290,10 +345,15 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
     if (!verified.menuPid) throw new Error("The installed menu bar app did not start.");
     await deps.sleep(750);
     checkCancelled();
+    let stableIdentity: any;
+    try { stableIdentity = await readInstallationState(origin + "/api/runtime"); }
+    catch { throw new Error("The installed collector did not report its expected runtime identity during startup stability verification."); }
+    // Re-read launchd after a delayed HTTP response, rather than accepting the
+    // process identities captured before the wait.
     const stableMenu = await job(LABELS[1]), stableCollector = await job(LABELS[0]);
-    const stableIdentity = await deps.json(origin + "/api/runtime");
     if (stableMenu.pid !== verified.menuPid || stableCollector.pid !== verified.collectorPid
-        || stableIdentity.pid !== verified.collectorPid || stableIdentity.sourceHash !== expectedHash
+        || stableIdentity?.schemaVersion !== 1 || stableIdentity.pid !== verified.collectorPid || stableIdentity.sourceHash !== expectedHash
+        || !Number.isFinite(Date.parse(stableIdentity.startedAt ?? ""))
         || (await deps.run(["/bin/kill", "-0", String(verified.menuPid)], env)).code !== 0) {
       throw new Error("The installed app or collector exited during startup verification.");
     }
