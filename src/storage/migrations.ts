@@ -23,10 +23,29 @@ function inTransaction(db: Database, work: () => void): void {
 }
 
 export function migrate(db: Database): void {
+    db.run(`CREATE TABLE IF NOT EXISTS work_host_goal_links (
+      task_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, revision TEXT NOT NULL, binding_key TEXT NOT NULL,
+      read_state TEXT NOT NULL, objective TEXT, linked_objective TEXT, host_status TEXT,
+      observed_at_ms INTEGER, attempted_at_ms INTEGER)`);
     db.run(`CREATE TABLE IF NOT EXISTS host_goal_links (
       task_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, revision TEXT NOT NULL,
       read_state TEXT NOT NULL, objective TEXT, host_status TEXT,
       observed_at_ms INTEGER, attempted_at_ms INTEGER)`);
+    db.run(`CREATE TABLE IF NOT EXISTS reset_account_recoveries (id TEXT PRIMARY KEY, observed_ms INTEGER NOT NULL, payload TEXT NOT NULL)`);
+    db.run(`CREATE TABLE IF NOT EXISTS reset_forecast_publications (
+      id TEXT PRIMARY KEY, event_id TEXT NOT NULL, issued_ms INTEGER NOT NULL, payload TEXT NOT NULL)`);
+    db.run(`CREATE TABLE IF NOT EXISTS reset_timing_labels (
+      id INTEGER PRIMARY KEY, case_key TEXT NOT NULL, known_ms INTEGER NOT NULL, version INTEGER NOT NULL, payload TEXT NOT NULL,
+      UNIQUE(case_key,version))`);
+    db.run(`CREATE TABLE IF NOT EXISTS reset_observation_coverage (
+      id TEXT PRIMARY KEY, provider TEXT NOT NULL, account TEXT NOT NULL, observed_ms INTEGER NOT NULL, payload TEXT NOT NULL)`);
+    db.run(`CREATE TABLE IF NOT EXISTS reset_forecast_actions (
+      forecast_id TEXT NOT NULL, policy_version INTEGER NOT NULL, decided_ms INTEGER NOT NULL,
+      PRIMARY KEY(forecast_id,policy_version))`);
+    db.run(`CREATE TABLE IF NOT EXISTS reset_timing_cases (
+      provider TEXT NOT NULL, account TEXT NOT NULL, signal_id TEXT NOT NULL,
+      published_ms INTEGER NOT NULL, payload TEXT NOT NULL,
+      PRIMARY KEY(provider,account,signal_id))`);
     db.run(`CREATE TABLE IF NOT EXISTS account_binding_secret (id INTEGER PRIMARY KEY CHECK(id=1), secret TEXT NOT NULL)`);
     db.run(`CREATE TABLE IF NOT EXISTS account_bindings (scope TEXT NOT NULL, id TEXT NOT NULL, binding TEXT NOT NULL, PRIMARY KEY(scope,id))`);
     db.run(`CREATE TABLE IF NOT EXISTS model_notification_state (
@@ -143,6 +162,7 @@ export function migrate(db: Database): void {
         details_json TEXT NOT NULL DEFAULT '{}'
       )
     `);
+    db.run("CREATE INDEX IF NOT EXISTS events_kind_time ON events(kind,occurred_at_ms)");
     db.run(`
       CREATE TABLE IF NOT EXISTS alert_state (
         key TEXT PRIMARY KEY,

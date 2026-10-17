@@ -172,6 +172,30 @@ test("terminal tasks retain history without further host reads and disappear whe
   expect(f.service.hostGoalLinks.list()).toEqual([]);
 });
 
+test("a resumed task continues reading its host goal without pretending a shell launch completed it", async () => {
+  const f = fixture();
+  await f.service.linkHostGoal(f.task.id, SESSION);
+  f.service.resumeTasks.markReady(f.task.id,Date.now());
+  f.service.resumeTasks.approve(f.task.id,Date.now());
+  f.service.resumeTasks.markResumed(f.task.id,Date.now());
+  f.client.readThreadGoal = async () => ({threadId:SESSION,objective:"Finish the fixture",status:"complete"});
+  await f.service.refreshHostGoals(true);
+  expect(f.service.hostGoalStatus().items[0]).toMatchObject({resumeState:"resumed",hostStatus:"complete",readState:"ready"});
+});
+
+test("pause with a goal can retry the same active registration after a failed lookup", async () => {
+  const f = fixture();
+  f.client.listThreads = async () => ({data:[],nextCursor:null});
+  await expect(f.service.linkHostGoal(f.task.id, SESSION)).rejects.toThrow("session_unavailable");
+  const retried = f.service.registerResumeTask({provider:"codex",account:"fixture",nativeId:SESSION,cwd:f.root},Date.now(),true);
+  expect(retried.id).toBe(f.task.id);
+  expect(f.service.resumeTasks.active()).toHaveLength(1);
+  f.client.listThreads = async () => ({data:[{id:SESSION,cwd:f.root,name:"Fixture"}],nextCursor:null});
+  expect((await f.service.linkHostGoal(retried.id,SESSION)).readState).toBe("ready");
+  fakeCodexLogin(f.profile,"different-account");
+  expect(()=>f.service.registerResumeTask({provider:"codex",account:"fixture",nativeId:SESSION},Date.now(),true)).toThrow("account_changed");
+});
+
 test("links survive a service restart, and the public API omits private session locators", async () => {
   const f = fixture(true);
   await f.service.linkHostGoal(f.task.id, SESSION);

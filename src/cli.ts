@@ -25,6 +25,8 @@ import { runCompactionCodex } from "./codex-compaction";
 import { runJobsCommand } from "./jobs/cli";
 import { runPoolCommand } from "./account-pool";
 import { runHostGoalsCommand } from "./host-goals-cli";
+import { resumeProfileKey } from "./resume-gate";
+import { runDotsCommand } from "./dots/cli";
 
 const ROOT = resolve(import.meta.dir, "..");
 const BIN = resolve(ROOT, "bin", "quotapie");
@@ -243,6 +245,7 @@ async function main(): Promise<number> {
   const [command = "status", ...args] = process.argv.slice(2);
   outputLocale = configuredLocale();
   if (command === "pool") return runPoolCommand(args);
+  if (command === "dots") return runDotsCommand(args);
   if (command === "codex") {
     return runCompactionCodex(args, loadConfig().collection.codexCommand);
   }
@@ -294,6 +297,38 @@ async function main(): Promise<number> {
   ].some((profile) => profile.id === selectedAccount && profile.enabled);
   if (!configuredAccount) {
     throw new Error(t("cli.error.unknown-account", { account: selectedAccount ?? "" }, outputLocale));
+  }
+  if (command === "resume-check") {
+    const provider = optionValue(args, "--provider", outputLocale) ?? "codex";
+    if (provider !== "codex" && provider !== "claude") throw new Error("provider must be codex or claude");
+    let account: string;
+    try { account = resumeAccount(config, provider, selectedAccount, outputLocale); }
+    catch {
+      console.log(JSON.stringify({ schemaVersion: 1, ready: false, reason: "account-unresolved" }));
+      return 69;
+    }
+    const origin = apiOrigin(config.dashboard.host, config.dashboard.port);
+    const url = new URL("/api/resume-check", origin);
+    url.searchParams.set("provider", provider); url.searchParams.set("account", account);
+    const bucket = optionValue(args, "--bucket", outputLocale);
+    if (bucket) url.searchParams.set("bucket", bucket);
+    try {
+      const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(3000) });
+      if (!response.ok) throw new Error("resume gate unavailable");
+      const gate = await response.json() as Record<string, unknown>;
+      if (gate.schemaVersion !== 1 || gate.provider !== provider || gate.account !== account ||
+          typeof gate.ready !== "boolean" || typeof gate.reason !== "string") throw new Error("invalid resume gate");
+      const profileKey = resumeProfileKey(config, provider, account);
+      if (!profileKey || gate.profileKey !== profileKey) {
+        console.log(JSON.stringify({ schemaVersion: 1, provider, account, ready: false, reason: "profile-mismatch" }));
+        return 69;
+      }
+      console.log(JSON.stringify(gate, null, jsonOutput ? 2 : undefined));
+      return gate.ready ? 0 : 3;
+    } catch {
+      console.log(JSON.stringify({ schemaVersion: 1, provider, account, ready: false, reason: "service-unavailable" }));
+      return 69;
+    }
   }
   if (command === "awake") {
     const action = args[0];
@@ -441,7 +476,7 @@ async function main(): Promise<number> {
           cwd: optionValue(args, "--cwd", outputLocale) ?? process.cwd(),
           projectLabel: optionValue(args, "--label", outputLocale) ?? undefined,
           bucket: optionValue(args, "--bucket", outputLocale) ?? undefined,
-        });
+        }, Date.now(), args.includes("--goal"));
         service.publishWorkBoundary();
         const profileRoot = provider === "codex"
           ? resolveUserPath(config.accounts.codex.find(p => p.id === task.account)!.codexHome ?? "~/.codex")

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { isAbsolute, basename } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { claudeProfileEnvironment } from "../providers/claude-profile";
@@ -13,6 +13,9 @@ export interface JobStepInput {
   sessionId?: string | null;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Claude's final structured_output envelope, not its human-readable result. */
+  structuredOutputSchema?: Record<string, unknown>;
+  verifyOwnedStop?: boolean;
 }
 
 export interface JobStepResult {
@@ -21,6 +24,8 @@ export interface JobStepResult {
   sessionId?: string;
   reason: string;
   retryAtMs?: number;
+  structuredOutput?: unknown;
+  ownedProcessStopped?: true;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -80,7 +85,7 @@ function quotaError(value: unknown, now: number, depth = 0): { retryAtMs?: numbe
   return retryAtMs === undefined ? {} : { retryAtMs };
 }
 
-function executionEnvironment(input: JobStepInput): NodeJS.ProcessEnv {
+export function executionEnvironment(input: Pick<JobStepInput, "provider" | "profileRoot">): NodeJS.ProcessEnv {
   // An allowlist also excludes custom API-key variables, cloud provider routing,
   // injected Node options and credentials inherited from the hosting AI session.
   const env: NodeJS.ProcessEnv = {};
@@ -108,12 +113,14 @@ function argumentsFor(input: JobStepInput): string[] {
   const args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default"];
   if (input.sessionId) args.push("--resume", input.sessionId);
   if (input.model) args.push("--model", input.model);
+  if (input.structuredOutputSchema) args.push("--json-schema", JSON.stringify(input.structuredOutputSchema));
   return args;
 }
 
 class ExecutionEvents {
   sessionId?: string;
   output?: string;
+  structuredOutput?: unknown;
   invalid = false;
   sessionMismatch = false;
   terminal: "success" | "failure" | null = null;
@@ -192,6 +199,7 @@ class ExecutionEvents {
       (typeof event.terminal_reason === "string" && event.terminal_reason !== "completed");
     if (event.subtype === "success" && event.is_error === false && !blocked && !this.permissionDenied && typeof event.result === "string") {
       this.output = event.result;
+      this.structuredOutput = event.structured_output;
       this.terminal = "success";
       this.quota = null;
     } else {
@@ -203,7 +211,8 @@ class ExecutionEvents {
 
   result(exitCode: number | null, stopped?: string): JobStepResult {
     const context = { ...(this.sessionId ? { sessionId: this.sessionId } : {}),
-      ...(this.output !== undefined ? { output: this.output } : {}) };
+      ...(this.output !== undefined ? { output: this.output } : {}),
+      ...(this.structuredOutput !== undefined ? { structuredOutput: this.structuredOutput } : {}) };
     if (stopped) return { ...context, kind: "uncertain", reason: stopped };
     if (this.sessionMismatch) return { ...context, kind: "uncertain", reason: "session-mismatch" };
     if (this.invalid) return { ...context, kind: "uncertain", reason: "invalid-event-stream" };
@@ -224,6 +233,8 @@ export async function executeJobStep(input: JobStepInput): Promise<JobStepResult
       !input.prompt.trim() || Buffer.byteLength(input.prompt) > STDOUT_LIMIT ||
       (input.sessionId != null && !UUID.test(input.sessionId)) ||
       (input.model !== undefined && !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$/.test(input.model)) ||
+      (input.structuredOutputSchema !== undefined && (input.provider !== "claude" ||
+        !object(input.structuredOutputSchema) || JSON.stringify(input.structuredOutputSchema).length > 65536)) ||
       (input.timeoutMs !== undefined && (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs <= 0))) {
     return { kind: "failed", reason: "invalid-arguments" };
   }
@@ -235,6 +246,7 @@ export async function executeJobStep(input: JobStepInput): Promise<JobStepResult
       child = spawn(input.executable, argumentsFor(input), {
         cwd: input.cwd, env: executionEnvironment(input), shell: false,
         stdio: ["pipe", "pipe", "pipe"],
+        detached: process.platform !== "win32",
       });
     } catch { resolve({ kind: "failed", reason: "process-start-failed", ...(input.sessionId ? { sessionId: input.sessionId } : {}) }); return; }
     const decoder = new StringDecoder("utf8");
@@ -247,12 +259,19 @@ export async function executeJobStep(input: JobStepInput): Promise<JobStepResult
     let exited = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     let drainTimer: ReturnType<typeof setTimeout> | undefined;
+    const signalOwned = (signal: "SIGTERM" | "SIGKILL") => {
+      try {
+        if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal);
+        else child.kill(signal);
+      } catch { /* The owned group has already exited. */ }
+    };
     const stop = (reason: string): void => {
       if (finished || exited || stopped) return;
       stopped = reason;
-      // Only this invocation's child is signalled. Never kill by name/session ID.
-      child.kill("SIGTERM");
-      killTimer = setTimeout(() => { if (!exited) child.kill("SIGKILL"); }, 1000);
+      // A detached group owns only this invocation and its tools. Never signal
+      // another session by name, or leave an owned tool running after a stop.
+      signalOwned("SIGTERM");
+      killTimer = setTimeout(() => signalOwned("SIGKILL"), 1000);
     };
     const timeout = setTimeout(() => stop("timeout"), input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const abort = (): void => stop("aborted");
@@ -261,6 +280,9 @@ export async function executeJobStep(input: JobStepInput): Promise<JobStepResult
     const finish = (code: number | null): void => {
       if (finished) return;
       finished = true;
+      // A tool may ignore TERM and close its inherited pipes. Closing the CLI
+      // must not cancel escalation while that owned descendant is still alive.
+      if (stopped) signalOwned("SIGKILL");
       clearTimeout(timeout);
       clearTimeout(killTimer);
       clearTimeout(drainTimer);
@@ -269,7 +291,29 @@ export async function executeJobStep(input: JobStepInput): Promise<JobStepResult
       child.stdin?.destroy();
       child.stdout?.destroy();
       child.stderr?.destroy();
-      resolve(events.result(code, stopped));
+      const result = events.result(code, stopped);
+      if (stopped && input.verifyOwnedStop && process.platform !== "win32" && child.pid) {
+        // Do not infer this from the CLI exit: tool descendants may outlive it.
+        void (async () => {
+          for (let attempt = 0; attempt < 100; attempt++) {
+            try { process.kill(-child.pid!, 0); }
+            catch (error) {
+              if ((error as NodeJS.ErrnoException).code === "ESRCH") result.ownedProcessStopped = true;
+              else if ((error as NodeJS.ErrnoException).code === "EPERM") {
+                // macOS sandbox signal rules may report EPERM for an absent
+                // process group. A successful numeric process inventory can
+                // independently establish absence; a failed inventory cannot.
+                const groups = spawnSync("/bin/ps", ["-axo", "pgid="], { encoding: "utf8", timeout: 1000 });
+                if (groups.status === 0 && /^\s*(?:\d+\s*)+$/.test(groups.stdout) &&
+                    !groups.stdout.trim().split(/\s+/).includes(String(child.pid))) result.ownedProcessStopped = true;
+              }
+              break;
+            }
+            await new Promise(done => setTimeout(done, 10));
+          }
+          resolve(result);
+        })();
+      } else resolve(result);
     };
     child.once("spawn", () => { spawned = true; });
     child.once("error", () => {

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
-import { ResponseOwnershipGuard, ResponseOwnershipError, type OwnershipProvenance } from "../src/codex-response-ownership";
+import { NativeResponseOwnershipGuard, ResponseOwnershipGuard, ResponseOwnershipError, type OwnershipProvenance } from "../src/codex-response-ownership";
 import { startCompactionProxy, type CompactionRequestEvent } from "../src/codex-compaction";
+import type { SubscriptionGuard } from "../src/subscription-guard";
 const turn = "11111111-1111-4111-8111-111111111111";
 const foreign = "22222222-2222-4222-8222-222222222222";
 const thread = "33333333-3333-4333-8333-333333333333";
@@ -11,6 +12,11 @@ const item = (id: string | undefined = turn) => ({ type: "function_call", id: "f
 const done = (id = turn) => ({ type: "response.output_item.done", item: item(id) });
 const created = (id = "resp_test") => ({ type: "response.created", response: { id, output: [] } });
 const completed = { type: "response.completed", response: { id: "resp_test", status: "completed", output: [] } };
+const nativeIdentityGuard: SubscriptionGuard = {
+  intervalMs: 60_000,
+  check: () => ({ version: 1, account: null, profileKey: null, ready: true, reason: "ready", checkedAtMs: Date.now(), windows: [] }),
+  checkIdentity: () => nativeIdentityGuard.check(),
+};
 
 test("whole-event gate blocks foreign tool before egress, including every byte split", () => {
   const good = frame(created()); const bad = frame(done(foreign));
@@ -380,5 +386,86 @@ test("conflicting current request identities fail before dispatch; fork session 
       "thread-id": thread, "session-id": foreign, "x-codex-turn-metadata": JSON.stringify({ thread_id: thread, turn_id: turn }),
     }, body: JSON.stringify({ model: "gpt-6-astra", input: [item(foreign)], previous_response_id: "parent" }) });
     expect(response.status).toBe(200); expect(calls).toBe(1);
+  } finally { proxy.stop(); }
+});
+
+test("native fork attribution checks the root session separately without granting it child ownership", () => {
+  for (const format of ["sse", "json"] as const) {
+    for (const [metadata, expected] of [
+      [undefined, "unattributed"],
+      [{ session_id: foreign }, "partial"],
+      [{ session_id: foreign, thread_id: thread, turn_id: turn }, "matched"],
+    ] as const) {
+      const logs: OwnershipProvenance[] = [], output: Uint8Array[] = [];
+      const value = { id: "resp_test", output: [], ...(metadata ? { internal_chat_message_metadata_passthrough: metadata } : {}) };
+      const bytes = enc.encode(format === "sse" ? frame(value) : JSON.stringify(value));
+      const guard = new NativeResponseOwnershipGuard({ threadId: thread, turnId: turn, sessionId: foreign }, e => logs.push(e), format);
+      guard.push(bytes, b => output.push(b)); guard.finish(b => output.push(b));
+      expect(Buffer.concat(output)).toEqual(Buffer.from(bytes));
+      expect(logs.at(-1)?.ownership).toBe(expected);
+    }
+  }
+});
+
+test("native JSON exceeding inspection size streams byte-exact before EOF and remains unverified", async () => {
+  const first = enc.encode('{"output":[],"text":"' + "x".repeat(4 * 1024 * 1024));
+  const last = enc.encode('한글 🚀"}');
+  let release!: () => void;
+  const tailReady = new Promise<void>(resolve => { release = resolve; });
+  let sent = 0, tailSent = false;
+  const logs: OwnershipProvenance[] = [];
+  const proxy = startCompactionProxy({ executionMode: "interactive", subscriptionGuard: nativeIdentityGuard,
+    onProvenance: e => logs.push(e), fetchUpstream: async () => new Response(new ReadableStream({ async pull(c) {
+      if (sent++ === 0) c.enqueue(first);
+      else { await tailReady; tailSent = true; c.enqueue(last); c.close(); }
+    } }), { headers: { "content-type": "application/json" } }) });
+  try {
+    const response = await fetch(proxy.baseUrl + "/responses", { method: "POST", body: JSON.stringify({ model: "future-model", input: [] }) });
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader(), output: Uint8Array[] = [];
+    const start = await reader.read(); expect(start.done).toBe(false); output.push(start.value!);
+    expect(tailSent).toBe(false); release();
+    while (true) { const part = await reader.read(); if (part.done) break; output.push(part.value); }
+    expect(Buffer.concat(output)).toEqual(Buffer.concat([first, last]));
+    expect(logs.some(e => e.stage === "unverified" && e.errorCode === "response_ownership_body_too_large")).toBe(true);
+    expect(logs.some(e => e.ownership === "matched" || e.stage === "blocked")).toBe(false);
+  } finally { release(); proxy.stop(); }
+});
+
+test("native malformed JSON preserves bytes while inspectable foreign JSON and SSE errors are rejected", async () => {
+  for (const scenario of ["malformed", "foreign-json", "foreign-json-error", "foreign-sse-error"] as const) {
+    const logs: OwnershipProvenance[] = [];
+    const malformed = '{"PRIVATE_MARKER":new-native-format';
+    const foreignBody = { error: { message: "PRIVATE_MARKER", internal_chat_message_metadata_passthrough: { thread_id: foreign } } };
+    const sse = scenario === "foreign-sse-error";
+    const payload = scenario === "malformed" ? malformed : sse ? frame(foreignBody) : JSON.stringify(foreignBody);
+    const proxy = startCompactionProxy({ executionMode: "interactive", subscriptionGuard: nativeIdentityGuard, onProvenance: e => logs.push(e),
+      fetchUpstream: async () => new Response(payload, { status: scenario.endsWith("error") ? 400 : 200,
+        headers: { "content-type": sse ? "text/event-stream" : "application/json" } }) });
+    try {
+      const response = await fetch(proxy.baseUrl + "/responses", { method: "POST", headers: { "thread-id": thread },
+        body: JSON.stringify({ model: "future-model", input: [] }) });
+      const text = await response.text();
+      if (scenario === "malformed") {
+        expect(response.status).toBe(200); expect(text).toBe(malformed);
+        expect(logs.some(e => e.stage === "unverified")).toBe(true);
+        expect(logs.every(e => e.ownership === "unattributed")).toBe(true);
+      } else {
+        expect(response.status).toBe(sse ? 400 : 502);
+        expect(text).toContain("response_ownership_mismatch"); expect(text).not.toContain("PRIVATE_MARKER");
+      }
+    } finally { proxy.stop(); }
+  }
+});
+
+test("native opaque request bodies cannot bypass conflicting identity headers", async () => {
+  let calls = 0;
+  const proxy = startCompactionProxy({ executionMode: "interactive", subscriptionGuard: nativeIdentityGuard,
+    fetchUpstream: async () => { calls++; return new Response("unexpected"); } });
+  try {
+    const response = await fetch(proxy.baseUrl + "/responses", { method: "POST", headers: {
+      "thread-id": thread, "x-codex-turn-metadata": JSON.stringify({ thread_id: foreign }),
+    }, body: "future opaque protocol" });
+    expect(response.status).toBe(400); expect(await response.text()).toContain("request_identity_conflict"); expect(calls).toBe(0);
   } finally { proxy.stop(); }
 });

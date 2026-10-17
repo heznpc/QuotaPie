@@ -8,6 +8,10 @@ import type { QuotaStorage } from './database';
 export class AccountBindingStore {
   constructor(private readonly storage: QuotaStorage) {}
 
+  /** Opaque local identity for an explicitly enrolled external continuation.
+   * Stable across token refresh; changes on account/user/root changes. */
+  identityKey(root: string): string | null { return this.fingerprint(root); }
+
   private fingerprint(root: string): string | null {
     try {
       root = realpathSync(root);

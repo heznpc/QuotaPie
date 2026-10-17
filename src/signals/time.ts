@@ -1,7 +1,7 @@
 import type { Locale } from "../i18n";
 import type { ResetSignal } from "./classify";
 
-type Schedule = { targetAtMs: number; sourceZone: string; qualifier: "at" | "by" | "around" };
+type Schedule = { targetAtMs: number; sourceZone: string; qualifier: "at" | "by" | "around"; relativeMinutes?: number };
 // Abbreviations explicitly supplied by the author are fixed offsets. PT/ET
 // mean regional civil time, including DST; never silently treat PST as PT.
 const zones: Record<string, number | string> = {
@@ -10,9 +10,12 @@ const zones: Record<string, number | string> = {
 };
 const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 const weekdays = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+const endOfDayPattern = /\b(?:EOD|end\s+of\s+(?:the\s+)?day)\b/i;
 export function announcementTimeHint(text: string): string | null {
   const deadline = text.match(/[^.!?\n]*\b(?:EOD|end\s+of\s+(?:the\s+)?day)\b[^.!?\n]*/i)?.[0]?.trim();
   if (deadline) return deadline.slice(0, 300);
+  const relative = text.match(/[^!?\n]*\b(?:within|in)\s+(?:(?:the\s+)?next\s+)?(?:~\s*)?(?:\d+(?:\.\d+)?|one|two|an?|half(?:\s+an?)?)\s+(?:hours?|minutes?)\b[^!?\n]*/i)?.[0]?.trim();
+  if (relative) return relative.slice(0, 300);
   return text.match(/[^.!?\n]*(?:\btomorrow\b|\btoday\b|\bmidnight\b|\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b|\b\d{1,2}(?::\d{2})?\s*(?:am|pm|PST|PDT|PT|UTC)\b|\bin\s+(?:~\s*)?(?:\d+|one|an?)\s+hours?\b)[^.!?\n]*/i)?.[0]?.trim().slice(0, 300) ?? null;
 }
 
@@ -42,19 +45,15 @@ function instant(wall: number[], zone: number | string): number | null {
   return candidates.length === 1 ? candidates[0]! : null;
 }
 
-export function parseAnnouncementTime(text: string, publishedAtMs: number): Schedule | null {
-  if (!Number.isFinite(publishedAtMs)) return null;
+function sourceTimeZone(text: string): string | null {
+  text = text.replace(/\bPacific\s+Standard\s+Time\b/gi,"PST").replace(/\bPacific\s+Daylight\s+Time\b/gi,"PDT")
+    .replace(/\bEastern\s+Standard\s+Time\b/gi,"EST").replace(/\bEastern\s+Daylight\s+Time\b/gi,"EDT")
+    .replace(/\bPacific(?:\s+(?:time|timezone))?\b/gi, "PT").replace(/\bEastern(?:\s+(?:time|timezone))?\b/gi, "ET");
   const zoneNames = [...text.matchAll(/\b(PST|PDT|PT|EST|EDT|ET|UTC|GMT|KST|JST|CET|CEST)\b/gi)].map(m => m[1]!.toUpperCase());
-  if (new Set(zoneNames).size !== 1) return null;
-  const sourceZone = zoneNames[0]!;
-  const zone = zones[sourceZone]!;
-  const clocks = [...text.matchAll(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b|\b(\d{1,2}):(\d{2})(?!\d)|\b(noon)\b/gi)];
-  if (clocks.length !== 1) return null;
-  const clock = clocks[0]!;
-  let hour = clock[6] ? 12 : Number(clock[1] ?? clock[4]);
-  const minute = Number(clock[2] ?? clock[5] ?? 0);
-  if (minute > 59 || hour > (clock[3] ? 12 : 23) || clock[3] && hour < 1) return null;
-  if (clock[3]) hour = hour % 12 + (clock[3].toLowerCase() === "pm" ? 12 : 0);
+  return new Set(zoneNames).size === 1 ? zoneNames[0]! : null;
+}
+
+function sourceDate(text: string, publishedAtMs: number, zone: number | string, implicitToday = false): number[] | null {
   let [year, month, day] = parts(publishedAtMs, zone) as [number, number, number];
   const iso = text.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
   const named = text.match(/\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?\b/i);
@@ -73,12 +72,61 @@ export function parseAnnouncementTime(text: string, publishedAtMs: number): Sche
     if (weekday?.[1] && offset === 0) offset = 7;
     base.setUTCDate(base.getUTCDate() + offset);
     [year, month, day] = [base.getUTCFullYear(), base.getUTCMonth() + 1, base.getUTCDate()];
-  } else return null;
+  } else if (!implicitToday || /\d|\b(?:day|week|month|year|mon|tue|wed|thu|fri|sat|sun|jan\w*|feb\w*|mar\w*|apr\w*|may|jun\w*|jul\w*|aug\w*|sep\w*|oct\w*|nov\w*|dec\w*)\b/i.test(text.replace(endOfDayPattern, ""))) return null;
   const date = new Date(Date.UTC(year, month - 1, day));
   if (date.getUTCFullYear() !== year || date.getUTCMonth() + 1 !== month || date.getUTCDate() !== day) return null;
-  const targetAtMs = instant([year, month, day, hour, minute], zone);
+  return [year, month, day];
+}
+
+const clocksIn = (text: string) => [...text.matchAll(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b|\b(\d{1,2}):(\d{2})(?!\d)|\b(noon)\b/gi)];
+
+export function parseAnnouncementTime(text: string, publishedAtMs: number): Schedule | null {
+  if (!Number.isFinite(publishedAtMs)) return null;
+  // Relative bounds are anchored to publication, not receipt or a guessed
+  // author timezone. A "within" deadline is an upper bound, never a start time.
+  const relative = [...text.matchAll(/\b(within|in)\s+(?:(?:the\s+)?next\s+)?(?:~\s*)?(\d+(?:\.\d+)?|one|two|an?|half(?:\s+an?)?)\s+(hours?|minutes?)\b/gi)];
+  if (relative.length) {
+    const durations = [...text.matchAll(/\b(?:\d+(?:\.\d+)?|one|two|an?|half(?:\s+an?)?)\s+(?:hours?|minutes?)\b/gi)];
+    if (relative.length !== 1 || durations.length !== 1 || clocksIn(text).length ||
+        /\b(?:tomorrow|yesterday|EOD|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b|\d{4}-\d{2}-\d{2}/i.test(text)) return null;
+    const match = relative[0]!, amount = match[2]!.toLowerCase();
+    const count = amount === "two" ? 2 : /^(?:one|a|an)$/.test(amount) ? 1 : amount.startsWith("half") ? 0.5 : Number(amount);
+    const minutes = count * (/^hour/i.test(match[3]!) ? 60 : 1);
+    if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 7 * 24 * 60) return null;
+    return { targetAtMs: publishedAtMs + minutes * 60_000, sourceZone: "UTC", relativeMinutes: minutes,
+      qualifier: /^within$/i.test(match[1]!) ? "by" : /\b(?:around|about|approximately)\b|~/i.test(text) ? "around" : "at" };
+  }
+  const sourceZone = sourceTimeZone(text);
+  if (!sourceZone) return null;
+  const zone = zones[sourceZone]!;
+  const clocks = clocksIn(text);
+  if (clocks.length !== 1) return null;
+  const clock = clocks[0]!;
+  let hour = clock[6] ? 12 : Number(clock[1] ?? clock[4]);
+  const minute = Number(clock[2] ?? clock[5] ?? 0);
+  if (minute > 59 || hour > (clock[3] ? 12 : 23) || clock[3] && hour < 1) return null;
+  if (clock[3]) hour = hour % 12 + (clock[3].toLowerCase() === "pm" ? 12 : 0);
+  const date = sourceDate(text, publishedAtMs, zone);
+  if (!date) return null;
+  const targetAtMs = instant([...date, hour, minute], zone);
   if (targetAtMs == null) return null;
   return { targetAtMs, sourceZone, qualifier: /\b(?:around|about|approximately)\b/i.test(text) ? "around" : /\bby\b/i.test(text) ? "by" : "at" };
+}
+
+/** A calendar-day boundary for display only, never a scheduled reset instant. */
+export function endOfDayBoundary(text: string, publishedAtMs: number): Schedule | null {
+  if (!Number.isFinite(publishedAtMs) || !endOfDayPattern.test(text) || clocksIn(text).length) return null;
+  // Do not turn unsupported or conflicting date references into "today".
+  if (/\b(?:yesterday|day\s+(?:after|before)|next\s+(?:week|month|year)|in\s+\d+\s+days?)\b/i.test(text) ||
+      /\btoday\b/i.test(text) && /\btomorrow\b/i.test(text)) return null;
+  const sourceZone = sourceTimeZone(text);
+  if (!sourceZone) return null;
+  const zone = zones[sourceZone]!;
+  const date = sourceDate(text, publishedAtMs, zone, true);
+  if (!date) return null;
+  const next = new Date(Date.UTC(date[0]!, date[1]! - 1, date[2]! + 1));
+  const targetAtMs = instant([next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), 0, 0], zone);
+  return targetAtMs == null ? null : { targetAtMs, sourceZone, qualifier: /\bby\s+(?:EOD|end\s+of)/i.test(text) ? "by" : "at" };
 }
 
 export function withAnnouncementTime(signal: ResetSignal): ResetSignal {
@@ -87,7 +135,10 @@ export function withAnnouncementTime(signal: ResetSignal): ResetSignal {
 }
 
 export function localAnnouncementTime(signal: ResetSignal, locale: Locale, timeZone: string): string | null {
-  const schedule = parseAnnouncementTime(signalTimeText(signal), signal.publishedAtMs);
+  const text = signalTimeText(signal);
+  const explicit = parseAnnouncementTime(text, signal.publishedAtMs);
+  const boundary = explicit ? null : endOfDayBoundary(text, signal.publishedAtMs);
+  const schedule = explicit ?? boundary;
   const target = schedule?.targetAtMs;
   if (target == null || !Number.isFinite(target)) return null;
   const dateFormatter = new Intl.DateTimeFormat(locale === "ko" ? "ko-KR" : "en-US", {
@@ -95,7 +146,20 @@ export function localAnnouncementTime(signal: ResetSignal, locale: Locale, timeZ
   });
   const date = dateFormatter.formatToParts(target).map(part =>
     part.type === "timeZoneName" && timeZone === "Asia/Seoul" ? "KST" : part.value).join("");
+  if (boundary) {
+    const source = parts(target - 1, zones[boundary.sourceZone]!);
+    const local = parts(target, timeZone);
+    const localZone = timeZone === "Asia/Seoul" ? "KST" : new Intl.DateTimeFormat("en-US", {
+      timeZone, timeZoneName: "short",
+    }).formatToParts(target).find(p => p.type === "timeZoneName")!.value;
+    const stamp = (p: number[]) => `${p[0] !== parts(signal.publishedAtMs, zones[boundary.sourceZone]!)[0] ? `${p[0]}/` : ""}${p[1]}/${p[2]}`;
+    const time = `${String(local[3]).padStart(2, "0")}:${String(local[4]).padStart(2, "0")}`;
+    return `${boundary.sourceZone} ${stamp(source)} EOD → ${localZone} ${stamp(local)} ${time}${locale === "ko" ? (boundary.qualifier === "by" ? " 전 · 시각 미정" : " 날짜 경계 · 시행 시각 미정") : (boundary.qualifier === "by" ? " latest · time unknown" : " calendar boundary · execution time unknown")}`;
+  }
   const qualifier = schedule?.qualifier === "by" ? (locale === "ko" ? "까지" : "By ") : schedule?.qualifier === "around" ? (locale === "ko" ? "경" : "Around ") : "";
   const label = locale === "ko" ? `${date}${qualifier}` : `${qualifier}${date}`;
-  return `${label}${schedule ? ` (${locale === "ko" ? "원문" : "source"} ${schedule.sourceZone})` : locale === "ko" ? " · 중계 피드 시각" : " · feed time"}`;
+  if (schedule?.relativeMinutes !== undefined) return locale === "ko"
+    ? `게시 시각 기준 → ${label}` : `From publication → ${label}`;
+  const source = parts(target, zones[schedule!.sourceZone]!);
+  return `${schedule!.sourceZone} ${source[1]}/${source[2]} ${String(source[3]).padStart(2, "0")}:${String(source[4]).padStart(2, "0")} → ${label}`;
 }

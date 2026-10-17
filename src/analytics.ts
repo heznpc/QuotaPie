@@ -238,6 +238,8 @@ export function analyzeWindow(
 
   let exhaustsAtMs: number | null = null;
   let minutesBeforeReset: number | null = null;
+  let reserveReachesAtMs: number | null = null;
+  let reserveMinutesBeforeReset: number | null = null;
   if (
     freshness === "fresh" &&
     remainingPercent != null && latest.usedPercent !== 0 &&
@@ -249,14 +251,29 @@ export function analyzeWindow(
     if (exhaustsAtMs != null) {
       minutesBeforeReset = (latest.resetsAtMs - exhaustsAtMs) / 60_000;
     }
+    // A reserve warning forecasts the point where the usable budget ends,
+    // while exhaustion continues to mean the entire allowance runs out.
+    if (safeRemaining != null) {
+      const reserveForecast = nowMs + safeRemaining / recentBurn * HOUR_MS;
+      if (reserveForecast < latest.resetsAtMs) {
+        reserveReachesAtMs = reserveForecast;
+        reserveMinutesBeforeReset = (latest.resetsAtMs - reserveForecast) / 60_000;
+      }
+    }
   }
 
   const sampleCount = samples.length;
+  // Polling more frequently does not create a longer usage history. Use
+  // the evidence behind the current forecast, including unchanged samples
+  // in its duration, but require repeated consumption for higher confidence.
+  const confidenceSamples = recentBurn != null ? recentSamples : personalPool;
+  const evidenceMs = confidenceSamples.reduce((sum, sample) => sum + sample.gapMs, 0);
+  const consumptionSamples = confidenceSamples.filter((sample) => sample.increase > 0).length;
   const confidence: WindowAnalysis["confidence"] = blendedBurn == null
     ? "none"
-    : sampleCount >= 20
+    : confidenceSamples.length >= 20 && evidenceMs >= 2 * HOUR_MS && consumptionSamples >= 6
       ? "high"
-      : sampleCount >= 6
+      : confidenceSamples.length >= 6 && evidenceMs >= 30 * 60_000 && consumptionSamples >= 2
         ? "medium"
         : "low";
 
@@ -296,6 +313,7 @@ export function analyzeWindow(
     resetsAtMs: latest.resetsAtMs,
     timeToResetMs,
     reservePercent,
+    showUsageSpeed: config.profile.showUsageSpeed,
     recentBurnPerHour: recentBurn,
     rapidDropPercent,
     rapidIntervalMinutes,
@@ -305,6 +323,8 @@ export function analyzeWindow(
     paceRatio,
     exhaustsAtMs,
     minutesBeforeReset,
+    reserveReachesAtMs,
+    reserveMinutesBeforeReset,
     confidence,
     sampleCount,
     activeHoursUntilReset: activeHours,

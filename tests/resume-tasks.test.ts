@@ -107,6 +107,65 @@ describe("resume task storage", () => {
 });
 
 describe("resume readiness", () => {
+  test("a full-quota registration can become ready on a newer positive observation and stale status is projected as waiting", async () => {
+    const config=structuredClone(DEFAULT_CONFIG);config.collection.codexEnabled=false;config.alerts.enabled=false;
+    prepareAccounts(config);
+    const service=new QuotaPieService(config,new QuotaDatabase(":memory:"));
+    try {
+      service.ingest([observation(1000,0)]);
+      const task=service.registerResumeTask({provider:"codex",nativeId:SESSION_A},1500);
+      await service.updateResumeReadiness(service.analyses(1500),1500);
+      expect(service.resumeTasks.get(task.id)?.state).toBe("waiting");
+      service.ingest([observation(2000,10)]);
+      await service.updateResumeReadiness(service.analyses(2000),2000);
+      expect(service.resumeTaskSummaries(100,2000)[0]?.state).toBe("ready");
+      expect(service.resumeTaskSummaries(100,2000+config.collection.staleAfterSeconds*1000+1)[0]?.state).toBe("waiting");
+      fakeCodexLogin(config.accounts.codex[0]!.codexHome!,"changed-login");
+      expect(service.resumeTaskSummaries(100,2000)[0]?.state).toBe("waiting");
+    } finally {await service.close();}
+  });
+  test("recovery, ready notifications and approval all respect the other quota window", async () => {
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.collection.codexEnabled = false;
+    config.alerts.enabled = false;
+    prepareAccounts(config);
+    const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
+    const weekly = { bucket: "codex:secondary:10080", label: "Codex weekly", windowSeconds: 604800, resetsAtMs: 900_000 };
+    try {
+      service.ingest([observation(1_000, 100), observation(1_000, 100, weekly)]);
+      const task = service.registerResumeTask({ provider: "codex", nativeId: SESSION_A, bucket: "codex:primary:300" }, 1_500);
+      service.ingest([observation(2_000, 0)]);
+      expect(await service.updateResumeReadiness(service.analyses(2_000), 2_000)).toEqual([]);
+      expect(service.resumeTasks.get(task.id)?.state).toBe("waiting");
+      service.ingest([observation(3_000, 20, weekly)]);
+      expect(await service.updateResumeReadiness(service.analyses(3_000), 3_000)).toHaveLength(1);
+      service.ingest([observation(4_000, 100, weekly)]);
+      await service.updateResumeReadiness(service.analyses(4_000), 4_000);
+      expect(service.resumeTasks.get(task.id)?.state).toBe("waiting");
+      service.resumeTasks.markReady(task.id, 4_100);
+      await expect(service.approveResumeTask(task.id, 4_200)).rejects.toThrow("fresh quota is no longer available");
+      expect(service.resumeTasks.get(task.id)?.state).toBe("waiting");
+    } finally { await service.close(); }
+  });
+
+  test("an expired secondary snapshot cannot authorize a recovered primary window", async () => {
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.collection.codexEnabled = false;
+    config.alerts.enabled = false;
+    prepareAccounts(config);
+    const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
+    const weekly = { bucket: "codex:secondary:10080", windowSeconds: 604800, resetsAtMs: 900_000 };
+    try {
+      service.ingest([observation(1_000, 100), observation(1_000, 20, weekly)]);
+      const task = service.registerResumeTask({ provider: "codex", nativeId: SESSION_A }, 1_500);
+      const now = config.collection.staleAfterSeconds * 1000 + 2_000;
+      service.ingest([observation(now, 0, { resetsAtMs: now + 100_000 })]);
+      expect(await service.updateResumeReadiness(service.analyses(now), now)).toEqual([]);
+      expect(service.resumeTasks.get(task.id)?.state).toBe("waiting");
+    } finally { await service.close(); }
+  });
+
+
   for (const provider of ["codex", "claude"] as const) {
     const primary = provider === "codex" ? "codex:primary:300" : "five_hour";
     const secondary = provider === "codex" ? "codex:secondary:10080" : "seven_day";
@@ -119,7 +178,7 @@ describe("resume readiness", () => {
       prepareAccounts(config);
       const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
       const sample = (at: number, used: number, bucket: string, account = "default") =>
-        observation(at, used, { provider, bucket, account, quality: provider === "claude" ? "derived" : "authoritative" });
+        observation(at, used, { provider, bucket, account, quality: "authoritative" });
       try {
         service.ingest([sample(1_000, 100, primary), sample(1_000, 100, secondary)]);
         const task = service.registerResumeTask({ provider, nativeId: SESSION_A, bucket: primary }, 1_500);

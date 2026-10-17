@@ -1,18 +1,34 @@
+import { inspectManagedSession } from "./dots/managed-continuation";
+import { planWork, workWindows as scopedWorkWindows } from "./work/admission";
+import { evaluateWorkPerformance } from "./work/performance";
+import { realpathSync, existsSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { WorkStore } from "./work/store";
+import { WorkController } from "./work/controller";
+import { inspectWorkTarget, executeWorkTurn } from "./work/runtime";
+import { executeCodexWork } from "./work/codex";
+import type { WorkPolicyInput, WorkPolicy, WorkForecast } from "./work/types";
 import { AccountBindingStore } from "./storage/account-binding-store";
-import { HostGoalLinkStore, HostGoalLinkError, type HostGoalLink, type HostGoalLinkSummary } from "./host-goals";
+import { HostGoalLinkStore, HostGoalLinkError, WorkHostGoalLinkStore, projectHostGoal,
+  type HostGoalLink, type HostGoalLinkSummary, type HostGoalSnapshot, type WorkHostGoalLink } from "./host-goals";
+import { readPoolPolicy } from "./account-pool";
+import { explicitAccountReserve } from "./subscription-policy";
 import { RecentWorkIndex, type RecentWorkSummary } from "./recent-work";
+import { evaluateResumeGate, evaluateResumeWindows, resumeProfileKey } from "./resume-gate";
 import { codexAccountDisplay } from "./account-display";
 import { notificationAllowed, type NotificationPreferencesPatch } from "./notification-preferences";
-import { buildWorkBoundary, writeWorkBoundary } from "./work-boundary";
+import { buildWorkBoundary, defaultWorkBoundaryPath, writeWorkBoundary } from "./work-boundary";
 import { JobStore } from "./storage/job-store";
 import { ManagedJobRunner } from "./jobs/runner";
+import { resetOpportunities, resetSignalClosed } from "./signals/opportunities";
+import { ResetTimingStore } from "./storage/reset-timing-store";
 import { buildResetTracking } from "./signals/correlation";
 import { codexContextChange } from "./domain/codex-context";
 import { ResetSignalStore } from "./storage/reset-signal-store";
 import { ResetSignalCollector } from "./signals/collector";
 import { signalDecision } from "./signals/presentation";
 import { analyzeWindow, analysisHistoryStart, buildHeadline, groupStatuses } from "./analytics";
-import { buildQuotaBoundary, cachedLeaderboard, collectionHealth, writeQuotaBoundary } from "./boundary";
+import { buildQuotaBoundary, cachedLeaderboard, collectionHealth, defaultBoundaryPath, writeQuotaBoundary } from "./boundary";
 import type { AppConfig, CodexAccountConfig } from "./config";
 import { codexProfileRoot, codexUsesFileCredentials, resolveUserPath } from "./config";
 import { QuotaDatabase } from "./db";
@@ -29,8 +45,8 @@ import { resolveLocale, t } from "./i18n";
 import type { Locale } from "./i18n";
 import { nextWakeDelayMs } from "./scheduler";
 import { alertScope, deliverTrigger, notificationAccountParams, planTriggers } from "./triggers";
-import { randomUUID } from "node:crypto";
-import { basename, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   findClaudeResumeTarget,
   findCodexResumeTarget,
@@ -94,6 +110,12 @@ const SOURCE_AUTHORITY: Record<string, number> = {
   [CLAUDE_STATUSLINE_SOURCE]: 1,
 };
 
+export interface ServiceBoundaryPaths {
+  /** Explicit destinations; null disables this export. Relative paths bind now. */
+  workState?: string | null;
+  quota?: string | null;
+}
+
 export class QuotaPieService {
   readonly recentWork = new RecentWorkIndex();
   private recentWorkSnapshot: RecentWorkSummary[] = [];
@@ -107,13 +129,19 @@ export class QuotaPieService {
   readonly claudeSessions: ClaudeSessionStore;
   readonly resumeTasks: ResumeTaskStore;
   readonly hostGoalLinks: HostGoalLinkStore;
+  readonly workHostGoalLinks: WorkHostGoalLinkStore;
   private goalClients = new Map<string, CodexAppServerClient>();
   private hostGoalRefresh: Promise<void> | null = null;
+  private goalLinkReads = new Map<string, Promise<void>>();
   readonly jobs: JobStore;
   readonly jobRunner: ManagedJobRunner;
+  readonly work: WorkController;
   private jobsEnabled = false;
   private jobNotifications: Promise<void> | null = null;
   readonly resetSignals: ResetSignalStore;
+  readonly resetTiming: ResetTimingStore;
+  private resetTimingError: string | null = null;
+  private readonly workForecastCache = new Map<string, { expiresAtMs: number; forecast: WorkForecast | null }>();
   readonly signalCollector: ResetSignalCollector;
   private signalTimer: ReturnType<typeof setInterval> | null = null;
   private signalWork: Promise<void> | null = null;
@@ -130,12 +158,30 @@ export class QuotaPieService {
 
   readonly locale: Locale;
   private readonly accountBindings: AccountBindingStore;
+  private readonly workBoundaryPath: string | null;
+  private readonly quotaBoundaryPath: string | null;
 
   constructor(
     readonly config: AppConfig,
     database?: QuotaDatabase,
+    boundaryPaths: ServiceBoundaryPaths = {},
   ) {
     this.db = database ?? new QuotaDatabase();
+    // An injected memory/fixture database does not own the installed app's
+    // exports. Capture destinations once, before asynchronous collection; a
+    // later process environment change must not redirect this service's writes.
+    const filename = this.db.db.filename;
+    const databaseRoot = filename && filename !== ":memory:" ? dirname(resolve(filename)) : null;
+    const bindPath = (specified: string | null | undefined, fallback: string | null): string | null => {
+      const path = specified === undefined ? fallback : specified;
+      if (path === null) return null;
+      if (!path.trim()) throw new Error("Boundary destination must be a non-empty path or null");
+      return resolve(path);
+    };
+    this.workBoundaryPath = bindPath(boundaryPaths.workState, database
+      ? databaseRoot ? join(databaseRoot, "work-state.json") : null : defaultWorkBoundaryPath());
+    this.quotaBoundaryPath = bindPath(boundaryPaths.quota, database
+      ? databaseRoot ? join(databaseRoot, "quota.json") : null : defaultBoundaryPath());
     // One connection, several collaborators. The service depends on each of
     // them directly rather than reaching through the database for everything.
     this.storage = this.db.storage;
@@ -145,16 +191,273 @@ export class QuotaPieService {
     this.claudeSessions = new ClaudeSessionStore(this.storage);
     this.resumeTasks = new ResumeTaskStore(this.storage);
     this.hostGoalLinks = new HostGoalLinkStore(this.storage);
+    this.workHostGoalLinks = new WorkHostGoalLinkStore(this.storage);
     this.jobs = new JobStore(this.storage);
+    this.work = new WorkController(new WorkStore(this.storage), config, {
+      windows: () => this.workWindows(),
+      inspect: p => this.inspectWork(p),
+      execute: (p,id,authorized,signal) => {
+        const planning = this.work.store.executions().find(e => e.id === id)?.planning;
+        if (planning?.forecastId) this.resetTiming.recordExecutionDecision(planning.forecastId, p.revision, Date.now());
+        return p.provider === "claude"
+          ? executeWorkTurn(config,p,{claimId:id,policyRevision:p.revision,timeoutMs:p.maxDurationSeconds*1000,signal,stillAuthorized:authorized})
+          : executeCodexWork(config,p,id,authorized,()=>this.workGate(p));
+      },
+      announcement: p => this.workOpportunity(p) !== undefined,
+      announcementPublishedAtMs: p => {
+        const opportunity = this.workOpportunity(p);
+        return opportunity?.calendarBoundaryMs != null ? undefined : opportunity?.publishedAtMs;
+      },
+      forecast: (p, now) => this.workForecast(p, now),
+      minimumReserveByBucket: p => Object.fromEntries(this.workWindows().filter(w => w.provider === p.provider && w.account === p.account)
+        .map(w => [w.bucket, p.provider === "codex" ? explicitAccountReserve(p.account, readPoolPolicy()) : 0])),
+      legacyBusy: p => this.legacyWorkBusy(p),
+      hostGoalBlock: p => this.workHostGoalBlock(p),
+      beforeDispatch: async p => {
+        const link = this.workHostGoalLinks.get(p.id);
+        if (link) await this.readWorkHostGoalLink(link);
+      },
+    });
     this.jobRunner = new ManagedJobRunner(this.jobs, config, {
+      work: this.work,
+
       changed: () => { void this.deliverJobNotifications().catch(() => undefined); },
     });
     this.locale = resolveLocale(config.profile.locale);
     this.resetSignals = new ResetSignalStore(this.storage);
+    this.resetTiming = new ResetTimingStore(this.storage);
     this.signalCollector = new ResetSignalCollector(this.resetSignals, config.resetSignals);
     if (!config.alerts.enabled || !config.alerts.macOSNotifications) {
       this.alerts.cancelAllAppNotifications();
     }
+  }
+
+  private workWindows(): WindowAnalysis[] {
+    return this.analyses(Date.now()).map(w => w.provider === "codex"
+      ? {...w,reservePercent:Math.max(0,explicitAccountReserve(w.account,readPoolPolicy()))} : w);
+  }
+  private legacyWorkBusy(p: WorkPolicyInput): boolean {
+    if(this.jobs.active().some(j=>j.spec.provider===p.provider && (j.spec.account===p.account || j.spec.profileKey===p.profileKey ||
+      (p.provider==="codex" && this.config.accounts.codex.some(a=>a.id===j.spec.account && this.accountBindings.identityKey(codexProfileRoot(a))===p.accountKey))))) return true;
+    const file=this.storage.db.filename;
+    if(!file || file===":memory:") return false;
+    const path=join(dirname(file),"dots.sqlite");
+    if(!existsSync(path) || p.provider!=="codex") return false;
+    let db:Database|undefined;
+    try {
+      db=new Database(path,{readonly:true});
+      return db.query<{state:string},[]>("SELECT state FROM targets").all().some(row=>{
+        const s=JSON.parse(row.state);
+        return (s.policy.enabled || s.claimed) && (s.policy.account===p.account || s.policy.accountKey===p.accountKey);
+      });
+    } catch {return true;} finally {db?.close();}
+  }
+  private async inspectWork(p: WorkPolicyInput) {
+    if(p.provider==="claude") return inspectWorkTarget(this.config,p);
+    if(p.provider!=="codex") throw new Error("work-provider-unsupported");
+    const profile=this.config.accounts.codex.find(a=>a.id===p.account&&a.enabled);
+    if(!profile) throw new Error("account-unavailable");
+    const plan=await this.buildResumePlan({provider:p.provider,account:p.account,taskKey:resumeTaskKey(p.provider,p.account,p.nativeSessionId)});
+    const profileKey=resumeProfileKey(this.config,p.provider,p.account);
+    const accountKey=this.accountBindings.identityKey(codexProfileRoot(profile));
+    if(!profileKey||!accountKey) throw new Error("account-identity-unavailable");
+    const original=inspectManagedSession(this.config,{account:p.account,threadId:p.nativeSessionId});
+    if(original.cwd!==realpathSync(plan.workingDirectory)) throw new Error("thread-workspace-changed");
+    return {profileKey,accountKey,cwd:original.cwd,model:original.model};
+  }
+  private workGate(p: WorkPolicy) {
+    const gate=this.resumeGate(p.provider,p.account);
+    const windows=scopedWorkWindows(p,this.workWindows());
+    const state=this.accountStates().find(s=>s.provider===p.provider&&s.account===p.account);
+    const scoped=state?{...state,windows:windows.map(w=>({...w,reservePercent:Math.max(w.reservePercent,p.budgetByBucket[w.bucket]?.reservePercent??0)}))}:undefined;
+    return {...evaluateResumeGate(scoped,p.provider,p.account,Date.now(),this.config.collection.staleAfterSeconds*1000),
+      profileKey:gate.profileKey,accountKey:gate.accountKey,validUntilMs:gate.validUntilMs};
+  }
+  workStatus() {
+    const accounts=this.accountStates().filter(a=>a.provider==="codex"||a.provider==="claude").map(a=>({
+      provider:a.provider,account:a.account,label:a.accountLabel,buckets:a.windows.map(w=>w.bucket),
+      reserveByBucket:Object.fromEntries(a.windows.map(w=>[w.bucket,w.reservePercent])),
+    }));
+    const executions=this.work.store.executions();
+    return {policies:this.work.list().map(p=>({...p,hostGoal:this.workHostGoalStatus(p),performance:evaluateWorkPerformance(p,executions)})),executions:executions.slice(-200),accounts,defaults:{timeZone:this.config.profile.timeZone}};
+  }
+  resetAutomationStatus(nowMs = Date.now()) {
+    const policies = this.work.store.list();
+    return (["codex", "claude"] as const).filter(provider => this.config.accounts[provider].some(a => a.enabled)).map(provider => {
+      const registered = policies.filter(p => p.provider === provider && p.trigger !== "notify-only");
+      const enabled = registered.filter(p => p.enabled && p.expiresAtMs > nowMs &&
+        (p.workDeadline === undefined || p.workDeadline > nowMs));
+      const runningCount = registered.filter(p => p.state.activeExecutionId !== null).length;
+      return { provider, registeredCount: registered.length, enabledCount: enabled.length, runningCount,
+        state: runningCount ? "running" : enabled.length ? "waiting" : "not-configured" };
+    });
+  }
+  async workTargets(provider:string,account:string) {
+    const summaries=(await this.recentWork.summaries(this.config)).filter(s=>s.provider===provider&&s.account===account).slice(0,30);
+    const targets=[];
+    for(const s of summaries) {
+      try {
+        const plan=await this.buildResumePlan({provider:s.provider,account:s.account,taskKey:s.id});
+        targets.push({nativeSessionId:plan.arguments.at(-1)!,title:s.projectLabel,cwd:plan.workingDirectory,lastActiveAtMs:s.lastActiveAtMs});
+      }catch{}
+    }
+    return {targets};
+  }
+
+  private workGoalBinding(policy: WorkPolicyInput): string {
+    return createHash("sha256").update(JSON.stringify([policy.provider, policy.account, policy.profileKey,
+      policy.accountKey, policy.nativeSessionId])).digest("hex");
+  }
+
+  private workGoalAccountMatches(policy: WorkPolicyInput): boolean {
+    if (policy.provider !== "codex") return false;
+    const profile = this.config.accounts.codex.find(p => p.id === policy.account && p.enabled);
+    return !!profile && policy.profileKey === resumeProfileKey(this.config, "codex", policy.account) &&
+      policy.accountKey === this.accountBindings.identityKey(codexProfileRoot(profile));
+  }
+
+  async previewWorkHostGoal(provider: string, account: string, nativeId: string): Promise<HostGoalSnapshot> {
+    if (provider !== "codex") throw new HostGoalLinkError("work-host-goal-codex-only");
+    let threadId: string;
+    try { threadId = normalizeSessionId(nativeId); } catch { throw new HostGoalLinkError("work-host-goal-session-invalid"); }
+    const profile = this.config.accounts.codex.find(p => p.id === account && p.enabled);
+    if (!profile) throw new HostGoalLinkError("work-host-goal-account-unavailable");
+    const accountKey = this.accountBindings.identityKey(codexProfileRoot(profile));
+    const profileKey = resumeProfileKey(this.config, "codex", account);
+    const same = () => !!accountKey && !!profileKey && this.config.accounts.codex.includes(profile) && profile.enabled &&
+      accountKey === this.accountBindings.identityKey(codexProfileRoot(profile)) &&
+      profileKey === resumeProfileKey(this.config, "codex", account);
+    const empty = (readState: HostGoalSnapshot["readState"]): HostGoalSnapshot =>
+      ({readState, objective:null, hostStatus:null, observedAtMs:null, expiresAtMs:null});
+    if (!same()) return empty("account_changed");
+    try {
+      const client = this.goalClient(profile);
+      const target = await findCodexResumeTarget(client, account, resumeTaskKey("codex", account, threadId));
+      if (!target || target.nativeId !== threadId) throw new Error("session-unavailable");
+      const goal = await client.readThreadGoal(threadId);
+      if (goal && goal.threadId !== threadId) throw new Error("session-mismatch");
+      if (!same()) return empty("account_changed");
+      const now = Date.now();
+      return {readState:goal ? "ready" : "no_goal", objective:goal?.objective ?? null, hostStatus:goal?.status ?? null,
+        observedAtMs:now, expiresAtMs:now + this.config.collection.staleAfterSeconds * 1000};
+    } catch (error) {
+      return empty(!same() ? "account_changed" : error instanceof CodexGoalUnsupportedError ? "unsupported" : "error");
+    }
+  }
+
+  workHostGoalStatus(policy: WorkPolicy, nowMs = Date.now()): HostGoalSnapshot | null {
+    const link = this.workHostGoalLinks.get(policy.id);
+    if (!link) return null;
+    const matches = link.binding_key === this.workGoalBinding(policy) && link.thread_id === policy.nativeSessionId && this.workGoalAccountMatches(policy);
+    const snapshot = projectHostGoal(link, matches, nowMs, this.config.collection.staleAfterSeconds * 1000);
+    return {...snapshot, objectiveChanged:matches && link.linked_objective != null && link.objective != null && link.linked_objective !== link.objective};
+  }
+
+  private workHostGoalBlock(policy: WorkPolicy): string | null {
+    const goal = this.workHostGoalStatus(policy);
+    if (!goal) return null;
+    if (goal.readState !== "ready") return "host-goal-" + goal.readState.replaceAll("_", "-");
+    if (goal.objectiveChanged) return "host-goal-objective-changed";
+    return goal.hostStatus === "active" || goal.hostStatus === "usageLimited" ? null :
+      "host-goal-" + (goal.hostStatus === "budgetLimited" ? "budget-limited" : goal.hostStatus ?? "unknown");
+  }
+
+  private serializeGoalRead(key: string, read: () => Promise<void>): Promise<void> {
+    const previous = this.goalLinkReads.get(key) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(read);
+    this.goalLinkReads.set(key, next);
+    void next.finally(() => { if (this.goalLinkReads.get(key) === next) this.goalLinkReads.delete(key); }).catch(() => {});
+    return next;
+  }
+
+  private readWorkHostGoalLink(link: WorkHostGoalLink): Promise<void> {
+    return this.serializeGoalRead("work:" + link.task_id, () => this.readWorkHostGoalLinkOnce(link));
+  }
+
+  private async readWorkHostGoalLinkOnce(link: WorkHostGoalLink): Promise<void> {
+    if (this.closing) return;
+    if (this.workHostGoalLinks.get(link.task_id)?.revision !== link.revision) return;
+    const policy = this.work.store.get(link.task_id);
+    if (!policy) { this.workHostGoalLinks.unlink(link.task_id); return; }
+    const matches = () => {
+      const current = this.work.store.get(link.task_id);
+      return !!current && this.workGoalBinding(current) === link.binding_key && current.nativeSessionId === link.thread_id && this.workGoalAccountMatches(current);
+    };
+    if (!matches()) { this.workHostGoalLinks.record(link, "account_changed", Date.now()); return; }
+    let snapshot: HostGoalSnapshot;
+    try { snapshot = await this.previewWorkHostGoal("codex", policy.account, link.thread_id); }
+    catch { snapshot = {readState:"error", objective:null, hostStatus:null, observedAtMs:null, expiresAtMs:null}; }
+    if (this.closing) return;
+    if (!matches()) { this.workHostGoalLinks.record(link, "account_changed", Date.now()); return; }
+    this.workHostGoalLinks.record(link, snapshot.readState, snapshot.observedAtMs ?? Date.now(),
+      snapshot.objective && snapshot.hostStatus ? {objective:snapshot.objective,status:snapshot.hostStatus} : null);
+  }
+
+  private reviewedHostObjective(value: unknown): string {
+    if (typeof value !== "string" || !value.trim() || value.length > 20_000) throw new HostGoalLinkError("work-host-goal-review-required");
+    return value;
+  }
+
+  async saveWorkPolicy(input: WorkPolicyInput, expectedRevision: number | null, requestId: string, hostGoalLinked?: boolean, reviewedObjective?: string) {
+    const existing = this.work.store.get(input.id);
+    if (existing && this.workHostGoalLinks.get(input.id) && !this.workGoalAccountMatches(existing)) throw new HostGoalLinkError("work-host-goal-account-changed");
+    if (hostGoalLinked !== undefined && typeof hostGoalLinked !== "boolean") throw new HostGoalLinkError("work-host-goal-invalid-link");
+    if (hostGoalLinked === true) {
+      this.reviewedHostObjective(reviewedObjective);
+      if (input.provider !== "codex") throw new HostGoalLinkError("work-host-goal-codex-only");
+      try { normalizeSessionId(input.nativeSessionId); } catch { throw new HostGoalLinkError("work-host-goal-session-invalid"); }
+      if (!this.workHostGoalLinks.get(input.id) && this.workHostGoalLinks.list().length >= 50) throw new HostGoalLinkError("work-host-goal-link-limit");
+    }
+    let linked: WorkHostGoalLink | undefined;
+    // The link intent and loading gate commit in the same idempotent transaction
+    // as the policy. Retrying a save cannot resurrect a subsequently removed link.
+    const policy = await this.work.save(input, expectedRevision, requestId, {
+      context:hostGoalLinked === undefined ? undefined : {hostGoalLinked,...(hostGoalLinked ? {reviewedObjective} : {})},
+      saved: saved => {
+        if (hostGoalLinked === false) this.workHostGoalLinks.unlink(saved.id);
+        if (hostGoalLinked === true) linked = this.workHostGoalLinks.link(saved.id, saved.nativeSessionId, this.workGoalBinding(saved), reviewedObjective!);
+      },
+    });
+    // Saving is complete once policy and gate are durable. Host reads may take
+    // longer than an HTTP client timeout; the loading state is pollable and the
+    // tracked read never turns a successful save into an ambiguous response.
+    if (linked) void this.readWorkHostGoalLink(linked).catch(() => {});
+    const latest = this.work.store.get(policy.id)!;
+    return {policy:{...latest,hostGoal:this.workHostGoalStatus(latest)}};
+  }
+
+  async changeWorkHostGoal(id: string, expectedRevision: number, action: string, reviewedObjective?: string): Promise<{hostGoal:HostGoalSnapshot|null;revision:number}> {
+    const policy = this.work.store.get(id);
+    if (!policy || policy.revision !== expectedRevision) throw new HostGoalLinkError("work-revision-conflict");
+    if (!["link", "refresh", "unlink"].includes(action)) throw new HostGoalLinkError("work-host-goal-action-invalid");
+    if (action === "unlink") {
+      const updated = this.storage.transaction(() => {
+        const next = this.work.store.advanceRevision(id, expectedRevision);
+        this.workHostGoalLinks.unlink(id);
+        return next;
+      });
+      this.work.interruptPolicy(id);
+      return {hostGoal:null,revision:updated.revision};
+    }
+    if (!this.workGoalAccountMatches(policy)) throw new HostGoalLinkError("work-host-goal-account-changed");
+    let link = this.workHostGoalLinks.get(id);
+    if (action === "link") {
+      this.reviewedHostObjective(reviewedObjective);
+      try { normalizeSessionId(policy.nativeSessionId); } catch { throw new HostGoalLinkError("work-host-goal-session-invalid"); }
+      link = this.storage.transaction(() => {
+        this.work.store.advanceRevision(id, expectedRevision);
+        return this.workHostGoalLinks.link(id, policy.nativeSessionId, this.workGoalBinding(policy), reviewedObjective!);
+      });
+      // A changed link is new execution authority. The previous claim keeps its
+      // old policy revision forever, even after a refreshed link becomes ready.
+      this.work.interruptPolicy(id);
+    }
+    if (!link) throw new HostGoalLinkError("work-host-goal-not-linked");
+    // Refresh preserves a still-fresh observation while reading. A harmless
+    // status request must not revoke an in-flight execution's authorization.
+    if (action === "link") this.workHostGoalLinks.record(link, "loading", Date.now());
+    void this.readWorkHostGoalLink(link).catch(() => {});
+    return {hostGoal:this.workHostGoalStatus(this.work.store.get(id)!),revision:this.work.store.get(id)!.revision};
   }
 
   ingest(observations: QuotaObservation[]): QuotaEvent[] {
@@ -680,7 +983,7 @@ export class QuotaPieService {
     return profiles.some((profile) => profile.id === account && profile.enabled);
   }
 
-  registerResumeTask(input: RegisterResumeTaskInput, nowMs = Date.now()): ResumeTaskSummary {
+  registerResumeTask(input: RegisterResumeTaskInput, nowMs = Date.now(), reuseExisting = false): ResumeTaskSummary {
     // Explicit QuotaPie opt-in only; observing another host's session or quota
     // must never call this as an automatic transfer of execution ownership.
     const account = input.account ?? "default";
@@ -688,6 +991,15 @@ export class QuotaPieService {
       throw new Error(`unknown or disabled ${input.provider} account alias: ${account}`);
     }
     const nativeId = normalizeSessionId(input.nativeId);
+    if (reuseExisting) {
+      const key = resumeTaskKey(input.provider, account, nativeId);
+      const row = this.storage.db.query<{id:string},[string]>("SELECT id FROM resume_tasks WHERE task_key=? AND state IN ('waiting','ready','approved') LIMIT 1").get(key);
+      const existing = row ? this.resumeTasks.get(row.id) : null;
+      if (existing) {
+        if (!this.resumeAccountMatches(existing)) throw new HostGoalLinkError("host_goal_account_changed");
+        return this.resumeTaskSummary(existing);
+      }
+    }
     const cwd = resolve(input.cwd ?? process.cwd());
     const projectLabel = (input.projectLabel ?? basename(cwd) ?? "").trim();
     if (!projectLabel || projectLabel.length > 160 || /[\u0000-\u001f\u007f]/.test(projectLabel)) {
@@ -731,8 +1043,12 @@ export class QuotaPieService {
     return this.resumeTaskSummary(created);
   }
 
-  resumeTaskSummaries(limit = 100): ResumeTaskSummary[] {
-    return this.resumeTasks.active(limit).map((task) => this.resumeTaskSummary(task));
+  resumeTaskSummaries(limit = 100, nowMs = Date.now()): ResumeTaskSummary[] {
+    return this.resumeTasks.active(limit).map((task) => {
+      const summary = this.resumeTaskSummary(task);
+      if (task.state === "ready" && (!this.resumeAccountMatches(task) || !this.hasFreshResumeCapacity(task, nowMs))) summary.state = "waiting";
+      return summary;
+    });
   }
 
   private resumeTaskSummary(task: ResumeTask): ResumeTaskSummary {
@@ -800,8 +1116,13 @@ export class QuotaPieService {
     this.hostGoalLinks.unlink(taskId);
   }
 
-  private async readHostGoalLink(link: HostGoalLink): Promise<void> {
+  private readHostGoalLink(link: HostGoalLink): Promise<void> {
+    return this.serializeGoalRead("resume:" + link.task_id, () => this.readHostGoalLinkOnce(link));
+  }
+
+  private async readHostGoalLinkOnce(link: HostGoalLink): Promise<void> {
     if (this.closing) return;
+    if (this.hostGoalLinks.get(link.task_id)?.revision !== link.revision) return;
     const task = this.resumeTasks.get(link.task_id);
     if (!task) return;
     if (!this.resumeAccountMatches(task)) {
@@ -835,10 +1156,16 @@ export class QuotaPieService {
       for (const link of this.hostGoalLinks.list()) {
         if (this.closing) break;
         const task = this.resumeTasks.get(link.task_id);
-        if (!task || !["waiting", "ready", "approved"].includes(task.state)) continue;
+        if (!task || !["waiting", "ready", "approved", "resumed"].includes(task.state)) continue;
         const interval = link.read_state === "unsupported" ? 300_000 : Math.max(30_000, this.config.collection.pollSeconds * 1_000);
         if (!force && link.attempted_at_ms != null && Date.now() - link.attempted_at_ms < interval) continue;
         await this.readHostGoalLink(link);
+      }
+      for (const link of this.workHostGoalLinks.list()) {
+        if (this.closing) break;
+        const interval = link.read_state === "unsupported" ? 300_000 : Math.max(30_000, this.config.collection.pollSeconds * 1_000);
+        if (!force && link.attempted_at_ms != null && Date.now() - link.attempted_at_ms < interval) continue;
+        await this.readWorkHostGoalLink(link);
       }
     })();
     this.hostGoalRefresh = work;
@@ -1016,9 +1343,7 @@ export class QuotaPieService {
     nowMs = Date.now(),
   ): Promise<ResumeTaskSummary[]> {
     for (const task of this.resumeTasks.active().filter((item) => item.state === "ready")) {
-      if (
-        this.resumeAccountMatches(task) && this.hasFreshResumeCapacity(task, nowMs, windows)
-      ) continue;
+      if (this.resumeAccountMatches(task) && this.hasFreshResumeCapacity(task, nowMs, windows)) continue;
       try {
         this.resumeTasks.markWaiting(task.id, nowMs);
         this.rearmResumeReadyNotification(task, nowMs);
@@ -1053,7 +1378,7 @@ export class QuotaPieService {
       }
       const recovered = this.resumeAccountMatches(task) && this.hasFreshResumeCapacity(task, nowMs, windows) &&
         current?.remainingPercent != null &&
-        current.remainingPercent > task.registeredRemainingPercent + 0.01;
+        (task.registeredRemainingPercent >= 100 || current.remainingPercent > task.registeredRemainingPercent + 0.01);
       if (!recovered) continue;
       try {
         ready.push(this.resumeTasks.markReady(task.id, nowMs));
@@ -1102,11 +1427,120 @@ export class QuotaPieService {
 
   notificationPreferences() {
     return { enabled: this.config.alerts.enabled, topics: { ...this.config.alerts.topics },
+      usageSpeed: this.config.profile.showUsageSpeed, paceForecasts: this.config.alerts.paceForecasts,
       desktopEnabled: this.config.alerts.macOSNotifications, resetCollectionEnabled: this.config.resetSignals.enabled };
+  }
+
+  resumeGate(provider: Provider, account: string, nowMs = Date.now(), requiredBucket?: string) {
+    let state = this.accountStates(nowMs).find(item => item.provider === provider && item.account === account);
+    const maxAgeMs = this.config.collection.staleAfterSeconds * 1000;
+    if (state && provider === "codex") {
+      let cutoff = NaN;
+      try { cutoff = explicitAccountReserve(account, readPoolPolicy()); } catch { /* Invalid execution policy cannot admit work. */ }
+      // Forecast reserves remain presentation inputs. Only an explicit enabled
+      // execution cutoff stops available subscription quota. A transient failed
+      // poll does not invalidate the still-fresh authoritative sample below.
+      state = { ...state, windows: state.windows.map(window => ({ ...window, reservePercent: cutoff })),
+        collection: state.collection.health === "attempted-then-failed" &&
+          ["provider-error", "network"].includes(state.collection.errorCategory ?? "")
+          ? { ...state.collection, health: "recent-success", errorCategory: null } : state.collection };
+    }
+    const gate = evaluateResumeGate(state, provider, account, nowMs, maxAgeMs, requiredBucket);
+    if (gate.windows.length) gate.validUntilMs = Math.min(...gate.windows.map(window => window.observedAtMs + maxAgeMs));
+    gate.profileKey = resumeProfileKey(this.config, provider, account);
+    const profile = provider === "codex" ? this.config.accounts.codex.find(p => p.id === account && p.enabled) : null;
+    gate.accountKey = profile ? this.accountBindings.identityKey(codexProfileRoot(profile)) : null;
+    if (!gate.profileKey) { gate.ready = false; gate.reason = "account-unavailable"; }
+    gate.resetOpportunities = this.resetOpportunities(provider, account, nowMs);
+    return gate;
+  }
+
+  resetPlanning(accounts: Array<{ provider: Provider; account: string }>, nowMs = Date.now()) {
+    const signals = this.resetSignals.list(1000), events = this.db.recentEvents(2000);
+    return accounts.map(account => ({ ...account,
+      opportunities: this.resetOpportunities(account.provider, account.account, nowMs),
+      closedSignalIDs: signals.filter(s => (s.provider ?? "codex") === account.provider &&
+        resetSignalClosed(s, signals, events.filter(e => e.account === account.account), nowMs)).map(s => s.id),
+    }));
+  }
+
+  resetOpportunities(provider: Provider, account: string, nowMs = Date.now(), options: {maxAgeMinutes?: number; bucket?: string} = {}) {
+    return resetOpportunities(this.resetSignals.list(1000), this.db.recentEvents(2000), provider, account, nowMs,
+      {...options, cases: this.resetTimingStatus().cases});
+  }
+
+  private workOpportunity(policy: WorkPolicy, nowMs = Date.now()) {
+    return this.resetOpportunities(policy.provider, policy.account, nowMs,
+      {maxAgeMinutes: policy.opportunityMaxAgeMinutes, bucket: policy.resetBucket})
+      .filter(o => o.actionableFromMs <= nowMs && o.expiresAtMs > nowMs)
+      .sort((a,b) => b.publishedAtMs - a.publishedAtMs)[0];
+  }
+
+  private workForecast(policy: WorkPolicy, nowMs: number): WorkForecast | null {
+    const opportunity = this.workOpportunity(policy, nowMs);
+    if (!opportunity || !policy.resetBucket) return null;
+    const key = `${policy.id}:${policy.revision}:${opportunity.signalId}`;
+    const cached = this.workForecastCache.get(key);
+    if (cached && cached.expiresAtMs > nowMs) return cached.forecast;
+    const estimatedWorkMinutes = this.work.estimatedWorkMinutes(policy);
+    const horizonAtMs = planWork(policy, nowMs, {estimatedWorkMinutes}).horizonAtMs;
+    if (horizonAtMs <= nowMs) return null;
+    const signal = this.resetSignals.list(1000).find(s => s.id === opportunity.signalId);
+    const publication = this.resetTiming.issueForecast({signalId: signal?.sourcePostId ?? opportunity.signalId,
+      provider: policy.provider, account: policy.account, bucket: policy.resetBucket, horizonAtMs, now: nowMs,
+      policyId: policy.id, policyVersion: policy.revision, earlyResetQuantile: policy.earlyResetQuantile, historyDays: policy.timingHistoryDays});
+    const forecast: WorkForecast | null = publication ? {id: publication.id, eventId: publication.eventId,
+      actionProbabilityEstimate: publication.actionProbabilityEstimate, quantileAtMs: publication.actionProbabilityEstimate === null ? null : publication.quantileAtMs,
+      horizonAtMs: publication.horizonAtMs, calibrationStatus: publication.calibrationStatus} : null;
+    for (const [id,value] of this.workForecastCache) if (value.expiresAtMs <= nowMs) this.workForecastCache.delete(id);
+    this.workForecastCache.set(key, {expiresAtMs: Math.min(horizonAtMs, nowMs + 60_000), forecast});
+    return forecast;
+  }
+
+  resetTimingStatus() {
+    try { return { ...this.resetTiming.summary(), error: this.resetTimingError }; }
+    catch { return { cases: [], evaluation: null, error: "timing-history-unavailable" }; }
+  }
+
+  refreshResetTiming(nowMs = Date.now()): void {
+    try {
+    const contexts = this.storage.db.query<{provider:Provider; account:string; at:number}, []>(
+      "SELECT provider,account,MAX(occurred_at_ms) AS at FROM events WHERE kind IN ('account_changed','plan_changed') GROUP BY provider,account"
+    ).all();
+    const accounts = [...new Map(this.db.latestAll().map(o => [`${o.provider}:${o.account}`, { provider: o.provider, account: o.account,
+      contextAtMs: contexts.find(c=>c.provider===o.provider&&c.account===o.account)?.at ?? 0 }])).values()];
+    const policyDays = this.work.store.list().map(p => p.timingHistoryDays ?? 365);
+    // A task learning window must never shorten the shared application history.
+    const retentionDays = Math.max(365, ...policyDays);
+    const events = this.storage.db.query<{provider: Provider; account: string; bucket: string; kind: QuotaEvent["kind"]; occurred_at_ms: number; details_json: string}, [number]>(
+      "SELECT provider,account,bucket,kind,occurred_at_ms,details_json FROM events WHERE kind IN ('external_relief','allowance_relief') AND occurred_at_ms >= ? ORDER BY occurred_at_ms DESC LIMIT 5000"
+    ).all(nowMs - retentionDays * 86400000).map(r => ({ provider:r.provider, account:r.account, bucket:r.bucket, kind:r.kind,
+      occurredAtMs:r.occurred_at_ms, details:JSON.parse(r.details_json), severity:"info" as const, confidence:"high" as const, displayText:"" }));
+    this.resetTiming.setRetentionDays(retentionDays);
+    for (const observation of this.db.latestAll()) {
+      this.resetTiming.recordCoverage({id: `${observation.provider}:${observation.account}:${observation.bucket}:${observation.observedAtMs}`,
+        provider: observation.provider, account: observation.account, bucket: observation.bucket, observedAtMs: observation.observedAtMs,
+        success: observation.quality === "authoritative", resetDetectable: false});
+    }
+    for (const state of this.collection.sourceStates()) if (state.lastAttemptMs != null && state.lastError) {
+      for (const observation of this.db.latestAll().filter(o => o.provider === state.provider && o.account === state.account))
+        this.resetTiming.recordCoverage({id: `failure:${state.provider}:${state.account}:${state.source}:${state.lastAttemptMs}:${observation.bucket}`,
+          provider: state.provider, account: state.account, bucket: observation.bucket, observedAtMs: state.lastAttemptMs,
+          success: false, resetDetectable: false});
+    }
+    this.resetTiming.sync(this.resetSignals.list(1000), events, accounts, nowMs);
+    this.resetTimingError = null;
+    } catch {
+      // Advisory measurement must not interrupt collection, quota publication or work.
+      this.resetTimingError = "timing-history-update-failed";
+      console.error("[quotapie] reset timing history update failed");
+    }
   }
 
   applyNotificationPreferences(patch: NotificationPreferencesPatch): void {
     if (patch.enabled != null) this.config.alerts.enabled = patch.enabled;
+    if (patch.usageSpeed != null) this.config.profile.showUsageSpeed = patch.usageSpeed;
+    if (patch.paceForecasts != null) this.config.alerts.paceForecasts = patch.paceForecasts;
     Object.assign(this.config.alerts.topics, patch.topics);
     this.cancelMutedNotifications();
   }
@@ -1118,6 +1552,7 @@ export class QuotaPieService {
   claimNextAppNotification(nowMs = Date.now()): AppNotificationClaim | null {
     this.cancelMutedNotifications(nowMs);
     this.cancelObsoleteJobNotifications(nowMs);
+    this.cancelObsoleteWorkNotifications(nowMs);
     if (!this.config.alerts.enabled || !this.config.alerts.macOSNotifications) {
       this.alerts.cancelAllAppNotifications(nowMs);
       return null;
@@ -1160,6 +1595,7 @@ export class QuotaPieService {
   renewAppNotification(id: string, claimToken: string, nowMs = Date.now()): boolean {
     this.cancelMutedNotifications(nowMs);
     this.cancelObsoleteJobNotifications(nowMs);
+    this.cancelObsoleteWorkNotifications(nowMs);
     return this.alerts.renewAppNotification(id, claimToken, nowMs);
   }
 
@@ -1267,6 +1703,46 @@ export class QuotaPieService {
     return this.jobNotifications;
   }
 
+  /** A notification policy never claims a model turn. The durable outbox keeps
+   * polling and restarts from repeating the same policy/event notification. */
+  async deliverWorkNotifications(): Promise<void> {
+    if (!this.work.store.list().length) return;
+    this.cancelObsoleteWorkNotifications();
+    const undelivered = new Set(this.alerts.suppressedThresholdKeys(true));
+    for (const policy of this.work.list()) {
+      if (!policy.enabled) continue;
+      const reason = policy.admission.reason;
+      if (!["notification-only", "forecast-unavailable-notify"].includes(reason)) continue;
+      const opportunity = this.workOpportunity(policy);
+      if (!opportunity) continue;
+      const messageKey = reason === "notification-only" ? "alert.work.notice.message" : "alert.work.forecastUnavailable.message";
+      const decision: TriggerDecision = {
+        key: `work:${policy.id}:${policy.revision}:${opportunity.signalId}:${reason}`,
+        title: t("alert.jobs.title", {label: policy.objective}, this.locale), message: t(messageKey, {}, this.locale),
+        presentation: {title: {key: "alert.jobs.title", params: {label: policy.objective}}, message: {key: messageKey, params: {}}}, severity: "info",
+      };
+      if (!notificationAllowed(decision, this.config.alerts)) continue;
+      if (undelivered.has(decision.key)) this.rearmAlertNotification(decision.key, 0);
+      const claim = this.alerts.claim(decision.key, Date.now(), 0);
+      if (!claim) continue;
+      try {
+        const result = await this.deliverDecision(decision, `threshold:${decision.key}:${claim.generation}`);
+        if (result.complete) this.alerts.completeClaim(decision.key, claim.token, Date.now(), result.suppressed ? "suppressed" : "delivered");
+        else this.alerts.releaseClaim(decision.key, claim.token);
+      } catch { this.alerts.releaseClaim(decision.key, claim.token); }
+    }
+  }
+
+  private cancelObsoleteWorkNotifications(nowMs = Date.now()): void {
+    const policies = this.work.store.list().length ? this.work.list() : [];
+    const validKeys = new Set(policies.filter(p => p.enabled).flatMap(p => {
+      const opportunity = this.workOpportunity(p, nowMs);
+      return opportunity && ["notification-only", "forecast-unavailable-notify"].includes(p.admission.reason)
+        ? [`work:${p.id}:${p.revision}:${opportunity.signalId}:${p.admission.reason}`] : [];
+    }));
+    this.alerts.cancelAppNotificationsWhere(item => item.alertKey.startsWith("work:") && !validKeys.has(item.alertKey), nowMs);
+  }
+
   private cancelObsoleteJobNotifications(nowMs = Date.now()): void {
     this.alerts.cancelAppNotificationsWhere(item => {
       if (!item.alertKey.startsWith("jobs:")) return false;
@@ -1277,27 +1753,17 @@ export class QuotaPieService {
     }, nowMs);
   }
 
-  private hasFreshResumeCapacity(
-    task: ResumeTask,
-    nowMs: number,
-    windows = this.analyses(nowMs, task.provider),
-  ): boolean {
-    const account = windows.filter(window => window.provider === task.provider && window.account === task.account);
-    const current = account.find(window => window.bucket === task.bucket);
-    const general = account.filter(window => task.provider === "codex"
-      ? window.bucket.startsWith("codex:")
-      : window.bucket === "five_hour" || window.bucket === "seven_day");
-    // A recovered lane cannot establish capacity while an account-wide limit
-    // still blocks it. Model-only observations do not establish general quota;
-    // unrelated model lanes and other accounts do not constrain this task.
-    if (!current || current.observedAtMs <= task.registeredAtMs || !general.length) return false;
-    return [current, ...general].every(window =>
-      window.freshness === "fresh" &&
-      Number.isFinite(window.observedAtMs) && window.observedAtMs <= nowMs &&
-      nowMs - window.observedAtMs <= this.config.collection.staleAfterSeconds * 1_000 &&
-      window.resetsAtMs != null && Number.isFinite(window.resetsAtMs) && window.resetsAtMs > nowMs &&
-      window.remainingPercent != null && Number.isFinite(window.remainingPercent) && window.remainingPercent > 0
-    );
+  private hasFreshResumeCapacity(task: ResumeTask, nowMs: number, windows = this.analyses(nowMs, task.provider)): boolean {
+    let reserve = 0;
+    if (task.provider === "codex") {
+      try { reserve = explicitAccountReserve(task.account, readPoolPolicy()); }
+      catch { return false; }
+    }
+    const scoped = windows.filter(w => w.provider === task.provider && w.account === task.account)
+      .map(w => ({ ...w, reservePercent: reserve }));
+    const gate = evaluateResumeWindows(scoped, task.provider, task.account, nowMs,
+      this.config.collection.staleAfterSeconds * 1000, task.bucket);
+    return gate.ready && gate.windows.some(w => w.bucket === task.bucket && w.observedAtMs > task.registeredAtMs);
   }
 
   recentEvents(limit = 50): QuotaEvent[] {
@@ -1415,6 +1881,7 @@ export class QuotaPieService {
     // clock for deterministic callers.
     const nowMs = evaluationTimeMs ?? Date.now();
     const collected = this.anyProviderCollectedRecently(nowMs);
+    this.refreshResetTiming(Date.now());
     this.db.maybePrune(nowMs, this.config.profile.historyDays);
     this.resumeTasks.pruneTerminal(nowMs - this.config.profile.historyDays * 86_400_000);
     // One analysis pass per tick. It feeds the triggers, the boundary file, and
@@ -1430,6 +1897,7 @@ export class QuotaPieService {
     if (this.jobsEnabled) this.jobRunner.tick(windows, jobsNowMs);
     else this.jobRunner.evaluate(windows, jobsNowMs);
     await this.deliverJobNotifications();
+    await this.deliverWorkNotifications();
     const triggers = await this.evaluateTriggers(nowMs, windows);
     await this.publishBoundary(nowMs, windows);
     return { events, triggers, windows, collected };
@@ -1447,8 +1915,9 @@ export class QuotaPieService {
   }
 
   publishWorkBoundary(nowMs = Date.now(), analysed?: WindowAnalysis[]): void {
+    if (this.workBoundaryPath === null) return;
     try {
-      writeWorkBoundary(buildWorkBoundary(this.accountStates(nowMs, analysed ?? this.currentQuotaWindows(nowMs)), this.resumeTasks.active(), this.config, nowMs));
+      writeWorkBoundary(buildWorkBoundary(this.accountStates(nowMs, analysed ?? this.currentQuotaWindows(nowMs)), this.resumeTasks.active(), this.config, nowMs), this.workBoundaryPath);
     } catch (error) {
       console.error(`[quotapie] work-state.json publish failed: ${String(error)}`);
     }
@@ -1458,6 +1927,7 @@ export class QuotaPieService {
     // A push can arrive while this tick awaits alerts/jobs. Never overwrite its
     // routing protection with the older analysis captured at tick start.
     this.publishWorkBoundary();
+    if (this.quotaBoundaryPath === null) return;
     try {
       const accounts = this.accountStates(nowMs, analysed);
       const document = buildQuotaBoundary(
@@ -1466,7 +1936,7 @@ export class QuotaPieService {
         nowMs,
         await cachedLeaderboard(nowMs),
       );
-      writeQuotaBoundary(document);
+      writeQuotaBoundary(document, this.quotaBoundaryPath);
     } catch (error) {
       // A failed boundary write must not kill the collection and alert tick
       // that is this loop's actual job.
@@ -1496,8 +1966,18 @@ export class QuotaPieService {
   async collectResetSignals(): Promise<void> {
     if (this.signalWork) return this.signalWork;
     this.signalWork = (async () => {
+      const evidenceVersion = () => (this.resetSignals.health().sources ?? [])
+        .map(source => `${source.id}:${source.lastEvidenceMs ?? ""}`).sort().join("|");
+      const before = evidenceVersion();
       await this.signalCollector.poll();
       if (this.closing || !this.config.resetSignals.enabled) return;
+      this.refreshResetTiming(Date.now());
+      if (evidenceVersion() !== before) {
+        this.workForecastCache.clear();
+        // Wake the quota loop so newly collected announcements reach the
+        // runner promptly, with fresh account checks before dispatch.
+        if (this.jobsEnabled) this.requestCollection();
+      }
       for (const signal of this.resetSignals.pending(Date.now())) {
         if (this.closing) break;
         const remaining = this.accountStates(Date.now(), this.currentQuotaWindows(Date.now()))
@@ -1565,6 +2045,7 @@ export class QuotaPieService {
     this.nativeNotificationTransportAvailable = false;
     await Promise.all([...this.goalClients.values()].map(client => client.close().catch(() => undefined)));
     await this.hostGoalRefresh?.catch(() => undefined);
+    await Promise.allSettled([...this.goalLinkReads.values()]);
     this.goalClients.clear();
     await this.jobRunner.close();
     await this.jobNotifications;

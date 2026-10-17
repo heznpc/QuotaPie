@@ -31,11 +31,70 @@ Currently supports Codex and Claude Code.
 - Temporary account lookup failures retain the last trusted snapshot and resident comparison context until a retry succeeds. An older provider that explicitly lacks `account/read` can still provide quota; a known plan change separates its anonymous usage baselines. Change notifications identify the configured local account label.
 - With the resident menu bar app connected, macOS notifications are posted by QuotaPie itself, so Notification Center attributes them to QuotaPie rather than to a script runner. `watch` and a clean older-app installation retain the legacy script notification as an upgrade fallback. An optional external command trigger is also supported.
 - Multiple Codex and Claude accounts are separated by profile directory and local alias; history, personal pace, bottleneck, and alert cooldowns are all isolated per account.
-- Notifications default to remaining-quota thresholds (20%, 10%, 5%) and an observed drop of at least 10 percentage points within 10 minutes. `alerts.rapidDropPercent` and `alerts.rapidWindowMinutes` set that rule. Speculative pace notifications require `alerts.paceForecasts: true`. The app shows notification permission status and a settings shortcut. After permission returns, it re-evaluates suppressed thresholds against current quota instead of replaying old messages.
+- Notifications default to remaining-quota thresholds (20%, 10%, 5%). Measured usage-speed display, rapid-consumption notifications, and reserve forecasts have separate native settings and default off. Enabling `alerts.topics.rapidConsumption` uses `alerts.rapidDropPercent` and `alerts.rapidWindowMinutes` (10 percentage points within 10 minutes by default). Forecasts require `alerts.paceForecasts: true` and at least medium evidence; they distinguish reaching the user's reserve from exhausting the entire allowance. Observation frequency alone cannot establish high confidence. The app shows notification permission status and a settings shortcut. After permission returns, it re-evaluates suppressed thresholds against current quota instead of replaying old messages.
 - Collection state is a four-state heartbeat (never-attempted / attempted-then-failed / stale-success / recent-success) so that a stalled collector and a disabled one do not wear the same face.
 - The burn leaderboard reads only token counts, paths, and timestamps (`cwd`, `usage`, `timestamp`) from Claude Code transcripts. Conversation content is never used, stored, or transmitted. Transcripts are line-delimited JSON, so reaching those fields does require parsing the lines that contain them — the accurate claim is "the content is not used", not "the content is never touched". Lines without the fields of interest are not parsed at all.
 
 The native settings window lets you select Sol, Luna, or Terra for future Astra compression requests, with the validated Low effort. It applies the choice to reachable relay generations that support live policy changes and shows how many acknowledge the selected model; older routes may retain their previous policy. Running requests keep their original policy snapshot. Activity groups compression start/end and the model of a later observed request from the same task (and the same turn when the turn ID is known). Unobserved follow-up models stay unverified. A bounded private metadata record preserves observed continuations after the relay’s live history rolls over.
+
+## Automatic continuation through Dots
+
+QuotaPie supplies fresh quota admission and MCP Events for explicitly approved
+existing Codex tasks. `continuation_status` reads the exact original thread in
+its configured local profile, rather than assuming the Dot's default computer
+host owns it. The returned metadata excludes transcript, credentials and local
+paths. A separate inspector's `notLoaded` does not establish native task idleness.
+Native execution-host and loaded-relay verification are not yet implemented;
+native-mode claims therefore fail closed even when quota is ready. An explicitly
+reviewed `profile-managed` policy can instead resume that same thread through
+the bundled Codex CLI in its original profile. `executionPurpose: report-check`
+(the legacy default) permits one tool-free, read-only report lasting at most
+60 seconds. `continue-work` permits actual workspace changes and existing tools,
+with an explicitly reviewed `maxDurationSeconds`, turn limit and usage budget.
+A completed or failed task stops; only a witnessed quota interruption can wait
+for recovery within the same approved policy. Neither mode retries an uncertain
+dispatch. Its in-memory
+proxy binds the original account and quota windows, rejects unguarded routes,
+and cancels the connection when permission or measured quota ends. Policies
+start disabled; live continuation still requires end-to-end verification.
+The [connection guide](skills/quotapie-resume/references/connection.md)
+covers the private tunnel, per-task policy, reserves, reset timing, priority,
+turn limits and observed usage budget. Registration starts disabled.
+
+The macOS settings include **Dots connection**. QuotaPie discovers the official
+tunnel client even when it is outside PATH, manages its own runtime, and reports
+transport readiness, event discovery and active subscriptions separately. The
+connection is bound to a locally signed-in account and a remotely verified
+workspace; it never replaces another application's tunnel. Connection setup does
+not enable any task policy. `quotapie dots connection` exposes the same status.
+
+Initial account authorization and actual Dot availability must be established
+before creating the private connection. A task policy retains its original
+account/profile. A Dot connected to another account's computer host cannot use
+that host's native thread tools to read or continue the original task. The
+profile-aware status reader and managed execution tool avoid that host's default
+profile; they do not switch the task to the Dot's account. A local login or a
+ready tunnel does not establish execution access.
+
+The [quotapie-resume skill](skills/quotapie-resume/SKILL.md) describes the Dot
+workflow. A local heartbeat is not created as a substitute. Real Dot connection
+and original-task continuation require end-to-end verification in the user's
+account; an event receipt or a local test does not establish that result.
+
+`quotapie resume-check --provider codex --account ACCOUNT --json` queries the
+running collector. Fresh authoritative general quota windows and an optional
+`--bucket` model window must exceed an explicitly configured execution cutoff
+(default 0%). Forecast headroom does not prevent spending remaining quota.
+Profile mismatch, unknown or expired values, authentication failures and an
+unconfirmed reset block admission. A temporary network/provider refresh failure
+does not revoke an authoritative observation before its configured expiry.
+Exit codes are 0 (ready), 3 (wait), and 69 (unavailable). The equivalent local
+endpoint is `GET /api/resume-check?provider=codex&account=ACCOUNT`.
+
+Speed display, rapid-consumption alerts and reserve forecasts can be switched
+independently in notification settings, and default to off. Reserve forecasts
+use the usable allowance and the elapsed observation period, rather than the
+number of frequent polls alone. Low-quota warnings remain enabled.
 
 ## Shared quota core
 
@@ -242,13 +301,61 @@ next request when either the short or weekly window has 30% or less remaining.
 The CLI equivalent is `quotapie pool reserve ACCOUNT 30`. The destination needs
 fresh quota above its own reserve, with up to five percentage points of headroom.
 If no eligible destination exists, or protected quota is unknown, the request
-pauses instead of spending the reserve. An already dispatched response completes;
-collection delay and concurrent requests can overshoot the threshold, so this is
-not a guaranteed hard spending cap. It applies only to requests through this
-Mac's QuotaPie Codex relay. Transfers require the same portable history checks
-described above, and disabling automatic routing also disables reserve enforcement.
-After first installing reserve support, finish active work and reopen Codex:
-already-loaded tasks may still use an older relay that does not enforce reserves.
+pauses instead of spending the reserve. Collection delay and concurrent requests
+can overshoot the threshold, so this is not a guaranteed hard spending cap.
+It applies only to requests through this Mac's QuotaPie Codex relay.
+Interactive relays now use a source-account boundary: requests keep the original
+login, with no account selection, credential substitution, 429 failover, or paid
+API fallback. A missing or zero reserve does not enroll ordinary work in local
+quota enforcement. Provider expiry, entitlement, model and quota decisions are
+returned to the native client; stale collector data and previous 402/429 responses
+do not create local holds. Explicit enabled reserves still require fresh quota
+and are rechecked during execution. Reviewed managed continuations retain their
+strict route/model/history policy and frozen budgets.
+
+Interactive requests use `authenticated-source` history policy. Missing, locked,
+unreadable or incomplete local rollout/routing data does not strand ephemeral
+helpers, compaction, forks or resumed work. Readable bindings to another login
+still reject the request. Same-login token refresh is accepted only for credentials
+actually observed in the source profile; an unobserved credential, a different
+workspace or a replaced login still stops execution. Missing account headers are
+filled from the authenticated source, never from another account.
+
+Within the fixed ChatGPT Codex origin and namespace, native GET/HEAD/POST/PUT/
+PATCH/DELETE/OPTIONS routes pass through, including future routes, search, images,
+files and audio. Native payloads and provider errors retain their bytes. Inspection
+bounds limit optimization, not admission; unknown encodings, large uploads,
+background requests, new models and unfamiliar SSE frames pass through. Explicit
+foreign response attribution still stops that response. Redirects within the same
+Codex namespace remain behind the source guard; external redirects are rejected.
+The local capability, browser-origin isolation, management endpoint boundary and
+native WebSocket-to-HTTP fallback remain in place.
+
+Missing optional optimization settings default to disabled/pass-through. Invalid
+optimizer settings fall back to the native request. Existing valid saved optimizer
+choices are retained. Local admission and provider results are recorded separately
+as sanitized native request diagnostics; no body, token, query or resource ID is
+retained by that diagnostic record.
+
+Relay health exposes `executionMode`, `nativeRequestPolicyVersion`,
+`sourceContinuationRevision`, `subscriptionGuard.enforcement` and
+`listenerPolicyVersion`. `/api/status` includes these policy dimensions alongside
+reason-specific rejection counts. `check:runtime` verifies every reachable relay's
+actual handler hash and policy dimensions, not just the collector's version.
+`quotapie-compaction upgrade --source REPOSITORY` hot-swaps request handlers without
+interrupting streams or changing loaded endpoint URLs. Bootstrap/listener changes
+are staged for natural restart; the old listener's 64 MiB transport limit cannot
+be removed by a handler swap. Updated listeners have no local request-size cutoff.
+An idle HTTP gap is not permission to kill a session that may be running tools.
+
+The earlier audits missed these failures because tests encoded known route/model
+allowlists and expected their denials, rather than asserting native compatibility.
+They also conflated source identity with optional history/quota observations and
+verified isolated handlers more often than the installed interactive runtime.
+`tests/native-interactive-policy.test.ts` now covers future routes, methods, body
+shapes, missing account headers, refresh, stale holds, broken/locked optional
+storage, explicit reserves, foreign identity, oversized uploads and unfamiliar
+responses. Both permissive native behavior and retained boundaries are tested.
 Use only accounts you are authorized to access, in accordance with the applicable
 provider terms.
 
@@ -402,20 +509,21 @@ quotapie doctor               check collectors and connection state
 quotapie test-alert           hand a test alert to the configured channels
 quotapie launchd              print a plist for running as a resident service
 quotapie menubar-launchd      print a plist for launching the menu bar app
-quotapie codex -- -m gpt-6-astra
+quotapie codex --compact-model gpt-5.6-sol -- -m gpt-6-astra
                                run Codex with experimental Sol compaction routing
 ```
 
 ## Experimental Codex compaction routing
 
-`quotapie codex` launches a Codex process through a private loopback relay. By
-default, Astra performs the task and Sol handles only its compaction requests,
-including automatic compaction in the middle of a turn. The next ordinary
-request still uses Astra; QuotaPie does not interrupt or replay the turn.
+`quotapie codex` launches a Codex process through a private loopback relay and
+preserves its native model by default. With `--compact-model gpt-5.6-sol`, Astra
+performs the task and Sol handles only its compaction requests, including automatic
+compaction in the middle of a turn. The next ordinary request still uses Astra;
+QuotaPie does not interrupt or replay the turn.
 
 ```bash
-quotapie codex -- -m gpt-6-astra
-quotapie codex -- resume -m gpt-6-astra SESSION_UUID
+quotapie codex --compact-model gpt-5.6-sol -- -m gpt-6-astra
+quotapie codex --compact-model gpt-5.6-sol -- resume -m gpt-6-astra SESSION_UUID
 quotapie codex --codex-bin /path/to/codex -- app-server --stdio
 ```
 
@@ -423,7 +531,8 @@ From an uninstalled source checkout, replace `quotapie` with `bun run src/cli.ts
 The command uses `collection.codexCommand` unless `--codex-bin` is supplied, and
 inherits the current Codex login and `CODEX_HOME`. It requires a ChatGPT login;
 API-key providers are outside this experiment. `--compact-from` and
-`--compact-model` override the source and compaction model names. Other model
+`--compact-model` override the source and compaction model names. Without an
+explicit compaction target, the wrapper preserves the native model. Other model
 pairs require their own compatibility check.
 
 The relay recognizes the final `compaction_trigger` input control on
@@ -635,7 +744,7 @@ The settings that matter most:
 
 - `recentWeight`: how strongly today's measured pace overrides your long-term personal pattern. With few samples, the long-term pattern automatically carries more weight.
 - `workSchedule`: ranges may cross midnight. `09:00`–`02:00` means 9am until 2am the next day.
-- `reservePercent`: the safety margin you want left when the reset arrives.
+- `reservePercent`: advisory headroom for forecasts; it is not an execution cutoff.
 - `accounts.*[].id`: the stable local alias used in the database and alerts. It must be unique within a provider.
 - `codexHome` / `configDir`: the per-account profile root. Two enabled accounts sharing a directory is rejected at startup.
 - `alerts.remainingThresholds`: the remaining-percentage steps that trigger alerts.
@@ -744,6 +853,15 @@ insert are a single unit of work.
 ```bash
 bun run check
 ```
+
+Run backend tests with `bun run test`, or a selected file with
+`bun script/test-isolated.ts tests/service-boundary-isolation.test.ts`.
+The macOS runner verifies an OS sandbox before starting tests: standard QuotaPie
+installation paths, profile state, and launch agents cannot be overwritten.
+Outbound connections are limited to newly reserved loopback fixture ports;
+`Bun.serve({ port: 0, ... })` uses that pool automatically. Tests use temporary
+data directories; direct `bun test` is rejected. An injected in-memory
+service does not publish integration files unless given explicit destinations.
 
 The tests cover low-usage normal and early resets, reset-clock rebases, allowance relief where only the ratio falls, null data, out-of-order responses, multi-session Claude consensus, multi-account isolation and validation, per-account alert keys, retirement of dynamic Codex entries, durable alert and native-notification claims, file permissions, paid credits, personal burn rate, bottleneck selection, dynamic rescheduling, exact-session resume races, API capability checks, and the native launcher's command boundary.
 
@@ -926,3 +1044,23 @@ finishes the request. It never touches installed profiles or tests a real logout
 The metadata collector also detects replacement of its configured executable or
 symlink on its next read; a missing explicit path is not silently replaced by a
 different CLI.
+
+### Public reset preparation
+
+A reviewed Dots `quota.reset_approaching` policy can select
+`resetTiming: "public-announcement"` to start at a universal reset announcement
+instead of waiting for the account API's scheduled reset. Existing policies
+retain `scheduled` timing. The target must still be enabled and subscribed,
+with its original account, fresh positive quota, explicit reserve and usage
+budget. News never raises quota, changes a cutoff, or enables a policy.
+
+`/api/resume-check` and `/api/status` expose `resetOpportunities`; the macOS reset
+detail shows the estimate separately from the original announcement time.
+EOD estimates use the range of authoritative near-full recoveries following
+the same author's EOD announcements on at least two distinct UTC dates. This
+is temporal association, not proof of causation or a calibrated prediction.
+The bounded history scan uses up to 1,000 signals and 2,000 recent events over
+30 days; missing evidence means no forecast. Scheduled resets, reset-credit
+consumption and observation gaps over 30 minutes do not contribute.
+A completion, withdrawal, revision or observed near-full recovery retires
+the opportunity. A report alone is not treated as the actual reset time.

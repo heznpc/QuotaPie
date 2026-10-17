@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { dataDirectory } from "./config";
 import type { AccountState, CollectionHealth, CollectionStateRow, Headline } from "./types";
 
 // The integration boundary with external consumers such as Modore. This one
@@ -273,7 +274,11 @@ export function buildQuotaBoundary(
 }
 
 export function defaultBoundaryPath(): string {
-  return join(homedir(), "Library", "Application Support", "QuotaPie", "quota.json");
+  // A separate CLI/test data directory cannot overwrite the installed app.
+  const data = dataDirectory();
+  return data !== join(homedir(), ".local", "share", "quotapie")
+    ? join(data, "quota.json")
+    : join(homedir(), "Library", "Application Support", "QuotaPie", "quota.json");
 }
 
 export function writeQuotaBoundary(document: QuotaBoundaryDocument, path = defaultBoundaryPath()): void {

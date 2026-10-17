@@ -94,6 +94,13 @@ struct ResetSignalSummary: View {
                 Button(Strings.t("overview.history"), action: openHistory)
                     .font(.caption).buttonStyle(.borderless)
             }
+            ForEach(feed.automation ?? []) { automation in
+                Text((automation.provider == "claude" ? "Claude" : "Codex") + " · " +
+                    Strings.t(automation.state == "running" ? "signal.automation.running" :
+                        automation.enabledCount > 0 ? "signal.automation.waiting" : "signal.automation.notConfigured"))
+                    .font(.caption)
+                    .foregroundStyle(automation.enabledCount > 0 || automation.runningCount > 0 ? Color.secondary : Color.orange)
+            }
             let pending = feed.pendingResets(nowMs: Date().timeIntervalSince1970 * 1000)
             if !pending.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
@@ -105,6 +112,7 @@ struct ResetSignalSummary: View {
                                     .font(.caption.weight(.medium))
                                 Text(signal.localTimeText ?? signal.summaryTimeHint ?? Strings.t("signal.pending.unknownTime"))
                                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                ResetTimingDetails(signal: signal)
                             }
                             Spacer(minLength: 4)
                             if let url = signal.safeSourceURL { Link(Strings.t("overview.original"), destination: url).font(.caption) }
@@ -136,9 +144,10 @@ struct ResetSignalSummary: View {
                     }
                 }.font(.caption2)
                 if let localTime = signal.localTimeText {
-                    Text(Strings.t("signal.localTime", localTime)).font(.callout).bold()
+                    Text(localTime).font(.callout).bold()
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                ResetTimingDetails(signal: signal)
                 if let hint = signal.summaryTimeHint {
                     Text(Strings.t("signal.originalTime", hint))
                         .font(.caption).lineLimit(2).help(signal.originalTimeHint ?? hint)
@@ -252,20 +261,37 @@ struct ResetSignalHistory: View {
             Text(Strings.t(signal.classificationKey) + " · " + Strings.t("signal.kind." + (["resetCredits", "credits", "limits", "student", "discounts", "events"].contains(signal.displayedBenefitKind ?? "") ? signal.displayedBenefitKind! : signal.resetKind)))
                 .font(.caption).foregroundStyle(.secondary)
             if let localTime = signal.localTimeText {
-                Text(Strings.t("signal.localTime", localTime)).font(.callout).bold()
+                Text(localTime).font(.callout).bold()
             } else if let target = signal.targetAtMs {
                 Text(Strings.t(target < Date().timeIntervalSince1970 * 1000 ? "signal.elapsed" : "signal.feedTime", ResetSignal.stamp(target)))
                     .font(.caption).foregroundStyle(.secondary)
             }
+            ResetTimingDetails(signal: signal)
             if let hint = signal.originalTimeHint {
                 Text(Strings.t("signal.originalTime", hint)).font(.caption).foregroundStyle(.secondary)
             }
-            if signal.originalTimeHint != nil && signal.targetAtMs == nil {
+            if signal.originalTimeHint != nil && signal.targetAtMs == nil && signal.localTimeText == nil {
                 Text(Strings.t("signal.timeUnresolved")).font(.caption).foregroundStyle(.secondary)
             }
             if let scope = signal.scopeHint, !scope.isEmpty {
                 Text(scope).font(.caption).foregroundStyle(.secondary)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ResetTimingDetails: View {
+    let signal: ResetSignal
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            if let forecast = signal.forecastText {
+                Text(forecast).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let history = signal.timingHistoryText {
+                Text(history).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 }

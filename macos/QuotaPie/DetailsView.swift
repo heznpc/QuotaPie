@@ -74,10 +74,14 @@ struct DetailsView: View {
             }
         case .work:
             if model.focusedResumeTaskID != nil { pausedWork }
-            HostGoalsSection(payload: model.payload?.hostGoals, isLoading: model.payload == nil && model.lastError == nil,
-                             transportUnavailable: model.lastError != nil,
-                             tasks: model.activeTasks, onReview: { model.showDetails(.work, taskID: $0) })
+            AutomaticWorkView(model: model)
             Divider()
+            if let goals = model.payload?.hostGoals, !goals.items.isEmpty {
+                HostGoalsSection(payload: goals, isLoading: false,
+                                 transportUnavailable: model.lastError != nil,
+                                 tasks: model.activeTasks, onReview: { model.showDetails(.work, taskID: $0) })
+                Divider()
+            }
             if model.focusedResumeTaskID == nil { pausedWork }
             if let jobs = model.payload?.jobs, !jobs.isEmpty {
                 ManagedJobsSection(jobs: jobs)
@@ -91,7 +95,7 @@ struct DetailsView: View {
                               onOpen: actions.openRecentWork)
         case .activity:
             if let savings = model.payload?.compaction?.savings {
-                TaskSavingsHistory(payload: savings, busy: model.savingsSaving, undo: { actions.configureSavings(nil, $0) })
+                TaskSavingsHistory(payload: savings, busy: model.savingsSaving, undo: { actions.configureSavings(nil, $0, nil) })
                 Divider()
             }
             if !model.recentRecoveries.isEmpty {
@@ -161,9 +165,11 @@ struct DetailsView: View {
             Divider()
             CodexProfilesView(status: model, actions: actions)
             Divider()
+            DotsConnectionView(model: model)
+            Divider()
             AccountPoolSettingsView(model: model, save: actions.configurePool)
             Divider()
-            TaskSavingsSettingsView(model: model, save: { actions.configureSavings($0, nil) })
+            TaskSavingsSettingsView(model: model, save: { actions.configureSavings($0, nil, nil) }, saveTests: { actions.configureSavings(nil, nil, $0) })
             Divider()
             CompactionSettingsView(model: model, save: actions.configureCompaction)
             Divider()

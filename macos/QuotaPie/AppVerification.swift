@@ -12,6 +12,8 @@ struct AppVerification: Decodable {
     let initialSection: String?
     let focusedResumeTaskID: String?
     let contentHeight: Double?
+    let interactive: Bool?
+    private static var interactiveWindow: NSWindow?
 
     static let current: AppVerification? = {
 #if DEBUG
@@ -46,10 +48,11 @@ struct AppVerification: Decodable {
     }
 
     func armTimeout() {
+        guard interactive != true else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 12) { exit(3) }
     }
 
-    func record(model: PopoverModel, item: NSStatusItem, content: NSViewController?) {
+    func record(model: PopoverModel, item: NSStatusItem, content: NSViewController?, workLoadAttempt: Int = 0, mountedWindow: NSWindow? = nil) {
         var rendered = false
         var accountSelectorVerified = false
         let expectsSelector = model.detailSection == nil && (model.payload?.accounts.filter(\.enabled).count ?? 0) > 1
@@ -65,10 +68,28 @@ struct AppVerification: Decodable {
             }
         }
         if let content {
-            let window = NSWindow(contentViewController: content)
+            let window = mountedWindow ?? Self.interactiveWindow ?? NSWindow(contentViewController: content)
             let height = contentHeight ?? (model.detailSection == nil ? 560 : Double(model.popoverDetailHeight))
             window.setContentSize(NSSize(width: model.detailSection == nil ? 380 : 460, height: min(1200, max(560, height))))
+            if interactive == true, Self.interactiveWindow == nil {
+                Self.interactiveWindow = window
+                NSApp.setActivationPolicy(.regular)
+                window.title = "QuotaPie — Isolated Verification"
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+            }
             content.view.layoutSubtreeIfNeeded()
+            // Mount the real SwiftUI surface first so its authenticated work
+            // request runs. Only this asynchronous section needs readiness.
+            if model.detailSection == .work, model.lastError == nil,
+               model.automaticWorkLoadedPolicyIDs == nil, workLoadAttempt < 100 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    withExtendedLifetime(window) {
+                        record(model: model, item: item, content: content, workLoadAttempt: workLoadAttempt + 1, mountedWindow: window)
+                    }
+                }
+                return
+            }
             if let selector = findSelector(content.view) {
                 let focused = window.makeFirstResponder(selector)
                 accountSelectorVerified = focused && selector.focusRingType == .none
@@ -116,7 +137,10 @@ struct AppVerification: Decodable {
             "hostGoalReadStates": model.payload?.hostGoals?.items.map {
                 $0.displayReadState(at: Date().timeIntervalSince1970 * 1_000, transportUnavailable: model.lastError != nil)
             } ?? [],
+            "efficiencyInsightIDs": model.payload?.compaction?.savings?.insights?.map(\.id) ?? [],
+            "testOnlySavings": model.payload?.compaction?.savings?.policy?.testOnly as Any? ?? NSNull(),
             "recentWorkIDs": model.payload?.recentWork.map(\.id) ?? [],
+            "automaticWorkLoadedPolicyIDs": model.automaticWorkLoadedPolicyIDs as Any? ?? NSNull(),
             "excludedPostIDs": model.payload?.resetSignals?.excludedPosts?.map(\.identity) ?? [],
             "pendingResetIDs": model.payload?.resetSignals?.pendingResets(nowMs: Date().timeIntervalSince1970 * 1000).map(\.id) ?? [],
             "profileDockIcons": CodexProfilesModel.shared.profiles.compactMap { $0.dockIcon?.rawValue },
@@ -127,6 +151,6 @@ struct AppVerification: Decodable {
             let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
             try data.write(to: URL(fileURLWithPath: reportPath), options: .atomic)
         } catch { exit(4) }
-        NSApp.terminate(nil)
+        if interactive != true { NSApp.terminate(nil) }
     }
 }

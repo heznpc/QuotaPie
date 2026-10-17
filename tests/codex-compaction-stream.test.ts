@@ -28,7 +28,7 @@ test("legacy JSON requires a complete compaction result", () => {
     ['{"output":[{"type":"compaction","encrypted_content":"opaque"}]}', "completed"],
     ['{"output":[]}', "unverified"],
     ['{"output":[', "unverified"],
-    ['{"error":{},"output":[{"type":"compaction"}]}', "unverified"],
+    ['{"error":{},"output":[{"type":"compaction"}]}', "failed"],
   ] as const) {
     const observer = new ResponseCompletionObserver("application/json", true);
     observer.push(new TextEncoder().encode(wire));

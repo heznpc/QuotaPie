@@ -2,9 +2,19 @@ import SwiftUI
 
 struct TaskSavingsPayload: Decodable {
     let policy: TaskSavingsPolicy?
+    let insights: [SessionEfficiencyInsight]?
     let active: [TaskSavingsRecord]
     let recent: [TaskSavingsRecord]
     var latest: TaskSavingsRecord? { active.first ?? recent.first }
+}
+struct SessionEfficiencyInsight: Decodable, Identifiable {
+    let id: String
+    let threadId: String
+    let kind: String
+    let count: Int
+    let observedDurationMs: Double
+    let suggestion: String
+    let savingsApplied: Bool
 }
 struct TaskSavingsPolicy: Decodable {
     let enabled: Bool
@@ -14,6 +24,8 @@ struct TaskSavingsPolicy: Decodable {
     let compatible: Int
     let applied: Int
     let bypassThreads: [String]?
+    let testOnly: Bool?
+    let phaseConfigurable: Bool?
 }
 struct TaskSavingsPolicyResponse: Decodable { let policy: TaskSavingsPolicy? }
 struct TaskSavingsUsage: Decodable { let input: Int; let cachedInput: Int; let output: Int }
@@ -39,6 +51,7 @@ struct TaskSavingsRecord: Decodable, Identifiable {
 struct TaskSavingsSettingsView: View {
     @ObservedObject var model: PopoverModel
     let save: (Bool) -> Void
+    let saveTests: (Bool) -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(Strings.t("savings.title")).font(.headline)
@@ -49,6 +62,9 @@ struct TaskSavingsSettingsView: View {
                     Text(Strings.t("savings.off")).tag(false)
                 }
                     .pickerStyle(.segmented).disabled(model.savingsSaving || !policy.configurable || (!policy.enabled && !policy.supported))
+                Toggle(Strings.t("savings.tests"), isOn: Binding(get: { policy.testOnly ?? false }, set: saveTests))
+                    .disabled(model.savingsSaving || !policy.enabled || policy.phaseConfigurable != true || !policy.supported)
+                Text(Strings.t("savings.testsScope")).font(.caption).foregroundStyle(.secondary)
                 Text(Strings.t("savings.applied", String(policy.applied), String(policy.generations))).font(.caption)
                 if policy.compatible < policy.generations {
                     Text(Strings.t("savings.partial")).font(.caption).foregroundStyle(.orange)
@@ -69,6 +85,20 @@ struct TaskSavingsHistory: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(Strings.t("savings.title")).font(.headline)
             Text(Strings.t("savings.evidenceNotice")).font(.caption).foregroundStyle(.secondary)
+            ForEach(payload.insights ?? []) { insight in
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(Strings.t("savings.insight." + insight.kind, String(insight.count))).fontWeight(.medium)
+                    Text(Strings.t("savings.insight." + insight.suggestion))
+                    Text(Strings.t("savings.insight.evidence", String(format: "%.1f", insight.observedDurationMs / 1000)))
+                        .foregroundStyle(.secondary)
+                    if let url = URL(string: "codex://threads/" + insight.threadId) {
+                        Link(Strings.t("savings.insight.open"), destination: url)
+                    }
+                    if insight.savingsApplied {
+                        Button(Strings.t("savings.undo")) { undo(insight.threadId) }.disabled(busy)
+                    }
+                }.font(.caption).padding(.vertical, 5)
+            }
             if payload.latest == nil { Text(Strings.t("savings.waiting")).font(.caption) }
             ForEach(payload.active + payload.recent) { record in
                 VStack(alignment: .leading, spacing: 5) {

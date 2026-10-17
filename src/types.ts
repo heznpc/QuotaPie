@@ -83,6 +83,7 @@ export interface WindowAnalysis {
   resetsAtMs: number | null;
   timeToResetMs: number | null;
   reservePercent: number;
+  showUsageSpeed?: boolean;
   recentBurnPerHour: number | null;
   rapidDropPercent?: number;
   rapidIntervalMinutes?: number;
@@ -92,6 +93,8 @@ export interface WindowAnalysis {
   paceRatio: number | null;
   exhaustsAtMs: number | null;
   minutesBeforeReset: number | null;
+  reserveReachesAtMs?: number | null;
+  reserveMinutesBeforeReset?: number | null;
   confidence: "none" | "low" | "medium" | "high";
   sampleCount: number;
   activeHoursUntilReset: number | null;

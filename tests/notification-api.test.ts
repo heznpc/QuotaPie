@@ -309,6 +309,7 @@ describe("notification service integration", () => {
       expect(service.alerts.pendingAppNotifications()).toEqual([]);
       internals.hasFreshResumeCapacity = originalCapacity;
 
+      internals.hasFreshResumeCapacity = originalCapacity;
       const rearmed = create("ready");
       const key = `resume:${rearmed}:ready`;
       service.alerts.setState(key, 1_000, false, 1_300);

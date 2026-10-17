@@ -88,6 +88,29 @@ result:JSON.stringify({args:process.argv.slice(2),prompt,profile:process.env.CLA
     });
   });
 
+  test("Claude structured progress is preserved separately from a successful turn", async () => {
+    const input = fixture(`emit({type:"result",subtype:"success",is_error:false,session_id:session,result:"Summary",structured_output:{status:"turn-finished",remainingWork:"Verify"}});`, "claude");
+    input.structuredOutputSchema = { type: "object", properties: { status: { type: "string" } } };
+    const result = await executeJobStep(input);
+    expect(result.structuredOutput).toEqual({ status: "turn-finished", remainingWork: "Verify" });
+    expect(result.output).toBe("Summary");
+  });
+
+  test("cancellation kills an owned descendant even if it ignores TERM and closes CLI pipes", async () => {
+    const input = fixture(`${codexStart}
+const {spawn}=await import("node:child_process");
+const tool=spawn(process.execPath,["-e",'process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'],{stdio:"ignore"});
+await Bun.write("tool-pid",String(tool.pid));setInterval(()=>{},1000);`);
+    input.timeoutMs = 1000; input.verifyOwnedStop = true;
+    const stopped = await executeJobStep(input);
+    expect(stopped.reason).toBe("timeout");
+    // A restricted process inventory must never fabricate a group-stop proof.
+    expect([true, undefined]).toContain(stopped.ownedProcessStopped);
+    const pid=Number(readFileSync(join(input.cwd,"tool-pid"),"utf8"));
+    for(let i=0;i<100;i++){try{process.kill(pid,0);}catch{break;}await Bun.sleep(10);}
+    expect(()=>process.kill(pid,0)).toThrow();
+  });
+
   test("accepts Claude's final success result", async () => {
     expect(await executeJobStep(fixture(claudeSuccess, "claude"))).toEqual({
       kind: "succeeded", reason: "completed", output: "Done", sessionId: SESSION,

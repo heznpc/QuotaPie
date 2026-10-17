@@ -51,6 +51,13 @@ export async function findCodexResumeTarget(
         sortKey: "updated_at",
         sortDirection: "desc",
         archived,
+        // The API defaults to interactive sessions and otherwise hides tasks
+        // originally created by the local executor. Keep subagents excluded.
+        sourceKinds: ["cli", "vscode", "exec", "appServer"],
+        // Managed continuation records the local proxy provider on the same
+        // thread. Search all providers inside this account profile so the next
+        // continuation can find it; execution still verifies account and route.
+        modelProviders: [],
         // Do not let discovery invoke Codex's JSONL scan-and-repair path. The
         // provider-owned state DB is sufficient and keeps QuotaPie read-only.
         useStateDbOnly: true,

@@ -15,9 +15,9 @@ test("October 11 EOD announcement is actionable without inventing a reset instan
   expect(signal.targetAtMs).toBeNull();
   const notice = signalDecision(signal, "ko", "Asia/Seoul", ["계정 1 · 주간: 63% 남음"]);
   expect(notice.severity).toBe("warning");
-  expect(notice.message).toContain("자정까지 기다리지 마세요");
+  expect(notice.message).toContain("남은 한도로 할 작업을 지금 확인하세요");
   expect(notice.message).toContain("63% 남음");
-  expect(signalDecision(signal, "en", "UTC").message).toContain("Do not wait until midnight");
+  expect(signalDecision(signal, "en", "UTC").message).toContain("Review work for your remaining quota now");
 });
 
 test("daily reset hint and propagation confirmation survive local classification", () => {
@@ -28,7 +28,7 @@ test("daily reset hint and propagation confirmation survive local classification
 
 test("explicit source zones and deadlines do not promise users a safe waiting period", () => {
   const eod = classify("Global reset by EOD PST.")!;
-  expect(signalDecision(eod, "ko", "Asia/Seoul").message).toContain("원문 시간대 PST");
+  expect(signalDecision(eod, "ko", "Asia/Seoul").message).toContain("EOD → KST");
   expect(eod.targetAtMs).toBeNull();
   const timed = classify("Global reset by tomorrow 10am PST.")!;
   const notice = signalDecision(timed, "ko", "Asia/Seoul");
@@ -44,4 +44,8 @@ test("questions, negation, history and unrelated deadlines do not become reset p
     expect(classify(text)?.state).not.toBe("announced");
     expect(classify(text)?.state).not.toBe("reported");
   }
+});
+
+test("an aspirational perfection remark is not a new reset announcement", () => {
+  expect(classify("The day we reach perfection it will be resets from there onwards")).toBeNull();
 });

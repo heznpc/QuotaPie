@@ -211,10 +211,29 @@ describe("Codex compaction request routing", () => {
   test("passes Codex arguments as argv and applies process-local provider settings", () => {
     const args = ["resume", "--", "prompt with $() and spaces"];
     const wrapped = compactionCodexArgs("http://127.0.0.1:1234/private/backend-api/codex", args);
-    expect(wrapped.slice(4)).toEqual(args);
+    expect(wrapped.slice(6)).toEqual(args);
+    expect(wrapped[5]).toBe('openai_base_url="http://127.0.0.1:1234/private/backend-api/codex"');
     expect(wrapped[1]).toBe('model_provider="quotapie_compaction"');
     expect(wrapped[3]).toContain("supports_websockets=false");
     expect(wrapped[3]).toContain("requires_openai_auth=true");
+  });
+
+  test("the subscription wrapper cannot replace its guarded endpoint through config overrides", () => {
+    for (const args of [
+      ["-c", 'model_provider="openai"'], ["--config", 'openai_base_url="https://example.invalid"'],
+      ['--config=model_providers.quotapie_compaction.base_url="https://example.invalid"'],
+      ['-cmodel_provider="openai"'], ["-c", 'profiles.other.model_provider="openai"'],
+    ]) expect(() => compactionCodexArgs("http://127.0.0.1:1234/fixture", args)).toThrow("provider overrides");
+    expect(compactionCodexArgs("http://127.0.0.1:1234/fixture", ["exec", "--", "-c", 'model_provider="openai"']).slice(-4))
+      .toEqual(["exec", "--", "-c", 'model_provider="openai"']);
+  });
+
+  test("exec-local config cannot replace invocation-local provider and retry controls", () => {
+    const wrapped = compactionCodexArgs("http://127.0.0.1:1234/fixture", ["exec", "-c", 'model_reasoning_effort="low"', "--json", "Run tests."]);
+    expect(wrapped.slice(-3)).toEqual(["exec", "--json", "Run tests."]);
+    expect(wrapped.slice(0, 2)).toEqual(["-c", 'model_reasoning_effort="low"']);
+    expect(wrapped).toContain('openai_base_url="http://127.0.0.1:1234/fixture"');
+    expect(wrapped.indexOf('model_provider="quotapie_compaction"')).toBeLessThan(wrapped.indexOf("exec"));
   });
 
   test("desktop health counts routed requests and supports Codex HTTP fallback", async () => {

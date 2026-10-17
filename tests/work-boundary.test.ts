@@ -34,6 +34,7 @@ test("work boundary links account and task without exporting native IDs, paths o
     expect(document.schemaVersion).toBe(1);
     expect(document.expiresAtMs).toBe(now + 600_000);
     expect(document.accounts[0]!.profileKey).toBe(profileReference(directory));
+    expect(document.accounts[0]!.collectionErrorCategory).toBeNull();
     expect(document.accounts[0]!.windows[0]!.validUntilMs).toBe(now - 1000 + config.collection.staleAfterSeconds * 1000);
     expect(document.tasks[0]!.sessionKey).toBe(task.taskKey);
     const raw = JSON.stringify(document);

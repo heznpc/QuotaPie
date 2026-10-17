@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync, statSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, loadConfig, saveNotificationPreferences } from "../src/config";
-import { DEFAULT_NOTIFICATION_TOPICS, notificationTopic } from "../src/notification-preferences";
+import { DEFAULT_NOTIFICATION_TOPICS, notificationAllowed, notificationTopic } from "../src/notification-preferences";
 import { deliverTrigger, planTriggers } from "../src/triggers";
 import { signalDecision } from "../src/signals/presentation";
 import type { ResetSignal, SignalState } from "../src/signals/classify";
@@ -19,6 +19,31 @@ function signal(state: SignalState, id = state): ResetSignal {
 }
 
 describe("notification topic preferences", () => {
+  test("speed display, rapid alerts, and reserve forecasts save independently", () => {
+    const dir = mkdtempSync(join(tmpdir(), "quotapie-speed-preferences-"));
+    const path = join(dir, "config.json");
+    try {
+      writeFileSync(path, JSON.stringify({ profile: { locale: "ko" }, alerts: { topics: { quotaWarnings: true } } }));
+      saveNotificationPreferences({ usageSpeed: true, paceForecasts: true, topics: { rapidConsumption: true } }, path);
+      const config = loadConfig(path);
+      expect(config.profile.showUsageSpeed).toBeTrue();
+      expect(config.profile.locale).toBe("ko");
+      expect(config.alerts.paceForecasts).toBeTrue();
+      expect(config.alerts.topics.rapidConsumption).toBeTrue();
+      saveNotificationPreferences({ usageSpeed: false, paceForecasts: false, topics: { rapidConsumption: false } }, path);
+      const disabled = loadConfig(path);
+      expect(disabled.profile.showUsageSpeed).toBeFalse();
+      expect(disabled.alerts.paceForecasts).toBeFalse();
+      expect(disabled.alerts.topics.quotaWarnings).toBeTrue();
+      expect(notificationAllowed({ key: "codex:primary:remaining:10" }, disabled.alerts)).toBeTrue();
+      expect(notificationAllowed({ key: "codex:primary:rapid" }, disabled.alerts)).toBeFalse();
+      expect(notificationAllowed({ key: "codex:primary:pace" }, disabled.alerts)).toBeFalse();
+      for (const invalid of [{ usageSpeed: "false" }, { paceForecasts: 1 }, { topics: { rapidConsumption: "no" } }]) {
+        expect(() => saveNotificationPreferences(invalid, path)).toThrow();
+      }
+    } finally { rmSync(dir, { recursive: true }); }
+  });
+
   for (const mute of ["topic", "all"] as const) {
     test(`${mute} mute consumes old events without suppressing new events after re-enabling`, async () => {
       const config = structuredClone(DEFAULT_CONFIG);
@@ -69,7 +94,7 @@ describe("notification topic preferences", () => {
     for (const [state, topic] of Object.entries({ possible: "resetPossible", announced: "resetAnnounced", updated: "resetUpdates", withdrawn: "resetUpdates", reported: "resetReported" } as const)) {
       expect(notificationTopic(signalDecision(signal(state as SignalState), "ko"))).toBe(topic);
     }
-    for (const [key, topic] of Object.entries({ "codex:primary:remaining:10": "quotaWarnings", "codex:primary:rapid": "quotaWarnings",
+    for (const [key, topic] of Object.entries({ "codex:primary:remaining:10": "quotaWarnings", "codex:primary:rapid": "rapidConsumption",
       "codex:primary:pace": "quotaWarnings", "codex:primary:stale": "collectionIssues", "resume:123:ready": "resumeReady",
       "event:codex:primary:external_relief": "quotaRecovery" } as const)) expect(notificationTopic({ alertKey: key })).toBe(topic);
   });
@@ -120,11 +145,26 @@ describe("notification topic preferences", () => {
     try {
       const payload: any = await (await fetch(origin + "/api/status")).json();
       expect(payload.notificationPreferences.topics).toEqual(DEFAULT_NOTIFICATION_TOPICS);
+      expect(payload.notificationPreferences.usageSpeed).toBeFalse();
+      expect(payload.notificationPreferences.paceForecasts).toBeFalse();
       const headers = { "x-quotapie-action-token": payload.actionToken, "content-type": "application/json" };
       const post = (body: unknown, extra = {}) => fetch(origin + "/api/notifications/preferences", { method: "POST", headers: { ...headers, ...extra }, body: JSON.stringify(body) });
       expect((await post({ topics: { resetPossible: false } }, { "x-quotapie-action-token": "wrong" })).status).toBe(403);
       expect((await post({ enabled: false }, { origin: "https://example.com" })).status).toBe(403);
-      for (const invalid of [{ topics: { resetPossible: "false" } }, { topics: { invented: false } }, { command: ["bad"] }, []]) expect((await post(invalid)).status).toBe(400);
+      for (const invalid of [{ topics: { resetPossible: "false" } }, { topics: { invented: false } },
+        { usageSpeed: "false" }, { paceForecasts: 1 }, { command: ["bad"] }, []]) expect((await post(invalid)).status).toBe(400);
+      const speedResponse = await post({ usageSpeed: true, paceForecasts: true, topics: { rapidConsumption: true } });
+      expect(speedResponse.status).toBe(200);
+      const speedPreferences: any = await speedResponse.json();
+      expect(speedPreferences.notificationPreferences.usageSpeed).toBeTrue();
+      expect(speedPreferences.notificationPreferences.paceForecasts).toBeTrue();
+      expect(service.config.profile.showUsageSpeed).toBeTrue();
+      expect(loadConfig(path).profile.showUsageSpeed).toBeTrue();
+      service.alerts.queueMacOSNotification({ key: "codex:primary:rapid", title: "Synthetic rapid", message: "Synthetic", severity: "warning" }, "speed-rapid");
+      service.alerts.queueMacOSNotification({ key: "codex:primary:pace", title: "Synthetic reserve", message: "Synthetic", severity: "warning" }, "speed-pace");
+      expect((await post({ usageSpeed: false, paceForecasts: false, topics: { rapidConsumption: false } })).status).toBe(200);
+      expect(service.alerts.pendingAppNotifications()).toHaveLength(0);
+      expect(service.config.alerts.topics.quotaWarnings).toBeTrue();
       const queued = service.alerts.queueMacOSNotification(signalDecision(signal("possible"), "en"), "old-possible");
       const claim = service.claimNextAppNotification()!;
       expect(claim.id).toBe(queued.id);

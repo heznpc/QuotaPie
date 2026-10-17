@@ -7,12 +7,12 @@ export class TaskSavingsSettings {
   constructor(private root: string, private fetcher: typeof fetch = fetch) {}
   private async inspect(healthByPath?: Map<string, any>, validatedEntries?: RelaySettingsEntry[]) {
     const project = async ({ path, raw, settings, current }: RelaySettingsEntry) => {
-      const saved = validateTaskSavings(settings.taskSavings ?? DEFAULT_TASK_SAVINGS);
+      const saved = validateTaskSavings(settings.taskSavings ?? { ...DEFAULT_TASK_SAVINGS, enabled: false });
       let health: any = null;
       try { health = healthByPath ? healthByPath.get(path) : await relayHealth(settings,this.fetcher); } catch { /* No endpoint details in status. */ }
       const configurable = health?.schemaVersion >= 3 && !!health.taskSavings;
       return {path,raw,settings,saved,current,configurable,
-        supported:health?.savingsModelSupported === true,
+        supported:health?.savingsModelSupported === true, phaseConfigurable:health?.taskSavingsPhasesVersion === 1,
         effective:configurable ? validateTaskSavings(health.taskSavings) : null};
     };
     return validatedEntries ? projectRelaySettings(validatedEntries, project) : inspectRelaySettings(this.root, project);
@@ -21,6 +21,7 @@ export class TaskSavingsSettings {
     try {
       const entries = await this.inspect(healthByPath, validatedEntries), current = entries[0]!;
       return {...current.saved,configurable:current.configurable,supported:current.supported,
+        phaseConfigurable:entries.filter(e=>e.configurable).every(e=>e.phaseConfigurable),
         generations:entries.length,compatible:entries.filter(e=>e.configurable).length,
         applied:entries.filter(e=>e.effective && JSON.stringify(e.effective)===JSON.stringify(current.saved)).length};
     } catch { return null; }
@@ -29,7 +30,7 @@ export class TaskSavingsSettings {
     if (this.busy) throw new Error("policy_busy");
     if (!input || typeof input !== "object") throw new Error("invalid_policy");
     const patch = input as any;
-    if (typeof patch.enabled !== "boolean" && !(typeof patch.bypassThread === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(patch.bypassThread))) throw new Error("invalid_policy");
+    if (typeof patch.enabled !== "boolean" && typeof patch.testOnly !== "boolean" && !(typeof patch.bypassThread === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(patch.bypassThread))) throw new Error("invalid_policy");
     this.busy=true;
     try {
       return await withRelaySettingsLock(this.root, async () => {
@@ -37,8 +38,9 @@ export class TaskSavingsSettings {
         try {
           const entries=await this.inspect(),current=entries[0]!;
           if(!current.configurable || patch.enabled === true && !current.supported) throw new Error("relay_unavailable");
+          if (patch.testOnly !== undefined && (typeof patch.testOnly !== "boolean" || entries.some(e=>e.configurable && !e.phaseConfigurable))) throw new Error("phase_policy_unavailable");
           const bypassThreads=[...new Set([...(current.saved.bypassThreads ?? []),...(patch.bypassThread?[patch.bypassThread]:[])])];
-          const policy=validateTaskSavings({...current.saved,...(typeof patch.enabled==='boolean'?{enabled:patch.enabled}:{}),bypassThreads});
+          const policy=validateTaskSavings({...current.saved,...(typeof patch.enabled==='boolean'?{enabled:patch.enabled}:{}),bypassThreads,...(patch.testOnly !== undefined ? {testOnly:patch.testOnly} : {})});
           for(const entry of entries.filter(e=>e.configurable)) {
             const after=JSON.stringify({...entry.settings,taskSavings:policy},null,2)+"\n";
             await replaceRelaySettings(entry.path,entry.raw,after);written.push({path:entry.path,before:entry.raw,after});

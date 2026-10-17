@@ -1,3 +1,4 @@
+import { sessionEfficiencyInsights } from "./session-efficiency";
 import { readdir, readFile, rename, writeFile, unlink } from "node:fs/promises";
 import { IncrementalJsonlReader } from "./incremental-jsonl";
 import { randomUUID } from "node:crypto";
@@ -11,6 +12,82 @@ import { inspectRelaySettings, type RelaySettingsEntry } from "./relay-settings"
 import { parseCompactionRequestEvent as event } from "../packages/quota-core/src/events.js";
 import { summarizeRequestEvents } from "../packages/quota-core/src/observations.js";
 const ongoing = (phase: string) => phase === "started" || phase === "response_headers";
+const EXPECTED_SUBSCRIPTION_GUARD_REVISION = 3;
+const guardReasons = new Set(["ready", "account-unavailable", "collection-unavailable", "quota-unknown", "quota-stale",
+  "reset-unconfirmed", "reserve-reached", "quota-exhausted", "reserve-invalid", "budget-baseline-invalid", "budget-baseline-changed",
+  "subscription-auth-required", "subscription-auth-unavailable", "account-identity-changed", "request-identity-mismatch",
+  "model-unverified", "profile-mismatch", "upstream-quota-hold", "guard-unavailable", "route-unsupported",
+  "background-unsupported", "request-invalid", "request-unsupported", "pool-closed", "pool-source-auth-unavailable", "pool-source-identity-mismatch",
+  "pool-lineage-invalid", "pool-source-history-unverified", "pool-thread-identity-required", "pool-source-continuation-mismatch",
+  "pool-lineage-conflict", "pool-lineage-unavailable", "source-continuation-unverified"]);
+const guardReason = (value: unknown) => {
+  const reason = typeof value === "string" ? value.replaceAll("_", "-") : "";
+  return guardReasons.has(reason) ? reason : "unknown";
+};
+const count = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+const percent = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100 ? value : null;
+function reasonCounts(value: unknown) {
+  const result: Record<string, number> = {};
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    for (const [rawReason, rawCount] of Object.entries(value)) {
+      const reason = guardReason(rawReason), n = count(rawCount);
+      if (n) result[reason] = (result[reason] ?? 0) + n;
+    }
+  }
+  return result;
+}
+
+function subscriptionProtection(generations: Array<{ reachable: boolean; health: any; records: CompactionRequestEvent[] }>, nowMs: number) {
+  // Health is an untrusted transport response. Project only diagnostic fields;
+  // profile paths, auth data, endpoint URLs and arbitrary error text stay local.
+  const relays = generations.map((generation, index) => {
+    const health = generation.reachable ? generation.health : null;
+    const guard = health?.subscriptionGuardVersion === 1 && health.subscriptionGuard?.version === 1 ? health.subscriptionGuard : null;
+    const revision = Number.isSafeInteger(health?.subscriptionGuardRevision) && health.subscriptionGuardRevision >= 0
+      ? health.subscriptionGuardRevision as number : null;
+    return { generation: index + 1, reachable: generation.reachable, revision,
+      executionMode: health?.executionMode === "interactive" ? "interactive" : "managed",
+      enforcement: ["source-identity", "explicit-reserve", "managed-budget"].includes(guard?.enforcement) ? guard.enforcement : null,
+      nativePolicyCurrent: health?.nativeRequestPolicyVersion === 1 && health?.nativeRequestPolicy === "source-origin" && health?.sourceContinuationRevision === 3,
+      listenerPolicyCurrent: health?.listenerPolicyVersion === 2,
+      outOfDate: generation.reachable && (revision !== EXPECTED_SUBSCRIPTION_GUARD_REVISION || !guard),
+      account: typeof guard?.account === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(guard.account) ? guard.account as string : null,
+      ready: typeof guard?.ready === "boolean" ? guard.ready as boolean : null,
+      reason: !generation.reachable ? "relay-unreachable" : !guard ? "guard-unavailable" : guardReason(guard.reason),
+      blockedRequests: count(guard?.blockedRequests), abortedRequests: count(guard?.abortedRequests),
+      blockedByReason: reasonCounts(guard?.blockedByReason),
+      activeRequests: count(health?.activeRequests),
+      windows: (Array.isArray(guard?.windows) ? guard.windows : []).slice(0, 64).flatMap((window: any) =>
+        typeof window?.bucket === "string" && /^[a-z0-9_.-]+:(?:primary|secondary):\d+$/i.test(window.bucket)
+          ? [{ bucket: window.bucket as string, remainingPercent: percent(window.remainingPercent), reservePercent: percent(window.reservePercent),
+            observedAgeMs: Number.isFinite(window.observedAtMs) && window.observedAtMs >= 0 && window.observedAtMs <= nowMs
+              ? nowMs - window.observedAtMs : null }] : []),
+    };
+  });
+  // These counts are evidence from retained relay events, not lifetime counters.
+  // One request can appear in both a log and health, or multiple generations.
+  const blocks = new Map<string, CompactionRequestEvent>();
+  for (const record of generations.flatMap(g => g.records)) {
+    if (record.phase !== "failed" || !record.errorCode?.startsWith("subscription_")) continue;
+    const previous = blocks.get(record.requestId);
+    if (!previous || Date.parse(record.at) >= Date.parse(previous.at)) blocks.set(record.requestId, record);
+  }
+  const observedBlocksByReason: Record<string, number> = {};
+  for (const record of blocks.values()) {
+    const code = record.errorCode!.slice("subscription_".length).replaceAll("_", "-");
+    const reason = guardReason(code === "auth-required" || code === "auth-unavailable" ? `subscription-${code}` : code);
+    observedBlocksByReason[reason] = (observedBlocksByReason[reason] ?? 0) + 1;
+  }
+  const blockedByReason: Record<string, number> = {};
+  for (const relay of relays) for (const [reason, n] of Object.entries(relay.blockedByReason))
+    blockedByReason[reason] = (blockedByReason[reason] ?? 0) + n;
+  return { expectedRevision: EXPECTED_SUBSCRIPTION_GUARD_REVISION, relays,
+    reachable: relays.filter(r => r.reachable).length, outOfDate: relays.filter(r => r.outOfDate).length,
+    revisionMismatch: new Set(relays.filter(r => r.reachable).map(r => r.revision)).size > 1,
+    blockedRequests: relays.reduce((sum, r) => sum + r.blockedRequests, 0),
+    abortedRequests: relays.reduce((sum, r) => sum + r.abortedRequests, 0),
+    activeRequests: relays.reduce((sum, r) => sum + r.activeRequests, 0), blockedByReason, observedBlocksByReason };
+}
 
 export class CompactionStatusReader {
   private logs = new IncrementalJsonlReader(event, item => item.requestId);
@@ -34,12 +111,16 @@ export class CompactionStatusReader {
   }
   snapshot(nowMs = Date.now()) {
     const cached = this.cached;
-    if (!cached) return { checkedAtMs: 0, generations: 0, reachable: 0, policy: null, active: [], recent: [] };
+    if (!cached) return { checkedAtMs: 0, generations: 0, reachable: 0, policy: null,
+      subscriptionProtection: subscriptionProtection([], nowMs), active: [], recent: [] };
     if (nowMs - cached.checkedAtMs <= 10_000) return cached;
     // A stale observer cannot assert that an old request is still running or
     // that a previously acknowledged policy is still live.
     return { ...cached, reachable: 0,
-      savings: {policy: cached.savings.policy ? {...cached.savings.policy,configurable:false,applied:0} : null, active: [], recent: cached.savings.recent},
+      subscriptionProtection: { ...cached.subscriptionProtection, reachable: 0, outOfDate: 0, revisionMismatch: false, activeRequests: 0,
+        relays: cached.subscriptionProtection.relays.map(r => ({ ...r, reachable: false, ready: null, reason: "observer-state-stale",
+          outOfDate: false, activeRequests: 0 })) },
+      savings: {policy: cached.savings.policy ? {...cached.savings.policy,configurable:false,applied:0} : null, active: [], recent: cached.savings.recent, insights: []},
       policy: cached.policy ? { ...cached.policy, configurable: false, applied: 0 } : null,
       active: [], recent: [...cached.active.map(r => ({ ...r, active: false, phase: "unverified",
         errorCode: "observer_state_stale" })), ...cached.recent].slice(0, 50) };
@@ -99,6 +180,10 @@ export class CompactionStatusReader {
     }
     const activeIds = new Set(installed.flatMap(g => [...g.activeIds]));
     const { records, savingsRecords, retained, notificationEvidence } = summarizeRequestEvents([...merged.values()], activeIds, nowMs);
+    const insights = sessionEfficiencyInsights([...merged.values()], nowMs);
+    for (const id of insights.flatMap(i => i.requestIds).slice(-200)) {
+      const evidence = merged.get(id); if (evidence) retained.set(id, evidence);
+    }
     this.notificationEvidence = notificationEvidence;
     this.evidence = retained;
     const serialized = JSON.stringify([...retained.values()]);
@@ -113,8 +198,9 @@ export class CompactionStatusReader {
     }
     const healthByPath = new Map(installed.map(g => [g.path, g.health]));
     return { checkedAtMs: nowMs, generations: installed.length, reachable: installed.filter(g => g.reachable).length,
+      subscriptionProtection: subscriptionProtection(installed, nowMs),
       policy: validatedEntries ? await this.policy.status(healthByPath, validatedEntries) : null,
-      savings: {policy: validatedEntries ? await this.savingsPolicy.status(healthByPath, validatedEntries) : null, active: savingsRecords.filter(r=>r.active), recent: savingsRecords.filter(r=>!r.active)},
+      savings: {insights, policy: validatedEntries ? await this.savingsPolicy.status(healthByPath, validatedEntries) : null, active: savingsRecords.filter(r=>r.active), recent: savingsRecords.filter(r=>!r.active)},
       active: records.filter(r => r.active), recent: records.filter(r => !r.active) };
   }
 }

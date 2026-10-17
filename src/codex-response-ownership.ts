@@ -5,10 +5,10 @@ import { createHmac, randomBytes } from "node:crypto";
 const key = randomBytes(32);
 const digest = (value: string | Uint8Array) => createHmac("sha256", key).update(value).digest("hex");
 const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
-export type OwnershipIdentity = { threadId: string | null; turnId: string | null };
+export type OwnershipIdentity = { threadId: string | null; turnId: string | null; sessionId?: string | null };
 export type OwnershipProvenance = {
   ordinal: number; bytes: number; digest: string;
-  stage: "validated" | "queued" | "blocked";
+  stage: "validated" | "queued" | "blocked" | "unverified";
   ownership: "matched" | "partial" | "unattributed";
   response: string | null; item: string | null;
   errorCode?: string;
@@ -35,7 +35,8 @@ export class ResponseOwnershipGuard {
   constructor(private identity: OwnershipIdentity,
     private provenance: (entry: OwnershipProvenance) => void = () => {},
     private maxBytes = 4 * 1024 * 1024,
-    private format: "sse" | "json" = "sse") {}
+    private format: "sse" | "json" = "sse",
+    private tolerateUnknownFrames = false) {}
 
   private report(entry: OwnershipProvenance) {
     try { this.provenance(entry); } catch { /* Telemetry must not affect delivery. */ }
@@ -86,6 +87,7 @@ export class ResponseOwnershipGuard {
     let matched = false, partial = false;
     let itemId: string | null = null;
     let failure: string | undefined;
+    let unverified = false;
     const expectedFields = Number(this.identity.turnId != null) + Number(this.identity.threadId != null);
     const check = (value: unknown): boolean => {
       if (!record(value)) return false;
@@ -94,10 +96,18 @@ export class ResponseOwnershipGuard {
       const meta = value.internal_chat_message_metadata_passthrough;
       if (!record(meta)) return false;
       const fields = new Set<string>();
-      for (const [field, expected] of [["turn_id", this.identity.turnId], ["thread_id", this.identity.threadId], ["session_id", this.identity.threadId]] as const) {
+      const sessionId = this.identity.sessionId === undefined ? this.identity.threadId : this.identity.sessionId;
+      for (const [field, expected] of [["turn_id", this.identity.turnId], ["thread_id", this.identity.threadId],
+        ["session_id", sessionId]] as const) {
         if (expected && meta[field] != null) {
           if (typeof meta[field] !== "string" || (meta[field] as string).toLowerCase() !== expected.toLowerCase()) failure = "response_ownership_mismatch";
-          else fields.add(field === "session_id" ? "thread_id" : field);
+          else {
+            partial = true;
+            // A fork's root session identifies the transport, not its child
+            // thread. It cannot substitute for the child's own attribution.
+            if (field !== "session_id" || sessionId === this.identity.threadId)
+              fields.add(field === "session_id" ? "thread_id" : field);
+          }
         }
       }
       partial ||= fields.size > 0;
@@ -105,7 +115,10 @@ export class ResponseOwnershipGuard {
     };
     if (data && data !== "[DONE]") {
       let value: unknown;
-      try { value = JSON.parse(data); } catch { failure = "response_ownership_invalid_json"; }
+      try { value = JSON.parse(data); } catch {
+        if (this.tolerateUnknownFrames) unverified = true;
+        else failure = "response_ownership_invalid_json";
+      }
       if (record(value)) {
         matched = check(value);
         const response = record(value.response) ? value.response : this.format === "json" ? value : null;
@@ -131,7 +144,7 @@ export class ResponseOwnershipGuard {
       }
     } else if (this.format === "json") failure = "response_ownership_invalid_json";
     this.last = { ordinal: ++this.ordinal, bytes: bytes.length, digest: digest(bytes),
-      stage: failure ? "blocked" : "validated", ownership: !failure && matched ? "matched" : partial ? "partial" : "unattributed",
+      stage: failure ? "blocked" : unverified ? "unverified" : "validated", ownership: !failure && matched ? "matched" : partial ? "partial" : "unattributed",
       response: this.responseId ? digest(this.responseId) : null, item: itemId ? digest(itemId) : null,
       ...(failure ? { errorCode: failure } : {}) };
     this.report(this.last);
@@ -154,5 +167,53 @@ export class ResponseOwnershipGuard {
     // Flush a terminal CR as its actual one-byte line ending.
     this.push(new Uint8Array(), deliver, true);
     if (this.pending || this.frame) this.reject("response_ownership_truncated_event");
+  }
+}
+
+/** Native clients own protocol compatibility. Preserve explicit ownership
+ * mismatch checks, but an inspection limit/new SSE format must not become a
+ * local content filter. Raw buffered bytes survive structural parse failures. */
+export class NativeResponseOwnershipGuard {
+  private guard?: ResponseOwnershipGuard;
+  private pending: Uint8Array[] = [];
+  private transparent = false;
+  constructor(identity: OwnershipIdentity, provenance: (entry: OwnershipProvenance) => void = () => {},
+    format: "sse" | "json" = "sse", maxBytes = 4 * 1024 * 1024) {
+    this.guard = new ResponseOwnershipGuard(identity, entry => {
+      // Structural inspection failures are transparent for native traffic.
+      // They are never reported as a blocked response or verified ownership.
+      provenance(entry.stage === "blocked" && entry.errorCode && !this.explicitMismatch(entry.errorCode)
+        ? { ...entry, stage: "unverified", ownership: "unattributed" } : entry);
+    }, maxBytes, format, format === "sse");
+  }
+  get passthrough() { return this.transparent; }
+  private explicitMismatch(code: string) {
+    return ["response_ownership_mismatch", "response_ownership_response_changed"].includes(code);
+  }
+  private consume(count: number) {
+    while (count && this.pending.length) {
+      const first = this.pending[0]!;
+      if (count >= first.length) { this.pending.shift(); count -= first.length; }
+      else { this.pending[0] = first.subarray(count); count = 0; }
+    }
+  }
+  private recover(error: unknown, deliver: (bytes: Uint8Array) => void) {
+    if (!(error instanceof ResponseOwnershipError) ||
+        this.explicitMismatch(error.code)) throw error;
+    this.transparent = true;
+    this.guard = undefined;
+    for (const chunk of this.pending) deliver(chunk);
+    this.pending = [];
+  }
+  push(bytes: Uint8Array, deliver: (bytes: Uint8Array) => void) {
+    if (this.transparent) { deliver(bytes); return; }
+    this.pending.push(bytes);
+    try { this.guard!.push(bytes, frame => { this.consume(frame.length); deliver(frame); }); }
+    catch (error) { this.recover(error, deliver); }
+  }
+  finish(deliver: (bytes: Uint8Array) => void) {
+    if (this.transparent) return;
+    try { this.guard!.finish(frame => { this.consume(frame.length); deliver(frame); }); }
+    catch (error) { this.recover(error, deliver); }
   }
 }

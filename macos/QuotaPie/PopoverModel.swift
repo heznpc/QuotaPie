@@ -15,6 +15,9 @@ enum ResumeTaskActivity: Equatable {
 }
 
 final class PopoverModel: ObservableObject {
+    var statusClient: StatusClient?
+    @Published var automaticWorkLoadedPolicyIDs: [String]?
+
     @Published var payload: StatusPayload?
     @Published var lastError: String?
     @Published var statusFailure: StatusFailure?
@@ -192,7 +195,7 @@ struct PopoverActions {
     let quit: () -> Void
     var openAccount: (AccountState) -> Void = { _ in }
     var configureCompaction: (String) -> Void = { _ in }
-    var configureSavings: (Bool?, String?) -> Void = { _, _ in }
+    var configureSavings: (Bool?, String?, Bool?) -> Void = { _, _, _ in }
     var configurePool: (Bool?, String?, Int?) -> Void = { _, _, _ in }
     var configureNotifications: (String, Bool) -> Void = { _, _ in }
     var openRecentWork: (RecentWork) -> Void = { _ in }

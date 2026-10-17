@@ -263,7 +263,7 @@ struct ManagedJobSummary: Decodable, Identifiable {
         guard let reason, !reason.isEmpty else { return nil }
         switch reason {
         case "quota-collection-wait": return Strings.t("jobs.reason.collection")
-        case "quota-wait", "quota-exhausted": return Strings.t("jobs.reason.quota")
+        case "quota-wait", "quota-exhausted", "quota-reserve-wait": return Strings.t("jobs.reason.quota")
         case "quota-retry-review", "review-retry-requested": return Strings.t("jobs.reason.retry")
         case "execution-uncertain", "lease-expired": return Strings.t("jobs.reason.uncertain")
         case "policy-expired": return Strings.t("jobs.reason.expired")
@@ -390,7 +390,8 @@ struct LocalizedMessagePayload: Decodable {
         }
 
         switch key {
-        case "model.notice.compaction", "model.notice.savings", "model.notice.original", "model.notice.unknown":
+        case "model.notice.compaction", "model.notice.savings", "model.notice.original", "model.notice.unknown",
+             "alert.work.notice.message", "alert.work.forecastUnavailable.message":
             return []
         case "model.notice.request":
             return required("fromLabel", "toLabel")
@@ -689,6 +690,7 @@ struct QuotaWindow: Decodable, Identifiable {
     let recentBurnPerHour: Double?
     let rapidDropPercent: Double?
     let rapidIntervalMinutes: Double?
+    let showUsageSpeed: Bool?
 
     var id: String { "\(provider)/\(account)/\(bucket)" }
     var isAtRisk: Bool { riskLevel == "at-risk" }
@@ -721,6 +723,7 @@ struct QuotaWindow: Decodable, Identifiable {
     var paceText: String? {
         guard freshness == "fresh" else { return nil }
         if isExhausted { return Strings.t("window.exhausted") }
+        guard showUsageSpeed == true else { return nil }
         if let drop = rapidDropPercent, let minutes = rapidIntervalMinutes, minutes > 0, drop > 0 {
             return Strings.t("window.recentUsage", String(Int(max(1, ceil(minutes)))), String(format: "%.1f", drop))
         }
@@ -835,9 +838,19 @@ struct ResetSignalPayload: Decodable {
     var excludedPosts: [ExcludedResetPost]? = nil
     var sources: [ResetSourceHealth]? = nil
     var coverage: String? = nil
+    var automation: [ResetAutomationStatus]? = nil
     var coverageKey: String {
         source == "x-api" || coverage == "direct-and-relays" ? "signal.coverage.direct" : "signal.coverage.relays"
     }
+}
+
+struct ResetAutomationStatus: Decodable, Identifiable {
+    let provider: String
+    let registeredCount: Int
+    let enabledCount: Int
+    let runningCount: Int
+    let state: String
+    var id: String { provider }
 }
 
 struct ResetSourceHealth: Decodable, Identifiable {
@@ -951,6 +964,9 @@ struct ResetSignal: Decodable, Identifiable {
     var provider: String? = nil
     var benefitKind: String? = nil
     var localTimeText: String? = nil
+    var forecastText: String? = nil
+    var preparationClosed: Bool? = nil
+    var timingHistoryText: String? = nil
     var benefitText: String? = nil
     var newsTitle: String? = nil
     var sourcePostId: String? = nil

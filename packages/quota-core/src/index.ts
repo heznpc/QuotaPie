@@ -1,6 +1,7 @@
 export * from "./codex-compaction-policy.js";
 export * from "./task-savings.js";
 export * from "./codex-compaction-stream.js";
+export * from "./codex-error-diagnostics.js";
 export * from "./events.js";
 export * from "./observations.js";
 export * from "./quota-types.js";

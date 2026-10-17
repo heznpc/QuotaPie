@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, readdir, writeFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 interface Observation {
@@ -18,6 +19,9 @@ interface Observation {
   hostGoalIDs?: string[];
   hostGoalReadStates?: string[];
   recentWorkIDs?: string[];
+  efficiencyInsightIDs?: string[];
+  testOnlySavings?: boolean;
+  automaticWorkLoadedPolicyIDs?: string[];
   profileDockIcons?: string[];
   pendingResetIDs?: string[];
   excludedPostIDs?: string[];
@@ -107,12 +111,30 @@ async function run() {
           publishedAtMs: Date.now(), state: "reported", resetKind: "unknown", observedVia: "codexreset",
           benefitKind: "limits", change: { percent: 50, evidence: "Synthetic: 50% more usage for everyone." },
           benefitText: "Announced: +50% (1.5× previous allowance)", targetAtMs: null }] },
+    compaction: {checkedAtMs: Date.now(), generations: 1, reachable: 1, active: [], recent: [], policy: null,
+      savings: {policy: {enabled: true, configurable: true, supported: true, generations: 1, compatible: 1, applied: 1, testOnly: false, phaseConfigurable: true},
+        active: [], recent: [], insights: [{id: "fixture-repeated-error", threadId: "11111111-1111-4111-8111-111111111111", kind: "repeated-failure", count: 3,
+          observedDurationMs: 1500, suggestion: "review-provider-error", savingsApplied: false}]}},
     accountPool: {enabled:true, accounts:["default","second"], recent:[{sourceAccount:"default",account:"second",accountLabel:"Second",state:"completed",status:200,atMs:Date.now()}]} };
+  const automaticPolicy = { id: "fixture-work", provider: "claude", account: "default", nativeSessionId: "fixture-session",
+    model: "original-session-model", prompt: "Continue the selected work", objective: "Shared work fixture", completionCriteria: ["Evidence recorded"],
+    dispatchOwner: "local", enabled: false, trigger: "quota-ready", resetWithinMinutes: 60,
+    budgetByBucket: {five_hour: {reservePercent: 0, maxUsagePercent: 20, targetUsagePercent: 10}},
+    maxTurns: 3, maxDurationSeconds: 60, maxTotalDurationSeconds: 120, expiresAtMs: Date.now()+3600000, priority: 0, onReset: "stop", revision: 2,
+    state: {spentByBucket: {five_hour: 4}, turns: 1, totalDurationSeconds: 12, status: "turn-finished", activeExecutionId: null} };
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async request => {
     if (request.method === "POST" && new URL(request.url).pathname === "/api/profiles/dock-icon") {
       const body = await request.json() as {account?: string; icon?: string};
       if (body.icon !== undefined || !["default", "second"].includes(body.account ?? "")) return new Response("Read-only fixture", {status: 400});
       return Response.json({icon: body.account === "default" ? "codex-system" : "app-default", changed: false});
+    }
+    if (request.method === "GET" && new URL(request.url).pathname === "/api/work/preferences") {
+      if (request.headers.get("x-quotapie-action-token") !== "isolated-fixture") return new Response("Unauthorized", {status: 403});
+      return Response.json({preferences: []});
+    }
+    if (request.method === "GET" && new URL(request.url).pathname === "/api/work") {
+      if(request.headers.get("x-quotapie-action-token")!=="isolated-fixture") return new Response("Unauthorized",{status:403});
+      return Response.json({policies:[automaticPolicy], executions:[], accounts:[{provider:"claude",account:"default",label:"Main",buckets:["five_hour"],reserveByBucket:{five_hour:0}}],defaults:{timeZone:"Asia/Seoul"}});
     }
     if (request.method !== "GET" || new URL(request.url).pathname !== "/api/status") return new Response("Unexpected request", { status: 400 });
     return malformed ? new Response("{invalid", { headers: { "content-type": "application/json" } }) : Response.json(payload);
@@ -136,6 +158,7 @@ async function run() {
       { name: "nickname-settings", running: ["main"], frontmost: null, initialSection: "settings", expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "dock-icons", running: ["main"], frontmost: null, initialSection: "settings", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "excluded-posts", running: ["main"], frontmost: null, initialSection: "resets", expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "session-efficiency", running: ["main"], frontmost: null, initialSection: "activity", expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "recent-work", running: ["main"], frontmost: null, initialSection: "work", expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "paused-overview", running: ["main"], frontmost: null, withTasks: true, contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "paused-work", running: ["main"], frontmost: null, withTasks: true, initialSection: "work", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
@@ -176,6 +199,8 @@ async function run() {
       if ("goalState" in scenario && (observed.detailSection !== "work" ||
           observed.hostGoalIDs?.join(",") !== payload.hostGoals.items.map(goal => goal.id).join(",") ||
           observed.hostGoalReadStates?.join(",") !== payload.hostGoals.items.map(() => scenario.goalState).join(","))) failures.push("host_goal_state_not_presented");
+      if (scenario.name === "session-efficiency" && (observed.detailSection !== "activity" || observed.efficiencyInsightIDs?.join(",") !== "fixture-repeated-error" || observed.testOnlySavings !== false)) failures.push("session_review_not_loaded");
+      if(scenario.name === "recent-work" && observed.automaticWorkLoadedPolicyIDs?.join(",") !== "fixture-work") failures.push("shared_work_not_loaded");
       console.log(JSON.stringify({ check: scenario.name, result: failures.length ? "fail" : "pass", failures }));
       if (failures.length) throw new Error(`Native verification failed: ${scenario.name}`);
     }
@@ -212,7 +237,11 @@ async function run() {
     const pids = Bun.spawnSync(["pgrep", "-x", "QuotaPie"]).stdout.toString().trim().split(/\s+/).filter(Boolean);
     for (const value of pids) {
       const command = Bun.spawnSync(["ps", "-p", value, "-o", "comm="]).stdout.toString().trim();
-      if (command === join(app, "Contents/MacOS/QuotaPie")) { try { process.kill(Number(value), "SIGTERM"); } catch {} }
+      try {
+        if (realpathSync(command) === realpathSync(join(app, "Contents/MacOS/QuotaPie"))) {
+          try { process.kill(Number(value), "SIGTERM"); } catch {}
+        }
+      } catch { /* An exited process or removed bundle is not ours to stop. */ }
     }
     // Keep observations and images, not a registered temporary app bundle.
     await rm(app, { recursive: true, force: true });

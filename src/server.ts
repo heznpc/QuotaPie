@@ -1,3 +1,4 @@
+import { resetTimingPresentation } from "./signals/timing-presentation";
 import { profileDockIcon } from "./profile-dock-icon";
 import { localAnnouncementTime } from "./signals/time";
 import { benefitChangeText, signalDecision } from "./signals/presentation";
@@ -14,6 +15,7 @@ import type { AppNotificationDisposition, Headline, QuotaEvent } from "./types";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { ResumeTargetError } from "./service";
 import { ResumeTaskStoreError } from "./storage/resume-task-store";
+import { DotsConnection } from "./dots/connection";
 
 // Deprecated compatibility aliases for the one consumer that can be a version
 // behind this daemon: the menu bar app, during the seconds between the backend
@@ -46,6 +48,7 @@ function json(value: unknown, status = 200): Response {
 export function startDashboard(service: QuotaPieService, config: AppConfig, options: { compactionRoot?: string; preferencesPath?: string; poolPolicyPath?: string; poolDatabasePath?: string } = {}) {
   const runtime = captureRuntimeIdentity();
   const compaction = new CompactionStatusReader(options.compactionRoot);
+  const dots = new DotsConnection({ config: () => config });
   const dashboardFile = Bun.file(new URL("./dashboard.html", import.meta.url));
   const actionToken = randomBytes(32).toString("base64url");
   const tokenMatches = (candidate: string | null): boolean => {
@@ -65,8 +68,61 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
       const allowedHosts = new Set(["127.0.0.1", "localhost", "::1", config.dashboard.host.toLowerCase()]);
       if (!hostname || !allowedHosts.has(hostname)) return json({ error: "invalid_host" }, 403);
       const url = new URL(request.url);
+      if (url.pathname === "/api/dots/connection") {
+        if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token")))
+          return json({ error: "forbidden" }, 403);
+        if (request.method === "GET") return json(await dots.status());
+        if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+        try {
+          const body = await request.text();
+          if (body.length > 128) return json({ error: "invalid_connection_action" }, 400);
+          const input = JSON.parse(body);
+          if (Object.keys(input).length !== 1 || !["connect", "disconnect"].includes(input.action))
+            return json({ error: "invalid_connection_action" }, 400);
+          return json(input.action === "connect" ? await dots.connect() : await dots.disconnect());
+        } catch { return json({ error: "connection_action_failed" }, 409); }
+      }
+      if (url.pathname === "/api/work" || url.pathname.startsWith("/api/work/")) {
+        if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token"))) return json({error:"forbidden"},403);
+        try {
+          if(request.method === "GET" && url.pathname === "/api/work") return json(service.workStatus());
+          if(request.method === "GET" && url.pathname === "/api/work/preferences") return json({preferences:service.work.store.preferences()});
+          if(request.method === "GET" && url.pathname === "/api/work/targets")
+            return json(await service.workTargets(url.searchParams.get("provider")??"",url.searchParams.get("account")??""));
+          if(request.method === "GET" && url.pathname === "/api/work/host-goal")
+            return json({hostGoal:await service.previewWorkHostGoal(url.searchParams.get("provider")??"",url.searchParams.get("account")??"",url.searchParams.get("session")??"")});
+          if(request.method !== "POST") return json({error:"method_not_allowed"},405);
+          const body=await request.text();
+          if(body.length>65536) return json({error:"work-policy-too-large"},400);
+          const input=JSON.parse(body);
+          if(url.pathname === "/api/work/host-goal") return json(await service.changeWorkHostGoal(input.id,input.expectedRevision,input.action,input.reviewedObjective));
+          if(url.pathname === "/api/work/preferences") {
+            if(input.scope === "account" && !config.accounts[input.provider as "codex"|"claude"]?.some(a => a.id === input.account && a.enabled))
+              return json({error:"account-unavailable"},409);
+            return json({preference:service.work.store.savePreferences(input.scope,input.provider,input.account,input.values,input.expectedRevision)});
+          }
+          if(url.pathname === "/api/work/execute") return json({execution:await service.work.dispatch(input.id,"dots",input.expectedRevision,input.requestId)});
+          if(url.pathname !== "/api/work") return json({error:"not_found"},404);
+          if(input.action === "save") return json(await service.saveWorkPolicy(input.policy,input.expectedRevision,input.requestId,input.hostGoalLinked,input.reviewedObjective));
+          if(input.action === "enabled") return json({policy:await service.work.setEnabled(input.id,input.enabled,input.expectedRevision,input.requestId)});
+          return json({error:"work-action-invalid"},400);
+        }catch(error){
+          const reason=error instanceof Error && /^[a-z-]{3,100}$/.test(error.message)?error.message:"work-action-failed";
+          return json({error:reason},409);
+        }
+      }
       if (url.pathname === "/api/runtime") {
         return request.method === "GET" ? json(runtime) : json({ error: "method_not_allowed" }, 405);
+      }
+      if (url.pathname === "/api/resume-check") {
+        if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
+        const provider = url.searchParams.get("provider"), account = url.searchParams.get("account");
+        const bucket = url.searchParams.get("bucket");
+        if ((provider !== "codex" && provider !== "claude") || !account || account.length > 128 ||
+            (bucket != null && (!bucket || bucket.length > 160))) {
+          return json({ error: "invalid_resume_target" }, 400);
+        }
+        return json(service.resumeGate(provider, account, Date.now(), bucket ?? undefined));
       }
       if (url.pathname.startsWith("/api/recent-work/")) {
         if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
@@ -290,12 +346,14 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
       }
       if (url.pathname === "/api/status") {
         const nowMs = Date.now();
+        const displayLocale = request.headers.get("x-quotapie-locale") === "ko" ? "ko" : request.headers.get("x-quotapie-locale") === "en" ? "en" : service.locale;
         const analysed = service.analyses(nowMs);
         const accounts = service.accountStates(nowMs, analysed);
+        const resetPlans = service.resetPlanning(accounts, nowMs);
         return json({
           nowMs,
           actionToken,
-          headline: headlineJson(buildHeadline(accounts, nowMs, service.locale)),
+          headline: headlineJson(buildHeadline(accounts, nowMs, displayLocale)),
           accounts,
           // File inventory is opt-in; quota-only clients do not start a scan.
           ...service.recentWorkStatus(nowMs, request.headers.get("x-quotapie-recent-work") === "1"),
@@ -305,12 +363,42 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           notificationPreferences: service.notificationPreferences(),
           resetSignals: (() => {
             const feed = service.signalCollector.status(nowMs);
-            return { ...feed, signals: feed.signals.map(signal => ({ ...signal,
-              localTimeText: localAnnouncementTime(signal, service.locale, service.config.profile.timeZone),
-              benefitText: benefitChangeText(signal, service.locale),
-              newsTitle: signalDecision(signal, service.locale, service.config.profile.timeZone).title,
+            const automation = service.resetAutomationStatus(nowMs);
+            const timingStatus = service.resetTimingStatus();
+            const timingCases = timingStatus.cases;
+            const publications = "publications" in timingStatus ? timingStatus.publications : [];
+            const opportunities = resetPlans.flatMap(plan => plan.opportunities);
+            const forecastText = (id: string) => {
+              const entries = opportunities.filter(o => o.signalId === id);
+              if (!entries.length) return null;
+              const forecasts = entries.flatMap(o => o.forecast ? [o.forecast] : []);
+              const ko = displayLocale === "ko";
+              if (!forecasts.length) {
+                const provider = feed.signals.find(s => s.id === id)?.provider ?? "codex";
+                if (!automation.some(a => a.provider === provider && a.enabledCount > 0))
+                  return ko ? "자동 실행 대상 없음 · 예고 수집만 동작 중" : "No automatic work configured · collecting announcements only";
+                return ko ? "패턴 근거 부족 · 등록 작업의 실행 조건 확인 중" : "Insufficient history · checking registered work conditions";
+              }
+              const format = (ms: number) => new Intl.DateTimeFormat(ko ? "ko-KR" : "en-US", {
+                timeZone: service.config.profile.timeZone, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short",
+              }).format(ms);
+              const low = Math.min(...forecasts.map(f => f.earliestMs)), high = Math.max(...forecasts.map(f => f.latestMs));
+              return `${ko ? "관측 기반 추정" : "Observed estimate"}: ${format(low)}–${format(high)} · ${ko ? "확정 아님" : "unconfirmed"}`;
+            };
+            const closed = new Map(resetPlans.map(a => [a.provider + ":" + a.account, new Set(a.closedSignalIDs)]));
+            return { ...feed, automation, signals: feed.signals.map(signal => ({ ...signal,
+              preparationClosed: accounts.some(a => a.provider === (signal.provider ?? "codex")) && accounts
+                .filter(a => a.provider === (signal.provider ?? "codex"))
+                .every(a => closed.get(a.provider + ":" + a.account)!.has(signal.id)),
+              forecastText: resetTimingPresentation(signal, timingCases, displayLocale, service.config.profile.timeZone, accounts, publications).forecastText ?? forecastText(signal.id),
+              timingHistoryText: resetTimingPresentation(signal, timingCases, displayLocale, service.config.profile.timeZone, accounts, publications).timingHistoryText,
+              localTimeText: localAnnouncementTime(signal, displayLocale, service.config.profile.timeZone),
+              benefitText: benefitChangeText(signal, displayLocale),
+              newsTitle: signalDecision(signal, displayLocale, service.config.profile.timeZone).title,
             })) };
           })(),
+          resetOpportunities: resetPlans.flatMap(plan => plan.opportunities.map(opportunity => ({ ...opportunity, account: plan.account }))),
+          resetTiming: service.resetTimingStatus(),
           resetTracking: service.resetTracking(nowMs, accounts),
           compaction: compaction.snapshot(nowMs),
           accountPool: (() => { try {

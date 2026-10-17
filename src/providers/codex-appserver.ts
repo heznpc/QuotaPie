@@ -76,6 +76,8 @@ export interface CodexThreadListParams {
   sortDirection?: "asc" | "desc" | null;
   archived?: boolean | null;
   useStateDbOnly?: boolean;
+  sourceKinds?: Array<"cli" | "vscode" | "exec" | "appServer">;
+  modelProviders?: string[];
 }
 
 export interface CodexThreadSummary {

@@ -7,7 +7,7 @@ function protocolId(value: unknown): string | null {
 
 // Request metadata is a claim, not a durable account binding. Keep parsing
 // bounded and never expose the rest (workspace paths, instructions, etc.).
-export function codexRequestIdentity(headers: Headers): { threadId: string | null; turnId: string | null; fork: ForkClaim; conflict: boolean } {
+export function codexRequestIdentity(headers: Headers): { threadId: string | null; turnId: string | null; sessionId: string | null; fork: ForkClaim; conflict: boolean } {
   let metadata: Record<string, unknown> = {}, malformed = false;
   const raw = headers.get("x-codex-turn-metadata");
   if (raw) {
@@ -35,5 +35,5 @@ export function codexRequestIdentity(headers: Headers): { threadId: string | nul
       && (headerThread === null || protocolId(headerThread) === threadId)
       ? { status: "claimed", parentId } : { status: "invalid" };
   }
-  return { threadId, turnId, fork, conflict };
+  return { threadId, turnId, sessionId: sessionUnderscore ?? sessionHyphen, fork, conflict };
 }

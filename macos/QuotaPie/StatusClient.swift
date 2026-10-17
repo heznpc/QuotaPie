@@ -70,6 +70,7 @@ final class StatusClient {
     func fetch(completion: @escaping (Result<StatusPayload, Error>) -> Void) {
         let url = baseURL.appendingPathComponent("api/status")
         var request = URLRequest(url: url)
+        request.setValue(Strings.language.rawValue, forHTTPHeaderField: "x-quotapie-locale")
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("1", forHTTPHeaderField: "x-quotapie-recent-work")
         perform(request) { result in
@@ -79,6 +80,99 @@ final class StatusClient {
                 completion(.failure(error))
             }
         }
+    }
+
+    func dotsConnection(action: String? = nil, actionToken: String,
+                        completion: @escaping (Result<DotsConnectionStatus, Error>) -> Void) {
+        do {
+            var request = try authenticatedPOST(pathComponents: ["api", "dots", "connection"], actionToken: actionToken)
+            if let action {
+                request.httpBody = try JSONSerialization.data(withJSONObject: ["action": action])
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+            } else { request.httpMethod = "GET" }
+            perform(request) { result in
+                completion(Result { try JSONDecoder().decode(DotsConnectionStatus.self, from: result.get()) })
+            }
+        } catch { completion(.failure(error)) }
+    }
+
+    func automaticWork(actionToken: String, completion: @escaping (Result<AutomaticWorkResponse, Error>) -> Void) {
+        workRequest(actionToken: actionToken, completion: completion)
+    }
+
+    func automaticWorkPreferences(actionToken: String, completion: @escaping (Result<AutomaticWorkPreferencesResponse, Error>) -> Void) {
+        workRequest(path: ["api", "work", "preferences"], actionToken: actionToken, completion: completion)
+    }
+    func saveAutomaticWorkPreferences(_ policy: AutomaticWorkPolicy, revision: Int?, actionToken: String,
+                                      completion: @escaping (Result<AutomaticWorkPreferenceSaveResponse, Error>) -> Void) {
+        workRequest(path: ["api", "work", "preferences"], body: ["scope": "account", "provider": policy.provider,
+            "account": policy.account, "values": policy.preferenceInput, "expectedRevision": revision.map { $0 as Any } ?? NSNull()],
+            actionToken: actionToken, completion: completion)
+    }
+
+    func automaticWorkTargets(provider: String, account: String, actionToken: String,
+                              completion: @escaping (Result<AutomaticWorkTargetsResponse, Error>) -> Void) {
+        workRequest(path: ["api", "work", "targets"], query: [URLQueryItem(name: "provider", value: provider),
+                    URLQueryItem(name: "account", value: account)], actionToken: actionToken, completion: completion)
+    }
+
+    func automaticWorkHostGoal(provider: String, account: String, session: String, actionToken: String,
+                               completion: @escaping (Result<AutomaticWorkHostGoalResponse, Error>) -> Void) {
+        workRequest(path: ["api", "work", "host-goal"], query: [URLQueryItem(name: "provider", value: provider),
+                    URLQueryItem(name: "account", value: account), URLQueryItem(name: "session", value: session)],
+                    actionToken: actionToken, completion: completion)
+    }
+
+    func updateAutomaticWorkHostGoal(id: String, revision: Int, action: String, reviewedObjective: String? = nil, actionToken: String,
+                                     completion: @escaping (Result<AutomaticWorkHostGoalResponse, Error>) -> Void) {
+        var body: [String: Any] = ["id": id, "expectedRevision": revision, "action": action]
+        if let reviewedObjective { body["reviewedObjective"] = reviewedObjective }
+        workRequest(path: ["api", "work", "host-goal"], body: body,
+                    actionToken: actionToken, completion: completion)
+    }
+
+    func saveAutomaticWork(_ policy: AutomaticWorkPolicy, hostGoalLinked: Bool? = nil, reviewedObjective: String? = nil, actionToken: String,
+                           completion: @escaping (Result<AutomaticWorkSaveResponse, Error>) -> Void) {
+        var body: [String: Any] = ["action": "save", "policy": policy.registrationInput,
+            "expectedRevision": policy.revision.map { $0 as Any } ?? NSNull(), "requestId": UUID().uuidString]
+        if let hostGoalLinked { body["hostGoalLinked"] = hostGoalLinked }
+        if let reviewedObjective { body["reviewedObjective"] = reviewedObjective }
+        workRequest(body: body, actionToken: actionToken, completion: completion)
+    }
+
+    func enableAutomaticWork(id: String, enabled: Bool, revision: Int, actionToken: String,
+                             completion: @escaping (Result<AutomaticWorkSaveResponse, Error>) -> Void) {
+        workRequest(body: ["action": "enabled", "id": id, "enabled": enabled,
+            "expectedRevision": revision, "requestId": UUID().uuidString], actionToken: actionToken, completion: completion)
+    }
+
+    private func workRequest<T: Decodable>(path: [String] = ["api", "work"], query: [URLQueryItem] = [],
+                                          body: [String: Any]? = nil, actionToken: String,
+                                          completion: @escaping (Result<T, Error>) -> Void) {
+        do {
+            var request = try authenticatedPOST(pathComponents: path, actionToken: actionToken)
+            if !query.isEmpty, let url = request.url {
+                var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                parts?.queryItems = query
+                request.url = parts?.url
+            }
+            request.setValue(nil, forHTTPHeaderField: "content-length")
+            if let body {
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+            } else { request.httpMethod = "GET" }
+            session.dataTask(with: request) { data, response, error in
+                if let error { completion(.failure(error)); return }
+                guard let http = response as? HTTPURLResponse else {
+                    completion(.failure(StatusClientError.invalidResponse)); return
+                }
+                let payload = data ?? Data()
+                guard (200..<300).contains(http.statusCode) else {
+                    completion(.failure(AutomaticWorkError(data: payload, status: http.statusCode))); return
+                }
+                completion(Result { try JSONDecoder().decode(T.self, from: payload) })
+            }.resume()
+        } catch { completion(.failure(error)) }
     }
 
     func saveNickname(provider: String, account: String, nickname: String, actionToken: String,
@@ -163,7 +257,8 @@ final class StatusClient {
                                 completion: @escaping (Result<NotificationPreferencesResponse, Error>) -> Void) {
         do {
             var request = try authenticatedPOST(pathComponents: ["api", "notifications", "preferences"], actionToken: actionToken)
-            let body: [String: Any] = key == "enabled" ? ["enabled": enabled] : ["topics": [key: enabled]]
+            let body: [String: Any] = ["enabled", "usageSpeed", "paceForecasts"].contains(key)
+                ? [key: enabled] : ["topics": [key: enabled]]
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             request.setValue(nil, forHTTPHeaderField: "content-length")
             request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -190,13 +285,14 @@ final class StatusClient {
         } catch { completion(.failure(error)) }
     }
 
-    func configureSavings(enabled: Bool?, bypassThread: String?, actionToken: String,
+    func configureSavings(enabled: Bool?, bypassThread: String?, testOnly: Bool? = nil, actionToken: String,
                           completion: @escaping (Result<TaskSavingsPolicyResponse, Error>) -> Void) {
         do {
             var request = try authenticatedPOST(pathComponents: ["api", "task-savings", "policy"], actionToken: actionToken)
             var body: [String: Any] = [:]
             if let enabled { body["enabled"] = enabled }
             if let bypassThread { body["bypassThread"] = bypassThread }
+            if let testOnly { body["testOnly"] = testOnly }
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             request.setValue(nil, forHTTPHeaderField: "content-length")
             request.setValue("application/json", forHTTPHeaderField: "content-type")
