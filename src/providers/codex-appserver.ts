@@ -27,6 +27,48 @@ class RpcRequestError extends Error {
 // Keep the resident client's last trusted context while this reading is retried.
 export class CodexSnapshotUnavailableError extends Error {}
 
+export class CodexGoalUnsupportedError extends Error {}
+
+const CODEX_GOAL_STATUSES = ["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"] as const;
+
+export interface CodexThreadGoal {
+  threadId: string;
+  objective: string;
+  status: typeof CODEX_GOAL_STATUSES[number];
+  tokenBudget?: number | null;
+  tokensUsed?: number;
+  timeUsedSeconds?: number;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+function parseThreadGoal(result: unknown, threadId: string): CodexThreadGoal | null {
+  const invalid = () => new Error("Codex App Server thread/goal/get returned an invalid response");
+  if (!result || typeof result !== "object" || Array.isArray(result)) throw invalid();
+  const raw = (result as Record<string, unknown>).goal;
+  if (raw == null) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) throw invalid();
+  const goal = raw as Record<string, unknown>;
+  if (goal.threadId !== threadId || typeof goal.objective !== "string" ||
+      typeof goal.status !== "string" || !CODEX_GOAL_STATUSES.includes(goal.status as CodexThreadGoal["status"])) {
+    throw invalid();
+  }
+  // Keep only goal metadata. Additional provider fields must not turn this
+  // read-only boundary into a source of transcript, path or credential data.
+  const parsed: CodexThreadGoal = { threadId, objective: goal.objective, status: goal.status as CodexThreadGoal["status"] };
+  for (const key of ["tokensUsed", "timeUsedSeconds", "createdAt", "updatedAt"] as const) {
+    if (goal[key] === undefined) continue;
+    if (typeof goal[key] !== "number" || !Number.isSafeInteger(goal[key]) || goal[key] < 0) throw invalid();
+    parsed[key] = goal[key];
+  }
+  if (goal.tokenBudget !== undefined) {
+    if (goal.tokenBudget !== null && (typeof goal.tokenBudget !== "number" ||
+        !Number.isSafeInteger(goal.tokenBudget) || goal.tokenBudget < 0)) throw invalid();
+    parsed.tokenBudget = goal.tokenBudget as number | null;
+  }
+  return parsed;
+}
+
 export interface CodexThreadListParams {
   cursor?: string | null;
   limit?: number | null;
@@ -230,6 +272,34 @@ export class CodexAppServerClient {
 
   async listThreads(params: CodexThreadListParams = {}): Promise<CodexThreadListPage> {
     return this.exclusive(() => this.readThreadPage(params));
+  }
+
+  async readThreadGoal(threadId: string): Promise<CodexThreadGoal | null> {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(threadId)) {
+      throw new Error("Codex goal lookup requires a thread UUID");
+    }
+    return this.exclusive(async () => {
+      await this.connect();
+      const stamp = this.currentCredentialStamp();
+      const before = await this.readAccountIdentity();
+      // Unlike quota-only legacy reads, linked goal data requires a verified
+      // login. Never accept an anonymous snapshot as belonging to this profile.
+      if (before === undefined) throw new CodexSnapshotUnavailableError("Codex identity unavailable; goal snapshot not accepted");
+      let result: unknown;
+      let unsupported = false;
+      try {
+        result = await this.request("thread/goal/get", { threadId });
+      } catch (error) {
+        if (!(error instanceof RpcRequestError) || error.code !== -32601) throw error;
+        unsupported = true;
+      }
+      const after = await this.readAccountIdentity();
+      if (stamp !== this.currentCredentialStamp() || before !== after) {
+        throw new CodexSnapshotUnavailableError("Codex login changed during goal lookup; retrying on next poll");
+      }
+      if (unsupported) throw new CodexGoalUnsupportedError("Codex App Server does not support thread/goal/get");
+      return parseThreadGoal(result, threadId);
+    });
   }
 
   private async readThreadPage(params: CodexThreadListParams): Promise<CodexThreadListPage> {

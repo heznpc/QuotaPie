@@ -356,6 +356,7 @@ const CATALOG = {
 
 Usage:
   quotapie jobs help            Register and review checkpointed execution jobs
+  quotapie goals help           Link and inspect an existing host goal for paused work
   quotapie init                 Create a private default config and print integrations
   quotapie poll [--json]        Fetch Codex once and update history
   quotapie status [--account ID] [--json]
@@ -368,7 +369,7 @@ Usage:
   quotapie pool reserve ACCOUNT PERCENT
                                  Leave this percentage unused and switch future requests
   quotapie pause [--provider codex|claude] [--account ID] [--session UUID]
-                 [--cwd PATH] [--label NAME] [--bucket ID] [--json]
+                 [--cwd PATH] [--label NAME] [--bucket ID] [--goal] [--json]
                                  Register this task for an explicit resume after quota recovers
   quotapie signals [--refresh]  Show public reset signals
   quotapie awake connect|disconnect
@@ -391,6 +392,7 @@ Environment:
 
 사용법:
   quotapie jobs help            체크포인트 실행 작업 등록·검토 방법
+  quotapie goals help           중단 작업에 기존 호스트 목표 연결·조회 방법
   quotapie init                 비공개 기본 설정을 만들고 연동 방법 표시
   quotapie poll [--json]        Codex 한도를 한 번 가져와 기록 갱신
   quotapie status [--account ID] [--json]
@@ -403,7 +405,7 @@ Environment:
   quotapie pool reserve ACCOUNT PERCENT
                                  지정한 잔여 비율을 남기고 다음 요청부터 계정 전환
   quotapie pause [--provider codex|claude] [--account ID] [--session UUID]
-                 [--cwd PATH] [--label NAME] [--bucket ID] [--json]
+                 [--cwd PATH] [--label NAME] [--bucket ID] [--goal] [--json]
                                  한도 회복 후 명시적으로 재개할 작업 등록
   quotapie signals [--refresh]  공개 리셋 소식 조회
   quotapie awake connect|disconnect

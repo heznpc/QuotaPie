@@ -15,6 +15,8 @@ interface Observation {
   focusedResumeTaskID?: string | null;
   activeTaskIDs?: string[];
   managedJobIDs?: string[];
+  hostGoalIDs?: string[];
+  hostGoalReadStates?: string[];
   recentWorkIDs?: string[];
   profileDockIcons?: string[];
   pendingResetIDs?: string[];
@@ -79,10 +81,14 @@ async function run() {
   }));
   const managedJobs = [{ id: "fixture-job", label: "Registered verification job", provider: "codex", account: "default",
     state: "waiting", completedSteps: 1, totalSteps: 3, reason: "quota-unavailable", policy: {mode: "manual"} }];
+  const hostGoals = pausedTasks.map(task => ({ id: task.id, taskId: task.id, provider: "codex", account: task.account,
+    accountLabel: task.accountLabel, projectLabel: task.projectLabel, readState: "ready",
+    objective: "Complete the linked host goal and verify the result", hostStatus: "paused",
+    observedAtMs: Date.now(), expiresAtMs: Date.now() + 600_000, resumeState: task.state }));
   // Independent expected values: no production account-selection or headline code.
   let payload = { actionToken: "isolated-fixture", headline: { kind: "normal", provider: "codex", account: "second", remainingPercent: 100 },
     accounts: [account("default", "Main", 18), account("second", "Second", 100)], events: [],
-    resumeTasks: pausedTasks.slice(0, 0), jobs: managedJobs.slice(0, 0),
+    resumeTasks: pausedTasks.slice(0, 0), jobs: managedJobs.slice(0, 0), hostGoals: {items: hostGoals.slice(0, 0)},
     recentWorkState: "ready", recentWork: [
       { id: "a".repeat(64), provider: "codex", account: "default", accountLabel: "Main", projectLabel: "Example project", tokenCount: 12400, lastActiveAtMs: Date.now() - 60_000 },
       { id: "b".repeat(64), provider: "claude", account: "default", accountLabel: "Main", projectLabel: "Another project", tokenCount: 8300, lastActiveAtMs: Date.now() - 3_600_000 },
@@ -134,10 +140,17 @@ async function run() {
       { name: "paused-overview", running: ["main"], frontmost: null, withTasks: true, contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "paused-work", running: ["main"], frontmost: null, withTasks: true, initialSection: "work", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "linked-work", running: ["main"], frontmost: null, withTasks: true, initialSection: "activity", focusedResumeTaskID: pausedTasks[0]!.id, expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "host-goals", running: ["main"], frontmost: null, withTasks: true, goalState: "ready", initialSection: "work", contentHeight: 1200, expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "host-goals-stale", running: ["main"], frontmost: null, withTasks: true, goalState: "stale", initialSection: "work", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "host-goals-account-change", running: ["main"], frontmost: null, withTasks: true, goalState: "account_changed", initialSection: "work", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "host-goals-absent", running: ["main"], frontmost: null, withTasks: true, goalState: "no_goal", initialSection: "work", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
     ]) {
       malformed = scenario.expected == null;
       payload.resumeTasks = "withTasks" in scenario ? pausedTasks : [];
       payload.jobs = "withTasks" in scenario ? managedJobs : [];
+      payload.hostGoals.items = "goalState" in scenario ? hostGoals.slice(0, scenario.goalState === "ready" ? 3 : 1)
+        .map(goal => ({ ...goal, readState: scenario.goalState!,
+          expiresAtMs: scenario.goalState === "stale" ? Date.now() - 1 : Date.now() + 600_000 })) : [];
       const reportPath = join(stage, scenario.name + ".json");
       const request = join(stage, "request.json");
       await writeFile(request, JSON.stringify({ endpoint: `http://127.0.0.1:${server.port}`, reportPath, profiles,
@@ -160,6 +173,9 @@ async function run() {
       if (scenario.name === "paused-work" && observed.detailSection !== "work") failures.push("wrong_work_section");
       if (scenario.name === "linked-work" && (observed.detailSection !== "work" ||
           observed.focusedResumeTaskID !== pausedTasks[0]!.id)) failures.push("task_link_not_routed_to_work");
+      if ("goalState" in scenario && (observed.detailSection !== "work" ||
+          observed.hostGoalIDs?.join(",") !== payload.hostGoals.items.map(goal => goal.id).join(",") ||
+          observed.hostGoalReadStates?.join(",") !== payload.hostGoals.items.map(() => scenario.goalState).join(","))) failures.push("host_goal_state_not_presented");
       console.log(JSON.stringify({ check: scenario.name, result: failures.length ? "fail" : "pass", failures }));
       if (failures.length) throw new Error(`Native verification failed: ${scenario.name}`);
     }

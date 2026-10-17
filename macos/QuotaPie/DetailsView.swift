@@ -73,7 +73,12 @@ struct DetailsView: View {
                 Button(Strings.t("action.openSettings"), action: actions.openConfig)
             }
         case .work:
-            pausedWork
+            if model.focusedResumeTaskID != nil { pausedWork }
+            HostGoalsSection(payload: model.payload?.hostGoals, isLoading: model.payload == nil && model.lastError == nil,
+                             transportUnavailable: model.lastError != nil,
+                             tasks: model.activeTasks, onReview: { model.showDetails(.work, taskID: $0) })
+            Divider()
+            if model.focusedResumeTaskID == nil { pausedWork }
             if let jobs = model.payload?.jobs, !jobs.isEmpty {
                 ManagedJobsSection(jobs: jobs)
                 Divider()

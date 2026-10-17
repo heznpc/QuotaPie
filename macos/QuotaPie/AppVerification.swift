@@ -112,6 +112,10 @@ struct AppVerification: Decodable {
             "focusedResumeTaskID": model.focusedResumeTaskID as Any? ?? NSNull(),
             "activeTaskIDs": model.activeTasks.map(\.id),
             "managedJobIDs": model.payload?.jobs.map(\.id) ?? [],
+            "hostGoalIDs": model.payload?.hostGoals?.items.map(\.id) ?? [],
+            "hostGoalReadStates": model.payload?.hostGoals?.items.map {
+                $0.displayReadState(at: Date().timeIntervalSince1970 * 1_000, transportUnavailable: model.lastError != nil)
+            } ?? [],
             "recentWorkIDs": model.payload?.recentWork.map(\.id) ?? [],
             "excludedPostIDs": model.payload?.resetSignals?.excludedPosts?.map(\.identity) ?? [],
             "pendingResetIDs": model.payload?.resetSignals?.pendingResets(nowMs: Date().timeIntervalSince1970 * 1000).map(\.id) ?? [],

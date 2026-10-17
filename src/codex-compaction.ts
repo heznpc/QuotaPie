@@ -125,7 +125,9 @@ export function startCompactionProxy(options: {
       }
       const path = url.pathname.slice(prefix.length);
       if (path === "/quotapie-health" && request.method === "GET") {
-        return Response.json({ service: "quotapie-compaction", schemaVersion: 3, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolReserveVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 3 : 0, accountPoolRecoveryVersion: options.accountPool ? 2 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, responseOwnershipVersion: 1, taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
+        return Response.json({ service: "quotapie-compaction", schemaVersion: 3, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolReserveVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 3 : 0, accountPoolRecoveryVersion: options.accountPool ? 2 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, responseOwnershipVersion: 2,
+          responseOwnership: { formats: ["sse", "json"], policy: "reject-explicit-mismatch", missingMetadata: "unattributed", unsupportedFormats: "unverified" },
+          taskSavings: validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
           accountPoolLineageVersion: options.accountPool ? 3 : 0,
           route: validateCompactionRoute(route), requests, rejectedRequests, compactions, attemptedCompactions,
           failedCompactions, cancelledCompactions, unverifiedCompactions, activeRequests, draining,
@@ -170,6 +172,11 @@ export function startCompactionProxy(options: {
               return new Response("Request too large", { status: 413 });
             }
             const input: unknown = JSON.parse(new TextDecoder().decode(decoded));
+            if (codexRequestIdentity(headers).conflict) {
+              activeRequests--; rejectedRequests++;
+              return Response.json({ error: { type: "quotapie_request_identity", code: "request_identity_conflict",
+                message: "Conflicting thread or turn identifiers were supplied. No request was sent to the provider." } }, { status: 400 });
+            }
             expectsSse = object(input) && (input.stream === true || (path === "/responses" && isCompaction(path, input)));
             const compact = object(input) && isCompaction(path, input);
             const savings = !compact && path === "/responses" ? savingsRouter.route(input, taskPolicy, requestIdentity(headers).threadId) : null;
@@ -344,18 +351,53 @@ export function startCompactionProxy(options: {
         emit("response_headers");
         const responseHeaders = transportHeaders(response.headers);
         responseHeaders.delete("content-encoding");
-        // The native Responses Lite transport omits Content-Type even for SSE.
-        // Use the request's stream control as a fallback, never conversation text.
-        observer = new ResponseCompletionObserver(response.headers.get("content-type") || (expectsSse ? "text/event-stream" : ""), event?.kind === "compaction");
-        const ownership = response.ok && (response.headers.get("content-type") || (expectsSse ? "text/event-stream" : "")).includes("text/event-stream")
+        // Native Responses transport can omit Content-Type. Infer successful
+        // Responses from the request's stream control, never conversation text.
+        // An untyped HTTP error can be plain text, so retain that error verbatim.
+        const responseRoute = ["/responses", "/responses/compact"].includes(path);
+        const contentType = (response.headers.get("content-type") || (response.ok && responseRoute
+          ? expectsSse ? "text/event-stream" : "application/json" : "")).toLowerCase();
+        const mediaType = contentType.split(";", 1)[0]!.trim();
+        const jsonType = mediaType === "application/json" || /^application\/[a-z0-9!#$&^_.+-]+\+json$/.test(mediaType);
+        observer = new ResponseCompletionObserver(jsonType ? "application/json" : contentType, event?.kind === "compaction");
+        const ownershipFormat = mediaType === "text/event-stream" ? "sse"
+          : responseRoute && jsonType ? "json" : null;
+        const ownership = ownershipFormat
           ? new ResponseOwnershipGuard(requestIdentity(request.headers), entry => {
             options.onProvenance?.({ requestId: event?.requestId ?? "untracked", ...entry });
-          }) : undefined;
+          }, undefined, ownershipFormat) : undefined;
         const reader = response.body?.getReader();
         if (!reader) {
           const result = observer.finish();
           finish(response.ok ? result.phase : "failed", response.ok ? result.errorCode : "upstream_http_error");
           return new Response(null, { status, headers: responseHeaders });
+        }
+        if (ownershipFormat === "json") {
+          // A JSON document has no safe event boundary before EOF. Retain at
+          // most the guard's bounded body, then return its original bytes only
+          // after inspection; malformed or foreign documents never reach Codex.
+          let output: Uint8Array | undefined;
+          try {
+            while (true) {
+              const next = await reader.read();
+              if (finished) { await reader.cancel(); return new Response(null, { status: 499 }); }
+              if (next.done) break;
+              upstreamBytes += next.value.byteLength;
+              ownership!.push(next.value, () => {});
+            }
+            ownership!.finish(bytes => { output = bytes; });
+            if (output) { observer.push(output); relayQueuedBytes += output.byteLength; }
+            const result = observer.finish();
+            finish(response.ok ? result.phase : "failed", response.ok ? result.errorCode : "upstream_http_error");
+            return new Response(output ? new Uint8Array(output) : null, { status, headers: responseHeaders });
+          } catch (error) {
+            if (!(error instanceof ResponseOwnershipError)) throw error;
+            finish("failed", error.code);
+            cancellation.abort();
+            void reader.cancel().catch(() => {});
+            return Response.json({ error: { type: "quotapie_response_ownership", code: error.code,
+              message: "QuotaPie blocked an invalid or foreign response before delivery." } }, { status: 502 });
+          }
         }
         const stream = new ReadableStream<Uint8Array>({
           async pull(controller) {

@@ -300,6 +300,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           // File inventory is opt-in; quota-only clients do not start a scan.
           ...service.recentWorkStatus(nowMs, request.headers.get("x-quotapie-recent-work") === "1"),
           resumeTasks: service.resumeTaskSummaries(),
+          hostGoals: service.hostGoalStatus(nowMs),
           jobs: service.jobs.summaries(),
           notificationPreferences: service.notificationPreferences(),
           resetSignals: (() => {

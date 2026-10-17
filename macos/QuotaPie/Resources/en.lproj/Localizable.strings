@@ -648,6 +648,37 @@
 
 /* Recent local work */
 "detail.work" = "Work";
+"goals.title" = "Linked host goals";
+"goals.loading" = "Loading goal links…";
+"goals.empty" = "No goals have been linked.";
+"goals.linkHelp" = "In a Codex session with a goal, register the paused work and link its goal:";
+"goals.serviceUnsupported" = "This local service does not provide host goal links.";
+"goals.unavailable" = "Goal links could not be refreshed. Check the local service connection.";
+"goals.previousObservation" = "Previous observation";
+"goals.hostStatus" = "Host goal: %@";
+"goals.lastObserved" = "Last checked %@";
+"goals.reviewTask" = "Review linked work";
+"goals.host.active" = "Active";
+"goals.host.paused" = "Paused";
+"goals.host.blocked" = "Blocked";
+"goals.host.usageLimited" = "Host usage limit reached";
+"goals.host.budgetLimited" = "Goal token budget reached";
+"goals.host.complete" = "Completed by the host";
+"goals.host.unknown" = "Unknown";
+"goals.read.loading" = "Reading the linked session’s goal…";
+"goals.read.no_goal" = "The host reports no goal for this session.";
+"goals.read.unsupported" = "The configured Codex CLI does not support reading goals.";
+"goals.read.error" = "The host goal could not be refreshed.";
+"goals.read.stale" = "This goal information needs a fresh check.";
+"goals.read.account_changed" = "The linked login account changed or could not be verified. Confirm the original account.";
+"goals.read.unknown" = "The goal status could not be confirmed.";
+"goals.resume.waiting" = "QuotaPie: waiting for quota";
+"goals.resume.ready" = "QuotaPie: resume conditions confirmed";
+"goals.resume.approved" = "QuotaPie: session opening needs review";
+"goals.resume.resumed" = "QuotaPie: session opened";
+"goals.resume.dismissed" = "QuotaPie: resume item dismissed";
+"goals.resume.unknown" = "QuotaPie: current resume conditions unconfirmed";
+"goals.resume.reviewInWork" = "QuotaPie: review the resume status in Work";
 "work.title" = "Recent local work";
 "work.explanation" = "Sessions active in the last 7 days, newest first. Use the project and recorded usage to choose a session to reopen.";
 "work.serviceUnavailable" = "This local service does not provide recent work yet. Update it to see sessions here.";

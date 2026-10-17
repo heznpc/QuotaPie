@@ -13,6 +13,7 @@ struct StatusPayload: Decodable {
     let recentWork: [RecentWork]
     let supportsRecentWork: Bool
     let recentWorkState: String
+    let hostGoals: HostGoalsPayload?
     let resetSignals: ResetSignalPayload?
     let resetTracking: ResetTracking?
     let compaction: CompactionPayload?
@@ -31,6 +32,7 @@ struct StatusPayload: Decodable {
         recentWork = try values.decodeIfPresent([RecentWork].self, forKey: .recentWork) ?? []
         supportsRecentWork = try values.contains(.recentWork) && !values.decodeNil(forKey: .recentWork)
         recentWorkState = try values.decodeIfPresent(String.self, forKey: .recentWorkState) ?? "ready"
+        hostGoals = try values.decodeIfPresent(HostGoalsPayload.self, forKey: .hostGoals)
         resetSignals = try values.decodeIfPresent(ResetSignalPayload.self, forKey: .resetSignals)
         resetTracking = try values.decodeIfPresent(ResetTracking.self, forKey: .resetTracking)
         compaction = try values.decodeIfPresent(CompactionPayload.self, forKey: .compaction)
@@ -39,8 +41,81 @@ struct StatusPayload: Decodable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case nowMs, headline, accounts, events, actionToken, resumeTasks, jobs, recentWork, recentWorkState, resetSignals, resetTracking, compaction, notificationPreferences, accountPool
+        case nowMs, headline, accounts, events, actionToken, resumeTasks, jobs, recentWork, recentWorkState, hostGoals, resetSignals, resetTracking, compaction, notificationPreferences, accountPool
     }
+}
+
+struct HostGoalsPayload: Decodable {
+    let items: [HostGoalLinkSummary]
+}
+
+/// The host owns the objective and goal status. QuotaPie only observes the
+/// explicitly linked session and the separate local resume conditions.
+struct HostGoalLinkSummary: Decodable, Identifiable {
+    let id: String
+    let taskId: String
+    let provider: String
+    let account: String
+    let accountLabel: String
+    let projectLabel: String
+    let readState: String
+    let objective: String?
+    let hostStatus: String?
+    let observedAtMs: Double?
+    let expiresAtMs: Double?
+    let resumeState: String
+
+    func displayReadState(at nowMs: Double, transportUnavailable: Bool) -> String {
+        if readState == "account_changed" { return "account_changed" }
+        if transportUnavailable { return "stale" }
+        if let expiresAtMs, expiresAtMs <= nowMs { return "stale" }
+        guard ["loading", "ready", "no_goal", "unsupported", "error", "stale"].contains(readState) else {
+            return "unknown"
+        }
+        if readState == "ready" {
+            guard let observedAtMs, observedAtMs > 0, observedAtMs <= nowMs,
+                  let expiresAtMs, expiresAtMs > observedAtMs else { return "stale" }
+            guard provider == "codex", let objective, !objective.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let hostStatus, Self.hostStates.contains(hostStatus) else { return "unknown" }
+        }
+        return readState
+    }
+
+    func visibleObjective(at nowMs: Double, transportUnavailable: Bool) -> String? {
+        guard ["ready", "error", "stale"].contains(readState),
+              ["ready", "error", "stale"].contains(displayReadState(at: nowMs, transportUnavailable: transportUnavailable)) else {
+            return nil
+        }
+        return objective
+    }
+
+    var hostStatusTitle: String {
+        guard let hostStatus, Self.hostStates.contains(hostStatus) else { return Strings.t("goals.host.unknown") }
+        return Strings.t("goals.host." + hostStatus)
+    }
+
+    func resumeStatusTitle(at nowMs: Double, transportUnavailable: Bool) -> String {
+        let state = displayReadState(at: nowMs, transportUnavailable: transportUnavailable)
+        if ["no_goal", "unsupported"].contains(state) {
+            if ["waiting", "approved", "resumed", "dismissed"].contains(resumeState) {
+                return Strings.t("goals.resume." + resumeState)
+            }
+            return Strings.t("goals.resume.reviewInWork")
+        }
+        guard state == "ready", ["waiting", "ready", "approved", "resumed", "dismissed"].contains(resumeState) else {
+            return Strings.t("goals.resume.unknown")
+        }
+        return Strings.t("goals.resume." + resumeState)
+    }
+
+    func canReview(_ tasks: [ResumeTask], at nowMs: Double, transportUnavailable: Bool) -> Bool {
+        ["ready", "no_goal", "unsupported"].contains(displayReadState(at: nowMs, transportUnavailable: transportUnavailable))
+            && id == taskId && UUID(uuidString: taskId) != nil
+            && ["waiting", "ready", "approved"].contains(resumeState)
+            && tasks.contains { $0.id == taskId && $0.provider == provider && $0.account == account && $0.isActive }
+    }
+
+    private static let hostStates = ["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"]
 }
 
 /// Recent local activity is evidence for choosing a session to open; it does

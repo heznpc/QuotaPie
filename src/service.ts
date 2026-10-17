@@ -1,4 +1,5 @@
 import { AccountBindingStore } from "./storage/account-binding-store";
+import { HostGoalLinkStore, HostGoalLinkError, type HostGoalLink, type HostGoalLinkSummary } from "./host-goals";
 import { RecentWorkIndex, type RecentWorkSummary } from "./recent-work";
 import { codexAccountDisplay } from "./account-display";
 import { notificationAllowed, type NotificationPreferencesPatch } from "./notification-preferences";
@@ -21,7 +22,7 @@ import { ClaudeSessionStore } from "./storage/claude-session-store";
 import { CollectionStore } from "./storage/collection-store";
 import type { QuotaStorage } from "./storage/database";
 import { ResumeTaskStore, ResumeTaskStoreError } from "./storage/resume-task-store";
-import { CodexAppServerClient, CodexSnapshotUnavailableError } from "./providers/codex-appserver";
+import { CodexAppServerClient, CodexSnapshotUnavailableError, CodexGoalUnsupportedError } from "./providers/codex-appserver";
 import { ClaudeUsageError, fetchClaudeUsage, mapClaudeUsage, readClaudeCredentialsAsync } from "./providers/claude-oauth";
 import { claudeProfileEnvironment } from "./providers/claude-profile";
 import { resolveLocale, t } from "./i18n";
@@ -105,6 +106,9 @@ export class QuotaPieService {
   readonly collection: CollectionStore;
   readonly claudeSessions: ClaudeSessionStore;
   readonly resumeTasks: ResumeTaskStore;
+  readonly hostGoalLinks: HostGoalLinkStore;
+  private goalClients = new Map<string, CodexAppServerClient>();
+  private hostGoalRefresh: Promise<void> | null = null;
   readonly jobs: JobStore;
   readonly jobRunner: ManagedJobRunner;
   private jobsEnabled = false;
@@ -140,6 +144,7 @@ export class QuotaPieService {
     this.collection = new CollectionStore(this.storage);
     this.claudeSessions = new ClaudeSessionStore(this.storage);
     this.resumeTasks = new ResumeTaskStore(this.storage);
+    this.hostGoalLinks = new HostGoalLinkStore(this.storage);
     this.jobs = new JobStore(this.storage);
     this.jobRunner = new ManagedJobRunner(this.jobs, config, {
       changed: () => { void this.deliverJobNotifications().catch(() => undefined); },
@@ -751,6 +756,117 @@ export class QuotaPieService {
     return !!profile && this.accountBindings.matches("resume", task.id, codexProfileRoot(profile));
   }
 
+  private goalClient(profile: CodexAccountConfig): CodexAppServerClient {
+    let client = this.goalClients.get(profile.id);
+    if (!client) {
+      // Goal lookups cannot hold up the quota collector, and a caller's
+      // inherited CODEX_HOME must not redefine the configured default profile.
+      client = new CodexAppServerClient(this.config.collection.codexCommand, profile.id, 8_000, codexProfileRoot(profile));
+      this.goalClients.set(profile.id, client);
+    }
+    return client;
+  }
+
+  async linkHostGoal(taskId: string, nativeId: string): Promise<HostGoalLinkSummary> {
+    const task = this.resumeTasks.get(taskId);
+    if (!task || task.provider !== "codex" || !["waiting", "ready", "approved"].includes(task.state)) {
+      throw new HostGoalLinkError("host_goal_active_codex_task_required");
+    }
+    const threadId = normalizeSessionId(nativeId);
+    if (resumeTaskKey("codex", task.account, threadId) !== task.taskKey) {
+      throw new HostGoalLinkError("host_goal_session_mismatch");
+    }
+    if (!this.resumeAccountMatches(task)) throw new HostGoalLinkError("host_goal_account_changed");
+    const profile = this.config.accounts.codex.find(p => p.id === task.account && p.enabled)!;
+    let target;
+    try { target = await findCodexResumeTarget(this.goalClient(profile), task.account, task.taskKey); }
+    catch { throw new HostGoalLinkError("host_goal_session_unavailable"); }
+    if (!target || target.nativeId !== threadId) throw new HostGoalLinkError("host_goal_session_unavailable");
+    if (!this.resumeAccountMatches(task)) throw new HostGoalLinkError("host_goal_account_changed");
+    const current = this.resumeTasks.get(taskId);
+    if (!current || !["waiting", "ready", "approved"].includes(current.state)) {
+      throw new HostGoalLinkError("host_goal_active_codex_task_required");
+    }
+    const link = this.hostGoalLinks.link(taskId, threadId);
+    await this.readHostGoalLink(link);
+    const summary = this.hostGoalStatus().items.find(item => item.taskId === taskId);
+    if (this.hostGoalLinks.get(taskId)?.revision !== link.revision || !summary) {
+      throw new HostGoalLinkError("host_goal_link_changed");
+    }
+    return summary;
+  }
+
+  unlinkHostGoal(taskId: string): void {
+    this.hostGoalLinks.unlink(taskId);
+  }
+
+  private async readHostGoalLink(link: HostGoalLink): Promise<void> {
+    if (this.closing) return;
+    const task = this.resumeTasks.get(link.task_id);
+    if (!task) return;
+    if (!this.resumeAccountMatches(task)) {
+      this.hostGoalLinks.record(link, "account_changed", Date.now());
+      return;
+    }
+    const profile = this.config.accounts.codex.find(p => p.id === task.account && p.enabled)!;
+    try {
+      const goal = await this.goalClient(profile).readThreadGoal(link.thread_id);
+      // A null goal alone cannot establish that the linked thread still exists.
+      if (goal === null && !await findCodexResumeTarget(this.goalClient(profile), task.account, task.taskKey)) {
+        throw new HostGoalLinkError("host_goal_session_unavailable");
+      }
+      if (this.closing) return;
+      if (!this.resumeAccountMatches(task)) {
+        this.hostGoalLinks.record(link, "account_changed", Date.now());
+        return;
+      }
+      this.hostGoalLinks.record(link, goal ? "ready" : "no_goal", Date.now(), goal);
+    } catch (error) {
+      if (this.closing) return;
+      this.hostGoalLinks.record(link, !this.resumeAccountMatches(task) ? "account_changed" :
+        error instanceof CodexGoalUnsupportedError ? "unsupported" : "error", Date.now());
+    }
+  }
+
+  refreshHostGoals(force = false): Promise<void> {
+    if (this.hostGoalRefresh) return this.hostGoalRefresh;
+    const work = (async () => {
+      this.hostGoalLinks.prune();
+      for (const link of this.hostGoalLinks.list()) {
+        if (this.closing) break;
+        const task = this.resumeTasks.get(link.task_id);
+        if (!task || !["waiting", "ready", "approved"].includes(task.state)) continue;
+        const interval = link.read_state === "unsupported" ? 300_000 : Math.max(30_000, this.config.collection.pollSeconds * 1_000);
+        if (!force && link.attempted_at_ms != null && Date.now() - link.attempted_at_ms < interval) continue;
+        await this.readHostGoalLink(link);
+      }
+    })();
+    this.hostGoalRefresh = work;
+    void work.finally(() => { if (this.hostGoalRefresh === work) this.hostGoalRefresh = null; }).catch(() => {});
+    return work;
+  }
+
+  hostGoalStatus(nowMs = Date.now()): { items: HostGoalLinkSummary[] } {
+    return { items: this.hostGoalLinks.list().flatMap(link => {
+      const task = this.resumeTasks.get(link.task_id);
+      if (!task) return [];
+      const accountMatches = this.resumeAccountMatches(task);
+      const expiresAtMs = link.observed_at_ms == null ? null :
+        link.observed_at_ms + this.config.collection.staleAfterSeconds * 1_000;
+      const stale = expiresAtMs != null && (nowMs >= expiresAtMs || link.observed_at_ms! > nowMs);
+      const readState = !accountMatches ? "account_changed" :
+        stale && ["ready", "no_goal"].includes(link.read_state) ? "stale" : link.read_state;
+      return [{ id: task.id, taskId: task.id, provider: "codex" as const,
+        account: task.account, accountLabel: this.accountLabel("codex", task.account), projectLabel: task.projectLabel,
+        readState, objective: accountMatches ? link.objective : null,
+        hostStatus: accountMatches ? link.host_status : null,
+        observedAtMs: accountMatches ? link.observed_at_ms : null,
+        expiresAtMs: accountMatches ? expiresAtMs : null,
+        resumeState: !accountMatches || (task.state === "ready" && !this.hasFreshResumeCapacity(task, nowMs))
+          ? "unknown" : task.state } satisfies HostGoalLinkSummary];
+    }) };
+  }
+
   async approveResumeTask(id: string, nowMs?: number): Promise<{
     task: ResumeTaskSummary;
     plan: ResumePlan;
@@ -1305,6 +1421,9 @@ export class QuotaPieService {
     // the wake schedule, all of which used to recompute it independently.
     const windows = this.analyses(nowMs);
     await this.updateResumeReadiness(windows, nowMs);
+    // Only explicitly linked sessions are read. Goal failures are isolated from
+    // quota readiness and never dispatch or complete a host turn.
+    void this.refreshHostGoals().catch(() => {});
     // Provider observations are timestamped when their asynchronous reads finish.
     // Never compare them with the time captured before those reads began.
     const jobsNowMs = Date.now();
@@ -1444,6 +1563,9 @@ export class QuotaPieService {
     this.stop();
     this.closing = true;
     this.nativeNotificationTransportAvailable = false;
+    await Promise.all([...this.goalClients.values()].map(client => client.close().catch(() => undefined)));
+    await this.hostGoalRefresh?.catch(() => undefined);
+    this.goalClients.clear();
     await this.jobRunner.close();
     await this.jobNotifications;
     await this.signalWork;

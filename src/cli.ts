@@ -24,6 +24,7 @@ import { configureAwakeHooks, releaseAwakeTask } from "./awake";
 import { runCompactionCodex } from "./codex-compaction";
 import { runJobsCommand } from "./jobs/cli";
 import { runPoolCommand } from "./account-pool";
+import { runHostGoalsCommand } from "./host-goals-cli";
 
 const ROOT = resolve(import.meta.dir, "..");
 const BIN = resolve(ROOT, "bin", "quotapie");
@@ -314,6 +315,7 @@ async function main(): Promise<number> {
 
   try {
     switch (command) {
+      case "goals": return await runHostGoalsCommand(args, service);
       case "jobs": return await runJobsCommand(args, service);
       case "signals": {
         if (args.includes("--refresh")) await service.signalCollector.poll(true);
@@ -431,6 +433,7 @@ async function main(): Promise<number> {
           const variable = provider === "codex" ? "CODEX_THREAD_ID" : "CLAUDE_SESSION_ID";
           throw new Error(t("cli.error.session-required", { variable }, outputLocale));
         }
+        if (args.includes("--goal") && provider !== "codex") throw new Error("host_goal_codex_only");
         const task = service.registerResumeTask({
           provider,
           account: resumeAccount(config, provider, selectedAccount, outputLocale),
@@ -444,10 +447,23 @@ async function main(): Promise<number> {
           ? resolveUserPath(config.accounts.codex.find(p => p.id === task.account)!.codexHome ?? "~/.codex")
           : resolveUserPath(config.accounts.claude.find(p => p.id === task.account)!.configDir);
         await releaseAwakeTask(provider, profileRoot, nativeId);
+        let hostGoal;
+        let hostGoalError: string | undefined;
+        if (args.includes("--goal")) {
+          try { hostGoal = await service.linkHostGoal(task.id, nativeId); }
+          catch (error) {
+            const code = error instanceof Error ? error.message : "";
+            hostGoalError = /^host_goal_[a-z_]+$/.test(code) ? code : "host_goal_link_failed";
+          }
+        }
+        // Keep --json a single document, including the registered task ID when
+        // the separate goal link fails so it can be retried explicitly.
         console.log(jsonOutput
-          ? JSON.stringify(task, null, 2)
+          ? JSON.stringify({ ...task, ...(hostGoal ? { hostGoal } : {}), ...(hostGoalError ? { hostGoalError } : {}) }, null, 2)
           : t("resume.registered", { label: task.projectLabel }, outputLocale));
-        return 0;
+        if (!jsonOutput && hostGoal) console.log(JSON.stringify({ hostGoal }, null, 2));
+        if (hostGoalError) console.error(`${hostGoalError}: ${task.id}`);
+        return hostGoalError ? 1 : 0;
       }
       case "doctor": {
         const checks: Array<{ check: string; ok: boolean; detail: string }> = [];

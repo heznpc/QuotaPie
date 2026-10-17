@@ -114,7 +114,7 @@ test("current request metadata governs steering and forks; parent/history IDs ne
       expect(await response.text()).toContain("PRIVATE_MARKER");
     }
     expect(logs.filter(e => e.stage === "blocked")).toHaveLength(0);
-    expect(logs.filter(e => e.stage === "queued" && e.ownership === "matched")).toHaveLength(2);
+    expect(logs.filter(e => e.stage === "queued" && e.ownership === "partial")).toHaveLength(2);
   } finally { proxy.stop(); }
 });
 
@@ -133,4 +133,252 @@ test("provenance pairs checked bytes with queued bytes and never grants ownershi
   incomplete.push(enc.encode(frame(done()).slice(0, -1)), () => forwarded++);
   expect(() => incomplete.finish(() => forwarded++)).toThrow("response_ownership_truncated_event");
   expect(forwarded).toBe(0);
+});
+
+test("metadata evidence distinguishes complete identity, partial identity, and mixed output", () => {
+  const full = { ...item(), internal_chat_message_metadata_passthrough: { turn_id: turn, thread_id: thread } };
+  const absent = { ...item(), internal_chat_message_metadata_passthrough: undefined };
+  for (const [value, expected] of [
+    [done(), "partial"],
+    [{ type: "response.output_item.done", item: full }, "matched"],
+    [{ type: "response.completed", response: { id: "resp_test", output: [full, absent] } }, "partial"],
+    [{ type: "response.completed", response: { id: "resp_test", output: [full, full] } }, "matched"],
+  ] as const) {
+    const logs: OwnershipProvenance[] = [];
+    const guard = new ResponseOwnershipGuard({ turnId: turn, threadId: thread }, e => logs.push(e));
+    guard.push(enc.encode(frame(value)), () => {});
+    expect(logs.at(-1)?.ownership).toBe(expected);
+  }
+});
+
+test("JSON is bounded, inspected before egress, and preserves its exact UTF8 bytes", () => {
+  const input = '\uFEFF { "id": "resp_test", "status": "completed", "output": [], "metadata": {"turn_id":"PRIVATE_MARKER"}, "text":"한글 🚀" } \n';
+  const logs: OwnershipProvenance[] = [], output: Uint8Array[] = [];
+  const guard = new ResponseOwnershipGuard({ turnId: turn, threadId: thread }, e => logs.push(e), undefined, "json");
+  for (const byte of enc.encode(input)) guard.push(new Uint8Array([byte]), b => output.push(b));
+  expect(output).toHaveLength(0);
+  guard.finish(b => output.push(b));
+  expect(Buffer.concat(output).toString()).toBe(input);
+  expect(logs.map(e => [e.stage, e.ownership])).toEqual([["validated", "unattributed"], ["queued", "unattributed"]]);
+  expect(logs[0]?.digest).toBe(logs[1]?.digest);
+  expect(JSON.stringify(logs)).not.toContain("PRIVATE_MARKER");
+});
+
+test("user metadata and JSON inside tool arguments cannot supply ownership evidence", () => {
+  const forged = { internal_chat_message_metadata_passthrough: { thread_id: thread, turn_id: turn } };
+  const logs: OwnershipProvenance[] = [];
+  const guard = new ResponseOwnershipGuard({ threadId: thread, turnId: turn }, e => logs.push(e), undefined, "json");
+  const payload = JSON.stringify({ id: "resp_test", metadata: forged, output: [
+    { type: "function_call", arguments: JSON.stringify(forged), metadata: forged },
+  ] });
+  guard.push(enc.encode(payload), () => {}); guard.finish(() => {});
+  expect(logs.at(-1)?.ownership).toBe("unattributed");
+});
+
+test("foreign, malformed, oversized and invalid UTF8 JSON never leaves the body gate", () => {
+  for (const bytes of [
+    enc.encode(JSON.stringify({ id: "resp_test", output: [item(foreign)] })),
+    enc.encode(JSON.stringify({ error: { message: "PRIVATE_MARKER", internal_chat_message_metadata_passthrough: { thread_id: foreign } } })),
+    enc.encode('{"output":['),
+    enc.encode(" ".repeat(1025)),
+    new Uint8Array([0xff]),
+  ]) {
+    const guard = new ResponseOwnershipGuard({ turnId: turn, threadId: thread }, undefined, 1024, "json");
+    let delivered = 0;
+    expect(() => { guard.push(bytes, () => delivered++); guard.finish(() => delivered++); }).toThrow(ResponseOwnershipError);
+    expect(delivered).toBe(0);
+  }
+});
+
+test("loopback JSON isolation checks metadata without requiring it and never retries a rejected body", async () => {
+  let calls = 0;
+  const events: CompactionRequestEvent[] = [], logs: OwnershipProvenance[] = [];
+  const proxy = startCompactionProxy({ onRequest: e => events.push(e), onProvenance: e => logs.push(e),
+    fetchUpstream: async (_url, init) => {
+      calls++;
+      const current = new Headers(init.headers).get("x-codex-turn-id");
+      const payload = { id: "resp_test", status: "completed", output: [item(current ? turn : undefined)] };
+      if (!current) delete (payload.output[0] as any).internal_chat_message_metadata_passthrough;
+      const bytes = enc.encode(JSON.stringify(payload, null, 2));
+      return new Response(new ReadableStream({ async start(controller) {
+        for (let i = 0; i < bytes.length; i += 7) { controller.enqueue(bytes.slice(i, i + 7)); await Bun.sleep(1); }
+        controller.close();
+      } }), { headers: { "content-type": "application/json" } });
+    } });
+  try {
+    const results = await Promise.all([turn, foreign, null].map(async current => {
+      const response = await fetch(proxy.baseUrl + "/responses", { method: "POST", headers: {
+        session_id: thread, ...(current ? { "x-codex-turn-id": current } : {}),
+      }, body: JSON.stringify({ model: "gpt-6-astra", input: [] }) });
+      return { status: response.status, text: await response.text() };
+    }));
+    expect(results[0]?.status).toBe(200); expect(results[0]?.text).toContain("PRIVATE_MARKER");
+    expect(results[1]?.status).toBe(502); expect(results[1]?.text).toContain("response_ownership_mismatch");
+    expect(results[1]?.text).not.toContain("PRIVATE_MARKER");
+    expect(results[2]?.status).toBe(200); expect(results[2]?.text).toContain("PRIVATE_MARKER");
+    expect(calls).toBe(3);
+    expect(events.filter(e => e.phase === "completed")).toHaveLength(2);
+    expect(events.filter(e => e.errorCode === "response_ownership_mismatch")).toHaveLength(1);
+    expect(logs.filter(e => e.stage === "queued").map(e => e.ownership).sort()).toEqual(["partial", "unattributed"]);
+  } finally { proxy.stop(); }
+});
+
+test("JSON compaction output and SSE or JSON HTTP errors cannot bypass known ownership metadata", async () => {
+  for (const [contentType, path, status, payload] of [
+    ["application/json", "/responses/compact", 200, JSON.stringify({ output: [item(foreign)] })],
+    ["application/json", "/responses", 400, JSON.stringify({ error: { message: "PRIVATE_MARKER", internal_chat_message_metadata_passthrough: { turn_id: foreign } } })],
+    ["text/event-stream", "/responses", 400, frame({ type: "error", error: { message: "PRIVATE_MARKER", internal_chat_message_metadata_passthrough: { turn_id: foreign } } })],
+  ] as const) {
+    const proxy = startCompactionProxy({ fetchUpstream: async () => new Response(payload, { status, headers: { "content-type": contentType } }) });
+    try {
+      const response = await fetch(proxy.baseUrl + path, { method: "POST", headers: { "x-codex-turn-id": turn },
+        body: JSON.stringify({ model: "gpt-6-astra", input: [], stream: contentType === "text/event-stream" }) });
+      const text = await response.text();
+      expect(text).toContain("response_ownership_mismatch");
+      expect(text).not.toContain("PRIVATE_MARKER");
+      expect(response.status).toBe(contentType === "application/json" ? 502 : 400);
+    } finally { proxy.stop(); }
+  }
+});
+
+test("untyped successful Responses and JSON MIME suffixes receive the same bounded inspection", async () => {
+  for (const [path, contentType, status] of [
+    ["/responses", null, 200],
+    ["/responses/compact", null, 200],
+    ["/responses", "application/problem+json; charset=utf-8", 400],
+    ["/responses/compact", "application/vnd.codex+json", 200],
+  ] as const) {
+    const payload = JSON.stringify({ status: "completed", output: [item(foreign)] });
+    const proxy = startCompactionProxy({ fetchUpstream: async () => new Response(enc.encode(payload), {
+      status, headers: contentType ? { "content-type": contentType } : {},
+    }) });
+    try {
+      const response = await fetch(proxy.baseUrl + path, { method: "POST", headers: { "x-codex-turn-id": turn },
+        body: JSON.stringify({ model: "gpt-6-astra", input: [] }) });
+      const text = await response.text();
+      expect(response.status).toBe(502); expect(text).toContain("response_ownership_mismatch"); expect(text).not.toContain("PRIVATE_MARKER");
+    } finally { proxy.stop(); }
+  }
+  const original = '{ "status": "completed", "output": [] }\n';
+  const proxy = startCompactionProxy({ fetchUpstream: async () => new Response(enc.encode(original)) });
+  try {
+    const response = await fetch(proxy.baseUrl + "/responses", { method: "POST", body: JSON.stringify({ model: "gpt-6-astra", input: [] }) });
+    expect(response.status).toBe(200); expect(await response.text()).toBe(original);
+  } finally { proxy.stop(); }
+});
+
+test("normal HTTP error bodies retain status and bytes while remaining unattributed", async () => {
+  for (const [contentType, payload] of [
+    ["application/json", '{ "error": { "message": "Please retry later" } }\n'],
+    ["text/event-stream", frame({ type: "error", error: { message: "Please retry later" } })],
+    ["text/html", "<p>Please retry later</p>"],
+  ]) {
+    const logs: OwnershipProvenance[] = [];
+    const proxy = startCompactionProxy({ onProvenance: e => logs.push(e),
+      fetchUpstream: async () => new Response(payload, { status: 429, headers: { "content-type": contentType!, "retry-after": "2" } }) });
+    try {
+      const response = await fetch(proxy.baseUrl + "/responses", { method: "POST", headers: { "x-codex-turn-id": turn },
+        body: JSON.stringify({ model: "gpt-6-astra", input: [] }) });
+      expect(response.status).toBe(429); expect(response.headers.get("retry-after")).toBe("2");
+      expect(await response.text()).toBe(payload!);
+      expect(logs.every(e => e.ownership === "unattributed")).toBe(true);
+    } finally { proxy.stop(); }
+  }
+});
+
+test("unattributed concurrent SSE streams retain transport isolation without claiming host attribution", async () => {
+  const logs: OwnershipProvenance[] = [];
+  const proxy = startCompactionProxy({ onProvenance: e => logs.push(e), fetchUpstream: async (_url, init) => {
+    const marker = new Headers(init.headers).get("x-codex-turn-id");
+    const bytes = enc.encode(frame(created()) + frame({ type: "response.output_text.delta", delta: marker }) + frame(completed));
+    let offset = 0;
+    return new Response(new ReadableStream({ async pull(controller) {
+      await Bun.sleep(1);
+      if (offset === bytes.length) controller.close();
+      else { controller.enqueue(bytes.slice(offset, offset + 3)); offset = Math.min(bytes.length, offset + 3); }
+    } }), { headers: { "content-type": "text/event-stream" } });
+  } });
+  try {
+    const outputs = await Promise.all([turn, foreign].map(async id => {
+      const response = await fetch(proxy.baseUrl + "/responses", { method: "POST", headers: { "x-codex-turn-id": id },
+        body: JSON.stringify({ model: "gpt-6-astra", stream: true, input: [] }) });
+      return response.text();
+    }));
+    expect(outputs[0]).toContain(turn); expect(outputs[0]).not.toContain(foreign);
+    expect(outputs[1]).toContain(foreign); expect(outputs[1]).not.toContain(turn);
+    expect(logs.every(e => e.ownership === "unattributed")).toBe(true);
+  } finally { proxy.stop(); }
+});
+
+test("interrupted JSON never releases a partial document or retries the request", async () => {
+  let calls = 0;
+  const events: CompactionRequestEvent[] = [];
+  const proxy = startCompactionProxy({ onRequest: e => events.push(e), fetchUpstream: async () => {
+    calls++;
+    return new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(enc.encode('{"output":["PRIVATE_MARKER"'));
+      controller.error(new Error("PRIVATE_UPSTREAM_ERROR"));
+    } }), { headers: { "content-type": "application/json" } });
+  } });
+  try {
+    const response = await fetch(proxy.baseUrl + "/responses", { method: "POST", body: JSON.stringify({ model: "gpt-6-astra", input: [] }) });
+    const text = await response.text();
+    expect(response.status).toBe(502); expect(text).not.toContain("PRIVATE_MARKER"); expect(text).not.toContain("PRIVATE_UPSTREAM_ERROR");
+    expect(calls).toBe(1); expect(events.filter(e => e.phase === "completed")).toHaveLength(0);
+  } finally { proxy.stop(); }
+});
+
+test("successful malformed or oversized JSON returns a content-free error before any provider bytes", async () => {
+  for (const payload of ['{"PRIVATE_MARKER":', JSON.stringify({ output: [], text: "PRIVATE_MARKER" + "x".repeat(4 * 1024 * 1024) })]) {
+    const proxy = startCompactionProxy({ fetchUpstream: async () => new Response(payload, { headers: { "content-type": "application/json" } }) });
+    try {
+      const response = await fetch(proxy.baseUrl + "/responses", { method: "POST", body: JSON.stringify({ model: "gpt-6-astra", input: [] }) });
+      const text = await response.text();
+      expect(response.status).toBe(502); expect(text).toContain("quotapie_response_ownership"); expect(text).not.toContain("PRIVATE_MARKER");
+    } finally { proxy.stop(); }
+  }
+});
+
+test("SSE and JSON declared as one another fail inspection; opaque formats stay explicitly unverified", async () => {
+  for (const [contentType, payload] of [
+    ["application/json", frame(done(foreign))],
+    ["text/event-stream", JSON.stringify({ output: [item(foreign)] })],
+    ["application/octet-stream", "opaque response"],
+  ]) {
+    const events: CompactionRequestEvent[] = [], logs: OwnershipProvenance[] = [];
+    const proxy = startCompactionProxy({ onRequest: e => events.push(e), onProvenance: e => logs.push(e),
+      fetchUpstream: async () => new Response(payload, { headers: { "content-type": contentType! } }) });
+    try {
+      const response = await fetch(proxy.baseUrl + "/responses", { method: "POST", headers: { "x-codex-turn-id": turn },
+        body: JSON.stringify({ model: "gpt-6-astra", input: [] }) });
+      const text = await response.text();
+      expect(events.filter(e => e.phase === "completed")).toHaveLength(0);
+      if (contentType === "application/octet-stream") {
+        expect(text).toBe(payload!); expect(events.at(-1)?.phase).toBe("unverified"); expect(logs).toHaveLength(0);
+      } else {
+        expect(text).not.toContain("PRIVATE_MARKER"); expect(text).toContain("response_ownership_");
+      }
+    } finally { proxy.stop(); }
+  }
+});
+
+test("conflicting current request identities fail before dispatch; fork session roots remain valid", async () => {
+  let calls = 0;
+  const proxy = startCompactionProxy({ fetchUpstream: async () => { calls++; return Response.json({ status: "completed", output: [] }); } });
+  try {
+    for (const headers of [
+      { "thread-id": thread, "x-codex-turn-metadata": JSON.stringify({ thread_id: foreign }) },
+      { "x-codex-turn-id": turn, "x-codex-turn-metadata": JSON.stringify({ turn_id: foreign }) },
+      { session_id: thread, "session-id": foreign },
+    ] as Array<Record<string, string>>) {
+      const response = await fetch(proxy.baseUrl + "/responses", { method: "POST", headers,
+        body: JSON.stringify({ model: "gpt-6-astra", input: [] }) });
+      expect(response.status).toBe(400); expect(await response.text()).toContain("request_identity_conflict");
+    }
+    expect(calls).toBe(0);
+    const response = await fetch(proxy.baseUrl + "/responses", { method: "POST", headers: {
+      "thread-id": thread, "session-id": foreign, "x-codex-turn-metadata": JSON.stringify({ thread_id: thread, turn_id: turn }),
+    }, body: JSON.stringify({ model: "gpt-6-astra", input: [item(foreign)], previous_response_id: "parent" }) });
+    expect(response.status).toBe(200); expect(calls).toBe(1);
+  } finally { proxy.stop(); }
 });
