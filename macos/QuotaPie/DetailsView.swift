@@ -74,6 +74,8 @@ struct DetailsView: View {
             }
         case .work:
             if model.focusedResumeTaskID != nil { pausedWork }
+            AutoResumeSection(model: model)
+            Divider()
             AutomaticWorkView(model: model)
             Divider()
             if let goals = model.payload?.hostGoals, !goals.items.isEmpty {

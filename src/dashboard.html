@@ -57,6 +57,13 @@
       .event .kind { color: var(--warm); }
       .empty { padding: 48px 24px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 18px; }
       .notice { color: #c2410c; font-size: 13px; margin: 4px 0 10px; }
+      #autoResume { margin: 24px 0; }
+      .auto-account, .auto-incident { padding: 12px 0; border-top: 1px solid var(--line); }
+      .auto-account label { display: flex; gap: 12px; align-items: center; cursor: pointer; }
+      .auto-account input { width: 18px; height: 18px; accent-color: var(--codex); }
+      .auto-incident code { display: block; overflow-wrap: anywhere; color: var(--muted); font-size: 12px; }
+      .auto-incident button { margin-top: 8px; padding: 6px 10px; color: var(--text); background: var(--line); border: 1px solid var(--muted); border-radius: 6px; cursor: pointer; }
+      .auto-incident button:disabled, .auto-account input:disabled { cursor: default; opacity: .5; }
       @media (max-width: 620px) {
         header { display: block; }
         .grid { grid-template-columns: 1fr; }
@@ -75,6 +82,7 @@
       </header>
       <section id="resetSignals"></section>
       <div id="providers" class="grid"></div>
+      <section id="autoResume" aria-live="polite"></section>
       <section class="events">
         <h2 id="whyChanged"></h2>
         <div id="events" class="muted"></div>
@@ -396,12 +404,81 @@
         if (d.balanceBefore != null && d.balanceAfter != null) bits.push(`${t("detail.credits")} ${d.balanceBefore}→${d.balanceAfter}`);
         return bits.length ? ` · ${bits.join(" · ")}` : "";
       };
+      const autoWords = LOCALE === "ko" ? {
+        title: "한도 회복 시 자동재개", description: "켜진 뒤 한도로 멈춘 대화만 같은 계정에서 한 번 이어갑니다.",
+        unsupported: "자동재개를 사용하려면 로컬 서비스를 업데이트하세요.", noAccounts: "사용할 수 있는 Codex 계정이 없습니다.",
+        empty: "한도 회복을 기다리는 대화가 아직 발견되지 않았습니다.", skip: "이 대화 건너뛰기", saving: "저장 중…",
+        failed: "변경 결과를 확인하지 못했습니다. 다시 시도하기 전에 상태를 새로고침하세요.",
+        scanError: "한도로 멈춘 대화를 확인하지 못했습니다.", scanWaiting: "첫 확인 대기", lastScan: "마지막 확인",
+        states: { waiting: "회복 대기", running: "1회 재개 중", resumed: "1회 재개 종료", skipped: "건너뜀", "needs-review": "확인 필요", unknown: "상태 미확인" },
+        reasons: { disabled: "이 계정의 자동재개가 꺼져 있습니다.", accountChanged: "연결된 계정이 바뀌었습니다. Codex에서 대화를 확인하세요.",
+          superseded: "한도로 멈춘 뒤 대화가 이미 진행됐습니다.", quota: "새 관측으로 한도 회복이 확인되기를 기다립니다.",
+          goal: "호스트 목표가 현재 이어하기를 허용하지 않습니다.", busy: "Codex가 아직 이 대화를 사용하고 있습니다.",
+          limit: "한 번 이어가기 횟수를 사용했습니다.", review: "Codex에서 대화를 열어 상태를 확인하세요." }
+      } : {
+        title: "Resume automatically when quota recovers", description: "After you turn this on, conversations stopped by quota limits continue once on the same account.",
+        unsupported: "Update the local service to use automatic quota resumption.", noAccounts: "No Codex accounts are available.",
+        empty: "No conversations waiting for quota recovery have been detected.", skip: "Skip this conversation", saving: "Saving…",
+        failed: "Could not confirm the change. Refresh the status before trying again.",
+        scanError: "Could not check for conversations stopped by quota limits.", scanWaiting: "Waiting for the first check", lastScan: "Last checked",
+        states: { waiting: "Waiting for recovery", running: "Resuming once", resumed: "One continuation ended", skipped: "Skipped", "needs-review": "Review needed", unknown: "Status unverified" },
+        reasons: { disabled: "Automatic resumption is off for this account.", accountChanged: "The account binding changed. Check the conversation in Codex.",
+          superseded: "The conversation has progressed since this quota failure.", quota: "Waiting for fresh quota recovery to be confirmed.",
+          goal: "The host goal does not currently allow continuation.", busy: "Codex is still using this conversation.",
+          limit: "The one-continuation allowance has been used.", review: "Open the conversation in Codex to review its status." }
+      };
+      const autoReason = (reason) => {
+        const keys = { "auto-resume-disabled": "disabled", "account-binding-changed": "accountChanged", superseded: "superseded",
+          "quota-recovery-unconfirmed": "quota", "subscription-quota-blocked": "quota", "reserve-reached": "quota", "quota-stale": "quota", "quota-unknown": "quota", "reset-unconfirmed": "quota",
+          "host-goal-not-active": "goal", "host-goal-stale": "goal", "host-goal-unavailable": "goal",
+          "native-writer-present": "busy", "native-turn-active": "busy", "work-turn-limit": "limit" };
+        const key = Object.hasOwn(keys, reason) ? keys[reason] : "review";
+        return autoWords.reasons[key];
+      };
+      const autoState = state => Object.hasOwn(autoWords.states, state) ? autoWords.states[state] : autoWords.states.unknown;
+      let latestStatus = null, statusAvailable = false, autoResumeSaving = false, autoResumeMessage = "", autoResumeRevision = 0;
+      function renderAutoResume() {
+        const section = document.getElementById("autoResume"), value = latestStatus?.autoResume;
+        const disabled = autoResumeSaving || !statusAvailable || !latestStatus?.actionToken ? "disabled" : "";
+        let contents = `<p class="muted">${autoWords.unsupported}</p>`;
+        if (value && Array.isArray(value.accounts) && Array.isArray(value.incidents)) {
+          contents = value.accounts.map(account => `<div class="auto-account"><label><input type="checkbox" data-auto-account="${escapeHtml(account.account)}" aria-label="${escapeHtml(autoWords.title + " · " + account.label)}" ${account.enabled === true ? "checked" : ""} ${disabled}><strong>${escapeHtml(account.label)}</strong></label>${account.lastError ? `<p class="notice">${account.lastError === "account-binding-changed" ? autoWords.reasons.accountChanged : autoWords.scanError}</p>` : account.enabled ? `<p class="muted">${account.lastScanAtMs ? `${autoWords.lastScan}: ${escapeHtml(exactTime(account.lastScanAtMs))}` : autoWords.scanWaiting}</p>` : ""}</div>`).join("") || `<p class="muted">${autoWords.noAccounts}</p>`;
+          contents += value.incidents.map(incident => `<div class="auto-incident"><div class="row"><strong>${escapeHtml(incident.projectLabel)}</strong><span class="badge">${escapeHtml(autoState(incident.state))}</span></div><span class="muted">${escapeHtml(value.accounts.find(account => account.account === incident.account)?.label ?? incident.account)} · ${escapeHtml(exactTime(incident.detectedAtMs))}</span><code>${escapeHtml(incident.threadId)}</code>${incident.reason && incident.reason !== "ready" ? `<p class="muted">${escapeHtml(autoReason(incident.reason))}</p>` : ""}${incident.state === "waiting" ? `<button type="button" data-auto-skip="${escapeHtml(incident.id)}" ${disabled}>${autoWords.skip}</button>` : ""}</div>`).join("") || `<p class="muted">${autoWords.empty}</p>`;
+        }
+        section.innerHTML = `<article class="provider"><h2>${autoWords.title}</h2><p class="muted">${autoWords.description}</p>${contents}<p role="status">${escapeHtml(autoResumeSaving ? autoWords.saving : autoResumeMessage)}</p></article>`;
+        section.onchange = event => {
+          const account = event.target?.dataset?.autoAccount;
+          if (typeof account === "string") void changeAutoResume({ action: "enabled", account, enabled: event.target.checked === true });
+        };
+        section.onclick = event => {
+          const id = event.target?.dataset?.autoSkip;
+          if (typeof id === "string") void changeAutoResume({ action: "skip", id });
+        };
+      }
+      async function changeAutoResume(body) {
+        if (autoResumeSaving || !statusAvailable || !latestStatus?.actionToken) return;
+        if (body.action === "skip" && !latestStatus.autoResume?.incidents.some(item => item.id === body.id && item.state === "waiting")) return;
+        autoResumeSaving = true; autoResumeMessage = ""; autoResumeRevision++; renderAutoResume();
+        try {
+          const response = await fetch("/api/auto-resume", { method: "POST", redirect: "error", cache: "no-store",
+            headers: { "content-type": "application/json", "x-quotapie-action-token": latestStatus.actionToken }, body: JSON.stringify(body) });
+          if (!response.ok) throw new Error("auto-resume-save-failed");
+          const reply = await response.json();
+          if (!Array.isArray(reply.autoResume?.accounts) || !Array.isArray(reply.autoResume?.incidents)) throw new Error("auto-resume-response-invalid");
+          latestStatus.autoResume = reply.autoResume;
+        } catch { autoResumeMessage = autoWords.failed; }
+        finally { autoResumeSaving = false; autoResumeRevision++; renderAutoResume(); }
+      }
       async function refresh() {
+        const autoRevision = autoResumeRevision;
         document.getElementById("subtitle").textContent = t("page.subtitle.basic");
         document.getElementById("whyChanged").textContent = t("page.whyChanged");
         try {
           const response = await fetch("/api/status", { cache: "no-store" });
           const data = await response.json();
+          if (response.ok === false) throw new Error("status-unavailable");
+          if (autoResumeSaving || autoRevision !== autoResumeRevision) data.autoResume = latestStatus?.autoResume;
+          latestStatus = data; statusAvailable = true; renderAutoResume();
           document.getElementById("updated").textContent = new Date(data.nowMs).toLocaleTimeString(DATE_LOCALE) + t("updated");
           // Render from accounts, not the legacy statuses projection: statuses
           // only carries accounts that already have windows, so a configured
@@ -434,6 +511,7 @@
             ? events.slice(0, 15).map((event) => `<div class="event"><span>${new Date(event.occurredAtMs).toLocaleString(DATE_LOCALE)}</span><span class="kind">${escapeHtml(enumText("event.label", event.kind))}</span><span>${escapeHtml(`${event.account} · ${eventMessage(event)}${eventDetails(event)}`)} · ${t("detail.confidence")} ${escapeHtml(enumText("confidence", event.confidence))}</span></div>`).join("")
             : t("noEvents");
         } catch (error) {
+          statusAvailable = false; renderAutoResume();
           document.getElementById("updated").textContent = t("failed");
         }
       }

@@ -75,7 +75,7 @@ function statusPayload() {
   };
 }
 
-async function render(language: string, payload = statusPayload()) {
+async function render(language: string, payload = statusPayload(), fetcher: (...args: any[]) => Promise<any> = async () => ({ json: async () => payload })) {
   const elements = new Map<string, FakeElement>();
   const element = (id: string) => {
     let value = elements.get(id);
@@ -89,7 +89,7 @@ async function render(language: string, payload = statusPayload()) {
   const context = createContext({
     navigator: { language, languages: [language] },
     document: { documentElement, getElementById: element },
-    fetch: async () => ({ json: async () => payload }),
+    fetch: fetcher,
     setInterval: () => 0,
   });
 
@@ -98,8 +98,98 @@ async function render(language: string, payload = statusPayload()) {
   runInContext(dashboardScript, context);
   await runInContext("refresh()", context);
 
-  return { documentElement, element };
+  return { documentElement, element, context };
 }
+
+describe("dashboard automatic quota resumption", () => {
+  const feature = () => ({ accounts: [{ account: "personal", label: '<img src=x onerror="bad()">', enabled: false,
+    enabledAtMs: null, lastScanAtMs: null, lastError: null }], incidents: ["waiting", "running", "resumed", "needs-review", "constructor"].map(state => ({
+    id: state, account: "personal", threadId: 'thread<unsafe>', projectLabel: '<script>bad()</script>', state,
+    reason: "private-error-text", detectedAtMs: Date.now(),
+  })) });
+
+  test("optional support, localized states, safe labels and waiting-only skip", async () => {
+    const legacy = await render("ko-KR");
+    expect(legacy.element("autoResume").innerHTML).toContain("로컬 서비스를 업데이트");
+    for (const language of ["en-US", "ko-KR"]) {
+      const page = await render(language, Object.assign(statusPayload(), { autoResume: feature(), actionToken: "fixture-token" }));
+      const html = page.element("autoResume").innerHTML;
+      expect(html).toContain(language === "ko-KR" ? "1회 재개 종료" : "One continuation ended");
+      expect(html).toContain(language === "ko-KR" ? "상태 미확인" : "Status unverified");
+      expect(html.match(/data-auto-skip=/g)).toHaveLength(1);
+      expect(html).toContain('data-auto-skip="waiting"');
+      expect(html).toContain("&lt;script&gt;");
+      expect(html).not.toContain("<script>");
+      expect(html).not.toContain("<img");
+      expect(html).not.toContain("private-error-text");
+    }
+    const changed = feature();
+    Object.assign(changed.accounts[0]!, { lastError: "account-binding-changed" });
+    const changedPage = await render("ko-KR", Object.assign(statusPayload(), { autoResume: changed }));
+    expect(changedPage.element("autoResume").innerHTML).toContain("연결된 계정이 바뀌었습니다");
+  });
+
+  test("authenticated enable/disable and skip, failed save, stale poll race", async () => {
+    const before = Object.assign(statusPayload(), { autoResume: feature(), actionToken: "fixture-token" });
+    const calls: Array<{ path: string; options: any }> = [];
+    let deferred: ((value: unknown) => void) | undefined, deferStatus = false, rejectMutation = false, failStatus = false;
+    const page = await render("ko-KR", before, async (path, options) => {
+      if (path === "/api/status") {
+        if (failStatus) throw new Error("offline");
+        if (deferStatus) return new Promise(resolve => { deferred = resolve; });
+        return { ok: true, json: async () => structuredClone(before) };
+      }
+      calls.push({ path, options });
+      if (rejectMutation) return { ok: false, json: async () => ({ error: "PRIVATE_ERROR_BODY" }) };
+      const reply = feature(), body = JSON.parse(options.body);
+      if (body.action === "enabled") reply.accounts[0]!.enabled = body.enabled;
+      if (body.action === "skip") reply.incidents.find(item => item.id === body.id)!.state = "skipped";
+      return { ok: true, json: async () => ({ autoResume: reply }) };
+    });
+    deferStatus = true;
+    const oldPoll = runInContext("refresh()", page.context);
+    await runInContext('changeAutoResume({action:"enabled",account:"personal",enabled:true})', page.context);
+    deferred!({ ok: true, json: async () => structuredClone(before) });
+    await oldPoll;
+    expect(page.element("autoResume").innerHTML).toContain('checked');
+    await runInContext('changeAutoResume({action:"enabled",account:"personal",enabled:false})', page.context);
+    expect(page.element("autoResume").innerHTML).not.toContain(' checked');
+    await runInContext('changeAutoResume({action:"skip",id:"running"})', page.context);
+    expect(calls).toHaveLength(2);
+    await runInContext('changeAutoResume({action:"skip",id:"waiting"})', page.context);
+    expect(calls).toHaveLength(3);
+    for (const { path, options } of calls) {
+      expect(path).toBe("/api/auto-resume");
+      expect(options.method).toBe("POST");
+      expect(options.headers["x-quotapie-action-token"]).toBe("fixture-token");
+      expect(options.redirect).toBe("error");
+    }
+    expect(JSON.parse(calls[2]!.options.body)).toEqual({ action: "skip", id: "waiting" });
+    rejectMutation = true;
+    await runInContext('changeAutoResume({action:"enabled",account:"personal",enabled:true})', page.context);
+    expect(page.element("autoResume").innerHTML).not.toContain(' checked');
+    expect(page.element("autoResume").innerHTML).toContain("변경 결과를 확인하지 못했습니다");
+    expect(page.element("autoResume").innerHTML).not.toContain("PRIVATE_ERROR_BODY");
+    failStatus = true;
+    await runInContext("refresh()", page.context);
+    const beforeOffline = calls.length;
+    await runInContext('changeAutoResume({action:"enabled",account:"personal",enabled:true})', page.context);
+    expect(calls).toHaveLength(beforeOffline);
+    expect(page.element("autoResume").innerHTML).toContain("disabled");
+  });
+
+  test("admission wait reasons stay informational and ready has no review prompt", async () => {
+    for (const reason of ["reserve-reached", "quota-stale", "quota-unknown", "reset-unconfirmed", "host-goal-stale", "host-goal-unavailable", "ready"]) {
+      const value = feature();
+      value.incidents = [{ ...value.incidents[0]!, reason }];
+      const page = await render("ko-KR", Object.assign(statusPayload(), { autoResume: value }));
+      const html = page.element("autoResume").innerHTML;
+      expect(html).not.toContain("Codex에서 대화를 열어 상태를 확인하세요");
+      if (reason === "ready") expect(html).not.toContain("호스트 목표가");
+      else expect(html).toContain(reason.startsWith("host-goal-") ? "호스트 목표가 현재 이어하기를 허용하지 않습니다" : "한도 회복이 확인되기를 기다립니다");
+    }
+  });
+});
 
 describe("dashboard localization", () => {
   test("speed controls hide analysis when absent or off, then show reserve timing when on", async () => {

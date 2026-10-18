@@ -4,6 +4,8 @@ export type WorkStatus = "waiting" | "running" | "turn-finished" | "objective-co
 export interface WorkBudget { reservePercent: number; maxUsagePercent: number; targetUsagePercent?: number }
 export interface WorkPolicyInput {
   id: string; provider: WorkProvider; account: string; profileKey: string; accountKey: string;
+  purpose?: "quota-resume";
+  quotaResume?: { turnId: string; stamp: string };
   nativeSessionId: string; cwd: string; model?: string; prompt: string; objective: string;
   completionCriteria: string[]; dispatchOwner: WorkOwner; enabled: boolean;
   trigger: "quota-ready" | "public-announcement" | "scheduled" | "forecast-probability" | "notify-only";

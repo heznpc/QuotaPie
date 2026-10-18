@@ -68,6 +68,22 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
       const allowedHosts = new Set(["127.0.0.1", "localhost", "::1", config.dashboard.host.toLowerCase()]);
       if (!hostname || !allowedHosts.has(hostname)) return json({ error: "invalid_host" }, 403);
       const url = new URL(request.url);
+      if(url.pathname === "/api/auto-resume") {
+        const origin=request.headers.get("origin");
+        if((origin!==null && origin!==url.origin) || !tokenMatches(request.headers.get("x-quotapie-action-token"))) return json({error:"forbidden"},403);
+        if(request.method!=="POST") return json({error:"method_not_allowed"},405);
+        try {
+          const body=await request.text();
+          if(body.length>1024) throw new Error("auto-resume-invalid-action");
+          const input=JSON.parse(body);
+          if(input?.action==="enabled" && typeof input.account==="string" && input.account.length<=128 &&
+            typeof input.enabled==="boolean" && Object.keys(input).length===3) await service.setAutoResumeEnabled(input.account,input.enabled);
+          else if(input?.action==="skip" && typeof input.id==="string" && input.id.length<=128 && Object.keys(input).length===2)
+            await service.autoResume.skip(input.id);
+          else throw new Error("auto-resume-invalid-action");
+          return json({autoResume:service.autoResume.status()});
+        } catch(error) {return json({error:error instanceof Error && /^[a-z-]{3,100}$/.test(error.message)?error.message:"auto-resume-action-failed"},409);}
+      }
       if (url.pathname === "/api/dots/connection") {
         if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token")))
           return json({ error: "forbidden" }, 403);
@@ -104,7 +120,10 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           if(url.pathname === "/api/work/execute") return json({execution:await service.work.dispatch(input.id,"dots",input.expectedRevision,input.requestId)});
           if(url.pathname !== "/api/work") return json({error:"not_found"},404);
           if(input.action === "save") return json(await service.saveWorkPolicy(input.policy,input.expectedRevision,input.requestId,input.hostGoalLinked,input.reviewedObjective));
-          if(input.action === "enabled") return json({policy:await service.work.setEnabled(input.id,input.enabled,input.expectedRevision,input.requestId)});
+          if(input.action === "enabled") {
+            if(service.work.store.get(input.id)?.purpose==="quota-resume") throw new Error("auto-resume-policy-readonly");
+            return json({policy:await service.work.setEnabled(input.id,input.enabled,input.expectedRevision,input.requestId)});
+          }
           return json({error:"work-action-invalid"},400);
         }catch(error){
           const reason=error instanceof Error && /^[a-z-]{3,100}$/.test(error.message)?error.message:"work-action-failed";
@@ -359,6 +378,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           // File inventory is opt-in; quota-only clients do not start a scan.
           ...service.recentWorkStatus(nowMs, request.headers.get("x-quotapie-recent-work") === "1"),
           resumeTasks: service.resumeTaskSummaries(),
+          autoResume: service.autoResume.status(),
           hostGoals: service.hostGoalStatus(nowMs),
           jobs: service.jobs.summaries(),
           notificationPreferences: service.notificationPreferences(),

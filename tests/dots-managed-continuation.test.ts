@@ -5,10 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config";
 import { resumeProfileKey, type ResumeGate } from "../src/resume-gate";
-import { prepareManagedContinuation, runManagedContinuation, spawnManagedChild, type ManagedRunOptions, type ManagedProcessPlan } from "../src/dots/managed-continuation";
+import { managedAccountPoolOptions, prepareManagedContinuation, runManagedContinuation, spawnManagedChild, type ManagedRunOptions, type ManagedProcessPlan } from "../src/dots/managed-continuation";
 import type { DotPolicy } from "../src/dots/store";
 import { readConfiguredThread, readExecutionConfiguration, type ProfileThreadStatus, type ThreadReadTransport } from "../src/dots/thread-reader";
 import type { SubscriptionGuardState } from "../src/subscription-guard";
+import { AccountPool, type PoolAccount } from "../src/account-pool";
+import { createCompactionHandler } from "../src/codex-compaction";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -127,6 +129,129 @@ test("unclosed turns and any existing native writer lock fail closed", async () 
   expect((await prepareManagedContinuation(f.config, f.policy, f.options)).ready).toBeTrue();
   writeFileSync(join(f.root, "thread-writer-locks", threadId + ".lock"), "");
   expect(await runManagedContinuation(f.input, f.options)).toMatchObject({ outcome: "failed", attempts: 0, reason: "native-writer-present" });
+  expect(f.plans).toHaveLength(0);
+});
+
+test("quota recovery checks the same incident before preparation and again before dispatch", async () => {
+  const f = fixture(); let reads = 0;
+  f.options.quotaResume = { turnId, stamp: "reviewed-failure" };
+  f.options.readQuotaResumeEvidence = async (config, account, id) => {
+    expect(config).toBe(f.config); expect(account).toBe("plus"); expect(id).toBe(threadId); reads++;
+    return { threadId, turnId, failedAtMs: now - 1000, stamp: "reviewed-failure", cwd: f.root, model: "gpt-6.1-sol" };
+  };
+  const proxy = f.options.proxy!;
+  f.options.proxy = (...args) => { expect(args[4]).toBe(true); return proxy(...args); };
+  expect(await runManagedContinuation(f.input, f.options)).toMatchObject({ outcome: "completed", attempts: 1 });
+  expect(reads).toBe(2); expect(f.plans).toHaveLength(1);
+});
+
+test("the final host-goal check runs after asynchronous evidence preparation and before spawn", async () => {
+  const f = fixture(); let reads = 0, checked = false;
+  f.options.quotaResume = { turnId, stamp: "reviewed-failure" };
+  f.options.readQuotaResumeEvidence = async () => {
+    reads++;
+    return { threadId, turnId, failedAtMs: now - 1000, stamp: "reviewed-failure", cwd: f.root, model: "gpt-6.1-sol" };
+  };
+  f.options.beforeSpawn = async () => {
+    expect(reads).toBe(2); expect(f.plans).toHaveLength(0);
+    await Promise.resolve(); checked = true;
+  };
+  const spawn = f.options.spawn!;
+  f.options.spawn = plan => { expect(checked).toBe(true); return spawn(plan); };
+  expect(await runManagedContinuation(f.input, f.options)).toMatchObject({ outcome: "completed", attempts: 1 });
+  expect(f.plans).toHaveLength(1);
+});
+
+test("a changed host goal or failed final read never spawns and exposes only a bounded reason", async () => {
+  for (const message of ["host-goal-not-active", "private host response and objective", "host-goal-" + "x".repeat(100)]) {
+    const f = fixture();
+    f.options.beforeSpawn = async () => { await Promise.resolve(); throw new Error(message); };
+    expect(await runManagedContinuation(f.input, f.options)).toMatchObject({ outcome: "failed", attempts: 0,
+      reason: message === "host-goal-not-active" ? message : "host-goal-unavailable" });
+    expect(f.plans).toHaveLength(0); expect(f.prompts).toHaveLength(0); expect(f.stopped).toBe(1);
+  }
+});
+
+test("authorization, source and config changes during the final host read are rechecked synchronously", async () => {
+  for (const changed of ["authorization", "source", "config"] as const) {
+    const f = fixture(); let configUnchanged = true;
+    f.options.readExecutionConfig = async () => ({ mcpServers: [], unchanged: () => configUnchanged });
+    f.options.beforeSpawn = async () => {
+      await Promise.resolve();
+      if (changed === "authorization") f.setAllowed(false);
+      else if (changed === "source") appendFileSync(f.path, event("task_started") + event("task_complete"));
+      else configUnchanged = false;
+    };
+    expect(await runManagedContinuation(f.input, f.options)).toMatchObject({ outcome: "failed", attempts: 0,
+      reason: "dispatch-precondition-changed" });
+    expect(f.plans).toHaveLength(0); expect(f.prompts).toHaveLength(0); expect(f.stopped).toBe(1);
+  }
+});
+
+test("quota recovery remains on its source account when global pooling is enabled or upstream returns 429", async () => {
+  const f = fixture();
+  f.config.accounts.codex.push({ id: "other", label: "Other", enabled: true, codexHome: f.root + "/other" });
+  const source: PoolAccount = { id: "plus", label: "Plus", identity: "plus-identity", accessToken: "fixture-source-token",
+    upstreamAccount: "fixture-source-workspace", tokenExpiresAt: now + 3600000, models: ["gpt-6-astra"], remaining: 80, validUntil: now + 60000 };
+  const other: PoolAccount = { ...source, id: "other", label: "Other", identity: "other-identity", accessToken: "fixture-other-token", remaining: 99 };
+  let globalPolicyReads = 0;
+  const readers = { accounts: (config: typeof f.config) => [source, other].filter(a => config.accounts.codex.some(p => p.id === a.id)),
+    policy: () => { globalPolicyReads++; return { enabled: true, accounts: ["plus", "other"] }; } };
+  const options = managedAccountPoolOptions(f.config, "plus", true, readers);
+  expect(options.accounts().map(a => a.id)).toEqual(["plus"]);
+  expect(options.policy()).toEqual({ enabled: false, accounts: [] }); expect(globalPolicyReads).toBe(0);
+  const path = join(f.root, "pool.sqlite3");
+  const pool = new AccountPool({ ...options, path, now: () => now, forkParent: () => ({ status: "known", parentId: null }) });
+  const selection = spyOn(pool, "selectAsync"); let ready = true, calls = 0;
+  const state = () => ({ version: 1 as const, ready, reason: ready ? "ready" : "quota-exhausted", checkedAtMs: now,
+    account: "plus", profileKey: f.policy.profileKey, windows: [] });
+  const handler = createCompactionHandler({ accountPool: pool,
+    subscriptionGuard: { intervalMs: 500, check: state, checkIdentity: state },
+    fetchUpstream: async (_url, init) => {
+      calls++;
+      expect(new Headers(init.headers).get("authorization")).toBe("Bearer fixture-source-token");
+      expect(new Headers(init.headers).get("chatgpt-account-id")).toBe("fixture-source-workspace");
+      return Response.json({ error: { message: "Synthetic quota rejection" } }, { status: 429 });
+    } });
+  const request = () => handler.fetch(new Request(`http://localhost${handler.prefix}/responses`, { method: "POST",
+    headers: { authorization: "Bearer fixture-source-token", "chatgpt-account-id": "fixture-source-workspace", "thread-id": threadId },
+    body: JSON.stringify({ model: "gpt-6-astra", input: [{ role: "user", content: "Synthetic continuation" }] }) }));
+  try {
+    let response = await request(); await response.text(); expect(response.status).toBe(429); expect(calls).toBe(1);
+    expect(selection).not.toHaveBeenCalled();
+    ready = false; response = await request(); await response.text(); expect(response.status).toBeGreaterThanOrEqual(400); expect(calls).toBe(1);
+    ready = true;
+    const db = new Database(path);
+    db.run("INSERT INTO bindings VALUES (?,?,?,?,?,?,?)", ["plus", threadId, "other", other.identity, source.identity, "Other", now]); db.close();
+    response = await request(); await response.text(); expect(response.status).toBeGreaterThanOrEqual(400); expect(calls).toBe(1);
+    expect(selection).not.toHaveBeenCalled(); // Existing foreign bindings are held, never rerouted.
+  } finally { selection.mockRestore(); pool.close(); }
+});
+
+test("a superseded quota failure never starts a continuation", async () => {
+  for (const changeAt of [1, 2]) {
+    const f = fixture(); let reads = 0;
+    f.options.quotaResume = { turnId, stamp: "reviewed-failure" };
+    f.options.readQuotaResumeEvidence = async () => ++reads >= changeAt ? null :
+      { threadId, turnId, failedAtMs: now - 1000, stamp: "reviewed-failure", cwd: f.root, model: "gpt-6.1-sol" };
+    expect(await runManagedContinuation(f.input, f.options)).toMatchObject({ outcome: "failed", attempts: 0, reason: "quota-resume-evidence-changed" });
+    expect(f.plans).toHaveLength(0); expect(f.prompts).toHaveLength(0);
+  }
+});
+
+test("quota recovery rejects changed incident identity and catches a final synchronous rollout change", async () => {
+  for (const patch of [{ stamp: "different" }, { turnId: claimId }, { threadId: claimId }]) {
+    const f = fixture(); f.options.quotaResume = { turnId, stamp: "reviewed-failure" };
+    f.options.readQuotaResumeEvidence = async () => ({ threadId, turnId, failedAtMs: now - 1000,
+      stamp: "reviewed-failure", cwd: f.root, model: "gpt-6.1-sol", ...patch });
+    expect(await runManagedContinuation(f.input, f.options)).toMatchObject({ outcome: "failed", attempts: 0, reason: "quota-resume-evidence-changed" });
+    expect(f.plans).toHaveLength(0);
+  }
+  const f = fixture(); f.options.quotaResume = { turnId, stamp: "reviewed-failure" };
+  f.options.readQuotaResumeEvidence = async () => ({ threadId, turnId, failedAtMs: now - 1000, stamp: "reviewed-failure", cwd: f.root, model: "gpt-6.1-sol" });
+  const proxy = f.options.proxy!;
+  f.options.proxy = (...args) => { appendFileSync(f.path, event("task_started")); return proxy(...args); };
+  expect(await runManagedContinuation(f.input, f.options)).toMatchObject({ outcome: "failed", attempts: 0 });
   expect(f.plans).toHaveLength(0);
 });
 

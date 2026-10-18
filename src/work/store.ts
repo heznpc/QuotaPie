@@ -104,7 +104,7 @@ export class WorkStore {
       const prior = this.get(input.id);
       if ((prior?.revision ?? null) !== expectedRevision) throw new WorkRevisionConflict(prior);
       if (prior?.state.activeExecutionId) {
-        const keys = ["provider", "account", "profileKey", "accountKey", "nativeSessionId", "cwd", "model", "prompt", "objective", "completionCriteria", "dispatchOwner"] as const;
+        const keys = ["provider", "account", "profileKey", "accountKey", "nativeSessionId", "cwd", "model", "prompt", "objective", "completionCriteria", "dispatchOwner", "purpose", "quotaResume"] as const;
         if (keys.some(key => JSON.stringify(input[key]) !== JSON.stringify(prior[key]))) throw new Error("work-active-binding-change");
       }
       if (prior?.state.status === "objective-completed" && input.enabled) throw new Error("work-objective-already-completed");
@@ -245,6 +245,7 @@ export class WorkStore {
         policy.state.pendingAccountingByBucket = Object.fromEntries(Object.keys(policy.budgetByBucket).map(bucket => [bucket, nowMs]));
       }
       if (result.status === "objective-completed") { policy.enabled = false; policy.revision++; }
+      else if (policy.purpose === "quota-resume" && policy.enabled) { policy.enabled = false; policy.revision++; }
       if (result.status === "quota-blocked") {
         policy.state.quotaBlockedAtMs = nowMs;
         policy.state.quotaBlockedEpochs = Object.fromEntries(Object.entries(policy.state.baselines).map(([key, value]) => [key, value.epoch]));
@@ -341,6 +342,16 @@ function validate(input: WorkPolicyInput) {
     || typeof input.enabled !== "boolean") throw new Error("work-invalid-policy");
   if (!Array.isArray(input.completionCriteria) || !input.completionCriteria.length || input.completionCriteria.some(c => typeof c !== "string" || !c.trim())) throw new Error("work-completion-criteria-required");
   if (!Number.isInteger(input.maxTurns) || input.maxTurns < 1) throw new Error("work-invalid-turn-limit");
+  if (input.purpose !== undefined && input.purpose !== "quota-resume") throw new Error("work-invalid-purpose");
+  if (input.purpose === "quota-resume") {
+    const evidence = input.quotaResume;
+    if (input.provider !== "codex" || input.dispatchOwner !== "local" || input.trigger !== "quota-ready" || input.maxTurns !== 1 ||
+        !evidence || typeof evidence !== "object" || Array.isArray(evidence) ||
+        Object.keys(evidence).some(key => !["turnId", "stamp"].includes(key)) ||
+        typeof evidence.turnId !== "string" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(evidence.turnId) ||
+        typeof evidence.stamp !== "string" || !evidence.stamp.trim() || evidence.stamp.length > 4096 || /[\u0000-\u001f\u007f]/.test(evidence.stamp))
+      throw new Error("work-invalid-quota-resume");
+  } else if (input.quotaResume !== undefined) throw new Error("work-invalid-quota-resume");
   for (const value of [input.maxDurationSeconds, input.maxTotalDurationSeconds, input.expiresAtMs]) if (!Number.isFinite(value) || value <= 0) throw new Error("work-invalid-limit");
   if (!Number.isFinite(input.priority) || !Number.isFinite(input.resetWithinMinutes) || input.resetWithinMinutes < 0) throw new Error("work-invalid-policy");
   if (input.workDeadline !== undefined && (!Number.isFinite(input.workDeadline) || input.workDeadline <= 0)) throw new Error("work-invalid-deadline");

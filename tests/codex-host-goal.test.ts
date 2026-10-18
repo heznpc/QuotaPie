@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CodexAppServerClient, CodexGoalUnsupportedError, CodexSnapshotUnavailableError } from "../src/providers/codex-appserver";
+import { CodexAppServerClient, CodexGoalUnsupportedError, CodexSnapshotUnavailableError, CodexTurnUnsupportedError } from "../src/providers/codex-appserver";
 
 const threadId = "11111111-2222-4333-8444-555555555555";
 const goal = {
@@ -43,6 +43,16 @@ for await (const line of createInterface({ input: process.stdin })) {
     }
     result = state.result;
   }
+  if (req.method === 'thread/turns/list') {
+    if (state.accountRace) writeFileSync(path, JSON.stringify({ ...state, email: 'changed@example.invalid', accountRace: false }));
+    if (state.credentialRace) writeFileSync(home + '/auth.json', '{"changed":true}');
+    if (state.turnError) {
+      console.log(JSON.stringify({ id: req.id, error: { code: state.turnError, message: 'Synthetic turn failure' } }));
+      continue;
+    }
+    result = state.turnResult;
+  }
+  if (req.method === 'thread/list') result = state.threadResult;
   console.log(JSON.stringify({ id: req.id, result }));
 }
 `, { mode: 0o700 });
@@ -118,5 +128,60 @@ test.each([
 ])("invalid or mismatched goal metadata is never accepted", async result => {
   await withFixture({ result }, async f => {
     await expect(f.client.readThreadGoal(threadId)).rejects.toThrow("invalid response");
+  });
+});
+
+const turn = { id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", status: "failed", completedAt: 1_800_000_000,
+  items: [], itemsView: "notLoaded", error: { codexErrorInfo: "usageLimitExceeded", message: "private failure text" } };
+
+test("latest turn reads request no items and preserve only typed incident metadata between identity checks", async () => {
+  await withFixture({ turnResult: { data: [{ ...turn, extra: "private transcript" }] } }, async f => {
+    expect(await f.client.readLatestTurn(threadId)).toEqual({ threadId, turnId: turn.id, status: "failed",
+      errorCode: "usageLimitExceeded", completedAtMs: 1_800_000_000_000 });
+    expect(f.requests().map(r => r.method)).toEqual(["initialize", "account/read", "thread/turns/list", "account/read"]);
+    expect(f.requests().find(r => r.method === "thread/turns/list").params).toEqual({ threadId, limit: 1, sortDirection: "desc", itemsView: "notLoaded" });
+  });
+});
+
+test.each(["completed", "interrupted", "inProgress"])("latest turn preserves non-quota state %s", async status => {
+  await withFixture({ turnResult: { data: [{ ...turn, status, error: null, completedAt: null }] } }, async f => {
+    expect(await f.client.readLatestTurn(threadId)).toMatchObject({ status, errorCode: null, completedAtMs: null });
+  });
+});
+
+test("missing, unsupported and failed turn lookups are distinct", async () => {
+  await withFixture({ turnResult: { data: [] } }, async f => { expect(await f.client.readLatestTurn(threadId)).toBeNull(); });
+  await withFixture({ turnError: -32601 }, async f => {
+    await expect(f.client.readLatestTurn(threadId)).rejects.toBeInstanceOf(CodexTurnUnsupportedError);
+  });
+  await withFixture({ turnError: -32603 }, async f => {
+    await expect(f.client.readLatestTurn(threadId)).rejects.toThrow();
+  });
+});
+
+test.each([{ noIdentity: true }, { identityError: -32601 }, { identityError: -32603 }, { accountRace: true }, { credentialRace: true }])(
+  "turn evidence rejects missing or changed account identity", async state => {
+    await withFixture({ turnResult: { data: [turn] }, ...state }, async f => {
+      await expect(f.client.readLatestTurn(threadId)).rejects.toBeInstanceOf(CodexSnapshotUnavailableError);
+    });
+  });
+
+test.each([
+  { data: [turn, turn] }, {}, null, { data: [{ ...turn, id: "not-a-uuid" }] },
+  { data: [{ ...turn, status: "unknown" }] }, { data: [{ ...turn, completedAt: -1 }] },
+  { data: [{ ...turn, completedAt: 1.25 }] }, { data: [{ ...turn, itemsView: "full" }] },
+  { data: [{ ...turn, items: [{ text: "private body" }] }] },
+  { data: [{ ...turn, status: "completed" }] },
+])("invalid latest turn payload cannot become an eligible quota incident", async turnResult => {
+  await withFixture({ turnResult }, async f => { await expect(f.client.readLatestTurn(threadId)).rejects.toThrow("invalid response"); });
+});
+
+test("thread list exposes valid millisecond update times without preview text", async () => {
+  await withFixture({ threadResult: { data: [{ id: threadId, cwd: "/fixture", updatedAt: 1_800_000_000, preview: "private" },
+    { id: turn.id, cwd: "/fixture", updatedAt: "invalid" }] } }, async f => {
+    expect((await f.client.listThreads()).data).toEqual([
+      { id: threadId, cwd: "/fixture", name: null, updatedAtMs: 1_800_000_000_000 },
+      { id: turn.id, cwd: "/fixture", name: null },
+    ]);
   });
 });

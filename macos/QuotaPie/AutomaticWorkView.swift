@@ -33,10 +33,11 @@ struct AutomaticWorkView: View {
             if let error { Text(error).foregroundStyle(.red).font(.caption) }
             if busy { ProgressView().controlSize(.small) }
             if let data {
-                ForEach(data.policies) { policy in
+                let editablePolicies = data.policies.filter(\.isUserEditable)
+                ForEach(editablePolicies) { policy in
                     policyRow(policy)
                 }
-                if data.policies.isEmpty { Text(Strings.t("automatic.empty")).foregroundStyle(.secondary) }
+                if editablePolicies.isEmpty { Text(Strings.t("automatic.empty")).foregroundStyle(.secondary) }
                 if draft == nil {
                     Button(Strings.t("automatic.create")) {
                         guard let account = data.accounts.first else { return }

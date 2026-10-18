@@ -244,6 +244,57 @@ test("managed work that can run or has an unresolved claim prevents any service 
   }
 });
 
+test("an enabled quota-recovery scanner prevents all process stops even before its first incident", async () => {
+  const f = fixture(), read = f.deps.json!;
+  const beforeJobs = [...f.jobs], beforePlists = f.agents.map(path => readFileSync(path, "utf8"));
+  f.deps.json = async (url, options) => url.endsWith("/api/status")
+    ? {actionToken:"fixture-only-token",jobs:[],resumeTasks:[],autoResume:{
+        accounts:[{account:"inactive",enabled:false},{account:"active",enabled:true}],incidents:[],
+      }} : read(url, options);
+  try {
+    expect(f.calls.filter(command => command[1] === "bootout")).toHaveLength(0);
+    await expect(f.run()).rejects.toThrow("Managed work is enabled");
+    expect(f.calls.filter(command => command[1] === "bootout" || command[1] === "bootstrap"
+      || command[0] === "/bin/kill" && command[1] !== "-0")).toHaveLength(0);
+    expect([...f.jobs]).toEqual(beforeJobs);
+    expect(f.agents.map(path => readFileSync(path, "utf8"))).toEqual(beforePlists);
+    expect(readFileSync(join(f.runtime, "src/cli.ts"), "utf8")).toBe("old-runtime");
+    expect(readFileSync(join(f.app, "Contents/MacOS/QuotaPie"), "utf8")).toBe("old-app");
+    expect(readFileSync(f.config, "utf8")).toBe(f.configText);
+  } finally { f.close(); }
+});
+
+test("disabled scanners and older collectors without auto-resume remain installable", async () => {
+  for (const autoResume of [undefined, {accounts:[],incidents:[]}, {
+    accounts:[{account:"personal",enabled:false}],incidents:[{state:"resumed"},{state:"skipped"}],
+  }]) {
+    const f = fixture(), read = f.deps.json!;
+    f.deps.json = async (url, options) => url.endsWith("/api/status")
+      ? {actionToken:"fixture-only-token",jobs:[],resumeTasks:[],...(autoResume === undefined ? {} : {autoResume})}
+      : read(url, options);
+    try { expect((await f.run()).installed).toBe(true); }
+    finally { f.close(); }
+  }
+});
+
+test("malformed scanner state never permits stopping the running installation", async () => {
+  for (const autoResume of [null, [], {}, {accounts:[],incidents:null}, {accounts:{},incidents:[]},
+    {accounts:[{account:"personal",enabled:"false"}],incidents:[]},
+    {accounts:[{account:"personal"}],incidents:[]}, {accounts:[{enabled:false}],incidents:[]},
+    {accounts:[],incidents:[{state:"unknown"}]}, {accounts:[],incidents:[null]},
+  ]) {
+    const f = fixture(), read = f.deps.json!, beforeJobs = [...f.jobs];
+    f.deps.json = async (url, options) => url.endsWith("/api/status")
+      ? {actionToken:"fixture-only-token",jobs:[],resumeTasks:[],autoResume} : read(url, options);
+    try {
+      await expect(f.run()).rejects.toThrow("Managed work state could not be verified");
+      expect(f.calls.filter(command => command[1] === "bootout" || command[1] === "bootstrap"
+        || command[0] === "/bin/kill" && command[1] !== "-0")).toHaveLength(0);
+      expect([...f.jobs]).toEqual(beforeJobs);
+    } finally { f.close(); }
+  }
+});
+
 test("pending, running and uncertain legacy jobs prevent service stops, while host-owned resume registrations do not", async () => {
   for (const state of ["waiting", "ready", "running", "review", "succeeded"]) {
     const f = fixture(), read = f.deps.json!;

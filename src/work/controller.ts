@@ -195,5 +195,6 @@ export class WorkController {
     }
   }
   async settle(){ await Promise.all([...this.running.values()].map(r=>r.promise)); }
+  ownsExecution(id: string): boolean { return this.running.has(id); }
   async close(){this.closed=true;for(const r of this.running.values())r.controller.abort();await this.settle();}
 }

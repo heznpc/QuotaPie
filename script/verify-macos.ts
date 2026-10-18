@@ -22,6 +22,9 @@ interface Observation {
   efficiencyInsightIDs?: string[];
   testOnlySavings?: boolean;
   automaticWorkLoadedPolicyIDs?: string[];
+  autoResumeControls?: Array<{kind:string;value:number;enabled:boolean;top:number}>;
+  renderedText?: Array<{text:string;top:number}>;
+  locale?: string;
   profileDockIcons?: string[];
   pendingResetIDs?: string[];
   excludedPostIDs?: string[];
@@ -89,10 +92,20 @@ async function run() {
     accountLabel: task.accountLabel, projectLabel: task.projectLabel, readState: "ready",
     objective: "Complete the linked host goal and verify the result", hostStatus: "paused",
     observedAtMs: Date.now(), expiresAtMs: Date.now() + 600_000, resumeState: task.state }));
+  const autoResume = {
+    accounts: ["default", "second"].map((account, index) => ({ account, label: index ? "Second" : "Main", enabled: index === 1,
+      enabledAtMs: index ? Date.now() - 3600000 : null, lastScanAtMs: index ? Date.now() : null, lastError: null })),
+    incidents: ["waiting", "running", "resumed", "skipped", "needs-review"].map((state, index) => ({
+      id: "fixture-" + state, account: "second", threadId: `10000000-0000-4000-8000-00000000000${index + 1}`,
+      projectLabel: "Quota recovery " + (index + 1), state, detectedAtMs: Date.now() - 60000,
+      reason: state === "needs-review" ? "account-binding-changed" : undefined,
+    })),
+  };
   // Independent expected values: no production account-selection or headline code.
   let payload = { actionToken: "isolated-fixture", headline: { kind: "normal", provider: "codex", account: "second", remainingPercent: 100 },
     accounts: [account("default", "Main", 18), account("second", "Second", 100)], events: [],
     resumeTasks: pausedTasks.slice(0, 0), jobs: managedJobs.slice(0, 0), hostGoals: {items: hostGoals.slice(0, 0)},
+    autoResume: undefined as typeof autoResume | undefined,
     recentWorkState: "ready", recentWork: [
       { id: "a".repeat(64), provider: "codex", account: "default", accountLabel: "Main", projectLabel: "Example project", tokenCount: 12400, lastActiveAtMs: Date.now() - 60_000 },
       { id: "b".repeat(64), provider: "claude", account: "default", accountLabel: "Main", projectLabel: "Another project", tokenCount: 8300, lastActiveAtMs: Date.now() - 3_600_000 },
@@ -160,6 +173,7 @@ async function run() {
       { name: "excluded-posts", running: ["main"], frontmost: null, initialSection: "resets", expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "session-efficiency", running: ["main"], frontmost: null, initialSection: "activity", expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "recent-work", running: ["main"], frontmost: null, initialSection: "work", expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "auto-resume", running: ["main"], frontmost: null, initialSection: "work", contentHeight: 1200, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "paused-overview", running: ["main"], frontmost: null, withTasks: true, contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "paused-work", running: ["main"], frontmost: null, withTasks: true, initialSection: "work", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "linked-work", running: ["main"], frontmost: null, withTasks: true, initialSection: "activity", focusedResumeTaskID: pausedTasks[0]!.id, expected: { account: "codex/default", remaining: 18, label: "Main" } },
@@ -171,6 +185,7 @@ async function run() {
       malformed = scenario.expected == null;
       payload.resumeTasks = "withTasks" in scenario ? pausedTasks : [];
       payload.jobs = "withTasks" in scenario ? managedJobs : [];
+      payload.autoResume = scenario.name === "auto-resume" ? autoResume : undefined;
       payload.hostGoals.items = "goalState" in scenario ? hostGoals.slice(0, scenario.goalState === "ready" ? 3 : 1)
         .map(goal => ({ ...goal, readState: scenario.goalState!,
           expiresAtMs: scenario.goalState === "stale" ? Date.now() - 1 : Date.now() + 600_000 })) : [];
@@ -179,10 +194,31 @@ async function run() {
       await writeFile(request, JSON.stringify({ endpoint: `http://127.0.0.1:${server.port}`, reportPath, profiles,
         runningProfileIDs: scenario.running, frontmostProfileID: scenario.frontmost,
         contentHeight: "contentHeight" in scenario ? scenario.contentHeight : undefined,
+        inspectAutoResume: scenario.name === "auto-resume",
         focusedResumeTaskID: "focusedResumeTaskID" in scenario ? scenario.focusedResumeTaskID : undefined,
         initialSection: "initialSection" in scenario ? scenario.initialSection : undefined }));
       await exec(["/usr/bin/open", "-W", "-n", "-g", app, "--args", "--verification", request], 20_000);
       const observed = JSON.parse(await readFile(reportPath, "utf8")) as Observation;
+      if (scenario.name === "auto-resume") {
+        // Keep Vision's first-use model loading outside the app launch deadline.
+        // These labels come from captured pixels, independently of the payload.
+        const ocrPath = reportPath + ".ocr.json";
+        await exec(["/usr/bin/swift", "-e", `
+          import Foundation
+          import Vision
+          let request = VNRecognizeTextRequest()
+          request.recognitionLevel = .accurate
+          request.recognitionLanguages = ["ko-KR", "en-US"]
+          request.usesLanguageCorrection = false
+          try VNImageRequestHandler(url: URL(fileURLWithPath: CommandLine.arguments[1])).perform([request])
+          let rows: [[String: Any]] = (request.results ?? []).compactMap { observation in
+            guard let text = observation.topCandidates(1).first?.string else { return nil }
+            return ["text": text, "top": 1 - observation.boundingBox.midY]
+          }
+          try JSONSerialization.data(withJSONObject: rows).write(to: URL(fileURLWithPath: CommandLine.arguments[2]))
+        `, reportPath + ".png", ocrPath], 60_000);
+        observed.renderedText = JSON.parse(await readFile(ocrPath, "utf8"));
+      }
       const failures = smokeFailures(observed, scenario.expected);
       if (scenario.expected && observed.pendingResetIDs?.join(",") !== "100") failures.push("pending_reset_displaced_by_newer_news");
       if (scenario.name === "excluded-posts" && (observed.detailSection !== "resets" || observed.excludedPostIDs?.join(",") !== "codexreset:102")) failures.push("excluded_post_not_available");
@@ -201,6 +237,26 @@ async function run() {
           observed.hostGoalReadStates?.join(",") !== payload.hostGoals.items.map(() => scenario.goalState).join(","))) failures.push("host_goal_state_not_presented");
       if (scenario.name === "session-efficiency" && (observed.detailSection !== "activity" || observed.efficiencyInsightIDs?.join(",") !== "fixture-repeated-error" || observed.testOnlySavings !== false)) failures.push("session_review_not_loaded");
       if(scenario.name === "recent-work" && observed.automaticWorkLoadedPolicyIDs?.join(",") !== "fixture-work") failures.push("shared_work_not_loaded");
+      if (scenario.name === "auto-resume") {
+        const controls = observed.autoResumeControls ?? [];
+        const text = observed.renderedText ?? [];
+        const normalized = (value: string) => value.replace(/\s/g, "");
+        const matchingText = (value: string) => text.filter(row => normalized(row.text) === normalized(value)).sort((a,b) => a.top-b.top);
+        for (const [account, label, enabled] of [["default", "Main", 0], ["second", "Second", 1]] as const) {
+          const name = matchingText(label)[0];
+          if (!name || !controls.some(control => control.value === enabled && control.enabled && Math.abs(control.top-name.top)<0.015))
+            failures.push("auto_resume_toggle_" + account);
+        }
+        const labels = observed.locale === "ko" ? ["회복 대기", "1회 재개 중", "1회 재개 종료", "건너뜀", "확인 필요"]
+          : ["Waiting for recovery", "Resuming once", "One continuation ended", "Skipped", "Review needed"];
+        for (const [index, state] of ["waiting", "running", "resumed", "skipped", "needs-review"].entries()) {
+          if (matchingText(labels[index]!).length !== 1) failures.push("auto_resume_state_" + state);
+        }
+        const skips = matchingText(observed.locale === "ko" ? "이 대화 건너뛰기" : "Skip this conversation");
+        const waiting = matchingText(labels[0]!)[0], running = matchingText(labels[1]!)[0];
+        if (skips.length !== 1 || !waiting || !running || skips[0]!.top <= waiting.top || skips[0]!.top >= running.top)
+          failures.push("auto_resume_skip_scope");
+      }
       console.log(JSON.stringify({ check: scenario.name, result: failures.length ? "fail" : "pass", failures }));
       if (failures.length) throw new Error(`Native verification failed: ${scenario.name}`);
     }

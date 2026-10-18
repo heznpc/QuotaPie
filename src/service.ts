@@ -1,4 +1,6 @@
 import { inspectManagedSession } from "./dots/managed-continuation";
+import { AutoResumeController, type QuotaResumeIncident } from "./quota-resume/controller";
+import { readQuotaResumeEvidence } from "./quota-resume/evidence";
 import { planWork, workWindows as scopedWorkWindows } from "./work/admission";
 import { evaluateWorkPerformance } from "./work/performance";
 import { realpathSync, existsSync } from "node:fs";
@@ -136,6 +138,10 @@ export class QuotaPieService {
   readonly jobs: JobStore;
   readonly jobRunner: ManagedJobRunner;
   readonly work: WorkController;
+  readonly autoResume: AutoResumeController;
+  private autoResumeTimer: ReturnType<typeof setInterval> | null = null;
+  private autoResumeGoalRefresh: Promise<void> | null = null;
+  private autoResumeGoals = new Map<string, {binding: string; observedAtMs: number; reason: string | null}>();
   private jobsEnabled = false;
   private jobNotifications: Promise<void> | null = null;
   readonly resetSignals: ResetSignalStore;
@@ -201,7 +207,8 @@ export class QuotaPieService {
         if (planning?.forecastId) this.resetTiming.recordExecutionDecision(planning.forecastId, p.revision, Date.now());
         return p.provider === "claude"
           ? executeWorkTurn(config,p,{claimId:id,policyRevision:p.revision,timeoutMs:p.maxDurationSeconds*1000,signal,stillAuthorized:authorized})
-          : executeCodexWork(config,p,id,authorized,()=>this.workGate(p));
+          : executeCodexWork(config,p,id,authorized,()=>this.workGate(p),undefined,
+              p.purpose === "quota-resume" ? () => this.readAutoResumeGoal(p) : undefined);
       },
       announcement: p => this.workOpportunity(p) !== undefined,
       announcementPublishedAtMs: p => {
@@ -212,11 +219,42 @@ export class QuotaPieService {
       minimumReserveByBucket: p => Object.fromEntries(this.workWindows().filter(w => w.provider === p.provider && w.account === p.account)
         .map(w => [w.bucket, p.provider === "codex" ? explicitAccountReserve(p.account, readPoolPolicy()) : 0])),
       legacyBusy: p => this.legacyWorkBusy(p),
-      hostGoalBlock: p => this.workHostGoalBlock(p),
+      hostGoalBlock: p => this.workHostGoalBlock(p) ?? this.autoResumeBlock(p),
       beforeDispatch: async p => {
+        await this.validateAutoResume(p);
         const link = this.workHostGoalLinks.get(p.id);
         if (link) await this.readWorkHostGoalLink(link);
       },
+    });
+    this.autoResume = new AutoResumeController(this.storage, {
+      accounts: () => this.config.accounts.codex.filter(p=>p.enabled).map(p=>({account:p.id,
+        label:this.accountLabel("codex",p.id),profileKey:resumeProfileKey(this.config,"codex",p.id),
+        accountKey:this.accountBindings.identityKey(codexProfileRoot(p))})),
+      listThreads: (account,cursor) => {
+        const profile=this.config.accounts.codex.find(p=>p.enabled&&p.id===account);
+        if(!profile) throw new Error("account-unavailable");
+        return this.goalClient(profile).listThreads({limit:50,cursor,sortKey:"updated_at",sortDirection:"desc",archived:false,
+          useStateDbOnly:true,modelProviders:[],sourceKinds:["cli","vscode","exec","appServer"]});
+      },
+      evidence: (account,threadId) => {
+        const profile=this.config.accounts.codex.find(p=>p.enabled&&p.id===account);
+        if(!profile) throw new Error("account-unavailable");
+        return readQuotaResumeEvidence(this.config,account,threadId,{allowNativeWriter:true,
+          readLatestTurn:()=>this.goalClient(profile).readLatestTurn(threadId)});
+      },
+      latestTurn: (account,threadId) => {
+        const profile=this.config.accounts.codex.find(p=>p.enabled&&p.id===account);
+        if(!profile) throw new Error("account-unavailable");
+        return this.goalClient(profile).readLatestTurn(threadId);
+      },
+      register: incident => this.registerAutoResume(incident),
+      policy: id => this.work.store.get(id),
+      disable: async id => {
+        const policy=this.work.store.get(id);
+        if(policy?.enabled) await this.work.setEnabled(id,false,policy.revision,randomUUID());
+      },
+      admissionReason: policy => this.work.admission(policy).reason,
+      ownsExecution: id => this.work.ownsExecution(id),
     });
     this.jobRunner = new ManagedJobRunner(this.jobs, config, {
       work: this.work,
@@ -259,6 +297,7 @@ export class QuotaPieService {
     if(p.provider!=="codex") throw new Error("work-provider-unsupported");
     const profile=this.config.accounts.codex.find(a=>a.id===p.account&&a.enabled);
     if(!profile) throw new Error("account-unavailable");
+    await this.validateAutoResume(p);
     const plan=await this.buildResumePlan({provider:p.provider,account:p.account,taskKey:resumeTaskKey(p.provider,p.account,p.nativeSessionId)});
     const profileKey=resumeProfileKey(this.config,p.provider,p.account);
     const accountKey=this.accountBindings.identityKey(codexProfileRoot(profile));
@@ -266,6 +305,75 @@ export class QuotaPieService {
     const original=inspectManagedSession(this.config,{account:p.account,threadId:p.nativeSessionId});
     if(original.cwd!==realpathSync(plan.workingDirectory)) throw new Error("thread-workspace-changed");
     return {profileKey,accountKey,cwd:original.cwd,model:original.model};
+  }
+  private async validateAutoResume(policy: WorkPolicyInput): Promise<void> {
+    if(policy.purpose!=="quota-resume") return;
+    await this.autoResume.validatePolicy(policy as WorkPolicy);
+    await this.readAutoResumeGoal(policy);
+  }
+  private readAutoResumeGoal(policy: WorkPolicyInput): Promise<void> {
+    return this.serializeGoalRead("auto-resume:" + policy.id, async () => {
+      if(this.closing || this.autoResume.blockPolicy(policy as WorkPolicy)) throw new Error("auto-resume-disabled");
+      const binding=this.workGoalBinding(policy);
+      let reason: string | null = null;
+      try {
+        const profile=this.config.accounts.codex.find(p=>p.enabled&&p.id===policy.account);
+        if(!profile || !this.workGoalAccountMatches(policy)) throw new Error("account-unavailable");
+        const goal=await this.goalClient(profile).readThreadGoal(policy.nativeSessionId);
+        if(goal && !["active","usageLimited"].includes(goal.status)) reason="host-goal-not-active";
+      } catch { reason="host-goal-unavailable"; }
+      if(this.closing || this.autoResume.blockPolicy(policy as WorkPolicy)) throw new Error("auto-resume-disabled");
+      this.autoResumeGoals.set(policy.id,{binding,observedAtMs:Date.now(),reason});
+      if(reason) throw new Error(reason);
+    });
+  }
+  private refreshAutoResumeGoals(): Promise<void> {
+    if(this.autoResumeGoalRefresh) return this.autoResumeGoalRefresh;
+    if(this.closing) return Promise.resolve();
+    const policies=this.work.store.list().filter(p=>p.purpose==="quota-resume" && p.enabled);
+    const ids=new Set(policies.map(p=>p.id));
+    for(const id of this.autoResumeGoals.keys()) if(!ids.has(id)) this.autoResumeGoals.delete(id);
+    this.autoResumeGoalRefresh=Promise.allSettled(policies.map(p=>this.readAutoResumeGoal(p))).then(()=>{}).finally(()=>{
+      this.autoResumeGoalRefresh=null;
+    });
+    return this.autoResumeGoalRefresh;
+  }
+  private autoResumeBlock(policy: WorkPolicy): string | null {
+    if(policy.purpose!=="quota-resume") return null;
+    const permission=this.autoResume.blockPolicy(policy);
+    if(permission) return permission;
+    // Permission is also checked during the owned turn. A failed or expired
+    // host observation cannot leave a prior active/no-goal result authoritative.
+    const goal=this.autoResumeGoals.get(policy.id), now=Date.now();
+    if(!goal || goal.binding!==this.workGoalBinding(policy) || goal.observedAtMs>now ||
+      now-goal.observedAtMs>=Math.min(60000,this.config.collection.staleAfterSeconds*1000)) return "host-goal-stale";
+    if(goal.reason) return goal.reason;
+    const failedAt=this.autoResume.failedAtMs(policy.id);
+    const windows=scopedWorkWindows(policy,this.workWindows());
+    // Clock expiry alone never grants capacity: every required lane must have
+    // an authoritative observation taken after this particular failed turn.
+    if(failedAt===null || !windows.length || windows.some(w=>w.observedAtMs<=failedAt)) return "quota-recovery-unconfirmed";
+    return null;
+  }
+  private async registerAutoResume(incident: QuotaResumeIncident): Promise<void> {
+    const evidence=incident.evidence;
+    const windows=scopedWorkWindows({provider:"codex",account:incident.account,model:evidence.model,budgetByBucket:{}} as WorkPolicyInput,this.workWindows());
+    if(!windows.length) throw new Error("quota-unknown");
+    const policy:WorkPolicyInput={id:incident.policyId,purpose:"quota-resume",quotaResume:{turnId:evidence.turnId,stamp:evidence.stamp},
+      provider:"codex",account:incident.account,profileKey:incident.profileKey,accountKey:incident.accountKey,
+      nativeSessionId:incident.threadId,cwd:evidence.cwd,model:evidence.model,
+      prompt:`[QuotaPie quota recovery:${incident.id}]\n한도가 회복되어 같은 대화를 자동으로 이어갑니다. 마지막 사용자 요청의 미완료 작업을 계속하세요. 이미 끝낸 작업과 실행 결과를 먼저 확인해 중복 실행하지 마세요. 새 목표를 만들거나 작업 범위를 넓히지 마세요. 작업이 완료됐거나 사용자 답변·승인이 필요하면 그 상태를 알리고 멈추세요.`,
+      objective:"한도로 중단된 기존 사용자 요청을 같은 대화에서 한 턴 이어가기",
+      completionCriteria:["동일 계정과 세션에서 한 턴 재개가 종료됨; 목표 완료 여부는 별도 판단"],
+      dispatchOwner:"local",enabled:true,trigger:"quota-ready",resetWithinMinutes:0,
+      budgetByBucket:Object.fromEntries(windows.map(w=>[w.bucket,{reservePercent:Math.max(0,w.reservePercent),maxUsagePercent:100}])),
+      maxTurns:1,maxDurationSeconds:3600,maxTotalDurationSeconds:3600,expiresAtMs:incident.detectedAtMs+8*86400000,
+      priority:0,activityMode:"unrestricted",onReset:"continue"};
+    await this.work.save(policy,null,incident.id);
+  }
+  async setAutoResumeEnabled(account: string, enabled: boolean): Promise<void> {
+    await this.autoResume.setEnabled(account,enabled);
+    if(enabled && this.jobsEnabled) void this.autoResume.poll().catch(()=>{});
   }
   private workGate(p: WorkPolicy) {
     const nowMs=Date.now();
@@ -403,6 +511,7 @@ export class QuotaPieService {
 
   async saveWorkPolicy(input: WorkPolicyInput, expectedRevision: number | null, requestId: string, hostGoalLinked?: boolean, reviewedObjective?: string) {
     const existing = this.work.store.get(input.id);
+    if(input.purpose==="quota-resume" || existing?.purpose==="quota-resume") throw new Error("auto-resume-policy-readonly");
     if (existing && this.workHostGoalLinks.get(input.id) && !this.workGoalAccountMatches(existing)) throw new HostGoalLinkError("work-host-goal-account-changed");
     if (hostGoalLinked !== undefined && typeof hostGoalLinked !== "boolean") throw new HostGoalLinkError("work-host-goal-invalid-link");
     if (hostGoalLinked === true) {
@@ -2023,6 +2132,14 @@ export class QuotaPieService {
   async watch(): Promise<void> {
     this.stopped = false;
     this.jobsEnabled = true;
+    if(!this.autoResumeTimer) {
+      const refresh=()=>{
+        void this.autoResume.poll().catch(()=>{});
+        void this.refreshAutoResumeGoals().catch(()=>{});
+      };
+      refresh();
+      this.autoResumeTimer=setInterval(refresh,30000);
+    }
     if (this.config.resetSignals.enabled && !this.signalTimer) {
       const collect = () => { void this.collectResetSignals().catch(() => undefined); };
       collect();
@@ -2050,11 +2167,14 @@ export class QuotaPieService {
     this.wakeCollection?.();
     if (this.signalTimer) clearInterval(this.signalTimer);
     this.signalTimer = null;
+    if(this.autoResumeTimer) clearInterval(this.autoResumeTimer);
+    this.autoResumeTimer=null;
   }
 
   async close(): Promise<void> {
     this.stop();
     this.closing = true;
+    await this.autoResume.close();
     this.nativeNotificationTransportAvailable = false;
     await Promise.all([...this.goalClients.values()].map(client => client.close().catch(() => undefined)));
     await this.hostGoalRefresh?.catch(() => undefined);

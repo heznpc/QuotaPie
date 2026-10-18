@@ -128,6 +128,7 @@ struct AutomaticWorkError: LocalizedError {
 
 struct AutomaticWorkPolicy: Decodable, Identifiable {
     var id: String
+    var purpose: String? = nil
     var provider: String
     var account: String
     var nativeSessionId: String
@@ -168,6 +169,7 @@ struct AutomaticWorkPolicy: Decodable, Identifiable {
     var hostGoal: AutomaticWorkHostGoal?
 
     var goalSessionKey: String { provider + "/" + account + "/" + nativeSessionId }
+    var isUserEditable: Bool { purpose == nil }
 
     static func draft(provider: String, account: String, buckets: [String], reserveByBucket: [String: Double] = [:]) -> Self {
         Self(id: UUID().uuidString, provider: provider, account: account, nativeSessionId: "",

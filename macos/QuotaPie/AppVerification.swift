@@ -13,6 +13,7 @@ struct AppVerification: Decodable {
     let focusedResumeTaskID: String?
     let contentHeight: Double?
     let interactive: Bool?
+    let inspectAutoResume: Bool?
     private static var interactiveWindow: NSWindow?
 
     static let current: AppVerification? = {
@@ -55,6 +56,7 @@ struct AppVerification: Decodable {
     func record(model: PopoverModel, item: NSStatusItem, content: NSViewController?, workLoadAttempt: Int = 0, mountedWindow: NSWindow? = nil) {
         var rendered = false
         var accountSelectorVerified = false
+        var autoResumeControls: [[String: Any]] = []
         let expectsSelector = model.detailSection == nil && (model.payload?.accounts.filter(\.enabled).count ?? 0) > 1
         func findSelector(_ view: NSView) -> AccountMenuButton? {
             if let button = view as? AccountMenuButton, button.identifier?.rawValue == "account-selector" { return button }
@@ -96,6 +98,23 @@ struct AppVerification: Decodable {
                     && selector.title == model.selectedAccount?.accountLabel
                     && selector.action != nil
             }
+#if DEBUG
+            // Read the actual mounted controls. SwiftUI's virtual AX tree is
+            // unavailable without an external accessibility session, so labels
+            // below are verified from the rendered pixels instead.
+            func inspectControls(_ view: NSView) {
+                if let control = view as? NSControl, control.responds(to: NSSelectorFromString("state")),
+                   let state = control.value(forKey: "state") as? NSNumber {
+                    let bounds = control.convert(control.bounds, to: content.view)
+                    let fraction = bounds.midY / content.view.bounds.height
+                    autoResumeControls.append(["value": state, "enabled": control.isEnabled,
+                        "top": content.view.isFlipped ? fraction : 1 - fraction,
+                        "kind": String(describing: type(of: control))])
+                }
+                for child in view.subviews { inspectControls(child) }
+            }
+            if inspectAutoResume == true { inspectControls(content.view) }
+#endif
             if let bitmap = content.view.bitmapImageRepForCachingDisplay(in: content.view.bounds) {
                 content.view.cacheDisplay(in: content.view.bounds, to: bitmap)
                 if let png = bitmap.representation(using: .png, properties: [:]) {
@@ -141,6 +160,8 @@ struct AppVerification: Decodable {
             "testOnlySavings": model.payload?.compaction?.savings?.policy?.testOnly as Any? ?? NSNull(),
             "recentWorkIDs": model.payload?.recentWork.map(\.id) ?? [],
             "automaticWorkLoadedPolicyIDs": model.automaticWorkLoadedPolicyIDs as Any? ?? NSNull(),
+            "autoResumeControls": autoResumeControls,
+            "locale": Strings.language.rawValue,
             "excludedPostIDs": model.payload?.resetSignals?.excludedPosts?.map(\.identity) ?? [],
             "pendingResetIDs": model.payload?.resetSignals?.pendingResets(nowMs: Date().timeIntervalSince1970 * 1000).map(\.id) ?? [],
             "profileDockIcons": CodexProfilesModel.shared.profiles.compactMap { $0.dockIcon?.rawValue },

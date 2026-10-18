@@ -100,6 +100,18 @@ final class StatusClient {
         workRequest(actionToken: actionToken, completion: completion)
     }
 
+    func setAutoResumeEnabled(account: String, enabled: Bool, actionToken: String,
+                              completion: @escaping (Result<AutoResumeResponse, Error>) -> Void) {
+        workRequest(path: ["api", "auto-resume"], body: ["action": "enabled", "account": account, "enabled": enabled],
+                    actionToken: actionToken, completion: completion)
+    }
+
+    func skipAutoResume(id: String, actionToken: String,
+                        completion: @escaping (Result<AutoResumeResponse, Error>) -> Void) {
+        workRequest(path: ["api", "auto-resume"], body: ["action": "skip", "id": id],
+                    actionToken: actionToken, completion: completion)
+    }
+
     func automaticWorkPreferences(actionToken: String, completion: @escaping (Result<AutomaticWorkPreferencesResponse, Error>) -> Void) {
         workRequest(path: ["api", "work", "preferences"], actionToken: actionToken, completion: completion)
     }

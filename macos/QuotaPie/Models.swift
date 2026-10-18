@@ -14,6 +14,7 @@ struct StatusPayload: Decodable {
     let supportsRecentWork: Bool
     let recentWorkState: String
     let hostGoals: HostGoalsPayload?
+    var autoResume: AutoResumePayload?
     let resetSignals: ResetSignalPayload?
     let resetTracking: ResetTracking?
     let compaction: CompactionPayload?
@@ -33,6 +34,7 @@ struct StatusPayload: Decodable {
         supportsRecentWork = try values.contains(.recentWork) && !values.decodeNil(forKey: .recentWork)
         recentWorkState = try values.decodeIfPresent(String.self, forKey: .recentWorkState) ?? "ready"
         hostGoals = try values.decodeIfPresent(HostGoalsPayload.self, forKey: .hostGoals)
+        autoResume = try values.decodeIfPresent(AutoResumePayload.self, forKey: .autoResume)
         resetSignals = try values.decodeIfPresent(ResetSignalPayload.self, forKey: .resetSignals)
         resetTracking = try values.decodeIfPresent(ResetTracking.self, forKey: .resetTracking)
         compaction = try values.decodeIfPresent(CompactionPayload.self, forKey: .compaction)
@@ -41,7 +43,7 @@ struct StatusPayload: Decodable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case nowMs, headline, accounts, events, actionToken, resumeTasks, jobs, recentWork, recentWorkState, hostGoals, resetSignals, resetTracking, compaction, notificationPreferences, accountPool
+        case nowMs, headline, accounts, events, actionToken, resumeTasks, jobs, recentWork, recentWorkState, hostGoals, autoResume, resetSignals, resetTracking, compaction, notificationPreferences, accountPool
     }
 }
 

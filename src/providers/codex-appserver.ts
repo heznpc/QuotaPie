@@ -28,6 +28,39 @@ class RpcRequestError extends Error {
 export class CodexSnapshotUnavailableError extends Error {}
 
 export class CodexGoalUnsupportedError extends Error {}
+export class CodexTurnUnsupportedError extends Error {}
+
+export interface CodexThreadTurnSummary {
+  threadId: string;
+  turnId: string;
+  status: "completed" | "interrupted" | "failed" | "inProgress";
+  errorCode: string | null;
+  completedAtMs: number | null;
+}
+
+function parseLatestTurn(result: unknown, threadId: string): CodexThreadTurnSummary | null {
+  const invalid = () => new Error("Codex App Server thread/turns/list returned an invalid response");
+  if (!result || typeof result !== "object" || Array.isArray(result)) throw invalid();
+  const data = (result as Record<string, unknown>).data;
+  if (!Array.isArray(data) || data.length > 1) throw invalid();
+  if (!data.length) return null;
+  const turn = data[0];
+  if (!turn || typeof turn !== "object" || Array.isArray(turn) ||
+      typeof turn.id !== "string" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(turn.id) ||
+      !["completed", "interrupted", "failed", "inProgress"].includes(turn.status) ||
+      !Array.isArray(turn.items) || turn.items.length !== 0 || turn.itemsView !== "notLoaded") throw invalid();
+  if (turn.completedAt != null && (!Number.isSafeInteger(turn.completedAt) || turn.completedAt < 0 ||
+      !Number.isSafeInteger(turn.completedAt * 1000))) throw invalid();
+  let errorCode: string | null = null;
+  if (turn.error != null) {
+    if (turn.status !== "failed" || typeof turn.error !== "object" || Array.isArray(turn.error)) throw invalid();
+    const code = turn.error.codexErrorInfo;
+    if (typeof code === "string" && /^[a-zA-Z][a-zA-Z0-9]{0,80}$/.test(code)) errorCode = code;
+    else if (code != null && (typeof code !== "object" || Array.isArray(code))) throw invalid();
+  }
+  return { threadId, turnId: turn.id, status: turn.status, errorCode,
+    completedAtMs: turn.completedAt == null ? null : turn.completedAt * 1000 };
+}
 
 const CODEX_GOAL_STATUSES = ["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"] as const;
 
@@ -84,6 +117,7 @@ export interface CodexThreadSummary {
   id: string;
   cwd: string;
   name: string | null;
+  updatedAtMs?: number;
 }
 
 export interface CodexThreadListPage {
@@ -276,6 +310,30 @@ export class CodexAppServerClient {
     return this.exclusive(() => this.readThreadPage(params));
   }
 
+  /** Metadata only: never request turn items, transcript text or inference. */
+  async readLatestTurn(threadId: string): Promise<CodexThreadTurnSummary | null> {
+    if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(threadId))
+      throw new Error("Codex turn lookup requires a thread UUID");
+    return this.exclusive(async () => {
+      await this.connect();
+      const stamp = this.currentCredentialStamp();
+      const before = await this.readAccountIdentity();
+      if (before === undefined) throw new CodexSnapshotUnavailableError("Codex identity unavailable; turn snapshot not accepted");
+      let result: unknown, unsupported = false;
+      try {
+        result = await this.request("thread/turns/list", { threadId, limit: 1, sortDirection: "desc", itemsView: "notLoaded" });
+      } catch (error) {
+        if (!(error instanceof RpcRequestError) || error.code !== -32601) throw error;
+        unsupported = true;
+      }
+      const after = await this.readAccountIdentity();
+      if (stamp !== this.currentCredentialStamp() || before !== after)
+        throw new CodexSnapshotUnavailableError("Codex login changed during turn lookup; retrying on next poll");
+      if (unsupported) throw new CodexTurnUnsupportedError("Codex App Server does not support thread/turns/list");
+      return parseLatestTurn(result, threadId);
+    });
+  }
+
   async readThreadGoal(threadId: string): Promise<CodexThreadGoal | null> {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(threadId)) {
       throw new Error("Codex goal lookup requires a thread UUID");
@@ -323,6 +381,8 @@ export class CodexAppServerClient {
         id: thread.id,
         cwd: thread.cwd,
         name: typeof thread.name === "string" ? thread.name : null,
+        ...(typeof thread.updatedAt === "number" && Number.isSafeInteger(thread.updatedAt) && thread.updatedAt >= 0 &&
+          Number.isSafeInteger(thread.updatedAt * 1000) ? { updatedAtMs: thread.updatedAt * 1000 } : {}),
       }];
     });
     return {

@@ -150,6 +150,13 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
       const status = await readInstallationState(origin + "/api/status");
       if (typeof status?.actionToken !== "string" || !status.actionToken || status.actionToken.length > 256
           || !Array.isArray(status.jobs) || !Array.isArray(status.resumeTasks)) throw new Error("invalid-status");
+      const autoResume = status.autoResume;
+      if (Object.hasOwn(status, "autoResume") && (!autoResume || typeof autoResume !== "object" || Array.isArray(autoResume)
+          || !Array.isArray(autoResume.accounts) || !Array.isArray(autoResume.incidents)
+          || autoResume.accounts.some((account: any) => typeof account?.account !== "string" || !account.account.trim()
+            || typeof account.enabled !== "boolean")
+          || autoResume.incidents.some((incident: any) => !["waiting", "running", "resumed", "skipped", "needs-review"].includes(incident?.state))))
+        throw new Error("invalid-work-state");
       // The status endpoint exposes only the most recent 100 legacy jobs. A
       // full page cannot prove that an older active job was not omitted.
       if (status.jobs.length >= 100) throw new Error("incomplete-job-status");
@@ -163,7 +170,8 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
         throw new Error("invalid-work-state");
       if (work.policies.some((policy: any) => policy.enabled || policy.state.activeExecutionId !== null)
           || work.executions.some((execution: any) => execution.status !== "finished")
-          || status.jobs.some((job: any) => ["waiting", "ready", "running", "review"].includes(job.state)))
+          || status.jobs.some((job: any) => ["waiting", "ready", "running", "review"].includes(job.state))
+          || autoResume?.accounts.some((account: any) => account.enabled))
         throw new Error("managed-work-active");
       const collector = await job(LABELS[0]);
       if (!expectedPid || collector.pid !== expectedPid) throw new Error("collector-changed");
@@ -305,7 +313,8 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
     const stagedCLI = join(dirname(cli), `.quotapie-install-${id}`);
     symlinkSync(join(runtime, "bin/quotapie"), stagedCLI);
     addSwap(runtime, stagedRuntime); addSwap(app, stagedApp); addSwap(cli, stagedCLI);
-    // Disabled policies cannot dispatch on a quota tick while services stop.
+    // Disabled policies and quota-recovery scanners cannot create new work
+    // or dispatch on a quota tick while services stop.
     // This does not lock out another client explicitly enabling new work; run
     // installation without concurrent work-policy changes.
     if (priorJobs[0]!.loaded) await assertNoManagedWork(origin, priorJobs[0]!.pid);

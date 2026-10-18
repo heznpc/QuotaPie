@@ -30,6 +30,16 @@ final class PopoverModel: ObservableObject {
     @Published var poolSaveMessage: String?
     @Published var compactionSaving = false
     @Published var compactionSaveMessage: String?
+    @Published private(set) var autoResumeSaving = false
+    private var autoResumeSavedAtMs: Double = 0
+
+    func beginAutoResumeSave() { autoResumeSaving = true }
+
+    func finishAutoResumeSave(_ value: AutoResumePayload?, nowMs: Double = Date().timeIntervalSince1970 * 1000) {
+        if let value { payload?.autoResume = value }
+        autoResumeSavedAtMs = nowMs
+        autoResumeSaving = false
+    }
 
     var statusFailureText: String {
         statusFailure?.detailText ?? Strings.t("popover.disconnected")
@@ -78,6 +88,11 @@ final class PopoverModel: ObservableObject {
         // snapshots requested before or during the most recent save.
         if notificationSaving || notificationRevision != notificationPreferencesRevision {
             next.notificationPreferences = payload?.notificationPreferences
+        }
+        // A poll begun before the mutation completed must not undo its reply.
+        // Both timestamps come from this Mac, independent of provider clocks.
+        if autoResumeSaving || (autoResumeSavedAtMs > 0 && (status.nowMs ?? 0) <= autoResumeSavedAtMs) {
+            next.autoResume = payload?.autoResume
         }
         payload = next
     }

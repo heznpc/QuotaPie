@@ -12,6 +12,7 @@ import { gateAllows, readGate } from "./policy";
 import { findBundledCodex, metadataPath, readConfiguredThread, readExecutionConfiguration, type ProfileThreadStatus } from "./thread-reader";
 import type { DotPolicy } from "./store";
 import type { ResumeGate } from "../resume-gate";
+import { readQuotaResumeEvidence } from "../quota-resume/evidence";
 
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const QUOTA_HOLDS = new Set(["reserve-reached", "quota-exhausted", "upstream-quota-hold"]);
@@ -29,6 +30,8 @@ interface PreparationOptions {
   readThread?: typeof readConfiguredThread;
   readGate?: (policy: DotPolicy) => Promise<ResumeGate>;
   now?: () => number;
+  quotaResume?: { turnId: string; stamp: string };
+  readQuotaResumeEvidence?: typeof readQuotaResumeEvidence;
 }
 export interface ManagedChild {
   stdout: AsyncIterable<Uint8Array>;
@@ -43,13 +46,15 @@ export interface ManagedChild {
 export interface ManagedProcessPlan { binary: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }
 export interface ManagedRunOptions extends PreparationOptions {
   stillAuthorized: () => boolean;
+  /** Last asynchronous veto before the synchronous source/auth checks and spawn. */
+  beforeSpawn?: () => Promise<void>;
   /** Resolved from the shared stored policy, never raw HTTP guard overrides. */
   budgetByBucket?: Record<string, {reservePercent:number;remainingUsagePercent:number}>;
   structuredWork?: boolean;
   binary?: () => string | null;
   readExecutionConfig?: typeof readExecutionConfiguration;
   guard?: typeof createSubscriptionGuard;
-  proxy?: (config: AppConfig, root: string, policy: DotPolicy, guard: SubscriptionGuard) => { baseUrl: string; stop(): void };
+  proxy?: (config: AppConfig, root: string, policy: DotPolicy, guard: SubscriptionGuard, sourceOnly?: boolean) => { baseUrl: string; stop(): void };
   spawn?: (plan: ManagedProcessPlan) => ManagedChild;
 }
 export interface ManagedContinuationResult {
@@ -132,6 +137,7 @@ export async function prepareManagedContinuation(config: AppConfig, policy: DotP
     lastLifecycle: null, runtimeStateVerified: false, nativeWriterLockVerified: false };
   if (policy.executionMode !== "profile-managed" || !UUID.test(policy.threadId)) return result;
   try {
+    if (!await quotaResumeStillMatches(config, policy, options)) throw new Error("quota-resume-evidence-changed");
     const thread = options.threadStatus ?? await (options.readThread ?? readConfiguredThread)(config, policy, { readGate: options.readGate });
     if (!thread.found || thread.threadId !== policy.threadId || thread.targetId !== policy.id || thread.account !== policy.account ||
         !thread.evidence.profileMatched || !thread.evidence.accountMatched || !thread.evidence.sessionMetadataMatched || !thread.evidence.rolloutPathMatched)
@@ -145,6 +151,15 @@ export async function prepareManagedContinuation(config: AppConfig, policy: DotP
   }
 }
 
+async function quotaResumeStillMatches(config: AppConfig, policy: DotPolicy, options: PreparationOptions): Promise<boolean> {
+  if (!options.quotaResume) return true;
+  if (!UUID.test(options.quotaResume.turnId) || !options.quotaResume.stamp) return false;
+  try {
+    const evidence = await (options.readQuotaResumeEvidence ?? readQuotaResumeEvidence)(config, policy.account, policy.threadId, { now: options.now });
+    return evidence?.threadId === policy.threadId && evidence.turnId === options.quotaResume.turnId && evidence.stamp === options.quotaResume.stamp;
+  } catch { return false; }
+}
+
 function environment(root: string, reportOnly: boolean): NodeJS.ProcessEnv {
   // Work keeps the profile's existing tool environment. Provider credentials
   // and endpoint overrides cannot replace the fixed ChatGPT relay identity.
@@ -155,8 +170,17 @@ function environment(root: string, reportOnly: boolean): NodeJS.ProcessEnv {
     delete env[key];
   return { ...env, CODEX_HOME: root, TERM: "dumb", NO_COLOR: "1" };
 }
-function startProxy(config: AppConfig, root: string, policy: DotPolicy, guard: SubscriptionGuard) {
-  const pool = new AccountPool({ sourceAccount: policy.account, accounts: () => poolAccounts(config), policy: readPoolPolicy,
+/** Recovery consent belongs to the original login, including when global pool
+ * routing is enabled. Keep foreign credentials out of this pool altogether. */
+export function managedAccountPoolOptions(config: AppConfig, account: string, sourceOnly: boolean,
+  readers = { accounts: poolAccounts, policy: readPoolPolicy }) {
+  const scoped = sourceOnly ? { ...config, accounts: { ...config.accounts,
+    codex: config.accounts.codex.filter(profile => profile.id === account) } } : config;
+  return { sourceAccount: account, accounts: () => readers.accounts(scoped),
+    policy: sourceOnly ? () => ({ enabled: false, accounts: [] as string[] }) : readers.policy };
+}
+function startProxy(config: AppConfig, root: string, policy: DotPolicy, guard: SubscriptionGuard, sourceOnly = false) {
+  const pool = new AccountPool({ ...managedAccountPoolOptions(config, policy.account, sourceOnly),
     forkParentAsync: threadId => readCodexForkParent(root, threadId) });
   try {
     const proxy = startCompactionProxy({ accountPool: pool, subscriptionGuard: guard, reportOnly: policy.executionPurpose !== "continue-work",
@@ -277,9 +301,10 @@ export async function runManagedContinuation(input: { config: AppConfig; policy:
     } };
   let proxy: { baseUrl: string; stop(): void } | undefined;
   try {
-    proxy = (options.proxy ?? startProxy)(config, snapshot.root, policy, guard);
-    if (!executionConfig.unchanged() || !guard.check().ready || !authorized() || inspectManagedSession(config, policy).stamp !== snapshot.stamp)
-      return failed("dispatch-precondition-changed");
+    // The desktop may receive a new message, cancellation or completed turn
+    // while quota/config checks await. Never replay the originally found failure.
+    if (!await quotaResumeStillMatches(config, policy, options)) return failed("quota-resume-evidence-changed");
+    proxy = (options.proxy ?? startProxy)(config, snapshot.root, policy, guard, options.quotaResume !== undefined);
     const disabledFeatures = ["hooks", "goals", "multi_agent", "apps", "plugins", "remote_plugin", "shell_tool", "unified_exec", "skill_mcp_dependency_install"];
     const mcp = `mcp_servers={${executionConfig.mcpServers.map(name => `${JSON.stringify(name)}={enabled=false}`).join(",")}}`;
     const reportRestrictions = reportOnly ? [...disabledFeatures.flatMap(name => ["-c", `features.${name}=false`]),
@@ -294,7 +319,18 @@ export async function runManagedContinuation(input: { config: AppConfig; policy:
     const providerIndex = args.findIndex(arg => arg.startsWith("model_providers.quotapie_compaction={"));
     if (providerIndex < 0 || !args[providerIndex]!.endsWith("}")) return failed("managed-provider-unverified");
     args[providerIndex] = args[providerIndex]!.slice(0, -1) + ",request_max_retries=0,stream_max_retries=0}";
-    const child = (options.spawn ?? spawnManagedChild)({ binary, args, cwd: snapshot.cwd, env: environment(snapshot.root, reportOnly) });
+    const plan = { binary, args, cwd: snapshot.cwd, env: environment(snapshot.root, reportOnly) };
+    try { await options.beforeSpawn?.(); }
+    catch (error) {
+      const reason = error instanceof Error && /^host-goal-[a-z-]{3,70}$/.test(error.message)
+        ? error.message : "host-goal-unavailable";
+      return failed(reason);
+    }
+    // The final host read can itself await a new login, cancellation, message or
+    // configuration change. Do not yield again after these local checks.
+    if (!executionConfig.unchanged() || !guard.check().ready || !authorized() || inspectManagedSession(config, policy).stamp !== snapshot.stamp)
+      return failed("dispatch-precondition-changed");
+    const child = (options.spawn ?? spawnManagedChild)(plan);
     attempts = 1;
     let stopped: string | null = null, finished = false, exited = false, matched = false, complete = false, report = "", quota = false;
     let hardKill: ReturnType<typeof setTimeout> | undefined, stopDeadline: ReturnType<typeof setTimeout> | undefined;
