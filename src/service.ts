@@ -1,6 +1,7 @@
 import { inspectManagedSession } from "./dots/managed-continuation";
 import { AutoResumeController, type QuotaResumeIncident } from "./quota-resume/controller";
 import { readQuotaResumeEvidence } from "./quota-resume/evidence";
+import { executeHostQueuedQuotaResume, observeHostQueueReceipt, removeOwnHostQueuedInput, type HostQueueReceipt } from "./quota-resume/host-queue";
 import { planWork, workWindows as scopedWorkWindows } from "./work/admission";
 import { evaluateWorkPerformance } from "./work/performance";
 import { realpathSync, existsSync } from "node:fs";
@@ -141,6 +142,7 @@ export class QuotaPieService {
   readonly autoResume: AutoResumeController;
   private autoResumeTimer: ReturnType<typeof setInterval> | null = null;
   private autoResumeGoalRefresh: Promise<void> | null = null;
+  private hostQueueRefresh: Promise<void> | null = null;
   private autoResumeGoals = new Map<string, {binding: string; observedAtMs: number; reason: string | null}>();
   private jobsEnabled = false;
   private jobNotifications: Promise<void> | null = null;
@@ -207,8 +209,7 @@ export class QuotaPieService {
         if (planning?.forecastId) this.resetTiming.recordExecutionDecision(planning.forecastId, p.revision, Date.now());
         return p.provider === "claude"
           ? executeWorkTurn(config,p,{claimId:id,policyRevision:p.revision,timeoutMs:p.maxDurationSeconds*1000,signal,stillAuthorized:authorized})
-          : executeCodexWork(config,p,id,authorized,()=>this.workGate(p),undefined,
-              p.purpose === "quota-resume" ? () => this.readAutoResumeGoal(p) : undefined);
+          : this.executeCodexPolicy(p,id,authorized,signal);
       },
       announcement: p => this.workOpportunity(p) !== undefined,
       announcementPublishedAtMs: p => {
@@ -255,6 +256,7 @@ export class QuotaPieService {
       },
       admissionReason: policy => this.work.admission(policy).reason,
       ownsExecution: id => this.work.ownsExecution(id),
+      execution: id => this.work.store.getExecution(id),
     });
     this.jobRunner = new ManagedJobRunner(this.jobs, config, {
       work: this.work,
@@ -302,9 +304,69 @@ export class QuotaPieService {
     const profileKey=resumeProfileKey(this.config,p.provider,p.account);
     const accountKey=this.accountBindings.identityKey(codexProfileRoot(profile));
     if(!profileKey||!accountKey) throw new Error("account-identity-unavailable");
-    const original=inspectManagedSession(this.config,{account:p.account,threadId:p.nativeSessionId});
+    const original=inspectManagedSession(this.config,{account:p.account,threadId:p.nativeSessionId},
+      p.purpose==="quota-resume" ? "host-queue" : "managed-cli");
+    // Capability is checked before creating/claiming a recovery policy. A busy
+    // host queue belongs to the user; never append a recovery behind their input.
+    if(p.purpose==="quota-resume" && original.nativeWriterPresent) {
+      const queue=await this.goalClient(profile).listThreadQueue(p.nativeSessionId,{limit:1});
+      if(queue.data.length || queue.nextCursor) throw new Error("host-queue-busy");
+    }
     if(original.cwd!==realpathSync(plan.workingDirectory)) throw new Error("thread-workspace-changed");
     return {profileKey,accountKey,cwd:original.cwd,model:original.model};
+  }
+  private async executeCodexPolicy(p: WorkPolicy, id: string, authorized: ()=>boolean, signal: AbortSignal) {
+    if(p.purpose==="quota-resume" &&
+        inspectManagedSession(this.config,{account:p.account,threadId:p.nativeSessionId},"host-queue").nativeWriterPresent) {
+      const profile=this.config.accounts.codex.find(a=>a.enabled&&a.id===p.account);
+      if(!profile || !this.workGoalAccountMatches(p)) throw new Error("account-binding-changed");
+      return executeHostQueuedQuotaResume({config:this.config,policy:p,claimId:id},{
+        client:this.goalClient(profile),stillAuthorized:authorized,signal,
+        beforeEnqueue:()=>this.validateAutoResume(p),
+        onReceipt:receipt=>this.work.store.recordHostQueue(id,receipt),
+      });
+    }
+    return executeCodexWork(this.config,p,id,authorized,()=>this.workGate(p),undefined,
+      p.purpose==="quota-resume" ? ()=>this.readAutoResumeGoal(p) : undefined);
+  }
+  /** After a collector restart only observe the existing intent. Never enqueue
+   * again, and never interrupt the host that owns the conversation. */
+  private refreshHostQueueReceipts(): Promise<void> {
+    if(this.hostQueueRefresh) return this.hostQueueRefresh;
+    if(this.closing) return Promise.resolve();
+    const executions=this.work.store.executions().filter(e=>e.hostQueue && e.status!=="finished" && !this.work.ownsExecution(e.id));
+    this.hostQueueRefresh=(async()=>{
+      for(const execution of executions) {
+        if(this.closing) break;
+        const p=execution.policySnapshot;
+        const profile=this.config.accounts.codex.find(a=>a.enabled&&a.id===p.account);
+        if(!profile || !this.workGoalAccountMatches(p)) continue;
+        try {
+          const receipt=execution.hostQueue!;
+          const options={client:this.goalClient(profile),afterTurnId:p.quotaResume?.turnId,
+            onReceipt:(receipt:HostQueueReceipt)=>this.work.store.recordHostQueue(execution.id,receipt),
+          };
+          if(!receipt.turnId) {
+            const deadline=Math.min(p.expiresAtMs,p.workDeadline??Infinity,
+              (execution.dispatchedAtMs??execution.claimedAtMs)+Math.min(p.maxDurationSeconds,p.maxTotalDurationSeconds-p.state.totalDurationSeconds)*1000);
+            let revoked=Date.now()>=deadline || !!this.autoResume.blockPolicy(p);
+            if(!revoked) {
+              try {
+                const goal=await options.client.readThreadGoal(p.nativeSessionId);
+                revoked=!!goal && !["active","usageLimited"].includes(goal.status);
+              } catch { revoked=true; }
+            }
+            if(revoked && this.workGoalAccountMatches(p)) await removeOwnHostQueuedInput(receipt,options);
+          }
+          const result=await observeHostQueueReceipt(receipt,options);
+          if(result && !this.closing && this.workGoalAccountMatches(p)) {
+            if(execution.status==="uncertain") this.work.store.reconcile(execution.id,result);
+            else this.work.store.finish(execution.id,result);
+          }
+        } catch { /* Ambiguous delivery retains the durable execution fence. */ }
+      }
+    })().finally(()=>{this.hostQueueRefresh=null;});
+    return this.hostQueueRefresh;
   }
   private async validateAutoResume(policy: WorkPolicyInput): Promise<void> {
     if(policy.purpose!=="quota-resume") return;
@@ -2136,6 +2198,7 @@ export class QuotaPieService {
       const refresh=()=>{
         void this.autoResume.poll().catch(()=>{});
         void this.refreshAutoResumeGoals().catch(()=>{});
+        void this.refreshHostQueueReceipts().catch(()=>{});
       };
       refresh();
       this.autoResumeTimer=setInterval(refresh,30000);
@@ -2175,6 +2238,7 @@ export class QuotaPieService {
     this.stop();
     this.closing = true;
     await this.autoResume.close();
+    await this.hostQueueRefresh;
     this.nativeNotificationTransportAvailable = false;
     await Promise.all([...this.goalClients.values()].map(client => client.close().catch(() => undefined)));
     await this.hostGoalRefresh?.catch(() => undefined);

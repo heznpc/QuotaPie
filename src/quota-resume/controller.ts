@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { QuotaStorage } from "../storage/database";
-import type { WorkPolicy } from "../work/types";
+import type { WorkPolicy, WorkExecution } from "../work/types";
 import type { QuotaResumeEvidence } from "./evidence";
 import type { CodexThreadTurnSummary } from "../providers/codex-appserver";
 
@@ -24,6 +24,7 @@ export interface AutoResumeDependencies {
   disable(id: string): Promise<void>;
   admissionReason(policy: WorkPolicy): string;
   ownsExecution?(id: string): boolean;
+  execution?(id: string): WorkExecution | null;
   now?: () => number;
 }
 
@@ -159,6 +160,8 @@ export class AutoResumeController {
       else if(policy?.state.activeExecutionId) {
         state=this.deps.ownsExecution?.(policy.state.activeExecutionId)===false?"needs-review":"running";
         reason=state==="needs-review"?"execution-unverified":undefined;
+        const receipt=this.deps.execution?.(policy.state.activeExecutionId)?.hostQueue;
+        if(state==="running" && receipt && !receipt.turnId) {state="queued";reason="host-queue-awaiting-turn";}
       }
       else if((policy?.state.turns??0)>0) {
         state=policy?.state.status==="turn-finished"?"resumed":"needs-review";
@@ -177,7 +180,7 @@ export class AutoResumeController {
     } catch (error) {
       const fresh=this.incident(incident.id);
       if(fresh?.state==="waiting") {
-        fresh.reason=error instanceof Error && ["native-writer-present","native-turn-active","host-goal-not-active","host-goal-unavailable"].includes(error.message)
+        fresh.reason=error instanceof Error && ["native-writer-present","native-turn-active","host-goal-not-active","host-goal-unavailable","host-queue-busy","host-queue-unsupported"].includes(error.message)
           ? error.message : "registration-unavailable";
         this.saveIncident(fresh);
       }

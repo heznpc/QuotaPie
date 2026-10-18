@@ -69,14 +69,19 @@ export interface ManagedContinuationResult {
 /** A lock file's absence and a completed rollout are only a snapshot. The
  * official CLI must still acquire its own native writer lock at dispatch.
  * Never acquire/remove another owner's lock or terminate that owner here. */
-export function inspectManagedSession(config: AppConfig, policy: Pick<DotPolicy, "account" | "threadId">) {
+export function inspectManagedSession(config: AppConfig, policy: Pick<DotPolicy, "account" | "threadId">,
+  transport: "managed-cli" | "host-queue" = "managed-cli") {
   const profile = config.accounts.codex.find(p => p.enabled && p.id === policy.account);
   if (!profile) throw new Error("profile-unavailable");
   const root = realpathSync(codexProfileRoot(profile));
+  let nativeWriterPresent = false;
   try {
     lstatSync(join(root, "thread-writer-locks", policy.threadId + ".lock"));
-    throw new Error("native-writer-present");
+    nativeWriterPresent = true;
   } catch (error: any) { if (error?.code !== "ENOENT") throw new Error("native-writer-present"); }
+  // A host queue never acquires the writer or starts a second inference process.
+  // All CLI dispatch call sites retain the strict default.
+  if (nativeWriterPresent && transport !== "host-queue") throw new Error("native-writer-present");
   const path = metadataPath(root, policy.threadId);
   let fd: number | undefined;
   try {
@@ -127,7 +132,7 @@ export function inspectManagedSession(config: AppConfig, policy: Pick<DotPolicy,
       cwd = realpathSync(row.cwd);
       if (!statSync(cwd).isDirectory()) throw new Error("workspace-unavailable");
     } finally { db.close(); }
-    return { root, cwd, model, effort, stamp: `${path}:${after.ino}:${after.size}:${after.mtimeMs}`,
+    return { root, cwd, model, effort, nativeWriterPresent, stamp: `${path}:${after.ino}:${after.size}:${after.mtimeMs}`,
       lastLifecycle: { type: latest.type, atMs: latest.atMs } as Lifecycle };
   } finally { if (fd !== undefined) closeSync(fd); }
 }

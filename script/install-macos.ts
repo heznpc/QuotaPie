@@ -6,6 +6,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { loadConfig } from "../src/config";
 import { runtimeSourceHash } from "../src/runtime-identity";
+import { InstallMaintenance } from "./install-maintenance";
 
 type Result = { code: number; stdout: string; stderr: string };
 type Job = { loaded: boolean; pid: number | null };
@@ -119,13 +120,15 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
     if (error.code === "EEXIST") throw new Error(`Another install is active, or was interrupted. Inspect ${lock} before retrying.`);
     throw error;
   }
-  writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }), { mode: 0o600 });
+  writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, installationId:id, dataDirectory:data, startedAt: new Date().toISOString() }), { mode: 0o600 });
   const work = join(dirname(runtime), `.quotapie-install-${id}`);
   const stagedRuntime = join(work, "runtime"), stagedApp = join(dirname(app), `.QuotaPie-install-${id}.app`);
   const swaps: Array<{ path: string; staged: string; backup: string; published: boolean; saved: boolean }> = [];
   let priorJobs: Job[] = [], activationStarted = false, createdConfig: string | null = null;
   const stoppedPids = new Map<string, Set<number>>();
   let rollbackFailed = false;
+  let maintenance: InstallMaintenance | null = null;
+  let previousIdentity: {origin:string;sourceHash:string} | null = null;
   const checkCancelled = () => { if (deps.signal?.aborted) throw new Error("Installation interrupted; previous installation restored."); };
   async function readInstallationState(url: string, options: JsonOptions = {}) {
     // An otherwise healthy collector can be briefly occupied at startup. Retry
@@ -155,7 +158,7 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
           || !Array.isArray(autoResume.accounts) || !Array.isArray(autoResume.incidents)
           || autoResume.accounts.some((account: any) => typeof account?.account !== "string" || !account.account.trim()
             || typeof account.enabled !== "boolean")
-          || autoResume.incidents.some((incident: any) => !["waiting", "running", "resumed", "skipped", "needs-review"].includes(incident?.state))))
+          || autoResume.incidents.some((incident: any) => !["waiting", "queued", "running", "resumed", "skipped", "needs-review"].includes(incident?.state))))
         throw new Error("invalid-work-state");
       // The status endpoint exposes only the most recent 100 legacy jobs. A
       // full page cannot prove that an older active job was not omitted.
@@ -168,13 +171,15 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
           || status.jobs.some((job: any) => !["waiting", "ready", "running", "review", "succeeded", "failed", "cancelled"].includes(job?.state))
           || status.resumeTasks.some((task: any) => !["waiting", "ready", "approved", "resumed", "dismissed"].includes(task?.state)))
         throw new Error("invalid-work-state");
-      if (work.policies.some((policy: any) => policy.enabled || policy.state.activeExecutionId !== null)
+      if (work.policies.some((policy: any) => policy.state.activeExecutionId !== null
+            || policy.enabled && !maintenance?.covers(policy.provider,policy.account))
           || work.executions.some((execution: any) => execution.status !== "finished")
           || status.jobs.some((job: any) => ["waiting", "ready", "running", "review"].includes(job.state))
-          || autoResume?.accounts.some((account: any) => account.enabled))
+          || autoResume?.accounts.some((account: any) => account.enabled && !maintenance?.covers("codex",account.account)))
         throw new Error("managed-work-active");
       const collector = await job(LABELS[0]);
       if (!expectedPid || collector.pid !== expectedPid) throw new Error("collector-changed");
+      maintenance?.assertHeldAndIdle();
     } catch (error) {
       if (error instanceof Error && error.message === "managed-work-active")
         throw new Error("Managed work is enabled, pending, running or uncertain. Disable scheduling and wait for execution to finish before installing.");
@@ -313,10 +318,29 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
     const stagedCLI = join(dirname(cli), `.quotapie-install-${id}`);
     symlinkSync(join(runtime, "bin/quotapie"), stagedCLI);
     addSwap(runtime, stagedRuntime); addSwap(app, stagedApp); addSwap(cli, stagedCLI);
-    // Disabled policies and quota-recovery scanners cannot create new work
-    // or dispatch on a quota tick while services stop.
-    // This does not lock out another client explicitly enabling new work; run
-    // installation without concurrent work-policy changes.
+    // Existing collectors already honor work_fences inside their claim
+    // transaction. Keep consent, its timestamp and pending incidents unchanged.
+    // The legacy job runner has no such gate: active legacy jobs still block
+    // installation, and clients must not register new legacy jobs during it.
+    if (priorJobs[0]!.loaded && existsSync(join(data,"quotapie.sqlite3"))) {
+      const priorAgent = await plist(agents[0]!);
+      const priorData = resolve(priorAgent.EnvironmentVariables?.QUOTAPIE_HOME ?? join(home,".local/share/quotapie"));
+      if (!existsSync(priorData) || realpathSync(priorData)!==realpathSync(data))
+        throw new Error("The running collector's data directory cannot be verified for maintenance.");
+      const database=join(data,"quotapie.sqlite3");
+      const openFiles=await deps.run(["/usr/sbin/lsof","-a","-p",String(priorJobs[0]!.pid),"-Fn","--",database],env);
+      if(openFiles.code!==0 || !openFiles.stdout.split("\n").some(line=>{
+        if(!line.startsWith("n"))return false;
+        try{return realpathSync(line.slice(1))===realpathSync(database);}catch{return false;}
+      })) throw new Error("The running collector's open database cannot be verified for maintenance.");
+      const identity = await readInstallationState(origin + "/api/runtime");
+      if (identity?.schemaVersion!==1 || identity.pid!==priorJobs[0]!.pid || typeof identity.sourceHash!=="string"
+          || identity.sourceHash!==runtimeSourceHash(runtime))
+        throw new Error("The running collector's runtime identity cannot be verified for maintenance.");
+      previousIdentity={origin,sourceHash:identity.sourceHash};
+      maintenance=InstallMaintenance.acquire(database,id,
+        (["codex","claude"] as const).flatMap(provider=>loaded.accounts[provider].map(account=>({provider,account:account.id}))));
+    }
     if (priorJobs[0]!.loaded) await assertNoManagedWork(origin, priorJobs[0]!.pid);
     checkCancelled();
     activationStarted = true;
@@ -367,20 +391,24 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
       throw new Error("The installed app or collector exited during startup verification.");
     }
     const health = await deps.json(origin + "/health").catch(() => null);
+    const accounts = Array.isArray(health?.accounts) ? health.accounts : [];
+    const collection = health?.ok === true && accounts.length > 0 && accounts.every((a: any) => a?.health === "recent-success") ? "ready"
+      : !health ? "unverified" : !accounts.length || accounts.some((a: any) => a?.health === "never-attempted"
+        || ["auth-required", "auth-expired", "not-configured"].includes(a?.errorCategory)) ? "setup-needed" : "degraded";
+    maintenance?.assertHeldAndIdle();
+    maintenance?.release(); maintenance=null;
     for (const swap of swaps) if (swap.saved) {
       try { rmSync(swap.backup, { recursive: true, force: true }); }
       catch { console.warn(`Installation verified; an old backup could not be removed: ${swap.backup}`); }
     }
-    const accounts = Array.isArray(health?.accounts) ? health.accounts : [];
-    const collection = health?.ok === true && accounts.length > 0 && accounts.every((a: any) => a.health === "recent-success") ? "ready"
-      : !health ? "unverified" : !accounts.length || accounts.some((a: any) => a.health === "never-attempted"
-        || ["auth-required", "auth-expired", "not-configured"].includes(a.errorCategory)) ? "setup-needed" : "degraded";
     return { installed: true, runtime, app, cli, config, data, sourceHash: expectedHash, ...verified,
       collection };
   } catch (error) {
     const failures: string[] = [];
     if (activationStarted) {
-      for (const label of [...LABELS].reverse()) {
+      try { maintenance?.assertHeldAndIdle(); }
+      catch { failures.push("verify idle maintenance before rollback; processes were not stopped"); }
+      if (!failures.length) for (const label of [...LABELS].reverse()) {
         try { await stop(label); } catch { failures.push(`unload ${label}`); }
       }
       // Never replace files while a newly started process could still use them.
@@ -397,14 +425,33 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
             try { await run(["/bin/launchctl", "bootstrap", domain, agents[index]!]); }
             catch { failures.push(`restart ${LABELS[index]}`); }
           }
+          // Releasing the admission fence is itself a scheduling mutation.
+          // Restore the verified old runtime before allowing it to claim work.
+          if (!failures.length && maintenance && previousIdentity) {
+            let restored=false;
+            for(let attempt=0;attempt<(options.attempts??40);attempt++) {
+              const identity=await deps.json(previousIdentity.origin+"/api/runtime",{timeoutMs:5000}).catch(()=>null);
+              const collector=await job(LABELS[0]), menu=await job(LABELS[1]);
+              if(identity?.schemaVersion===1 && identity.sourceHash===previousIdentity.sourceHash
+                && !!collector.pid && identity.pid===collector.pid && Number.isFinite(Date.parse(identity.startedAt??""))
+                && (!priorJobs[1]?.loaded || !!menu.pid)) {restored=true;break;}
+              await deps.sleep(250);
+            }
+            if(!restored) failures.push("verify restored runtime before releasing maintenance");
+          }
         }
       }
     }
     if (!failures.length && createdConfig !== null && existsSync(config) && readFileSync(config, "utf8") === createdConfig) rmSync(config);
     rollbackFailed = failures.length > 0;
+    if (!rollbackFailed && maintenance) {
+      try { maintenance.release(); maintenance=null; }
+      catch { rollbackFailed=true; failures.push("release installation maintenance"); }
+    }
     if (rollbackFailed) throw new Error(`${error instanceof Error ? error.message : error}\nRecovery needs attention: ${failures.join(", ")}. Backups and transaction files retained at ${work}.`);
     throw error;
   } finally {
+    maintenance?.close();
     if (!rollbackFailed) {
       for (const swap of swaps) if (present(swap.staged)) rmSync(swap.staged, { recursive: true, force: true });
       rmSync(stagedApp, { recursive: true, force: true });

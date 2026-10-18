@@ -29,6 +29,46 @@ export class CodexSnapshotUnavailableError extends Error {}
 
 export class CodexGoalUnsupportedError extends Error {}
 export class CodexTurnUnsupportedError extends Error {}
+export class CodexQueueUnsupportedError extends Error {}
+
+export interface CodexQueuedSubmission { id: string; clientUserMessageId: string }
+export interface CodexThreadQueuePage { data: CodexQueuedSubmission[]; nextCursor: string | null }
+export interface CodexThreadQueueListParams { cursor?: string | null; limit?: number }
+
+const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const queueInvalid = () => new Error("Codex App Server queue returned an invalid response");
+function record(value: unknown): Record<string, any> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw queueInvalid();
+  return value as Record<string, any>;
+}
+function queueIdentifier(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 256 && !/[\u0000-\u001f\u007f]/.test(value);
+}
+function queueEnvelope(value: unknown, threadId: string): Record<string, any> {
+  const result = record(value);
+  if (result.threadId !== undefined && result.threadId !== threadId) throw queueInvalid();
+  return result;
+}
+function queueSubmission(value: unknown): CodexQueuedSubmission {
+  const entry = record(value);
+  if (!queueIdentifier(entry.id) || !queueIdentifier(entry.clientUserMessageId) || !Array.isArray(entry.input)) throw queueInvalid();
+  // The queue may contain other users' messages. Never expose their bodies.
+  for (const input of entry.input) {
+    const item = record(input);
+    if (typeof item.type !== "string" || !["text", "image", "localImage", "audio", "localAudio", "skill", "mention"].includes(item.type)) throw queueInvalid();
+    if (item.type === "text" && typeof item.text !== "string") throw queueInvalid();
+    if (item.type === "image" && typeof item.url !== "string" && typeof item.fileId !== "string") throw queueInvalid();
+    if (item.type === "audio" && typeof item.url !== "string") throw queueInvalid();
+    if (["localImage", "localAudio", "skill", "mention"].includes(item.type) && typeof item.path !== "string") throw queueInvalid();
+    if (["skill", "mention"].includes(item.type) && typeof item.name !== "string") throw queueInvalid();
+  }
+  return { id: entry.id, clientUserMessageId: entry.clientUserMessageId };
+}
+function queueCursor(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value !== "string" || !value.length || value.length > 4096) throw queueInvalid();
+  return value;
+}
 
 export interface CodexThreadTurnSummary {
   threadId: string;
@@ -38,7 +78,7 @@ export interface CodexThreadTurnSummary {
   completedAtMs: number | null;
 }
 
-function parseLatestTurn(result: unknown, threadId: string): CodexThreadTurnSummary | null {
+function parseLatestTurn(result: unknown, threadId: string, allowInterruptedError = false): CodexThreadTurnSummary | null {
   const invalid = () => new Error("Codex App Server thread/turns/list returned an invalid response");
   if (!result || typeof result !== "object" || Array.isArray(result)) throw invalid();
   const data = (result as Record<string, unknown>).data;
@@ -53,7 +93,7 @@ function parseLatestTurn(result: unknown, threadId: string): CodexThreadTurnSumm
       !Number.isSafeInteger(turn.completedAt * 1000))) throw invalid();
   let errorCode: string | null = null;
   if (turn.error != null) {
-    if (turn.status !== "failed" || typeof turn.error !== "object" || Array.isArray(turn.error)) throw invalid();
+    if ((turn.status !== "failed" && !(allowInterruptedError && turn.status === "interrupted")) || typeof turn.error !== "object" || Array.isArray(turn.error)) throw invalid();
     const code = turn.error.codexErrorInfo;
     if (typeof code === "string" && /^[a-zA-Z][a-zA-Z0-9]{0,80}$/.test(code)) errorCode = code;
     else if (code != null && (typeof code !== "object" || Array.isArray(code))) throw invalid();
@@ -179,7 +219,7 @@ export class CodexAppServerClient {
     if (this.closing) throw new Error("Codex App Server client is closing");
     if (this.connectTask) return this.connectTask;
     // A stable command/symlink can point to a new executable after an update.
-    // Restart only our read-only metadata child, never a user's inference process.
+    // Restart only our protocol client child, never a user's inference process.
     // A temporarily missing file during replacement need not stop a healthy child.
     const executable = this.currentExecutableStamp();
     if (this.process && this.initialized && this.credentialStamp === this.currentCredentialStamp()
@@ -203,8 +243,8 @@ export class CodexAppServerClient {
     this.collectorEpoch = randomUUID();
     this.initialized = false;
     this.process = Bun.spawn(
-      // This client only reads account/session metadata. Keep its sandbox
-      // read-only and disallow interactive escalation; newer CLIs removed untrusted.
+      // This child reads metadata and submits explicit host-queue requests;
+      // it never starts inference. Keep its own sandbox read-only with no escalation.
       [this.command, "-s", "read-only", "-a", "never", "app-server", "--stdio"],
       {
         stdin: "pipe",
@@ -331,6 +371,150 @@ export class CodexAppServerClient {
         throw new CodexSnapshotUnavailableError("Codex login changed during turn lookup; retrying on next poll");
       if (unsupported) throw new CodexTurnUnsupportedError("Codex App Server does not support thread/turns/list");
       return parseLatestTurn(result, threadId);
+    });
+  }
+
+  /** Queue IDs correlate delivery; clientUserMessageId is NOT a deduplication key. */
+  async listThreadQueue(threadId: string, params: CodexThreadQueueListParams = {}): Promise<CodexThreadQueuePage> {
+    this.validateQueueThread(threadId);
+    if (params.limit !== undefined && (!Number.isInteger(params.limit) || params.limit < 1 || params.limit > 100)) throw new Error("Invalid queue page limit");
+    if (params.cursor !== undefined && params.cursor !== null) queueCursor(params.cursor);
+    return this.queueOperation(async () => {
+      const result = queueEnvelope(await this.queueRequest("thread/queue/list", {
+        threadId, ...(params.cursor !== undefined ? { cursor: params.cursor } : {}),
+        ...(params.limit !== undefined ? { limit: params.limit } : {}),
+      }), threadId);
+      if (!Array.isArray(result.data) || result.data.length > (params.limit ?? 100)) throw queueInvalid();
+      const data = result.data.map(queueSubmission);
+      if (new Set(data.map(item => item.id)).size !== data.length) throw queueInvalid();
+      return { data, nextCursor: queueCursor(result.nextCursor) };
+    });
+  }
+
+  /** Exactly one transport attempt. Any ambiguous failure must be reconciled, never replayed. */
+  async addThreadQueue(threadId: string, clientUserMessageId: string, text: string, beforeWrite?: () => void): Promise<CodexQueuedSubmission> {
+    this.validateQueueThread(threadId);
+    if (!queueIdentifier(clientUserMessageId) || typeof text !== "string" || !text.trim() || text.length > 32_768)
+      throw new Error("Invalid queue submission");
+    return this.queueOperation(async () => {
+      // Account/connect awaits must not outlive the caller's consent or deadline.
+      // No asynchronous work separates this veto from the single request write.
+      beforeWrite?.();
+      const result = queueEnvelope(await this.queueRequest("thread/queue/add", {
+        threadId, clientUserMessageId, input: [{ type: "text", text }],
+      }), threadId);
+      const submission = queueSubmission(result.queuedSubmission);
+      const input = result.queuedSubmission.input;
+      if (submission.clientUserMessageId !== clientUserMessageId || input.length !== 1 ||
+          input[0].type !== "text" || input[0].text !== text) throw queueInvalid();
+      return submission;
+    });
+  }
+
+  /** The owner can already hold a copy. Neither result proves execution cancellation. */
+  async deleteThreadQueue(threadId: string, queuedSubmissionId: string): Promise<boolean> {
+    this.validateQueueThread(threadId);
+    if (!queueIdentifier(queuedSubmissionId)) throw new Error("Invalid queue submission ID");
+    return this.queueOperation(async () => {
+      const result = queueEnvelope(await this.queueRequest("thread/queue/delete", { threadId, queuedSubmissionId }), threadId);
+      if (typeof result.deleted !== "boolean") throw queueInvalid();
+      return result.deleted;
+    });
+  }
+
+  /** Persisted user-message correlation only. A miss never authorizes a resend. */
+  async readTurnForClientMessage(threadId: string, clientUserMessageId: string, afterTurnId?: string): Promise<CodexThreadTurnSummary | null> {
+    this.validateQueueThread(threadId);
+    if (!queueIdentifier(clientUserMessageId) || (afterTurnId !== undefined && !UUID.test(afterTurnId)))
+      throw new Error("Invalid queue correlation identity");
+    return this.queueOperation(async () => {
+      let cursor: string | null = null, matchedTurn: string | null = null, complete = false;
+      const cursors = new Set<string>(), itemIds = new Set<string>();
+      for (let page = 0; page < 5; page++) {
+        const result = queueEnvelope(await this.queueRequest("thread/items/list", {
+          threadId, limit: 100, sortDirection: "desc", ...(cursor ? { cursor } : {}),
+        }), threadId);
+        if (!Array.isArray(result.data) || result.data.length > 100) throw queueInvalid();
+        for (const raw of result.data) {
+          const entry = record(raw), item = record(entry.item);
+          if (!UUID.test(entry.turnId) || !queueIdentifier(item.id) || typeof item.type !== "string") throw queueInvalid();
+          if (itemIds.has(item.id)) throw queueInvalid();
+          itemIds.add(item.id);
+          if (entry.turnId === afterTurnId) { complete = true; break; }
+          if (item.type !== "userMessage") continue;
+          if (!Array.isArray(item.content) || (item.clientId != null && !queueIdentifier(item.clientId))) throw queueInvalid();
+          if (item.clientId === clientUserMessageId) {
+            if (matchedTurn !== null) throw new Error("Codex queue correlation is ambiguous");
+            matchedTurn = entry.turnId;
+          }
+        }
+        cursor = queueCursor(result.nextCursor);
+        if (complete || cursor === null) { complete = true; break; }
+        if (cursors.has(cursor)) throw queueInvalid();
+        cursors.add(cursor);
+      }
+      if (!complete) throw new CodexSnapshotUnavailableError("Codex queue correlation exceeded its history bound");
+      if (!matchedTurn) return null;
+      const turn = await this.readTurnMetadata(threadId, matchedTurn);
+      if (!turn) throw new CodexSnapshotUnavailableError("Codex correlated turn metadata is unavailable");
+      return turn;
+    });
+  }
+
+  /** Poll an already-correlated immutable turn without re-reading growing items. */
+  async readTurn(threadId: string, turnId: string): Promise<CodexThreadTurnSummary | null> {
+    this.validateQueueThread(threadId);
+    if (typeof turnId !== "string" || !UUID.test(turnId)) throw new Error("Codex turn lookup requires a turn UUID");
+    return this.queueOperation(() => this.readTurnMetadata(threadId, turnId));
+  }
+
+  private async readTurnMetadata(threadId: string, turnId: string): Promise<CodexThreadTurnSummary | null> {
+    let cursor: string | null = null;
+    const cursors = new Set<string>();
+    for (let page = 0; page < 5; page++) {
+      const result = queueEnvelope(await this.queueRequest("thread/turns/list", {
+        threadId, limit: 100, sortDirection: "desc", itemsView: "notLoaded", ...(cursor ? { cursor } : {}),
+      }), threadId);
+      if (!Array.isArray(result.data) || result.data.length > 100) throw queueInvalid();
+      const matches = result.data.filter((raw: unknown) => record(raw).id === turnId);
+      if (matches.length > 1) throw queueInvalid();
+      if (matches.length === 1) return parseLatestTurn({ data: matches }, threadId, true);
+      cursor = queueCursor(result.nextCursor);
+      if (cursor === null) return null;
+      if (cursors.has(cursor)) throw queueInvalid();
+      cursors.add(cursor);
+    }
+    throw new CodexSnapshotUnavailableError("Codex correlated turn metadata exceeded its history bound");
+  }
+
+  private validateQueueThread(threadId: string): void {
+    if (typeof threadId !== "string" || !UUID.test(threadId)) throw new Error("Codex queue requires a thread UUID");
+  }
+
+  private async queueRequest(method: string, params: unknown): Promise<unknown> {
+    try { return await this.request(method, params); }
+    catch (error) {
+      if (error instanceof RpcRequestError && error.code === -32601)
+        throw new CodexQueueUnsupportedError("host-queue-unsupported");
+      // Server messages may include submitted text. Keep this boundary opaque.
+      throw new Error("Codex queue request failed; delivery may be unknown");
+    }
+  }
+
+  private queueOperation<T>(operation: () => Promise<T>): Promise<T> {
+    return this.exclusive(async () => {
+      await this.connect();
+      const stamp = this.currentCredentialStamp();
+      const before = await this.readAccountIdentity();
+      if (before === undefined || (this.remoteAccount !== undefined && before !== this.remoteAccount) ||
+          stamp !== this.currentCredentialStamp() || stamp !== this.credentialStamp)
+        throw new CodexSnapshotUnavailableError("Codex identity unavailable or changed; queue operation withheld");
+      // Deliberately no transport retry: add may have committed before a pipe error.
+      const result = await operation();
+      const after = await this.readAccountIdentity();
+      if (before !== after || stamp !== this.currentCredentialStamp())
+        throw new CodexSnapshotUnavailableError("Codex login changed during queue operation; delivery may be unknown");
+      return result;
     });
   }
 

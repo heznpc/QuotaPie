@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { installMacOS, stageRuntime, type InstallDependencies } from "../script/install-macos";
 import { runtimeSourceHash } from "../src/runtime-identity";
+import { QuotaStorage } from "../src/storage/database";
+import { WorkStore } from "../src/work/store";
 
 const labels = ["local.quotapie", "local.quotapie.menubar"];
 function fixture(existing = true) {
@@ -94,6 +96,7 @@ function fixture(existing = true) {
         return jobs.has(labels[1]!) ? ok(String(jobs.get(labels[1]!))) : bad();
       }
       if (command[0] === "/bin/ps") return ok(command.at(-1) === "comm=" ? join(app, "Contents/MacOS/QuotaPie") : `${process.execPath} ${runtime}/src/cli.ts serve`);
+      if (command[0] === "/usr/sbin/lsof") return ok(`p${jobs.get(labels[0]!)}\nn${join(data,"quotapie.sqlite3")}\n`);
       throw new Error(`Unexpected command ${command.join(" ")}`);
     },
     async json(url) {
@@ -109,6 +112,111 @@ function fixture(existing = true) {
     run: (prebuilt = true) => installMacOS({ home, sourceRoot: source, app: prebuilt ? supplied : undefined, attempts: 2 }, deps),
     close: () => rmSync(root, { recursive: true, force: true }) };
 }
+
+function maintainedFixture() {
+  const f=fixture(), storage=new QuotaStorage(join(f.data,"quotapie.sqlite3")), store=new WorkStore(storage);
+  const config=JSON.parse(f.configText);
+  config.accounts.codex=[{id:"plus",label:"Plus",enabled:true,codexHome:join(f.root,"profile")}];
+  writeFileSync(f.config,JSON.stringify(config));
+  const agent=JSON.parse(readFileSync(f.agents[0]!,"utf8"));
+  agent.EnvironmentVariables={QUOTAPIE_HOME:f.data};writeFileSync(f.agents[0]!,JSON.stringify(agent));
+  store.save({id:"quota-policy",provider:"codex",account:"plus",accountKey:"identity",profileKey:"profile",nativeSessionId:"thread",cwd:"/tmp",
+    prompt:"continue",objective:"finish",completionCriteria:["proof"],dispatchOwner:"local",enabled:true,trigger:"quota-ready",resetWithinMinutes:0,
+    budgetByBucket:{"codex:primary":{reservePercent:0,maxUsagePercent:100}},maxTurns:1,maxDurationSeconds:60,maxTotalDurationSeconds:60,
+    expiresAtMs:Date.now()+3600000,priority:0,onReset:"continue"},null,"fixture");
+  storage.db.exec("CREATE TABLE quota_resume_preferences(account TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE quota_resume_incidents(id TEXT PRIMARY KEY,value TEXT NOT NULL)");
+  const preference=JSON.stringify({account:"plus",enabled:true,enabledAtMs:1234,revision:7}),incident=JSON.stringify({id:"pending",state:"waiting",authorizationRevision:7});
+  storage.db.query("INSERT INTO quota_resume_preferences VALUES(?,?)").run("plus",preference);
+  storage.db.query("INSERT INTO quota_resume_incidents VALUES(?,?)").run("pending",incident);
+  const read=f.deps.json!;
+  f.deps.json=async(url,options)=>url.endsWith("/api/work")?{policies:store.list(),executions:store.executions()}
+    :url.endsWith("/api/status")?{actionToken:"fixture-only-token",jobs:[],resumeTasks:[],autoResume:{accounts:[{account:"plus",enabled:true}],incidents:[{state:"waiting"}]}}
+    :read(url,options);
+  return {...f,storage,store,preference,incident,close(){storage.close();f.close();}};
+}
+
+test("maintenance permits enabled scheduling without changing opt-in or pending incidents and blocks claims until verified",async()=>{
+  const f=maintainedFixture(), run=f.deps.run!;
+  let checked=0;
+  f.deps.run=async(command,env)=>{
+    if(command[1]==="bootout" || command[1]==="bootstrap") {
+      expect(f.store.claimRequest("quota-policy","local",1,"racing-claim").execution).toBeNull();checked++;
+    }
+    return run(command,env);
+  };
+  try {
+    expect((await f.run()).installed).toBe(true);expect(checked).toBe(4);
+    expect(f.store.fences()).toEqual([]);
+    expect(f.storage.db.query<{value:string},[]>("SELECT value FROM quota_resume_preferences").get()!.value).toBe(f.preference);
+    expect(f.storage.db.query<{value:string},[]>("SELECT value FROM quota_resume_incidents").get()!.value).toBe(f.incident);
+    expect(f.store.get("quota-policy")?.enabled).toBe(true);
+    expect(f.store.claimRequest("quota-policy","local",1,"after-install").execution).not.toBeNull();
+  } finally {f.close();}
+});
+
+test("maintenance survives failed activation until the restored runtime is verified",async()=>{
+  for(const verifyRollback of [true,false]) {
+    const f=maintainedFixture(), read=f.deps.json!;
+    f.setFailure("menu-start");
+    f.deps.json=async(url,options)=>{
+      const value=await read(url,options);
+      if(url.endsWith("/api/runtime") && readFileSync(join(f.runtime,"src/cli.ts"),"utf8")==="old-runtime"
+        && (f.jobs.get(labels[0]!)??0)>=200) {
+        expect(f.store.claim("quota-policy","local",1)).toBeNull();
+        if(!verifyRollback)return {...value,sourceHash:"unverified-restoration"};
+      }
+      return value;
+    };
+    try {
+      await expect(f.run()).rejects.toThrow(verifyRollback?"menu start failed":"Recovery needs attention");
+      expect(f.store.fences().length).toBe(verifyRollback?0:1);
+      expect(existsSync(join(dirname(f.runtime),".quotapie-install.lock"))).toBe(!verifyRollback);
+      expect(f.storage.db.query<{value:string},[]>("SELECT value FROM quota_resume_preferences").get()!.value).toBe(f.preference);
+    } finally {f.close();}
+  }
+});
+
+test("changed live data path or an older unlisted execution refuses activation and cleans only this install",async()=>{
+  for(const failure of ["path","open-file","history"]) {
+    const f=maintainedFixture();
+    if(failure==="path") {
+      const agent=JSON.parse(readFileSync(f.agents[0]!,"utf8"));agent.EnvironmentVariables.QUOTAPIE_HOME=f.root;
+      writeFileSync(f.agents[0]!,JSON.stringify(agent));
+    } else if(failure==="open-file") {
+      const run=f.deps.run!;f.deps.run=async(command,env)=>command[0]==="/usr/sbin/lsof"
+        ?{code:1,stdout:"",stderr:"unverified"}:run(command,env);
+    } else {
+      f.storage.db.query("INSERT INTO work_executions(id,policy_id,value) VALUES(?,?,?)").run("hidden","quota-policy",JSON.stringify({status:"uncertain"}));
+      const read=f.deps.json!;
+      f.deps.json=async(url,options)=>url.endsWith("/api/work")?{policies:f.store.list(),executions:[]}:read(url,options);
+    }
+    try {
+      await expect(f.run()).rejects.toThrow(failure==="path"?"data directory":failure==="open-file"?"open database":"Managed work");
+      expect(f.calls.some(command=>command[1]==="bootout")).toBe(false);
+      expect(f.store.fences()).toEqual([]);
+    } finally {f.close();}
+  }
+});
+
+test("lost maintenance during verification cannot trigger rollback that interrupts newly claimed work",async()=>{
+  const f=maintainedFixture(), read=f.deps.json!;
+  f.deps.json=async(url,options)=>{
+    const result=await read(url,options);
+    if(url.endsWith("/health")) {
+      for(const fence of f.store.fences()) f.store.releaseLegacy(fence.id);
+      expect(f.store.claim("quota-policy","local",1)).not.toBeNull();
+    }
+    return result;
+  };
+  try {
+    await expect(f.run()).rejects.toThrow("processes were not stopped");
+    expect(f.calls.filter(command=>command[1]==="bootout")).toHaveLength(2);
+    expect(f.jobs.get(labels[0]!)).toBeGreaterThan(200);
+    expect(f.jobs.get(labels[1]!)).toBeGreaterThan(200);
+    expect(readFileSync(join(f.runtime,"src/cli.ts"),"utf8")).toBe("new-runtime");
+    expect(existsSync(join(dirname(f.runtime),".quotapie-install.lock"))).toBe(true);
+  } finally {f.close();}
+});
 
 test("prebuilt installation preserves config, credentials and data, pins paths and can be repeated", async () => {
   const f = fixture();

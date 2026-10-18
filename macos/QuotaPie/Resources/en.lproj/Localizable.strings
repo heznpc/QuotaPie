@@ -968,7 +968,7 @@
 "automatic.resetStopExplanation" = "A quota reset disables this work. Choose Continue if it should wait for quota recovery and then run.";
 "automatic.resetContinueExplanation" = "After a quota reset, this work may continue once fresh quota, the linked goal and the remaining execution budget allow it.";
 "autoResume.title" = "Resume automatically when quota recovers";
-"autoResume.description" = "After you turn this on, conversations stopped by quota limits continue once on the same account.";
+"autoResume.description" = "After you turn this on, conversations stopped by quota limits continue once on the same account. Open conversations use ChatGPT's queue. An accepted continuation may still run after you turn this off.";
 "autoResume.unsupported" = "Update the local service to use automatic quota resumption.";
 "autoResume.noAccounts" = "No Codex accounts are available.";
 "autoResume.empty" = "No conversations waiting for quota recovery have been detected.";
@@ -978,6 +978,7 @@
 "autoResume.saveFailed" = "Could not confirm the change. Refresh the status before trying again.";
 "autoResume.skip" = "Skip this conversation";
 "autoResume.state.waiting" = "Waiting for recovery";
+"autoResume.state.queued" = "Waiting for ChatGPT";
 "autoResume.state.running" = "Resuming once";
 "autoResume.state.resumed" = "One continuation ended";
 "autoResume.state.skipped" = "Skipped";
@@ -989,5 +990,8 @@
 "autoResume.reason.quota" = "Waiting for fresh quota recovery to be confirmed.";
 "autoResume.reason.goal" = "The host goal does not currently allow continuation.";
 "autoResume.reason.busy" = "Codex is still using this conversation.";
+"autoResume.reason.queued" = "Sent to ChatGPT's queue. Checking for a turn in the same conversation.";
+"autoResume.reason.queueBusy" = "Waiting because this conversation already has queued input.";
+"autoResume.reason.queueUnsupported" = "The installed ChatGPT version does not support conversation queues.";
 "autoResume.reason.limit" = "The one-continuation allowance has been used.";
 "autoResume.reason.review" = "Open the conversation in Codex to review its status.";

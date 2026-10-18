@@ -56,6 +56,15 @@ final class AutoResumeTests: XCTestCase {
         }
     }
 
+    func testHostQueueIsDistinctFromAnActuallyRunningTurn() {
+        let incident = AutoResumeIncident(id: "queued", account: "personal", threadId: "thread",
+            projectLabel: "Project", state: "queued", reason: "host-queue-awaiting-turn", detectedAtMs: 0, policyId: nil)
+        XCTAssertEqual(incident.stateTitle, Strings.t("autoResume.state.queued"))
+        XCTAssertNotEqual(incident.stateTitle, Strings.t("autoResume.state.running"))
+        XCTAssertEqual(incident.reasonText, Strings.t("autoResume.reason.queued"))
+        XCTAssertFalse(incident.canSkip, "Accepted queue input cannot promise atomic cancellation")
+    }
+
     func testAutoResumePolicyCannotEnterTheOrdinaryEditor() throws {
         let regular = AutomaticWorkPolicy.draft(provider: "codex", account: "personal", buckets: ["codex:primary:300"])
         XCTAssertTrue(regular.isUserEditable)

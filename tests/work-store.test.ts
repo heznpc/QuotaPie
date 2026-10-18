@@ -21,6 +21,28 @@ function input(overrides: Partial<WorkPolicyInput> = {}): WorkPolicyInput {
 }
 
 describe("shared work policy and execution ledger", () => {
+  test("host queue intent survives restart and cannot change identity or clear an uncertain fence", () => {
+    const dir=mkdtempSync(join(tmpdir(),"quotapie-host-queue-ledger-")); directories.push(dir);
+    const a=store(join(dir,"quota.sqlite3")), b=store(join(dir,"quota.sqlite3"));
+    const thread="11111111-2222-4333-8444-555555555555", turn="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    a.save(input({provider:"codex",purpose:"quota-resume",nativeSessionId:thread,quotaResume:{turnId:turn,stamp:"stable"},maxTurns:1}),null,"create");
+    const e=a.claim("work","local",1,1000)!;
+    const intent={threadId:thread,clientUserMessageId:e.id,sentAtMs:1002};
+    expect(()=>a.recordHostQueue(e.id,intent)).toThrow();
+    a.markDispatched(e.id,1001); a.recordHostQueue(e.id,intent);
+    expect(b.getExecution(e.id)?.hostQueue).toEqual(intent);
+    a.finish(e.id,{status:"uncertain",reason:"host-queue-ack-unverified"},1010);
+    expect(b.claim("work","local",b.get("work")!.revision,1011)).toBeNull();
+    const receipt={...intent,queuedSubmissionId:turn,turnId:thread};
+    b.recordHostQueue(e.id,receipt);
+    expect(()=>a.recordHostQueue(e.id,{...receipt,clientUserMessageId:"different"})).toThrow("work-host-queue-receipt-conflict");
+    expect(()=>a.recordHostQueue(e.id,intent)).toThrow("work-host-queue-receipt-conflict");
+    expect(a.get("work")!.state.activeExecutionId).toBe(e.id);
+    a.reconcile(e.id,{status:"turn-finished",summary:"Correlated host turn finished",remainingWork:"Goal completion unverified"},2000);
+    expect(b.getExecution(e.id)?.hostQueue).toEqual(receipt);
+    expect(b.get("work")!.state.activeExecutionId).toBeNull();
+    expect(b.get("work")!.state.turns).toBe(1);
+  });
   test("equal-priority policies retain registration order across revisions", () => {
     const s = store();
     s.save(input({ id: "z-first" }), null, "first");

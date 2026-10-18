@@ -59,6 +59,9 @@ export interface WorkExecution {
   policySnapshot: WorkPolicy; turnOrdinal: number; claimedAtMs: number;
   dispatchedAtMs?: number; finishedAtMs?: number; result?: WorkResult;
   accountedDurationSeconds?: number; planning?: WorkPlanning;
+  /** Durable intent/receipt for the existing host's queue. The client message
+   * ID correlates a turn; the provider does not deduplicate submissions. */
+  hostQueue?: {threadId:string;clientUserMessageId:string;sentAtMs:number;queuedSubmissionId?:string;turnId?:string};
   minimumRemainingByBucket?: Record<string,number>; effectiveReserveByBucket?: Record<string,number>;
   status: "claimed" | "dispatched" | "finished" | "uncertain";
 }

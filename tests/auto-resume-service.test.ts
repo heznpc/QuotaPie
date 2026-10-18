@@ -46,6 +46,7 @@ function fixture(persistent = false) {
   };
   writeFailure(failedAtMs);
   const client = {
+    listThreadQueue: async () => ({data:[] as Array<{id:string;clientUserMessageId:string}>,nextCursor:null as string|null}),
     listThreads: async (_params?: CodexThreadListParams) => {
       listReads++; return { data: [{ id: THREAD, cwd: root, name: "Fixture task", updatedAtMs: failedAtMs }], nextCursor: null };
     },
@@ -59,6 +60,7 @@ function fixture(persistent = false) {
     },
     close: async () => {},
   };
+  const executeHostAdapter=service.work.deps.execute;
   // Both metadata paths are fakes; no installed CLI or external service runs.
   const installFakes = () => {
     (service as any).goalClients.set(ACCOUNT, client);
@@ -89,6 +91,7 @@ function fixture(persistent = false) {
   };
   cleanup.push(async () => { await service.close(); rmSync(root, { recursive: true, force: true }); });
   return { root, profile, config, get service() { return service; }, client, observe, writeFailure, enableAndDiscover, failedAt: () => failedAtMs,
+    useRealExecutionAdapter: () => {service.work.deps.execute=executeHostAdapter;},
     runs: () => runs, listReads: () => listReads, turnReads: () => turnReads,
     setGoal: (status: CodexThreadGoal["status"] | null) => {
       goalError = false; goal = status === null ? null : { threadId: THREAD, objective: "Synthetic host objective", status };
@@ -137,24 +140,78 @@ test("auto resume is off by default and the HTTP toggle requires its action toke
   expect(f.service.work.store.list()).toEqual([]); expect(f.runs()).toBe(0);
 });
 
-test("a desktop-owned quota failure remains visible and waits without claiming or disturbing its writer", async () => {
+test("a desktop-owned quota failure registers through the host queue without disturbing its writer", async () => {
   const f = fixture();
   await f.service.setAutoResumeEnabled(ACCOUNT, true);
   f.writeFailure(Date.now());
   const lock=join(f.profile,"thread-writer-locks",THREAD+".lock");
   writeFileSync(lock,"");
+  const queued=spyOn(f.client,"listThreadQueue").mockResolvedValue({data:[{id:"existing",clientUserMessageId:"user"}],nextCursor:null});
   await f.service.autoResume.poll();
-  expect(f.service.autoResume.status().incidents).toMatchObject([{state:"waiting",reason:"native-writer-present"}]);
+  expect(f.service.autoResume.status().incidents).toMatchObject([{state:"waiting",reason:"host-queue-busy"}]);
   expect(f.service.work.store.list()).toEqual([]);
   f.service.work.tick(); await f.service.work.settle();
   expect(f.runs()).toBe(0);
   expect(f.service.work.store.executions()).toEqual([]);
-  // Only the fixture's host releases its lock; discovery never deletes it.
+  // The host keeps its writer throughout registration. Only its user queue clears.
   expect(await Bun.file(lock).exists()).toBe(true);
-  rmSync(lock);
+  queued.mockResolvedValue({data:[],nextCursor:null});
   await f.service.autoResume.poll();
   expect(f.service.work.store.list()).toHaveLength(1);
   expect(f.service.autoResume.status().incidents).toHaveLength(1);
+  expect(await Bun.file(lock).exists()).toBe(true);
+});
+
+test("the service sends one recovery through the owning host queue and records its exact turn", async () => {
+  const f=fixture();
+  const lock=join(f.profile,"thread-writer-locks",THREAD+".lock"); writeFileSync(lock,"");
+  const incident=await f.enableAndDiscover();
+  f.observe(Date.now()+1);
+  let adds=0, clientId="";
+  const resumed="cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa";
+  Object.assign(f.client,{
+    addThreadQueue:async (thread:string,id:string,prompt:string)=>{
+      expect(thread).toBe(THREAD); expect(prompt).toStartWith("[QuotaPie quota recovery:");
+      adds++; clientId=id; return {id:resumed,clientUserMessageId:id};
+    },
+    readTurnForClientMessage:async(thread:string,id:string,after:string)=>{
+      expect(thread).toBe(THREAD);expect(id).toBe(clientId);expect(after).toBe(TURN);
+      return {threadId:THREAD,turnId:resumed,status:"completed",errorCode:null,completedAtMs:Date.now()};
+    },
+    deleteThreadQueue:async()=>{throw new Error("Completed host work must not be cancelled");},
+  });
+  f.useRealExecutionAdapter();
+  const p=f.service.work.store.get(incident.policyId)!;
+  await f.service.work.dispatch(p.id,"local",p.revision,"host-queue-integration");
+  await f.service.work.settle();
+  const execution=f.service.work.store.executions()[0]!;
+  expect(execution.result?.status).toBe("turn-finished");
+  expect(execution.hostQueue).toMatchObject({threadId:THREAD,clientUserMessageId:clientId,queuedSubmissionId:resumed,turnId:resumed});
+  expect(adds).toBe(1);expect(f.runs()).toBe(0);
+  expect(await Bun.file(lock).exists()).toBe(true);
+  expect(f.service.autoResume.status().incidents[0]?.state).toBe("resumed");
+});
+
+test("restart removes only its revoked queued input without replaying or clearing ambiguous delivery", async () => {
+  const f=fixture(true), incident=await f.enableAndDiscover();
+  const execution=f.service.work.store.claim(incident.policyId,"local",1)!;
+  f.service.work.store.markDispatched(execution.id);
+  const receipt={threadId:THREAD,clientUserMessageId:"cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa",sentAtMs:Date.now(),queuedSubmissionId:"dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb"};
+  f.service.work.store.recordHostQueue(execution.id,receipt);
+  await f.service.setAutoResumeEnabled(ACCOUNT,false);
+  await f.restart();
+  let deletes=0;
+  Object.assign(f.client,{
+    listThreadQueue:async()=>({data:[{id:receipt.queuedSubmissionId,clientUserMessageId:receipt.clientUserMessageId},{id:"eeeeeeee-ffff-4aaa-8bbb-cccccccccccc",clientUserMessageId:"other-user-input"}],nextCursor:null}),
+    deleteThreadQueue:async(thread:string,id:string)=>{expect(thread).toBe(THREAD);expect(id).toBe(receipt.queuedSubmissionId);deletes++;return true;},
+    addThreadQueue:async()=>{throw new Error("Restart must never resend");},
+    readTurnForClientMessage:async()=>null,
+  });
+  await (f.service as any).refreshHostQueueReceipts();
+  expect(deletes).toBe(1);expect(f.runs()).toBe(0);
+  expect(f.service.work.store.getExecution(execution.id)?.status).not.toBe("finished");
+  expect(f.service.work.store.get(incident.policyId)?.state.activeExecutionId).toBe(execution.id);
+  expect(f.service.autoResume.status().incidents[0]?.state).toBe("needs-review");
 });
 
 test("invalid auto-resume requests never change consent", async () => {

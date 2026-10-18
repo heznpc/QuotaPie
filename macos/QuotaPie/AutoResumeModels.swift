@@ -33,7 +33,7 @@ struct AutoResumeIncident: Decodable, Identifiable {
 
     var canSkip: Bool { state == "waiting" }
     var stateTitle: String {
-        let known = ["waiting", "running", "resumed", "skipped", "needs-review"]
+        let known = ["waiting", "queued", "running", "resumed", "skipped", "needs-review"]
         return Strings.t("autoResume.state." + (known.contains(state) ? state : "unknown"))
     }
     var reasonText: String? {
@@ -47,6 +47,9 @@ struct AutoResumeIncident: Decodable, Identifiable {
         case "quota-recovery-unconfirmed", "subscription-quota-blocked", "reserve-reached", "quota-stale", "quota-unknown", "reset-unconfirmed": key = "quota"
         case "host-goal-not-active", "host-goal-stale", "host-goal-unavailable": key = "goal"
         case "native-writer-present", "native-turn-active": key = "busy"
+        case "host-queue-awaiting-turn": key = "queued"
+        case "host-queue-busy": key = "queueBusy"
+        case "host-queue-unsupported": key = "queueUnsupported"
         case "work-turn-limit": key = "limit"
         default: key = "review"
         }

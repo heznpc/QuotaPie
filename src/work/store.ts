@@ -216,7 +216,26 @@ export class WorkStore {
   finish(id: string, result: WorkResult, nowMs = Date.now()): WorkExecution {
     return this.finishInternal(id, result, nowMs, false);
   }
-  /** Call only after the adapter proves the previous owned process has stopped. */
+  recordHostQueue(id: string, receipt: NonNullable<WorkExecution["hostQueue"]>): void {
+    this.storage.transaction(() => {
+      const execution = this.getExecution(id);
+      if (!execution || !["dispatched", "uncertain"].includes(execution.status) ||
+          execution.policySnapshot.purpose !== "quota-resume" ||
+          receipt.threadId !== execution.policySnapshot.nativeSessionId ||
+          !/^[a-zA-Z0-9_-]{1,128}$/.test(receipt.clientUserMessageId) ||
+          !Number.isSafeInteger(receipt.sentAtMs) || receipt.sentAtMs < execution.claimedAtMs ||
+          [receipt.queuedSubmissionId, receipt.turnId].some(value => value !== undefined &&
+            !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value)))
+        throw new Error("work-host-queue-receipt-invalid");
+      const prior = execution.hostQueue;
+      if (prior && Object.entries(prior).some(([key, value]) => receipt[key as keyof typeof receipt] !== value))
+        throw new Error("work-host-queue-receipt-conflict");
+      execution.hostQueue = structuredClone(receipt);
+      this.writeExecution(execution, "host-queue", Date.now());
+    });
+  }
+  /** Call only after the adapter proves its owned process stopped or the exact
+   * correlated host turn reached a terminal state. */
   reconcile(id: string, result: WorkResult, nowMs = Date.now()): WorkExecution {
     return this.finishInternal(id, result, nowMs, true);
   }
