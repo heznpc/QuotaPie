@@ -89,6 +89,41 @@ struct CodexProfileUpdateRecovery {
     }
 }
 
+/// Updaters can add Dock pins after replacing the bundle. Debounce replacement
+/// writes and recheck for a bounded period, including after QuotaPie restarts.
+struct CodexProfileDockRepairWindow {
+    private var stamp: String?
+    private var nextCheck: Date = .distantFuture
+    private var deadline: Date = .distantPast
+    private var finished = false
+
+    mutating func shouldCheck(stamp: String, now: Date) -> Bool {
+        if self.stamp != stamp {
+            self.stamp = stamp
+            nextCheck = now.addingTimeInterval(2)
+            deadline = now.addingTimeInterval(120)
+            finished = false
+        }
+        guard !finished, now >= nextCheck else { return false }
+        if now >= deadline { finished = true }
+        nextCheck = min(now.addingTimeInterval(10), deadline)
+        return true
+    }
+}
+
+final class CodexProfileDockRepairLifetime {
+    private let lock = NSLock()
+    private var active = true
+    var isActive: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return active
+    }
+    func cancel() {
+        lock.lock(); defer { lock.unlock() }
+        active = false
+    }
+}
+
 final class CodexProfileUpdateMonitor {
     private struct Snapshot: Codable {
         let boot: String
@@ -111,6 +146,10 @@ final class CodexProfileUpdateMonitor {
     private var shuttingDown = false
     private var lastSaved = Date.distantPast
     private var retryStamp: String?
+    private var dockRepairWindow = CodexProfileDockRepairWindow()
+    private var dockRepairInFlight = false
+    private var dockRepairLifetime = CodexProfileDockRepairLifetime()
+    private let dockRepairQueue = DispatchQueue(label: "local.quotapie.profile-dock-repair", qos: .utility)
     private let snapshotKey = "local.quotapie.profile-recovery.snapshot.v1"
     private let loginKey = "local.quotapie.profile-recovery.login.v1"
 
@@ -121,6 +160,9 @@ final class CodexProfileUpdateMonitor {
     }
     func start() {
         guard timer == nil else { return }
+        shuttingDown = false
+        dockRepairLifetime = CodexProfileDockRepairLifetime()
+        dockRepairWindow = CodexProfileDockRepairWindow()
         if let defaults {
             let boot = CodexProfileLoginRecovery.bootID()
             let saved = defaults.dictionary(forKey: loginKey)
@@ -133,17 +175,20 @@ final class CodexProfileUpdateMonitor {
             }
         }
         powerObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willPowerOffNotification,
-            object: nil, queue: .main) { [weak self] _ in self?.shuttingDown = true }
+            object: nil, queue: .main) { [weak self] _ in self?.stop() }
         poll()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
         if let timer { RunLoop.main.add(timer, forMode: .common) }
     }
     func stop() {
+        shuttingDown = true
+        dockRepairLifetime.cancel()
+        dockRepairInFlight = false
         timer?.invalidate(); timer = nil
         if let powerObserver { NSWorkspace.shared.notificationCenter.removeObserver(powerObserver) }
         powerObserver = nil
     }
-    deinit { timer?.invalidate() }
+    deinit { stop() }
 
     private func poll() {
         guard !shuttingDown, let url = appURL(), let executable = Bundle(url: url)?.executableURL,
@@ -161,6 +206,27 @@ final class CodexProfileUpdateMonitor {
         }
         let now = Date()
         let registered = profiles()
+        if installShortcuts, !dockRepairInFlight, dockRepairWindow.shouldCheck(stamp: stamp, now: now) {
+            dockRepairInFlight = true
+            let lifetime = dockRepairLifetime
+            dockRepairQueue.async { [weak self] in
+                let result = Result {
+                    try CodexProfileDockRepair.repair(profiles: registered, appURL: url,
+                                                     shouldProceed: { lifetime.isActive })
+                }
+                DispatchQueue.main.async {
+                    guard let self, self.dockRepairLifetime === lifetime, lifetime.isActive else { return }
+                    self.dockRepairInFlight = false
+                    switch result {
+                    case .success(let count) where count > 0:
+                        self.logger.notice("Removed \(count) duplicate vendor Dock pins; running account apps were preserved")
+                    case .failure:
+                        self.logger.error("Could not reconcile duplicate Dock pins; existing account apps were preserved")
+                    default: break
+                    }
+                }
+            }
+        }
         var actions = recovery.observe(stamp: stamp, instances: instances, profiles: registered, now: now)
         // Retained argv proves which isolated data folder was requested, even
         // though it cannot prove the app actually used it after env loss.

@@ -5,6 +5,30 @@ final class CodexProfileUpdateRecoveryTests: XCTestCase {
     let primary = CodexDesktopProfile.primary
     let second = CodexDesktopProfile(id: "second", name: "Second", codexHome: "/tmp/update-second-home", appData: "/tmp/update-second-data")
     let start = Date(timeIntervalSince1970: 1000)
+    func testDockRepairChecksStartupAndLateUpdaterPinsThenStops() {
+        var window = CodexProfileDockRepairWindow()
+        XCTAssertFalse(window.shouldCheck(stamp: "first", now: start))
+        XCTAssertFalse(window.shouldCheck(stamp: "first", now: start.addingTimeInterval(1)))
+        XCTAssertTrue(window.shouldCheck(stamp: "first", now: start.addingTimeInterval(2)))
+        XCTAssertFalse(window.shouldCheck(stamp: "first", now: start.addingTimeInterval(3)))
+        XCTAssertTrue(window.shouldCheck(stamp: "first", now: start.addingTimeInterval(12)))
+        XCTAssertTrue(window.shouldCheck(stamp: "first", now: start.addingTimeInterval(32)))
+        XCTAssertTrue(window.shouldCheck(stamp: "first", now: start.addingTimeInterval(112)))
+        XCTAssertFalse(window.shouldCheck(stamp: "first", now: start.addingTimeInterval(119)))
+        // A late timer tick still performs the final check exactly once.
+        XCTAssertTrue(window.shouldCheck(stamp: "first", now: start.addingTimeInterval(121)))
+        XCTAssertFalse(window.shouldCheck(stamp: "first", now: start.addingTimeInterval(122)))
+    }
+    func testDockRepairDebouncesBundleWritesAndRearmsForNextUpdate() {
+        var window = CodexProfileDockRepairWindow()
+        XCTAssertFalse(window.shouldCheck(stamp: "old", now: start))
+        XCTAssertFalse(window.shouldCheck(stamp: "binary", now: start.addingTimeInterval(1)))
+        XCTAssertFalse(window.shouldCheck(stamp: "resources", now: start.addingTimeInterval(2)))
+        XCTAssertFalse(window.shouldCheck(stamp: "resources", now: start.addingTimeInterval(3)))
+        XCTAssertTrue(window.shouldCheck(stamp: "resources", now: start.addingTimeInterval(4)))
+        XCTAssertFalse(window.shouldCheck(stamp: "next-update", now: start.addingTimeInterval(600)))
+        XCTAssertTrue(window.shouldCheck(stamp: "next-update", now: start.addingTimeInterval(602)))
+    }
     func instance(_ pid: Int32, _ profile: CodexDesktopProfile, _ date: Date) -> CodexProfileUpdateRecovery.Instance {
         .init(pid: pid, identity: .init(codexHome: CodexDesktopProfile.canonical(profile.codexHome),
                                       appData: CodexDesktopProfile.canonical(profile.appData)), launchedAt: date)
