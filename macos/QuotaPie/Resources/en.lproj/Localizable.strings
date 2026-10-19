@@ -543,6 +543,16 @@
 "jobs.reason.accountChanged" = "The login account changed or could not be verified. Restore the original account. Jobs registered by older versions require registration with verified account identity.";
 
 "navigation.overview" = "Overview";
+"navigation.accounts" = "Accounts";
+"accounts.list.title" = "Your accounts";
+"accounts.list.count" = "%@ accounts";
+"accounts.list.moreLimits" = "+%@ limits";
+"accounts.list.measured" = "Measured %@";
+"accounts.list.open" = "View quota and activity for %@";
+"accounts.list.unavailable" = "Account unavailable";
+"accounts.list.usageBlocked" = "The provider has restricted one or more limits";
+"accounts.list.limitBlocked" = "Usage restricted";
+"accounts.list.permissionUnknown" = "Usage permission unconfirmed";
 
 "profiles.accountNotLinked" = "No unique Codex app is linked to this account. Check the connection in Settings → Codex accounts.";
 "profiles.openAccount" = "Open %@ Codex app";
@@ -552,7 +562,7 @@
 "pool.enabled" = "Automatic account selection for new tasks";
 "pool.lastCompleted" = "Last response served by: %@";
 "pool.lastRouted" = "Last request assigned to: %@";
-"pool.loginUnchanged" = "Menu bar and top quota follow your selected account.";
+"pool.loginUnchanged" = "This account stays in view when the menu bar follows another active account.";
 "pool.waiting" = "An account will be selected for a new task.";
 "pool.disabled" = "New routing off · existing bindings retained";
 "pool.blocked" = "Account routing is blocked. Check accounts, sign-in and quota.";

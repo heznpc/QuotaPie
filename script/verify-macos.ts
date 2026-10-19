@@ -23,12 +23,15 @@ interface Observation {
   testOnlySavings?: boolean;
   automaticWorkLoadedPolicyIDs?: string[];
   autoResumeControls?: Array<{kind:string;value:number;enabled:boolean;top:number}>;
-  renderedText?: Array<{text:string;top:number}>;
+  renderedText?: Array<{text:string;top:number;left:number}>;
   locale?: string;
   profileDockIcons?: string[];
   pendingResetIDs?: string[];
   excludedPostIDs?: string[];
-  accountSelectorVerified?: boolean;
+  isShowingAccountList?: boolean;
+  inspectedAccount?: string | null;
+  displayedAccount?: string | null;
+  enabledAccountIDs?: string[];
   statusFailure: string | null;
   routedAccount?: string | null;
   routedRemainingPercent?: number | null;
@@ -37,7 +40,6 @@ interface Observation {
 export function smokeFailures(observed: Observation, expected: { account: string; remaining: number; label: string } | null): string[] {
   const failures: string[] = [];
   if (observed.menuVisible) failures.push("fixture_created_menu_bar");
-  if (observed.accountSelectorVerified === false) failures.push("account_selector_focus_or_identity");
   if (!observed.viewRendered) failures.push("view_not_rendered");
   if (expected) {
     if (!observed.connected || observed.statusFailure) failures.push("not_connected");
@@ -75,6 +77,40 @@ async function run() {
     try { if (await child.exited !== 0) throw new Error(`Native verification command failed: ${cmd[0]}`); }
     finally { clearTimeout(timer); }
   };
+  const recognizeText = async (reportPath: string, inspectAccountNames = false) => {
+    const ocrPath = reportPath + ".ocr.json";
+    await exec(["/usr/bin/swift", "-e", `
+      import Foundation
+      import Vision
+      let request = VNRecognizeTextRequest()
+      request.recognitionLevel = .accurate
+      request.recognitionLanguages = ["ko-KR", "en-US"]
+      request.usesLanguageCorrection = false
+      try VNImageRequestHandler(url: URL(fileURLWithPath: CommandLine.arguments[1])).perform([request])
+      var rows: [[String: Any]] = (request.results ?? []).compactMap { observation in
+        guard let text = observation.topCandidates(1).first?.string else { return nil }
+        return ["text": text, "top": 1 - observation.boundingBox.midY, "left": observation.boundingBox.midX]
+      }
+      // Account initials sit next to names; independently recognize the name
+      // column too, so a badge cannot merge into the account's visible label.
+      if CommandLine.arguments[3] == "names" {
+        let names = VNRecognizeTextRequest()
+        names.recognitionLevel = .accurate
+        names.recognitionLanguages = ["en-US", "ko-KR"]
+        names.usesLanguageCorrection = false
+        names.regionOfInterest = CGRect(x: 0.14, y: 0, width: 0.7, height: 1)
+        try VNImageRequestHandler(url: URL(fileURLWithPath: CommandLine.arguments[1])).perform([names])
+        rows += (names.results ?? []).compactMap { observation in
+          guard let text = observation.topCandidates(1).first?.string else { return nil }
+          return ["text": text, "top": 1 - observation.boundingBox.midY, "left": observation.boundingBox.midX]
+        }
+      }
+      try JSONSerialization.data(withJSONObject: rows).write(to: URL(fileURLWithPath: CommandLine.arguments[2]))
+    `, reportPath + ".png", ocrPath, inspectAccountNames ? "names" : "full"], 60_000);
+    return JSON.parse(await readFile(ocrPath, "utf8")) as NonNullable<Observation["renderedText"]>;
+  };
+  let rowClick: {x:number;y:number} | undefined;
+  let backClick: {x:number;y:number} | undefined;
   let malformed = false;
   let fastQuotaScenario = false;
   const fastQuotaRequests: Array<{path:string;method:string;token:string|null;reason?:string}> = [];
@@ -131,6 +167,13 @@ async function run() {
         active: [], recent: [], insights: [{id: "fixture-repeated-error", threadId: "11111111-1111-4111-8111-111111111111", kind: "repeated-failure", count: 3,
           observedDurationMs: 1500, suggestion: "review-provider-error", savingsApplied: false}]}},
     accountPool: {enabled:true, accounts:["default","second"], recent:[{sourceAccount:"default",account:"second",accountLabel:"Second",state:"completed",status:200,atMs:Date.now()}]} };
+  const baseAccounts = payload.accounts;
+  const blockedAccounts = baseAccounts.map((value,index)=>({...value,windows:value.windows.map(window=>({...window,metadata:index ? {spendControlReached:true} : {ordinaryUsageAllowed:false}}))}));
+  const mixedAccounts = [...baseAccounts,
+    {...account("default", "Claude Main", 37), provider:"claude", collection:{health:"auth-required",sources:[]},
+      windows:account("default", "Claude Main", 37).windows.map(window=>({...window,provider:"claude",bucket:"five_hour",freshness:"stale",observedAtMs:Date.now()-3_600_000}))},
+    {...account("disabled", "Disabled", 91), enabled:false},
+  ];
   const automaticPolicy = { id: "fixture-work", provider: "claude", account: "default", nativeSessionId: "fixture-session",
     model: "original-session-model", prompt: "Continue the selected work", objective: "Shared work fixture", completionCriteria: ["Evidence recorded"],
     dispatchOwner: "local", enabled: false, trigger: "quota-ready", resetWithinMinutes: 60,
@@ -187,6 +230,10 @@ async function run() {
       { name: "second-only", running: ["second"], frontmost: null, expected: { account: "codex/second", remaining: 100, label: "Second" } },
       { name: "both-main-frontmost", running: ["second", "main"], frontmost: "main", expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "no-running-account", running: [], frontmost: null, expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "account-list-mixed", running: ["main"], frontmost: null, mixedAccounts: true, expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "account-list-blocked", running: ["main"], frontmost: null, blockedAccounts: true, expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "account-detail-second", running: ["main"], frontmost: null, mixedAccounts: true, initialAccountID: "codex/second", expected: { account: "codex/second", remaining: 100, label: "Second" } },
+      { name: "account-list-navigation", running: ["main"], frontmost: null, mixedAccounts: true, expected: { account: "codex/second", remaining: 100, label: "Second" } },
       { name: "invalid-response", running: ["main"], frontmost: null, expected: null },
       { name: "nickname-settings", running: ["main"], frontmost: null, initialSection: "settings", expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "dock-icons", running: ["main"], frontmost: null, initialSection: "settings", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
@@ -203,6 +250,7 @@ async function run() {
       { name: "host-goals-absent", running: ["main"], frontmost: null, withTasks: true, goalState: "no_goal", initialSection: "work", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
     ]) {
       malformed = scenario.expected == null;
+      payload.accounts = "mixedAccounts" in scenario ? mixedAccounts : "blockedAccounts" in scenario ? blockedAccounts : baseAccounts;
       fastQuotaScenario = "fastQuota" in scenario;
       payload.resumeTasks = "withTasks" in scenario ? pausedTasks : [];
       payload.jobs = "withTasks" in scenario ? managedJobs : [];
@@ -219,36 +267,61 @@ async function run() {
           nowMs:measuredAt,accounts:payload.accounts.map(item=>({...item,
             windows:item.windows.map(window=>({...window,remainingPercent:12,observedAtMs:measuredAt}))}))}));
       }
+      if (scenario.name === "account-list-navigation" && (!rowClick || !backClick)) throw new Error("Missing independently observed navigation targets");
       await writeFile(request, JSON.stringify({ endpoint: `http://127.0.0.1:${server.port}`, reportPath, profiles,
         runningProfileIDs: scenario.running, frontmostProfileID: scenario.frontmost,
         contentHeight: "contentHeight" in scenario ? scenario.contentHeight : undefined,
         inspectAutoResume: scenario.name === "auto-resume",
         fastQuota: fastQuotaScenario, quotaCachePath,
         focusedResumeTaskID: "focusedResumeTaskID" in scenario ? scenario.focusedResumeTaskID : undefined,
-        initialSection: "initialSection" in scenario ? scenario.initialSection : undefined }));
+        initialSection: "initialSection" in scenario ? scenario.initialSection : undefined,
+        initialAccountID: "initialAccountID" in scenario ? scenario.initialAccountID : undefined,
+        navigationClicks: scenario.name === "account-list-navigation" ? [rowClick, backClick] : undefined }));
       await exec(["/usr/bin/open", "-W", "-n", "-g", app, "--args", "--verification", request], 20_000);
       const observed = JSON.parse(await readFile(reportPath, "utf8")) as Observation;
-      if (scenario.name === "auto-resume") {
-        // Keep Vision's first-use model loading outside the app launch deadline.
-        // These labels come from captured pixels, independently of the payload.
-        const ocrPath = reportPath + ".ocr.json";
-        await exec(["/usr/bin/swift", "-e", `
-          import Foundation
-          import Vision
-          let request = VNRecognizeTextRequest()
-          request.recognitionLevel = .accurate
-          request.recognitionLanguages = ["ko-KR", "en-US"]
-          request.usesLanguageCorrection = false
-          try VNImageRequestHandler(url: URL(fileURLWithPath: CommandLine.arguments[1])).perform([request])
-          let rows: [[String: Any]] = (request.results ?? []).compactMap { observation in
-            guard let text = observation.topCandidates(1).first?.string else { return nil }
-            return ["text": text, "top": 1 - observation.boundingBox.midY]
-          }
-          try JSONSerialization.data(withJSONObject: rows).write(to: URL(fileURLWithPath: CommandLine.arguments[2]))
-        `, reportPath + ".png", ocrPath], 60_000);
-        observed.renderedText = JSON.parse(await readFile(ocrPath, "utf8"));
+      if (["auto-resume", "account-list-mixed", "account-list-blocked", "account-detail-second"].includes(scenario.name)) {
+        observed.renderedText = await recognizeText(reportPath, scenario.name === "account-list-mixed");
       }
       const failures = smokeFailures(observed, scenario.expected);
+      const expectedList = !("initialSection" in scenario) && !("initialAccountID" in scenario);
+      if (observed.isShowingAccountList !== expectedList) failures.push("wrong_popover_landing_page");
+      if (scenario.name === "account-list-mixed") {
+        const text = observed.renderedText ?? [];
+        const normalized = (value:string) => value.replace(/\s/g, "");
+        const allText = normalized(text.map(row=>row.text).join(" "));
+        for (const label of ["Main", "Second", "Claude Main", "18%", "100%", "37%"])
+          if (!allText.includes(normalized(label))) failures.push("account_list_missing_" + label);
+        if (allText.includes("Disabled")) failures.push("disabled_account_visible");
+        const authText = observed.locale === "ko" ? "로그인이 필요합니다" : "Sign-in required";
+        if (!allText.includes(normalized(authText))) failures.push("account_list_hides_auth_error");
+        const cachedText = observed.locale === "ko" ? "이전 수집값" : "Previous readings";
+        if (!allText.toLowerCase().includes(normalized(cachedText).toLowerCase())) failures.push("account_list_hides_cached_status");
+        if (observed.enabledAccountIDs?.join(",") !== "codex/default,codex/second,claude/default") failures.push("account_list_scope");
+        const row = text.find(row=>normalized(row.text) === "Second");
+        if (!row) failures.push("account_row_click_target_missing");
+        else rowClick = {x:row.left,y:row.top};
+      }
+      if (scenario.name === "account-list-blocked") {
+        const allText = (observed.renderedText ?? []).map(row=>row.text).join("").replace(/\s/g,"");
+        const blocked = (observed.locale === "ko" ? "제공자가 사용을 제한한 한도가 있습니다" : "The provider has restricted one or more limits").replace(/\s/g,"");
+        if (allText.split(blocked).length - 1 !== 2) failures.push("positive_quota_hides_provider_denial");
+        for (const remaining of ["18%", "100%"])
+          if (!allText.includes(remaining)) failures.push("denied_quota_lost_measured_value");
+      }
+      if (scenario.name === "account-detail-second") {
+        if (observed.inspectedAccount !== "codex/second" || observed.displayedAccount !== "codex/second") failures.push("account_detail_wrong_identity");
+        const backLabel = observed.locale === "ko" ? "계정 목록" : "Accounts";
+        const back = observed.renderedText?.find(row=>row.text.replace(/\s/g,"").includes(backLabel.replace(/\s/g,"")));
+        if (!back) failures.push("account_back_click_target_missing");
+        else backClick = {x:back.left,y:back.top};
+      }
+      if (scenario.name === "account-list-navigation") {
+        const initial = JSON.parse(await readFile(reportPath + ".navigation-0", "utf8")) as Observation;
+        const selected = JSON.parse(await readFile(reportPath + ".navigation-1", "utf8")) as Observation;
+        if (!initial.isShowingAccountList || initial.inspectedAccount !== null) failures.push("navigation_did_not_start_at_list");
+        if (selected.isShowingAccountList || selected.displayedAccount !== "codex/second" || selected.inspectedAccount !== "codex/second") failures.push("native_row_click_did_not_open_account");
+        if (!observed.isShowingAccountList || observed.inspectedAccount !== null || observed.detailSection !== null) failures.push("native_back_click_did_not_restore_list");
+      }
       if (scenario.expected && !fastQuotaScenario && observed.pendingResetIDs?.join(",") !== "100") failures.push("pending_reset_displaced_by_newer_news");
       if (fastQuotaScenario) {
         const cache = JSON.parse(await readFile(reportPath + ".cache", "utf8"));
@@ -289,7 +362,11 @@ async function run() {
         const normalized = (value: string) => value.replace(/\s/g, "");
         const matchingText = (value: string) => text.filter(row => normalized(row.text) === normalized(value)).sort((a,b) => a.top-b.top);
         for (const [account, label, enabled] of [["default", "Main", 0], ["second", "Second", 1]] as const) {
-          const name = matchingText(label)[0];
+          // Vision may append a switch glyph to its neighboring account name.
+          // Keep the independently read name prefix, then require the real
+          // mounted switch value and vertical alignment for that same row.
+          const name = text.filter(row=>normalized(row.text).startsWith(normalized(label)) && row.left < 0.25)
+            .sort((a,b)=>a.top-b.top)[0];
           if (!name || !controls.some(control => control.value === enabled && control.enabled && Math.abs(control.top-name.top)<0.015))
             failures.push("auto_resume_toggle_" + account);
         }

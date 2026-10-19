@@ -20,6 +20,126 @@ final class OverviewTests: XCTestCase {
         }
     }
 
+    func testAccountListIsTheLandingPageWithoutChangingTheMenuMeter() throws {
+        let model = PopoverModel()
+        let payload = try navigationPayload()
+        model.applyStatus(payload, notificationRevision: 0)
+        XCTAssertTrue(model.isShowingAccountList)
+        XCTAssertEqual(model.enabledAccounts.map(\.id), ["codex/default", "codex/work", "claude/default"])
+        XCTAssertEqual(model.selectedAccount?.id, "codex/default")
+        model.selectAccount(payload.accounts[1])
+        XCTAssertTrue(model.isShowingAccountList, "Menu-meter selection must not navigate the popup")
+        XCTAssertEqual(model.selectedHeadline?.remainingPercent, 73)
+    }
+
+    func testInspectingAccountSurvivesFocusChangesAndDetailBackNavigation() throws {
+        let model = PopoverModel()
+        let payload = try navigationPayload()
+        model.applyStatus(payload, notificationRevision: 0)
+        model.showAccount(payload.accounts[1])
+        XCTAssertFalse(model.isShowingAccountList)
+        XCTAssertEqual(model.displayedAccount?.id, "codex/work")
+        model.showDetails(.quota)
+        model.showOverview()
+        XCTAssertNil(model.detailSection)
+        XCTAssertEqual(model.displayedAccount?.id, "codex/work")
+        let profile = CodexDesktopProfile(id: "main", name: "Main", codexHome: "/tmp/navigation-home",
+                                         appData: "/tmp/navigation-data", collectionAccount: "default")
+        model.followCodexFocus(CodexProcessIdentity(codexHome: profile.codexHome, appData: profile.appData), profiles: [profile])
+        XCTAssertEqual(model.selectedAccount?.id, "codex/default")
+        XCTAssertEqual(model.displayedAccount?.id, "codex/work", "A background focus event must not replace the account being inspected")
+        model.applyStatus(payload, notificationRevision: 0)
+        XCTAssertEqual(model.displayedAccount?.id, "codex/work")
+        model.showAccountList()
+        XCTAssertTrue(model.isShowingAccountList)
+        XCTAssertNil(model.inspectedAccountID)
+        XCTAssertEqual(model.selectedAccount?.id, "codex/default")
+    }
+
+    func testReopeningAccountListClearsTaskFocusButExplicitTaskLinkStillOpensWork() throws {
+        let model = PopoverModel()
+        let payload = try navigationPayload()
+        model.applyStatus(payload, notificationRevision: 0)
+        model.showAccount(payload.accounts[1])
+        model.showDetails(.activity, taskID: "paused-task")
+        XCTAssertEqual(model.detailSection, .work)
+        XCTAssertEqual(model.focusedResumeTaskID, "paused-task")
+        XCTAssertEqual(model.inspectedAccountID, "codex/work", "Internal work navigation preserves its back destination")
+        model.showAccountList()
+        XCTAssertTrue(model.isShowingAccountList)
+        XCTAssertNil(model.focusedResumeTaskID)
+        XCTAssertEqual(model.selectedAccount?.id, "codex/work")
+        model.showDetails(.activity, taskID: "paused-task")
+        XCTAssertFalse(model.isShowingAccountList)
+        XCTAssertEqual(model.detailSection, .work)
+        XCTAssertEqual(model.focusedResumeTaskID, "paused-task")
+        XCTAssertNil(model.inspectedAccountID, "The external route clears prior inspection before opening the task")
+        model.showOverview()
+        XCTAssertTrue(model.isShowingAccountList)
+        XCTAssertNil(model.focusedResumeTaskID)
+    }
+
+    func testRemovedInspectedAccountNeverShowsAnotherAccountsQuota() throws {
+        let model = PopoverModel()
+        let payload = try navigationPayload()
+        model.applyStatus(payload, notificationRevision: 0)
+        model.showAccount(payload.accounts[1])
+        model.applyStatus(try navigationPayload(includeWork: false), notificationRevision: 0)
+        XCTAssertNil(model.displayedAccount, "A removed account must not silently display the default account as its own")
+        model.showAccountList()
+        XCTAssertTrue(model.isShowingAccountList)
+        XCTAssertEqual(model.enabledAccounts.map(\.id), ["codex/default", "claude/default"])
+    }
+
+    func testPositiveQuotaCannotConcealExplicitUsageDenial() throws {
+        for metadata in [#"{"ordinaryUsageAllowed":false}"#, #"{"spendControlReached":true}"#,
+                         #"{"ordinaryUsageAllowed":false,"spendControlReached":false}"#] {
+            let value = try JSONDecoder().decode(QuotaWindow.self, from: Data("""
+            {"provider":"codex","account":"default","bucket":"codex:primary","label":"5h",
+             "remainingPercent":82,"freshness":"fresh","observedAtMs":1000,"metadata":\(metadata)}
+            """.utf8))
+            XCTAssertEqual(value.remainingPercent, 82)
+            XCTAssertTrue(value.isUsageBlocked)
+        }
+        let legacy = try window("codex:primary", seconds: 18000, remaining: 82)
+        XCTAssertFalse(legacy.isUsageBlocked, "Missing permission metadata is not an explicit denial")
+    }
+
+    func testUnknownUsagePermissionSurvivesCachingWithoutChangingLegacyReadings() throws {
+        let legacy = try window("codex:primary", seconds: 18000, remaining: 82)
+        XCTAssertFalse(legacy.isUsagePermissionUnknown)
+        for metadata in [#"{"ordinaryUsageAllowed":null}"#, #"{"spendControlReached":null}"#] {
+            let value = try JSONDecoder().decode(QuotaWindow.self, from: Data("""
+            {"provider":"codex","account":"default","bucket":"codex:primary","label":"5h",
+             "remainingPercent":82,"freshness":"fresh","observedAtMs":1000,"metadata":\(metadata)}
+            """.utf8))
+            XCTAssertTrue(value.isUsagePermissionUnknown)
+            XCTAssertFalse(value.isUsageBlocked)
+            let cached = try JSONDecoder().decode(QuotaWindow.self, from: JSONEncoder().encode(value))
+            XCTAssertTrue(cached.isUsagePermissionUnknown)
+            XCTAssertEqual(cached.remainingPercent, 82)
+        }
+    }
+
+    private func navigationPayload(includeWork: Bool = true) throws -> StatusPayload {
+        let work = includeWork ? #"""
+          {"provider":"codex","account":"work","accountLabel":"Work","enabled":true,
+           "collection":{"health":"recent-success"},"windows":[
+           {"provider":"codex","account":"work","bucket":"codex:primary","label":"5h","windowSeconds":18000,
+            "freshness":"fresh","observedAtMs":1000,"remainingPercent":73}]},
+        """# : ""
+        return try JSONDecoder().decode(StatusPayload.self, from: Data("""
+        {"accounts":[
+          {"provider":"codex","account":"default","accountLabel":"Main","enabled":true,
+           "collection":{"health":"recent-success"},"windows":[]},
+          \(work)
+          {"provider":"claude","account":"default","accountLabel":"Claude Main","enabled":true,
+           "collection":{"health":"auth-required"},"windows":[]},
+          {"provider":"codex","account":"disabled","accountLabel":"Disabled","enabled":false,
+           "collection":{"health":"recent-success"},"windows":[]}]}
+        """.utf8))
+    }
+
     func testInterruptedLaunchIsNotCountedAsWaitingForQuota() throws {
         let model = PopoverModel()
         model.payload = try JSONDecoder().decode(StatusPayload.self, from: Data(#"""

@@ -11,10 +11,10 @@ struct DetailsView: View {
         VStack(spacing: 0) {
             HStack {
                 Button(action: back) {
-                    Label(Strings.t("navigation.overview"), systemImage: "chevron.left")
-                }.buttonStyle(.plain)
+                    Label(model.detailBackTitle, systemImage: "chevron.left")
+                }.buttonStyle(.plain).accessibilityIdentifier("navigation.detailBack")
                 Spacer()
-                if let account = model.selectedAccount {
+                if section == .quota, model.inspectedAccountID != nil, let account = model.displayedAccount {
                     Text("\(account.providerTitle) · \(account.accountLabel)")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
@@ -51,7 +51,7 @@ struct DetailsView: View {
                     Label(Strings.t("action.refresh"), systemImage: "arrow.clockwise")
                 }
                 Spacer()
-                if let last = model.measurementDate {
+                if let last = model.displayedMeasurementDate {
                     Text(DisplayFormat.age(since: last)).font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -155,8 +155,8 @@ struct DetailsView: View {
 
     private var orderedAccounts: [AccountState] {
         let accounts = model.payload?.accounts ?? []
-        return accounts.filter { $0.id == model.selectedAccount?.id }
-            + accounts.filter { $0.id != model.selectedAccount?.id }
+        return accounts.filter { $0.id == model.displayedAccount?.id }
+            + accounts.filter { $0.id != model.displayedAccount?.id }
     }
 
     private var settingsContent: some View {

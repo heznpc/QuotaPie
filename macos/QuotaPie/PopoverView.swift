@@ -13,13 +13,74 @@ struct PopoverView: View {
                 set: { model.detailSection = $0 }
             ), actions: actions, back: model.showOverview)
                 .frame(width: 460, height: AppVerification.current?.contentHeight.map { CGFloat(min(1200, max(560, $0))) } ?? model.popoverDetailHeight)
+        } else if model.isShowingAccountList {
+            accountList
         } else {
             overview
         }
     }
 
+    private var accountList: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(Strings.t("accounts.list.title")).font(.headline)
+                Spacer()
+                if model.payload?.collection?.refreshing == true {
+                    Text(Strings.t("collection.refreshing")).font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text(Strings.t("accounts.list.count", String(model.enabledAccounts.count)))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }.padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 12)
+            Divider()
+            ScrollView {
+                VStack(spacing: 0) {
+                    if model.enabledAccounts.isEmpty {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(model.lastError == nil ? Strings.t("popover.noAccounts") : model.statusFailureText)
+                                .font(.callout).foregroundStyle(.secondary)
+                            Button(Strings.t("action.openSettings")) { showDetails(.settings) }
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
+                    } else {
+                        ForEach(model.enabledAccounts) { account in
+                            AccountListRow(account: account, showingStartupCache: model.showingStartupCache,
+                                           transportFailure: model.lastError == nil ? nil : model.statusFailureText,
+                                           select: { model.showAccount(account) })
+                            if account.id != model.enabledAccounts.last?.id { Divider().padding(.horizontal, 20) }
+                        }
+                    }
+                    if let message = model.collectionRequestError ?? model.accountOpenError {
+                        Text(message).font(.caption).foregroundStyle(.orange)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.bottom, 12)
+                    }
+                    if !model.activeTasks.isEmpty {
+                        Divider().padding(.horizontal, 20)
+                        Button { showDetails(.work) } label: {
+                            HStack {
+                                Label(model.taskOverviewSummary, systemImage: "play.circle")
+                                Spacer(minLength: 4)
+                                Image(systemName: "chevron.right").font(.caption2)
+                            }.font(.caption).contentShape(Rectangle()).padding(20)
+                        }.buttonStyle(.plain)
+                    }
+                }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            Divider()
+            footer.padding(.horizontal, 16).padding(.vertical, 12)
+        }
+        .frame(width: 380, height: min(model.popoverDetailHeight,
+            max(280, CGFloat(model.enabledAccounts.count) * 146 + 110 + (model.activeTasks.isEmpty ? 0 : 60))))
+        .accessibilityIdentifier("accounts.list")
+    }
+
     private var overview: some View {
         VStack(spacing: 0) {
+            HStack {
+                Button(action: model.showAccountList) {
+                    Label(Strings.t("navigation.accounts"), systemImage: "chevron.left")
+                }.buttonStyle(.plain).accessibilityIdentifier("navigation.accountsBack")
+                Spacer()
+            }.padding(.horizontal, 20).padding(.top, 16)
             ScrollView(.vertical) {
                 overviewContent
             }
@@ -103,12 +164,12 @@ struct PopoverView: View {
     private var quotaOverview: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .center, spacing: 8) {
-                if let account = model.selectedAccount {
+                if let account = model.displayedAccount {
                     Image(nsImage: AccountBadge(accountID: account.id, name: account.accountLabel).image(size: 20))
                         .accessibilityHidden(true)
                 }
-                accountPicker
-                if let account = model.selectedAccount, account.provider == "codex" {
+                accountIdentity
+                if let account = model.displayedAccount, account.provider == "codex" {
                     Button { actions.openAccount(account) } label: {
                         Image(systemName: "arrow.up.forward.app")
                     }
@@ -118,12 +179,12 @@ struct PopoverView: View {
                     .accessibilityLabel(Strings.t("profiles.openAccount", account.accountLabel))
                 }
                 Spacer(minLength: 8)
-                if let last = model.measurementDate {
+                if let last = model.displayedMeasurementDate {
                     Text(DisplayFormat.age(since: last))
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            if let account = model.selectedAccount {
+            if let account = model.displayedAccount {
                 if let window = account.overviewWindow {
                     quotaReading(account: account, window: window)
                 } else {
@@ -141,6 +202,11 @@ struct PopoverView: View {
                 if let message = model.collectionRequestError {
                     Text(message).font(.caption).foregroundStyle(.orange)
                 }
+                if account.windows.contains(where: \.isUsageBlocked) || account.windows.contains(where: \.isUsagePermissionUnknown) {
+                    Label(Strings.t(account.windows.contains(where: \.isUsageBlocked) ? "accounts.list.usageBlocked" :
+                        "accounts.list.permissionUnknown"), systemImage: "exclamationmark.circle")
+                        .font(.caption).foregroundStyle(.orange)
+                }
                 if !model.showingStartupCache && (model.lastError != nil || !account.collection.isHealthy) {
                     Button { showDetails(.quota) } label: {
                         Label(model.lastError != nil ? model.statusFailureText : account.collection.actionText,
@@ -150,7 +216,7 @@ struct PopoverView: View {
                     }
                     .buttonStyle(.plain)
                 }
-                if let recovery = model.selectedRecovery {
+                if let recovery = model.displayedRecovery {
                     Button { showDetails(.activity) } label: {
                         HStack(spacing: 10) {
                             Image(systemName: "arrow.up.circle.fill").foregroundStyle(.green)
@@ -178,23 +244,15 @@ struct PopoverView: View {
         }
     }
 
-    @ViewBuilder private var accountPicker: some View {
-        if (model.payload?.accounts.filter(\.enabled).count ?? 0) > 1 {
-            AccountSelector(accounts: model.payload?.accounts.filter(\.enabled) ?? [],
-                            selectedID: model.selectedAccount?.id,
-                            onSelect: { model.selectAccount($0) })
-                .frame(maxWidth: 230, alignment: .leading)
-                .frame(height: 24)
-        } else {
-            accountIdentity
-        }
-    }
-
     private var accountIdentity: some View {
-        Text(model.selectedAccount?.accountLabel ?? "QuotaPie")
-            .font(.system(size: 13, weight: .medium))
-            .lineLimit(1).truncationMode(.middle)
-            .help(model.selectedAccount.map { "\($0.providerTitle) · \($0.accountLabel)" } ?? "QuotaPie")
+        VStack(alignment: .leading, spacing: 2) {
+            Text(model.displayedAccount?.accountLabel ?? Strings.t("accounts.list.unavailable"))
+                .font(.system(size: 13, weight: .medium))
+                .lineLimit(1).truncationMode(.middle)
+            if let account = model.displayedAccount {
+                Text(account.providerTitle).font(.caption2).foregroundStyle(.secondary)
+            }
+        }.help(model.displayedAccount.map { "\($0.providerTitle) · \($0.accountLabel)" } ?? "QuotaPie")
     }
 
     private func quotaReading(account: AccountState, window: QuotaWindow) -> some View {
@@ -228,7 +286,7 @@ struct PopoverView: View {
                 }
             }
             .frame(height: 5).accessibilityHidden(true)
-            if let measured = model.measurementDate {
+            if let measured = model.displayedMeasurementDate {
                 Text(Strings.t("collection.measuredAt", measured.formatted(date: .abbreviated, time: .shortened)))
                     .font(.caption2).foregroundStyle(.secondary)
             }

@@ -660,7 +660,8 @@ extension AccountState {
                 exhaustsAtMs: window.exhaustsAtMs ?? old.exhaustsAtMs, minutesBeforeReset: window.minutesBeforeReset ?? old.minutesBeforeReset,
                 confidence: old.confidence ?? window.confidence, riskLevel: old.riskLevel ?? window.riskLevel,
                 recentBurnPerHour: window.recentBurnPerHour ?? old.recentBurnPerHour, rapidDropPercent: old.rapidDropPercent ?? window.rapidDropPercent,
-                rapidIntervalMinutes: old.rapidIntervalMinutes ?? window.rapidIntervalMinutes, showUsageSpeed: window.showUsageSpeed ?? old.showUsageSpeed)
+                rapidIntervalMinutes: old.rapidIntervalMinutes ?? window.rapidIntervalMinutes, showUsageSpeed: window.showUsageSpeed ?? old.showUsageSpeed,
+                metadata: window.metadata)
         }
         return copy
     }
@@ -716,12 +717,15 @@ struct QuotaWindow: Codable, Identifiable {
     let rapidDropPercent: Double?
     let rapidIntervalMinutes: Double?
     let showUsageSpeed: Bool?
+    var metadata: QuotaWindowMetadata? = nil
 
     var id: String { "\(provider)/\(account)/\(bucket)" }
     var isAtRisk: Bool { riskLevel == "at-risk" }
     var isWatch: Bool { riskLevel == "watch" }
     var isExhausted: Bool { (remainingPercent ?? 1) <= 0 }
     var isLowRemaining: Bool { QuotaPresentation.isLow(remainingPercent) }
+    var isUsageBlocked: Bool { metadata?.ordinaryUsageAllowed == false || metadata?.spendControlReached == true }
+    var isUsagePermissionUnknown: Bool { metadata?.hasUnknownPermission == true }
 
     var shortLabel: String {
         guard let windowSeconds else { return label }
@@ -756,6 +760,35 @@ struct QuotaWindow: Codable, Identifiable {
             return Strings.t("window.measuredRate", String(format: "%.1f", rate))
         }
         return nil
+    }
+}
+
+struct QuotaWindowMetadata: Codable {
+    let ordinaryUsageAllowed: Bool?
+    let spendControlReached: Bool?
+    private let ordinaryUsageReported: Bool
+    private let spendControlReported: Bool
+
+    var hasUnknownPermission: Bool {
+        (ordinaryUsageReported && ordinaryUsageAllowed == nil) || (spendControlReported && spendControlReached == nil)
+    }
+
+    private enum CodingKeys: String, CodingKey { case ordinaryUsageAllowed, spendControlReached }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        ordinaryUsageReported = values.contains(.ordinaryUsageAllowed)
+        spendControlReported = values.contains(.spendControlReached)
+        ordinaryUsageAllowed = try values.decodeIfPresent(Bool.self, forKey: .ordinaryUsageAllowed)
+        spendControlReached = try values.decodeIfPresent(Bool.self, forKey: .spendControlReached)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        // An explicit unknown permission must remain unknown after a cache round
+        // trip; legacy payloads without these fields remain distinguishable.
+        if ordinaryUsageReported { try values.encode(ordinaryUsageAllowed, forKey: .ordinaryUsageAllowed) }
+        if spendControlReported { try values.encode(spendControlReached, forKey: .spendControlReached) }
     }
 }
 

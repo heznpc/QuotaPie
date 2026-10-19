@@ -543,6 +543,16 @@
 "jobs.reason.accountChanged" = "로그인 계정이 바뀌었거나 확인할 수 없습니다. 원래 계정으로 돌아간 뒤 다시 확인하세요. 이전 버전에서 등록한 작업은 계정을 확인하여 다시 등록해야 합니다.";
 
 "navigation.overview" = "요약으로";
+"navigation.accounts" = "계정 목록";
+"accounts.list.title" = "내 계정";
+"accounts.list.count" = "%@개 계정";
+"accounts.list.moreLimits" = "+%@개 한도";
+"accounts.list.measured" = "%@ 측정";
+"accounts.list.open" = "%@ 계정의 한도와 활동 보기";
+"accounts.list.unavailable" = "계정을 사용할 수 없습니다";
+"accounts.list.usageBlocked" = "제공자가 사용을 제한한 한도가 있습니다";
+"accounts.list.limitBlocked" = "사용 제한됨";
+"accounts.list.permissionUnknown" = "사용 가능 여부 미확인";
 
 "profiles.accountNotLinked" = "이 계정에 연결된 Codex 앱을 찾지 못했습니다. 설정의 Codex 계정에서 앱 연결을 확인해 주세요.";
 "profiles.openAccount" = "%@ Codex 앱 열기";
@@ -552,7 +562,7 @@
 "pool.enabled" = "새 작업 계정 자동 배정";
 "pool.lastCompleted" = "최근 응답 처리: %@";
 "pool.lastRouted" = "최근 요청 배정: %@";
-"pool.loginUnchanged" = "메뉴 막대와 상단 잔여량은 선택한 계정 기준입니다.";
+"pool.loginUnchanged" = "메뉴 막대가 다른 사용 계정을 따라가도 이 화면의 계정은 유지됩니다.";
 "pool.waiting" = "새 작업에서 사용할 계정을 배정합니다.";
 "pool.disabled" = "새 계정 배정 꺼짐 · 기존 연결 유지";
 "pool.blocked" = "계정 라우팅이 중단됐습니다. 계정·인증·잔여량을 확인하세요.";

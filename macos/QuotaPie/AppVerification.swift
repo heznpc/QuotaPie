@@ -10,6 +10,9 @@ struct AppVerification: Decodable {
     let runningProfileIDs: [String]
     let frontmostProfileID: String?
     let initialSection: String?
+    let initialAccountID: String?
+    let navigationClicks: [NavigationClick]?
+    struct NavigationClick: Decodable { let x: Double; let y: Double }
     let focusedResumeTaskID: String?
     let contentHeight: Double?
     let interactive: Bool?
@@ -17,6 +20,7 @@ struct AppVerification: Decodable {
     let fastQuota: Bool?
     let quotaCachePath: String?
     private static var recordedFastFirst = false
+    private static var initialInspectionApplied = false
     private static var interactiveWindow: NSWindow?
 
     static let current: AppVerification? = {
@@ -56,18 +60,23 @@ struct AppVerification: Decodable {
         DispatchQueue.main.asyncAfter(deadline: .now() + 12) { exit(3) }
     }
 
-    func record(model: PopoverModel, item: NSStatusItem, content: NSViewController?, workLoadAttempt: Int = 0, mountedWindow: NSWindow? = nil, phase: String? = nil) {
+    func record(model: PopoverModel, item: NSStatusItem, content: NSViewController?, workLoadAttempt: Int = 0, mountedWindow: NSWindow? = nil, phase: String? = nil, navigationStep: Int = 0) {
+        if !Self.initialInspectionApplied, let initialAccountID,
+           let account = model.enabledAccounts.first(where: { $0.id == initialAccountID }) {
+            Self.initialInspectionApplied = true
+            model.showAccount(account)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                record(model: model, item: item, content: content, mountedWindow: mountedWindow)
+            }
+            return
+        }
         let waitingForDetails = fastQuota == true && !model.detailsLoaded && model.detailsError == nil
         if phase == nil && waitingForDetails && Self.recordedFastFirst { return }
-        let outputPath = reportPath + (phase.map { "." + $0 } ?? (waitingForDetails ? ".first" : ""))
+        let navigating = navigationStep < (navigationClicks?.count ?? 0)
+        let outputPath = reportPath + (phase.map { "." + $0 } ?? (waitingForDetails ? ".first" : (navigating ? ".navigation-\(navigationStep)" : "")))
         var rendered = false
-        var accountSelectorVerified = false
+        var mountedContentWindow: NSWindow?
         var autoResumeControls: [[String: Any]] = []
-        let expectsSelector = model.detailSection == nil && (model.payload?.accounts.filter(\.enabled).count ?? 0) > 1
-        func findSelector(_ view: NSView) -> AccountMenuButton? {
-            if let button = view as? AccountMenuButton, button.identifier?.rawValue == "account-selector" { return button }
-            return view.subviews.lazy.compactMap { findSelector($0) }.first
-        }
         if let button = item.button,
            let bitmap = button.bitmapImageRepForCachingDisplay(in: button.bounds) {
             button.cacheDisplay(in: button.bounds, to: bitmap)
@@ -77,8 +86,9 @@ struct AppVerification: Decodable {
         }
         if let content {
             let window = mountedWindow ?? Self.interactiveWindow ?? NSWindow(contentViewController: content)
-            let height = contentHeight ?? (model.detailSection == nil ? 560 : Double(model.popoverDetailHeight))
-            window.setContentSize(NSSize(width: model.detailSection == nil ? 380 : 460, height: min(1200, max(560, height))))
+            mountedContentWindow = window
+            let height = contentHeight ?? Double(content.view.fittingSize.height)
+            window.setContentSize(NSSize(width: model.detailSection == nil ? 380 : 460, height: min(1200, max(280, height))))
             if interactive == true, Self.interactiveWindow == nil {
                 Self.interactiveWindow = window
                 NSApp.setActivationPolicy(.regular)
@@ -97,12 +107,6 @@ struct AppVerification: Decodable {
                     }
                 }
                 return
-            }
-            if let selector = findSelector(content.view) {
-                let focused = window.makeFirstResponder(selector)
-                accountSelectorVerified = focused && selector.focusRingType == .none
-                    && selector.title == model.selectedAccount?.accountLabel
-                    && selector.action != nil
             }
 #if DEBUG
             // Read the actual mounted controls. SwiftUI's virtual AX tree is
@@ -155,6 +159,10 @@ struct AppVerification: Decodable {
             "menuVisible": item.isVisible,
             "viewRendered": rendered,
             "detailSection": model.detailSection?.rawValue as Any? ?? NSNull(),
+            "isShowingAccountList": model.isShowingAccountList,
+            "inspectedAccount": model.inspectedAccountID as Any? ?? NSNull(),
+            "displayedAccount": model.displayedAccount?.id as Any? ?? NSNull(),
+            "enabledAccountIDs": model.enabledAccounts.map(\.id),
             "focusedResumeTaskID": model.focusedResumeTaskID as Any? ?? NSNull(),
             "activeTaskIDs": model.activeTasks.map(\.id),
             "managedJobIDs": model.payload?.jobs.map(\.id) ?? [],
@@ -171,7 +179,6 @@ struct AppVerification: Decodable {
             "excludedPostIDs": model.payload?.resetSignals?.excludedPosts?.map(\.identity) ?? [],
             "pendingResetIDs": model.payload?.resetSignals?.pendingResets(nowMs: Date().timeIntervalSince1970 * 1000).map(\.id) ?? [],
             "profileDockIcons": CodexProfilesModel.shared.profiles.compactMap { $0.dockIcon?.rawValue },
-            "accountSelectorVerified": !expectsSelector || accountSelectorVerified,
             "statusFailure": model.statusFailure?.rawValue as Any? ?? NSNull(),
             "showingStartupCache": model.showingStartupCache,
             "measurementAtMs": model.measurementDate.map { $0.timeIntervalSince1970 * 1_000 } as Any? ?? NSNull(),
@@ -186,6 +193,35 @@ struct AppVerification: Decodable {
             try data.write(to: URL(fileURLWithPath: outputPath), options: .atomic)
         } catch { exit(4) }
         if phase != nil { return }
+        if navigating, let click = navigationClicks?[navigationStep], let window = mountedContentWindow,
+           let view = content?.view {
+            // Exercise the mounted SwiftUI button through its window event path.
+            // Coordinates come from independently recognized screenshot text;
+            // no model action or global user-input event is injected here.
+            window.orderFront(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                view.layoutSubtreeIfNeeded()
+                let point = view.convert(NSPoint(x: view.bounds.minX + view.bounds.width * click.x,
+                    y: view.bounds.minY + (view.isFlipped ? view.bounds.height * click.y : view.bounds.height * (1 - click.y))), to: nil)
+                let trace: [String: Any] = ["point": NSStringFromPoint(point), "bounds": NSStringFromRect(view.bounds),
+                    "frame": NSStringFromRect(view.frame), "flipped": view.isFlipped,
+                    "window": NSStringFromRect(window.frame), "step": navigationStep]
+                if let data = try? JSONSerialization.data(withJSONObject: trace) {
+                    try? data.write(to: URL(fileURLWithPath: outputPath + ".click.json"))
+                }
+                for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                    if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                        context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) {
+                        window.sendEvent(event)
+                    }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    record(model: model, item: item, content: content, mountedWindow: window, navigationStep: navigationStep + 1)
+                }
+            }
+            return
+        }
         if waitingForDetails { Self.recordedFastFirst = true; return }
         if interactive != true { NSApp.terminate(nil) }
     }

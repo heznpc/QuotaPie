@@ -60,6 +60,9 @@ final class PopoverModel: ObservableObject {
     @Published var openingAccount = false
     @Published var accountOpenError: String?
     @Published var selectedAccountID: String?
+    // Inspection is independent of the account followed by the menu bar meter.
+    // Activating a different host must not replace an account the user is reading.
+    @Published private(set) var inspectedAccountID: String?
     @Published var detailSection: DetailSection?
     @Published var popoverDetailHeight: CGFloat = 600
 
@@ -72,6 +75,31 @@ final class PopoverModel: ObservableObject {
     func showOverview() {
         detailSection = nil
         focusedResumeTaskID = nil
+    }
+
+    func showAccount(_ account: AccountState) {
+        guard enabledAccounts.contains(where: { $0.id == account.id }) else { return }
+        selectAccount(account)
+        inspectedAccountID = account.id
+        showOverview()
+    }
+
+    func showAccountList() {
+        inspectedAccountID = nil
+        showOverview()
+    }
+
+    var isShowingAccountList: Bool { detailSection == nil && inspectedAccountID == nil }
+    var enabledAccounts: [AccountState] { payload?.accounts.filter(\.enabled) ?? [] }
+
+    var displayedAccount: AccountState? {
+        guard let inspectedAccountID else { return selectedAccount }
+        // A removed account must never silently become a different account.
+        return enabledAccounts.first { $0.id == inspectedAccountID }
+    }
+
+    var detailBackTitle: String {
+        Strings.t(inspectedAccountID == nil ? "navigation.accounts" : "navigation.overview")
     }
 
     @Published private(set) var detailLocationID = UUID()
@@ -145,6 +173,12 @@ final class PopoverModel: ObservableObject {
         return Date(timeIntervalSince1970: ms / 1_000)
     }
 
+    var displayedMeasurementDate: Date? {
+        guard let ms = displayedAccount?.overviewWindow?.observedAtMs ?? displayedAccount?.collection.lastSuccessAtMs,
+              ms > 0, ms.isFinite else { return nil }
+        return Date(timeIntervalSince1970: ms / 1_000)
+    }
+
     func applyStatus(_ status: StatusPayload, notificationRevision: Int,
                      quotaRevision requestedQuotaRevision: Int? = nil, poolRevision: Int? = nil,
                      savingsRevision: Int? = nil, compactionRevision: Int? = nil) {
@@ -189,7 +223,7 @@ final class PopoverModel: ObservableObject {
     }
 
     var selectedAccount: AccountState? {
-        let accounts = payload?.accounts.filter(\.enabled) ?? []
+        let accounts = enabledAccounts
         return accounts.first { $0.id == selectedAccountID }
             ?? accounts.first { $0.provider == "codex" && $0.account == "default" }
             ?? accounts.first
@@ -279,6 +313,10 @@ final class PopoverModel: ObservableObject {
 
     var selectedRecovery: ObservedRecovery? {
         recentRecoveries.first { $0.accountID == selectedAccount?.id }
+    }
+
+    var displayedRecovery: ObservedRecovery? {
+        recentRecoveries.first { $0.accountID == displayedAccount?.id }
     }
 }
 

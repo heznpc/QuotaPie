@@ -197,6 +197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        popoverModel.showAccountList()
         showPopover()
         return true
     }
@@ -204,6 +205,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let route = urls.compactMap({ QuotaPieRoute(url: $0) }).first else { return }
         if case .resume(let id) = route {
+            // A task link has its own account context, independent of a prior
+            // inspection left in the popover.
+            popoverModel.showAccountList()
             popoverModel.showDetails(.work, taskID: id)
             showPopover()
         }
@@ -237,6 +241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             popover.performClose(nil)
             return
         }
+        popoverModel.showAccountList()
         showPopover()
     }
 
