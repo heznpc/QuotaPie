@@ -1,14 +1,15 @@
 import Foundation
 
 struct StatusPayload: Decodable {
-    let nowMs: Double?
-    let headline: Headline?
-    let accounts: [AccountState]
+    var nowMs: Double?
+    var headline: Headline?
+    var accounts: [AccountState]
+    var collection: CollectionRefreshState?
     let events: [QuotaEvent]
     /// A short-lived capability issued by the local service. It is deliberately
     /// kept in memory and is required for every resume-task mutation.
-    let actionToken: String?
-    let resumeTasks: [ResumeTask]
+    var actionToken: String?
+    var resumeTasks: [ResumeTask]
     let jobs: [ManagedJobSummary]
     let recentWork: [RecentWork]
     let supportsRecentWork: Bool
@@ -17,7 +18,7 @@ struct StatusPayload: Decodable {
     var autoResume: AutoResumePayload?
     let resetSignals: ResetSignalPayload?
     let resetTracking: ResetTracking?
-    let compaction: CompactionPayload?
+    var compaction: CompactionPayload?
     var accountPool: AccountPoolPayload? = nil
     var notificationPreferences: NotificationPreferences?
 
@@ -26,6 +27,7 @@ struct StatusPayload: Decodable {
         nowMs = try values.decodeIfPresent(Double.self, forKey: .nowMs)
         headline = try values.decodeIfPresent(Headline.self, forKey: .headline)
         accounts = try values.decodeIfPresent([AccountState].self, forKey: .accounts) ?? []
+        collection = try values.decodeIfPresent(CollectionRefreshState.self, forKey: .collection)
         events = try values.decodeIfPresent([QuotaEvent].self, forKey: .events) ?? []
         actionToken = try values.decodeIfPresent(String.self, forKey: .actionToken)
         resumeTasks = try values.decodeIfPresent([ResumeTask].self, forKey: .resumeTasks) ?? []
@@ -43,7 +45,7 @@ struct StatusPayload: Decodable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case nowMs, headline, accounts, events, actionToken, resumeTasks, jobs, recentWork, recentWorkState, hostGoals, autoResume, resetSignals, resetTracking, compaction, notificationPreferences, accountPool
+        case nowMs, headline, accounts, collection, events, actionToken, resumeTasks, jobs, recentWork, recentWorkState, hostGoals, autoResume, resetSignals, resetTracking, compaction, notificationPreferences, accountPool
     }
 }
 
@@ -628,14 +630,14 @@ struct Headline: Decodable {
     }
 }
 
-struct AccountState: Decodable, Identifiable {
+struct AccountState: Codable, Identifiable {
     var nickname: String? = nil
     let provider: String
     let account: String
     let accountLabel: String
     let enabled: Bool
-    let collection: CollectionState
-    let windows: [QuotaWindow]
+    var collection: CollectionState
+    var windows: [QuotaWindow]
     let bottleneckBucket: String?
     let updatedAtMs: Double?
 
@@ -643,12 +645,33 @@ struct AccountState: Decodable, Identifiable {
     var providerTitle: String { provider == "codex" ? "Codex" : provider == "claude" ? "Claude" : provider }
 }
 
-struct CollectionState: Decodable {
-    let health: String
+extension AccountState {
+    /// Forecasts belong to one observation. Reuse them only while the cheap
+    /// snapshot still names that exact sample, never across new measurements.
+    func preservingDetails(from previous: AccountState?) -> AccountState {
+        guard let previous, previous.id == id else { return self }
+        var copy = self
+        copy.windows = windows.map { window in
+            guard let old = previous.windows.first(where: { $0.id == window.id && $0.observedAtMs == window.observedAtMs }) else { return window }
+            return QuotaWindow(provider: window.provider, account: window.account, bucket: window.bucket, label: window.label,
+                windowSeconds: window.windowSeconds, freshness: window.freshness, observedAtMs: window.observedAtMs,
+                usedPercent: window.usedPercent, remainingPercent: window.remainingPercent, resetsAtMs: window.resetsAtMs,
+                reservePercent: window.reservePercent ?? old.reservePercent, paceRatio: window.paceRatio ?? old.paceRatio,
+                exhaustsAtMs: window.exhaustsAtMs ?? old.exhaustsAtMs, minutesBeforeReset: window.minutesBeforeReset ?? old.minutesBeforeReset,
+                confidence: old.confidence ?? window.confidence, riskLevel: old.riskLevel ?? window.riskLevel,
+                recentBurnPerHour: window.recentBurnPerHour ?? old.recentBurnPerHour, rapidDropPercent: old.rapidDropPercent ?? window.rapidDropPercent,
+                rapidIntervalMinutes: old.rapidIntervalMinutes ?? window.rapidIntervalMinutes, showUsageSpeed: window.showUsageSpeed ?? old.showUsageSpeed)
+        }
+        return copy
+    }
+}
+
+struct CollectionState: Codable {
+    var health: String
     let activeSource: String?
     let lastSuccessAtMs: Double?
-    let errorCategory: String?
-    let errorDetail: String?
+    var errorCategory: String?
+    var errorDetail: String?
 
     var isHealthy: Bool { health == "recent-success" }
 
@@ -672,13 +695,13 @@ struct CollectionState: Decodable {
     }
 }
 
-struct QuotaWindow: Decodable, Identifiable {
+struct QuotaWindow: Codable, Identifiable {
     let provider: String
     let account: String
     let bucket: String
     let label: String
     let windowSeconds: Double?
-    let freshness: String
+    var freshness: String
     let observedAtMs: Double
     let usedPercent: Double?
     let remainingPercent: Double?
@@ -876,7 +899,7 @@ struct CompactionPayload: Decodable {
     let reachable: Int
     let active: [CompactionRecord]
     let recent: [CompactionRecord]
-    let policy: CompactionPolicy?
+    var policy: CompactionPolicy?
     var savings: TaskSavingsPayload? = nil
     var latest: CompactionRecord? { active.first ?? recent.first }
 }
@@ -984,4 +1007,13 @@ struct ResetSignal: Decodable, Identifiable {
         else { return nil }
         return url
     }
+}
+
+/// Local collection scheduling, separate from the age of each provider reading.
+struct CollectionRefreshState: Decodable {
+    let refreshing: Bool
+    let requestedAtMs: Double?
+    let lastStartedAtMs: Double?
+    let lastFinishedAtMs: Double?
+    let nextAttemptAtMs: Double?
 }

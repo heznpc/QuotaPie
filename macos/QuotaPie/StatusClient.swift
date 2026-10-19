@@ -82,6 +82,26 @@ final class StatusClient {
         }
     }
 
+    @discardableResult
+    func fetchQuota(completion: @escaping (Result<StatusPayload, Error>) -> Void) -> URLSessionDataTask {
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/quota"))
+        request.setValue(Strings.language.rawValue, forHTTPHeaderField: "x-quotapie-locale")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        return perform(request) { result in
+            completion(Result { try JSONDecoder().decode(StatusPayload.self, from: result.get()) })
+        }
+    }
+
+    func refreshCollection(reason: String, actionToken: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        do {
+            var request = try authenticatedPOST(pathComponents: ["api", "collection", "refresh"], actionToken: actionToken)
+            request.setValue(nil, forHTTPHeaderField: "content-length")
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["reason": reason])
+            perform(request) { result in completion(result.map { _ in () }) }
+        } catch { completion(.failure(error)) }
+    }
+
     func dotsConnection(action: String? = nil, actionToken: String,
                         completion: @escaping (Result<DotsConnectionStatus, Error>) -> Void) {
         do {
@@ -530,11 +550,12 @@ final class StatusClient {
         return request
     }
 
+    @discardableResult
     private func perform(
         _ request: URLRequest,
         completion: @escaping (Result<Data, Error>) -> Void
-    ) {
-        session.dataTask(with: request) { data, response, error in
+    ) -> URLSessionDataTask {
+        let task = session.dataTask(with: request) { data, response, error in
             if let error {
                 completion(.failure(error))
                 return
@@ -548,7 +569,9 @@ final class StatusClient {
                 return
             }
             completion(.success(data ?? Data()))
-        }.resume()
+        }
+        task.resume()
+        return task
     }
 }
 

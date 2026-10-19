@@ -3,6 +3,7 @@ import SwiftUI
 import UserNotifications
 import OSLog
 import Combine
+import Network
 
 @main
 struct QuotaPieApp {
@@ -62,9 +63,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         return false
 #endif
     }
+    private var usesFastQuota: Bool { !isFixturePreview || verification?.fastQuota == true }
     private var renderedAccountID: String?
     private let menuLogger = Logger(subsystem: "local.quotapie.menubar", category: "MenuBar")
-    private var isFetching = false
+    private let quotaRequests = QuotaRequestGate()
+    private var isFetchingDetails = false
+    private var lastDetailsFetchAt: Date?
+    private var pendingCollectionReason: String?
+    private var isRequestingCollection = false
+    private var wakeObserver: NSObjectProtocol?
+    private var networkMonitor: NWPathMonitor?
+    private var networkWasAvailable: Bool?
+    private var quotaCache: QuotaSnapshotCache?
     private var failureIndex = 0
     private var lastStatusDiagnostic: String?
     private let retrySeconds: [TimeInterval] = [2, 5, 15, 30]
@@ -79,7 +89,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                                           ?? ProcessInfo.processInfo.environment)
             self.client = client
             popoverModel.statusClient = client
-            if isFixturePreview { return }
+            if isFixturePreview {
+                if let verification, verification.fastQuota == true {
+                    // The verifier may only read/write its own temporary cache.
+                    let reportDirectory = URL(fileURLWithPath: verification.reportPath).deletingLastPathComponent()
+                    if let path = verification.quotaCachePath,
+                       URL(fileURLWithPath: path).deletingLastPathComponent() == reportDirectory {
+                        quotaCache = QuotaSnapshotCache(endpoint: client.baseURL.absoluteString, url: URL(fileURLWithPath: path))
+                        if let snapshot = quotaCache?.load() { popoverModel.applyCachedQuota(snapshot) }
+                    }
+                    pendingCollectionReason = "startup"
+                }
+                return
+            }
+            let cache = QuotaSnapshotCache(endpoint: client.baseURL.absoluteString)
+            quotaCache = cache
+            if let snapshot = cache.load() { popoverModel.applyCachedQuota(snapshot) }
+            pendingCollectionReason = "startup"
             let presenter = NotificationPresenter(
                 client: client,
                 scheduler: UserNotificationScheduler(center: userNotificationCenter),
@@ -108,6 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if !isFixturePreview {
             AwakeController.shared.start()
             profileUpdateMonitor.start()
+            installCollectionRecoveryObservers()
         }
         installPopoverContent()
         installKeyboardShortcuts()
@@ -142,6 +169,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             verification.selectInitialAccount(in: popoverModel)
         }
         render()
+        if verification?.fastQuota == true, popoverModel.showingStartupCache {
+            verification?.record(model: popoverModel, item: statusItem, content: popover.contentViewController, phase: "cache")
+        }
         refresh()
         if !isFixturePreview {
             notificationTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -181,6 +211,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         profileUpdateMonitor.stop()
+        networkMonitor?.cancel()
+        quotaRequests.cancel()
+        if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         refreshTimer?.invalidate()
         notificationTimer?.invalidate()
         if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
@@ -225,7 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private var popoverActions: PopoverActions {
         PopoverActions(
-            refresh: { [weak self] in self?.refresh() },
+            refresh: { [weak self] in self?.requestFreshCollection(reason: "manual") },
             copy: { [weak self] in self?.copyStatus() },
             openDashboard: { [weak self] in self?.openDashboard() },
             openConfig: { [weak self] in self?.openConfig() },
@@ -322,7 +355,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 #endif
 
     private func scheduleRefresh(after seconds: TimeInterval) {
-        guard verification == nil else { return }
+        guard verification == nil || verification?.fastQuota == true else { return }
         refreshTimer?.invalidate()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
             self?.refresh()
@@ -350,19 +383,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func configurePool(_ enabled: Bool?, _ account: String?, _ reserve: Int?) {
         guard !popoverModel.poolSaving, let client, let token = currentActionToken else { return }
-        popoverModel.poolSaving = true
+        popoverModel.beginPoolSave()
         popoverModel.poolSaveMessage = nil
         client.configurePool(enabled: enabled, account: account, reservePercent: reserve, actionToken: token) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.popoverModel.poolSaving = false
                 switch result {
                 case .success(let response):
-                    self.popoverModel.payload?.accountPool = response.pool
+                    self.popoverModel.finishPoolSave(response.pool)
                     self.popoverModel.poolSaveMessage = Strings.t("pool.settings.saved")
                 case .failure:
+                    self.popoverModel.finishPoolSave(nil)
                     self.popoverModel.poolSaveMessage = Strings.t("pool.settings.error")
                 }
+                self.lastDetailsFetchAt = nil
                 self.refresh()
             }
         }
@@ -370,14 +404,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func configureSavings(_ enabled: Bool?, _ thread: String?, _ tests: Bool?) {
         guard !popoverModel.savingsSaving, let client, let token = currentActionToken else { return }
-        popoverModel.savingsSaving = true
+        popoverModel.beginSavingsSave()
         popoverModel.savingsMessage = nil
         client.configureSavings(enabled: enabled, bypassThread: thread, testOnly: tests, actionToken: token) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.popoverModel.savingsSaving = false
                 switch result {
                 case .success(let response):
+                    self.popoverModel.finishSavingsSave(response.policy)
                     let acknowledged = response.policy.map { policy in
                         policy.applied > 0 && policy.applied == policy.compatible &&
                         (enabled == nil || policy.enabled == enabled) &&
@@ -385,8 +419,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                         (thread == nil || policy.bypassThreads?.contains(thread!) == true)
                     } ?? false
                     self.popoverModel.savingsMessage = Strings.t(acknowledged ? "savings.saved" : "savings.pending")
-                case .failure: self.popoverModel.savingsMessage = Strings.t("savings.error")
+                case .failure:
+                    self.popoverModel.finishSavingsSave(nil)
+                    self.popoverModel.savingsMessage = Strings.t("savings.error")
                 }
+                self.lastDetailsFetchAt = nil
                 self.refresh()
             }
         }
@@ -394,41 +431,90 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func configureCompaction(_ model: String) {
         guard !popoverModel.compactionSaving, let client, let token = currentActionToken else { return }
-        popoverModel.compactionSaving = true
+        popoverModel.beginCompactionSave()
         popoverModel.compactionSaveMessage = nil
         client.configureCompaction(model: model, actionToken: token) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.popoverModel.compactionSaving = false
                 switch result {
                 case .success(let response):
+                    self.popoverModel.finishCompactionSave(response.policy)
                     self.popoverModel.compactionSaveMessage = Strings.t(response.policy?.model == model
                         ? "compaction.settings.saved" : "compaction.settings.error")
                 case .failure:
+                    self.popoverModel.finishCompactionSave(nil)
                     self.popoverModel.compactionSaveMessage = Strings.t("compaction.settings.error")
                 }
+                self.lastDetailsFetchAt = nil
                 self.refresh()
             }
         }
     }
 
-    @objc private func refresh() {
-        guard !isFetching, let client else { return }
-        isFetching = true
-        let notificationRevision = popoverModel.notificationPreferencesRevision
-        client.fetch { [weak self] result in
+    private func installCollectionRecoveryObservers() {
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.requestFreshCollection(reason: "wake") }
+        let monitor = NWPathMonitor()
+        networkMonitor = monitor
+        monitor.pathUpdateHandler = { [weak self] path in
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.isFetching = false
+                let available = path.status == .satisfied
+                let restored = self.networkWasAvailable == false && available
+                self.networkWasAvailable = available
+                if restored { self.requestFreshCollection(reason: "network") }
+            }
+        }
+        monitor.start(queue: DispatchQueue(label: "local.quotapie.network"))
+    }
+
+    private func requestFreshCollection(reason: String) {
+        guard !isFixturePreview else { refresh(); return }
+        pendingCollectionReason = reason
+        // Only our local quota HTTP request is replaced; host work and rich
+        // detail requests keep running. Ignore its eventual cancellation callback.
+        quotaRequests.cancel()
+        lastDetailsFetchAt = nil
+        submitPendingCollectionRequest()
+        refresh()
+    }
+
+    private func submitPendingCollectionRequest() {
+        guard !isRequestingCollection, let reason = pendingCollectionReason,
+              let client, let token = currentActionToken else { return }
+        pendingCollectionReason = nil
+        isRequestingCollection = true
+        popoverModel.collectionRequestError = nil
+        client.refreshCollection(reason: reason, actionToken: token) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isRequestingCollection = false
+                if case .failure = result {
+                    self.popoverModel.collectionRequestError = Strings.t("collection.requestFailed")
+                    // Retain the event through startup/network failure. Retrying
+                    // this coalesced collection request never resumes a task.
+                    if self.pendingCollectionReason == nil { self.pendingCollectionReason = reason }
+                }
+                self.scheduleRefresh(after: 2)
+            }
+        }
+    }
+
+    @objc private func refresh() {
+        guard let client, let generation = quotaRequests.begin() else { return }
+        let notificationRevision = popoverModel.notificationPreferencesRevision
+        let receive: (Result<StatusPayload, Error>) -> Void = { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self, self.quotaRequests.finish(generation) else { return }
                 switch result {
                 case .success(let payload):
-                    if self.popoverModel.statusFailure != nil {
-                        self.statusLogger.notice("Status connection recovered")
-                    }
-                    self.popoverModel.applyStatus(payload, notificationRevision: notificationRevision)
-                    let activeTaskIDs = Set(payload.resumeTasks.filter(\.isActive).map(\.id))
-                    self.popoverModel.resumeActivities = self.popoverModel.resumeActivities.filter {
-                        activeTaskIDs.contains($0.key)
+                    if self.popoverModel.statusFailure != nil { self.statusLogger.notice("Status connection recovered") }
+                    if !self.usesFastQuota {
+                        self.popoverModel.applyStatus(payload, notificationRevision: notificationRevision)
+                    } else {
+                        self.popoverModel.applyQuota(payload)
+                        try? self.quotaCache?.save(payload)
                     }
                     self.popoverModel.lastSuccessAt = Date()
                     self.popoverModel.lastError = nil
@@ -446,15 +532,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                             }
                         }
                     }
-                    self.scheduleRefresh(after: payload.compaction?.active.isEmpty == false || self.popover.isShown ? 2 : 10)
+                    self.submitPendingCollectionRequest()
+                    self.refreshDetailsIfNeeded()
+                    self.scheduleRefresh(after: payload.collection?.refreshing == true || self.popover.isShown || self.verification?.fastQuota == true ? 2 : 10)
                 case .failure(let error):
-                    let failure = StatusFailure(error)
                     let diagnostic = StatusFailure.diagnostic(error)
                     if self.lastStatusDiagnostic != diagnostic {
-                        self.statusLogger.error("Status fetch failed: \(diagnostic, privacy: .public)")
+                        self.statusLogger.error("Quota fetch failed: \(diagnostic, privacy: .public)")
                         self.lastStatusDiagnostic = diagnostic
                     }
-                    self.popoverModel.statusFailure = failure
+                    self.popoverModel.statusFailure = StatusFailure(error)
                     self.popoverModel.lastError = error.localizedDescription
                     let delay = self.retrySeconds[min(self.failureIndex, self.retrySeconds.count - 1)]
                     self.failureIndex = min(self.failureIndex + 1, self.retrySeconds.count - 1)
@@ -463,6 +550,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 self.render()
                 self.verification?.record(model: self.popoverModel, item: self.statusItem,
                                           content: self.popover.contentViewController)
+            }
+        }
+        if !usesFastQuota { client.fetch(completion: receive) }
+        else { quotaRequests.attach(client.fetchQuota(completion: receive), generation: generation) }
+    }
+
+    private func refreshDetailsIfNeeded() {
+        guard usesFastQuota, (popover.isShown || verification?.fastQuota == true), !isFetchingDetails, let client,
+              lastDetailsFetchAt.map({ Date().timeIntervalSince($0) >= 10 }) ?? true else { return }
+        isFetchingDetails = true
+        popoverModel.detailsLoading = true
+        lastDetailsFetchAt = Date()
+        let notificationRevision = popoverModel.notificationPreferencesRevision
+        let quotaRevision = popoverModel.quotaRevision
+        let poolRevision = popoverModel.poolPreferencesRevision
+        let savingsRevision = popoverModel.savingsPreferencesRevision
+        let compactionRevision = popoverModel.compactionPreferencesRevision
+        client.fetch { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isFetchingDetails = false
+                self.popoverModel.detailsLoading = false
+                switch result {
+                case .success(let payload):
+                    self.popoverModel.applyStatus(payload, notificationRevision: notificationRevision,
+                                                  quotaRevision: quotaRevision, poolRevision: poolRevision,
+                                                  savingsRevision: savingsRevision, compactionRevision: compactionRevision)
+                    let activeTaskIDs = Set((self.popoverModel.payload?.resumeTasks ?? []).filter(\.isActive).map(\.id))
+                    self.popoverModel.resumeActivities = self.popoverModel.resumeActivities.filter { activeTaskIDs.contains($0.key) }
+                    self.render()
+                case .failure:
+                    // Rich history is optional for the meter. A timeout here
+                    // cannot erase a successful quota read or change its health.
+                    self.popoverModel.detailsError = Strings.t("details.refreshFailed")
+                }
+                if self.verification?.fastQuota == true {
+                    self.verification?.record(model: self.popoverModel, item: self.statusItem, content: self.popover.contentViewController)
+                }
             }
         }
     }
@@ -485,7 +610,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let readyTasks = popoverModel.lastError == nil
             ? (popoverModel.payload?.resumeTasks.filter(\.isReady) ?? [])
             : []
-        if readyTasks.isEmpty, popoverModel.lastError == nil,
+        if readyTasks.isEmpty, !popoverModel.showingStartupCache, popoverModel.lastError == nil,
            let headline, ["normal", "pace-risk"].contains(headline.kind),
            let provider = headline.provider,
            let remaining = headline.remainingPercent, remaining.isFinite {
@@ -536,6 +661,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 task.accountTitle,
                 "\(task.projectLabel) \(task.shortReference)"
             )
+        } else if popoverModel.showingStartupCache {
+            title = headline?.cachedTitle ?? Strings.t("headline.checking")
+            color = .secondaryLabelColor
+            toolTip = [Strings.t("collection.previousReading"), self.popoverModel.measurementDate.map {
+                Strings.t("collection.measuredAt", $0.formatted(date: .abbreviated, time: .shortened))
+            }].compactMap { $0 }.joined(separator: "\n")
         } else if popoverModel.lastError != nil {
             title = headline?.cachedTitle(reason: popoverModel.statusFailure?.shortText)
                 ?? popoverModel.statusFailure?.shortText ?? Strings.t("headline.disconnected")
@@ -660,6 +791,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     switch transitionResult {
                     case .success:
                         self.popoverModel.resumeActivities.removeValue(forKey: task.id)
+                        self.lastDetailsFetchAt = nil
                         self.refresh()
                     case .failure(let error):
                         self.popoverModel.resumeActivities[task.id] = .failed(error.localizedDescription)
@@ -694,6 +826,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 switch result {
                 case .success:
                     self.popoverModel.resumeActivities.removeValue(forKey: task.id)
+                    self.lastDetailsFetchAt = nil
                     self.refresh()
                 case .failure(let error):
                     self.popoverModel.resumeActivities[task.id] = .failed(error.localizedDescription)
@@ -703,7 +836,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private var currentActionToken: String? {
-        guard popoverModel.lastError == nil else { return nil }
+        guard !popoverModel.showingStartupCache, popoverModel.lastError == nil else { return nil }
         guard let token = popoverModel.payload?.actionToken, !token.isEmpty else { return nil }
         return token
     }

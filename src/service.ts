@@ -154,6 +154,13 @@ export class QuotaPieService {
   private signalTimer: ReturnType<typeof setInterval> | null = null;
   private signalWork: Promise<void> | null = null;
   private codexClients = new Map<string, CodexAppServerClient>();
+  private codexRetries = new Map<string, { failures: number; atMs: number }>();
+  private collectionStartedAtMs: number | null = null;
+  private collectionFinishedAtMs: number | null = null;
+  private collectionRequestedAtMs: number | null = null;
+  private collectionNextAtMs: number | null = null;
+  private collecting = false;
+  private forceNextCollection = false;
   private codexAccountNames = new Map<string, string>();
   private stopped = false;
   private closing = false;
@@ -829,9 +836,11 @@ export class QuotaPieService {
       const message = "rate limit response contained no windows";
       this.codexPollState.set(account, { count: 0, error: message });
       this.collection.recordAttempt("codex", account, CODEX_SOURCE, Date.now(), message, "no-windows");
+      this.scheduleCodexRetry(account);
       return { ok: false as const, events: [] as QuotaEvent[], message };
     }
     this.codexPollState.set(account, { count: observations.length, error: null });
+    this.codexRetries.delete(account);
     this.collection.recordAttempt("codex", account, CODEX_SOURCE, Date.now(), null, null);
     const events = this.closing ? [] : this.ingestCodexSnapshot(observations);
     if (!this.closing) {
@@ -846,13 +855,17 @@ export class QuotaPieService {
     };
   }
 
-  async pollCodex(): Promise<QuotaEvent[]> {
+  async pollCodex(respectRetry = false): Promise<QuotaEvent[]> {
     if (!this.config.collection.codexEnabled) return [];
     const profiles = this.config.accounts.codex.filter((profile) => profile.enabled);
     if (!profiles.length) return [];
     const requireFileCredentials = profiles.length > 1;
     const outcomes = await Promise.all(profiles.map(async (profile) => {
+      if (respectRetry && (this.codexRetries.get(profile.id)?.atMs ?? 0) > Date.now()) {
+        return { ok: false as const, skipped: true, events: [] as QuotaEvent[], message: "retry pending" };
+      }
       if (requireFileCredentials && !codexUsesFileCredentials(profile)) {
+        this.codexRetries.delete(profile.id);
         const message = "multi-account Codex requires cli_auth_credentials_store = \"file\" in this profile's config.toml";
         this.codexPollState.set(profile.id, { count: 0, error: message });
         this.collection.recordAttempt(
@@ -877,6 +890,7 @@ export class QuotaPieService {
         const message = error instanceof Error ? error.message : String(error);
         this.codexPollState.set(profile.id, { count: 0, error: message });
         this.collection.recordAttempt("codex", profile.id, CODEX_SOURCE, Date.now(), message, "provider-error");
+        this.scheduleCodexRetry(profile.id);
         if (!(error instanceof CodexSnapshotUnavailableError)) {
           await client.close().catch(() => undefined);
           this.codexClients.delete(profile.id);
@@ -885,6 +899,7 @@ export class QuotaPieService {
         return { ok: false as const, events: [] as QuotaEvent[], message };
       }
     }));
+    if (outcomes.every(outcome => "skipped" in outcome)) return [];
     if (!outcomes.some((outcome) => outcome.ok)) {
       throw new Error(`all configured Codex accounts failed (${profiles.map((profile) => profile.id).join(", ")})`);
     }
@@ -1010,6 +1025,31 @@ export class QuotaPieService {
 
   private currentQuotaWindows(nowMs: number): WindowAnalysis[] {
     return this.currentObservations().map(latest => analyzeWindow(latest, [], this.config, nowMs));
+  }
+
+  /** The menu meter needs persisted measurements, not history/forecast scans. */
+  quotaAccounts(nowMs = Date.now()): AccountState[] {
+    return this.accountStates(nowMs, this.currentQuotaWindows(nowMs));
+  }
+
+  collectionStatus() {
+    return { refreshing: this.collecting, requestedAtMs: this.collectionRequestedAtMs,
+      lastStartedAtMs: this.collectionStartedAtMs, lastFinishedAtMs: this.collectionFinishedAtMs,
+      nextAttemptAtMs: this.collectionNextAtMs };
+  }
+
+  private scheduleCodexRetry(account: string, nowMs = Date.now()): void {
+    const failures = (this.codexRetries.get(account)?.failures ?? 0) + 1;
+    this.codexRetries.set(account, { failures,
+      atMs: nowMs + QuotaPieService.collectionRetryDelay(0, failures) });
+  }
+
+  nextCollectionDelayMs(scheduled: number, nowMs = Date.now()): number {
+    const enabled = new Set(this.config.collection.codexEnabled
+      ? this.config.accounts.codex.filter(p => p.enabled).map(p => p.id) : []);
+    const retries = [...this.codexRetries].filter(([account]) => enabled.has(account))
+      .map(([, retry]) => Math.max(1_000, retry.atMs - nowMs));
+    return Math.min(scheduled, ...retries);
   }
 
   analyses(nowMs = Date.now(), provider?: Provider): WindowAnalysis[] {
@@ -1217,10 +1257,10 @@ export class QuotaPieService {
     return this.resumeTaskSummary(created);
   }
 
-  resumeTaskSummaries(limit = 100, nowMs = Date.now()): ResumeTaskSummary[] {
+  resumeTaskSummaries(limit = 100, nowMs = Date.now(), windows?: WindowAnalysis[]): ResumeTaskSummary[] {
     return this.resumeTasks.active(limit).map((task) => {
       const summary = this.resumeTaskSummary(task);
-      if (task.state === "ready" && (!this.resumeAccountMatches(task) || !this.hasFreshResumeCapacity(task, nowMs))) summary.state = "waiting";
+      if (task.state === "ready" && (!this.resumeAccountMatches(task) || !this.hasFreshResumeCapacity(task, nowMs, windows))) summary.state = "waiting";
       return summary;
     });
   }
@@ -2052,14 +2092,25 @@ export class QuotaPieService {
     collected: boolean;
   }> {
     const collectionStartedAtMs = evaluationTimeMs ?? Date.now();
+    this.collectionStartedAtMs = Date.now();
+    this.collecting = true;
+    this.collectionNextAtMs = null;
+    const force = this.forceNextCollection;
+    this.forceNextCollection = false;
     let events: QuotaEvent[] = [];
     try {
-      events = await this.pollCodex();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[quotapie] Codex refresh failed: ${message}`);
+      try {
+        events = await this.pollCodex(!force);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[quotapie] Codex refresh failed: ${message}`);
+      }
+      // Waking the Mac must not bypass Claude's provider-specific minimum.
+      events = events.concat(await this.pollClaudeOAuth(collectionStartedAtMs));
+    } finally {
+      this.collecting = false;
+      this.collectionFinishedAtMs = Date.now();
     }
-    events = events.concat(await this.pollClaudeOAuth(collectionStartedAtMs));
     // Asynchronous provider reads timestamp their observations when they finish.
     // Evaluate against the post-read clock, preserving an explicitly supplied
     // clock for deterministic callers.
@@ -2186,8 +2237,15 @@ export class QuotaPieService {
   private refreshRequested = false;
   private wakeCollection: (() => void) | null = null;
 
-  requestCollection(): void {
+  requestCollection(force = false): void {
+    const nowMs = Date.now();
+    // Coalesce wake/network/manual bursts, including one request arriving
+    // while an older read is still in flight. Never start a second poll loop.
+    this.forceNextCollection ||= force;
+    if (this.refreshRequested) return;
+    this.collectionRequestedAtMs = nowMs;
     this.refreshRequested = true;
+    this.collectionNextAtMs = nowMs;
     this.wakeCollection?.();
   }
 
@@ -2208,15 +2266,14 @@ export class QuotaPieService {
       collect();
       this.signalTimer = setInterval(collect, 30_000);
     }
-    let consecutiveFailures = 0;
     while (!this.stopped) {
       this.refreshRequested = false;
-      const { collected, windows } = await this.tick();
-      consecutiveFailures = collected ? 0 : consecutiveFailures + 1;
+      const { windows } = await this.tick();
       if (this.stopped) break;
       const scheduled = nextWakeDelayMs(windows, this.config);
-      const delay = QuotaPieService.collectionRetryDelay(scheduled, consecutiveFailures);
+      const delay = this.nextCollectionDelayMs(scheduled);
       if (this.refreshRequested) continue;
+      this.collectionNextAtMs = Date.now() + delay;
       await new Promise<void>((resolve) => {
         const finish = () => { clearTimeout(timer); this.wakeCollection = null; resolve(); };
         const timer = setTimeout(finish, delay);

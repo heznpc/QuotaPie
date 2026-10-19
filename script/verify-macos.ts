@@ -76,6 +76,8 @@ async function run() {
     finally { clearTimeout(timer); }
   };
   let malformed = false;
+  let fastQuotaScenario = false;
+  const fastQuotaRequests: Array<{path:string;method:string;token:string|null;reason?:string}> = [];
   const account = (id: string, label: string, remaining: number) => ({ provider: "codex", account: id, accountLabel: label, enabled: true,
     windows: [{ provider: "codex", account: id, bucket: "codex:primary", label: "5h", windowSeconds: 18_000,
       usedPercent: 100 - remaining, remainingPercent: remaining, freshness: "fresh", quality: "authoritative",
@@ -136,6 +138,23 @@ async function run() {
     maxTurns: 3, maxDurationSeconds: 60, maxTotalDurationSeconds: 120, expiresAtMs: Date.now()+3600000, priority: 0, onReset: "stop", revision: 2,
     state: {spentByBucket: {five_hour: 4}, turns: 1, totalDurationSeconds: 12, status: "turn-finished", activeExecutionId: null} };
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async request => {
+    const requestPath = new URL(request.url).pathname;
+    if (fastQuotaScenario) {
+      const entry = {path:requestPath,method:request.method,token:request.headers.get("x-quotapie-action-token")} as typeof fastQuotaRequests[number];
+      fastQuotaRequests.push(entry);
+      if (requestPath === "/api/collection/refresh" && request.method === "POST") {
+        entry.reason = ((await request.json()) as {reason:string}).reason;
+        if (entry.token !== "isolated-fixture") return new Response("Unauthorized",{status:403});
+        return Response.json({collection:{refreshing:true}},{status:202});
+      }
+      if (requestPath === "/api/quota" && request.method === "GET") {
+        return Response.json({nowMs:Date.now(),headline:payload.headline,accounts:payload.accounts,
+          actionToken:payload.actionToken,collection:{refreshing:true}});
+      }
+      // The first meter must render while this unrelated rich request is slow;
+      // its eventual timeout must not erase the continuing fast reads.
+      if (requestPath === "/api/status" && request.method === "GET") await Bun.sleep(6_500);
+    }
     if (request.method === "POST" && new URL(request.url).pathname === "/api/profiles/dock-icon") {
       const body = await request.json() as {account?: string; icon?: string};
       if (body.icon !== undefined || !["default", "second"].includes(body.account ?? "")) return new Response("Read-only fixture", {status: 400});
@@ -163,6 +182,7 @@ async function run() {
     await exec(["codesign", "--force", "--sign", "-", "--timestamp=none", app]);
     await exec(["/usr/bin/defaults", "write", bundleID, "local.quotapie.codex-desktop-profiles.v1", "-data", Buffer.from(JSON.stringify(profiles)).toString("hex")]);
     for (const scenario of [
+      { name: "fast-quota-delayed-details", running: ["main"], frontmost: null, fastQuota: true, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "main-only", running: ["main"], frontmost: null, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "second-only", running: ["second"], frontmost: null, expected: { account: "codex/second", remaining: 100, label: "Second" } },
       { name: "both-main-frontmost", running: ["second", "main"], frontmost: "main", expected: { account: "codex/default", remaining: 18, label: "Main" } },
@@ -183,6 +203,7 @@ async function run() {
       { name: "host-goals-absent", running: ["main"], frontmost: null, withTasks: true, goalState: "no_goal", initialSection: "work", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
     ]) {
       malformed = scenario.expected == null;
+      fastQuotaScenario = "fastQuota" in scenario;
       payload.resumeTasks = "withTasks" in scenario ? pausedTasks : [];
       payload.jobs = "withTasks" in scenario ? managedJobs : [];
       payload.autoResume = scenario.name === "auto-resume" ? autoResume : undefined;
@@ -191,10 +212,18 @@ async function run() {
           expiresAtMs: scenario.goalState === "stale" ? Date.now() - 1 : Date.now() + 600_000 })) : [];
       const reportPath = join(stage, scenario.name + ".json");
       const request = join(stage, "request.json");
+      const quotaCachePath = fastQuotaScenario ? join(stage, "isolated-quota-cache.json") : undefined;
+      if (quotaCachePath) {
+        const measuredAt = Date.now() - 3_600_000;
+        await writeFile(quotaCachePath, JSON.stringify({version:1,endpoint:`http://127.0.0.1:${server.port}`,
+          nowMs:measuredAt,accounts:payload.accounts.map(item=>({...item,
+            windows:item.windows.map(window=>({...window,remainingPercent:12,observedAtMs:measuredAt}))}))}));
+      }
       await writeFile(request, JSON.stringify({ endpoint: `http://127.0.0.1:${server.port}`, reportPath, profiles,
         runningProfileIDs: scenario.running, frontmostProfileID: scenario.frontmost,
         contentHeight: "contentHeight" in scenario ? scenario.contentHeight : undefined,
         inspectAutoResume: scenario.name === "auto-resume",
+        fastQuota: fastQuotaScenario, quotaCachePath,
         focusedResumeTaskID: "focusedResumeTaskID" in scenario ? scenario.focusedResumeTaskID : undefined,
         initialSection: "initialSection" in scenario ? scenario.initialSection : undefined }));
       await exec(["/usr/bin/open", "-W", "-n", "-g", app, "--args", "--verification", request], 20_000);
@@ -220,7 +249,24 @@ async function run() {
         observed.renderedText = JSON.parse(await readFile(ocrPath, "utf8"));
       }
       const failures = smokeFailures(observed, scenario.expected);
-      if (scenario.expected && observed.pendingResetIDs?.join(",") !== "100") failures.push("pending_reset_displaced_by_newer_news");
+      if (scenario.expected && !fastQuotaScenario && observed.pendingResetIDs?.join(",") !== "100") failures.push("pending_reset_displaced_by_newer_news");
+      if (fastQuotaScenario) {
+        const cache = JSON.parse(await readFile(reportPath + ".cache", "utf8"));
+        const first = JSON.parse(await readFile(reportPath + ".first", "utf8"));
+        const final = observed as Observation & {detailsLoaded:boolean;detailsError:string|null;showingStartupCache:boolean};
+        if (!cache.showingStartupCache || cache.hasActionToken || cache.canActOnTasks || cache.remainingPercent !== 12 || !cache.measurementAtMs)
+          failures.push("startup_cache_claimed_authority_or_lost_reading");
+        if (!first.connected || first.showingStartupCache || first.remainingPercent !== 18 || first.detailsLoaded || !first.detailsLoading)
+          failures.push("fast_quota_waited_for_slow_details");
+        if (!final.detailsError || final.detailsLoaded || final.showingStartupCache || !final.connected)
+          failures.push("detail_timeout_erased_fast_quota");
+        const posts = fastQuotaRequests.filter(item=>item.method === "POST");
+        if (posts.length !== 1 || posts[0]!.path !== "/api/collection/refresh" || posts[0]!.reason !== "startup" || posts[0]!.token !== "isolated-fixture")
+          failures.push("startup_collection_request_missing_or_duplicated");
+        if (fastQuotaRequests.filter(item=>item.path === "/api/quota").length < 2 || fastQuotaRequests.filter(item=>item.path === "/api/status").length !== 1)
+          failures.push("fast_and_rich_polling_not_independent");
+        await writeFile(join(stage,"fast-quota-requests.json"),JSON.stringify(fastQuotaRequests));
+      }
       if (scenario.name === "excluded-posts" && (observed.detailSection !== "resets" || observed.excludedPostIDs?.join(",") !== "codexreset:102")) failures.push("excluded_post_not_available");
       if (scenario.name === "dock-icons" && observed.profileDockIcons?.join(",") !== "codex-system,chatgpt") failures.push("profile_icons_not_preserved");
       if (scenario.name === "recent-work" && (observed.detailSection !== "work" ||

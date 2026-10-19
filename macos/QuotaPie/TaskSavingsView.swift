@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct TaskSavingsPayload: Decodable {
-    let policy: TaskSavingsPolicy?
+    var policy: TaskSavingsPolicy?
     let insights: [SessionEfficiencyInsight]?
     let active: [TaskSavingsRecord]
     let recent: [TaskSavingsRecord]

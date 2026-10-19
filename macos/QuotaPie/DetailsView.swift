@@ -31,7 +31,13 @@ struct DetailsView: View {
                     if let error = model.lastError {
                         CalloutView(text: model.statusFailureText, detail: error, tone: .warning)
                     }
-                    detailContent
+                    if let error = model.detailsError {
+                        Text(error).font(.caption).foregroundStyle(.orange)
+                    }
+                    if section != .quota && !model.detailsLoaded {
+                        if model.detailsLoading { ProgressView() }
+                        Text(model.detailsError ?? Strings.t("details.loading")).foregroundStyle(.secondary)
+                    } else { detailContent }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)
@@ -45,7 +51,7 @@ struct DetailsView: View {
                     Label(Strings.t("action.refresh"), systemImage: "arrow.clockwise")
                 }
                 Spacer()
-                if let last = model.lastSuccessAt {
+                if let last = model.measurementDate {
                     Text(DisplayFormat.age(since: last)).font(.caption).foregroundStyle(.secondary)
                 }
             }

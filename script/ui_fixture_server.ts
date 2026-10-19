@@ -287,6 +287,14 @@ Bun.serve({
   port,
   async fetch(request) {
     const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/api/collection/refresh") {
+      if (request.headers.get("x-quotapie-action-token") !== ACTION_TOKEN) return json({error:"unauthorized"},403);
+      return json({collection:{refreshing:false,lastFinishedAtMs:Date.now()}},202);
+    }
+    if (request.method === "GET" && url.pathname === "/api/quota") {
+      return json({nowMs:Date.now(),headline:buildHeadline(accounts,Date.now()),accounts,actionToken:ACTION_TOKEN,
+        collection:{refreshing:false,lastFinishedAtMs:Date.now()}});
+    }
     if (request.method === "GET" && url.pathname === "/api/status") {
       const transportFile = process.env.QUOTAPIE_FIXTURE_TRANSPORT_FILE;
       const transport = transportFile ? (await Bun.file(transportFile).text()).trim() : "normal";

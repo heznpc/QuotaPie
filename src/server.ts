@@ -68,6 +68,35 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
       const allowedHosts = new Set(["127.0.0.1", "localhost", "::1", config.dashboard.host.toLowerCase()]);
       if (!hostname || !allowedHosts.has(hostname)) return json({ error: "invalid_host" }, 403);
       const url = new URL(request.url);
+      if (url.pathname === "/api/quota") {
+        if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
+        const nowMs = Date.now();
+        const locale = request.headers.get("x-quotapie-locale") === "ko" ? "ko"
+          : request.headers.get("x-quotapie-locale") === "en" ? "en" : service.locale;
+        const accounts = service.quotaAccounts(nowMs);
+        return json({ nowMs, actionToken, accounts, collection: service.collectionStatus(),
+          resumeTasks: service.resumeTaskSummaries(100, nowMs, accounts.flatMap(account => account.windows)),
+          headline: headlineJson(buildHeadline(accounts, nowMs, locale)) });
+      }
+      if (url.pathname === "/api/collection/refresh") {
+        if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+        const origin = request.headers.get("origin");
+        if ((origin !== null && origin !== url.origin) || !tokenMatches(request.headers.get("x-quotapie-action-token")))
+          return json({ error: "forbidden" }, 403);
+        const body = await request.text();
+        if (body.length > 128) return json({ error: "invalid_refresh" }, 400);
+        if (body) {
+          try {
+            const input = JSON.parse(body);
+            if (!input || typeof input !== "object" || Array.isArray(input) ||
+                Object.keys(input).some(key => key !== "reason") ||
+                (input.reason !== undefined && !["startup", "wake", "network", "manual"].includes(input.reason)))
+              return json({ error: "invalid_refresh" }, 400);
+          } catch { return json({ error: "invalid_refresh" }, 400); }
+        }
+        service.requestCollection(true);
+        return json({ collection: service.collectionStatus() }, 202);
+      }
       if(url.pathname === "/api/auto-resume") {
         const origin=request.headers.get("origin");
         if((origin!==null && origin!==url.origin) || !tokenMatches(request.headers.get("x-quotapie-action-token"))) return json({error:"forbidden"},403);
@@ -373,6 +402,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
         return json({
           nowMs,
           actionToken,
+          collection: service.collectionStatus(),
           headline: headlineJson(buildHeadline(accounts, nowMs, displayLocale)),
           accounts,
           // File inventory is opt-in; quota-only clients do not start a scan.

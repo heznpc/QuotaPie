@@ -14,6 +14,9 @@ struct AppVerification: Decodable {
     let contentHeight: Double?
     let interactive: Bool?
     let inspectAutoResume: Bool?
+    let fastQuota: Bool?
+    let quotaCachePath: String?
+    private static var recordedFastFirst = false
     private static var interactiveWindow: NSWindow?
 
     static let current: AppVerification? = {
@@ -53,7 +56,10 @@ struct AppVerification: Decodable {
         DispatchQueue.main.asyncAfter(deadline: .now() + 12) { exit(3) }
     }
 
-    func record(model: PopoverModel, item: NSStatusItem, content: NSViewController?, workLoadAttempt: Int = 0, mountedWindow: NSWindow? = nil) {
+    func record(model: PopoverModel, item: NSStatusItem, content: NSViewController?, workLoadAttempt: Int = 0, mountedWindow: NSWindow? = nil, phase: String? = nil) {
+        let waitingForDetails = fastQuota == true && !model.detailsLoaded && model.detailsError == nil
+        if phase == nil && waitingForDetails && Self.recordedFastFirst { return }
+        let outputPath = reportPath + (phase.map { "." + $0 } ?? (waitingForDetails ? ".first" : ""))
         var rendered = false
         var accountSelectorVerified = false
         var autoResumeControls: [[String: Any]] = []
@@ -66,7 +72,7 @@ struct AppVerification: Decodable {
            let bitmap = button.bitmapImageRepForCachingDisplay(in: button.bounds) {
             button.cacheDisplay(in: button.bounds, to: bitmap)
             if let png = bitmap.representation(using: .png, properties: [:]) {
-                try? png.write(to: URL(fileURLWithPath: reportPath + ".menu.png"), options: .atomic)
+                try? png.write(to: URL(fileURLWithPath: outputPath + ".menu.png"), options: .atomic)
             }
         }
         if let content {
@@ -129,7 +135,7 @@ struct AppVerification: Decodable {
                         image.unlockFocus()
                         guard let tiff = image.tiffRepresentation,
                               let flattened = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { exit(4) }
-                        try flattened.write(to: URL(fileURLWithPath: reportPath + ".png"), options: .atomic)
+                        try flattened.write(to: URL(fileURLWithPath: outputPath + ".png"), options: .atomic)
                         rendered = true
                     } catch { rendered = false }
                 }
@@ -167,11 +173,20 @@ struct AppVerification: Decodable {
             "profileDockIcons": CodexProfilesModel.shared.profiles.compactMap { $0.dockIcon?.rawValue },
             "accountSelectorVerified": !expectsSelector || accountSelectorVerified,
             "statusFailure": model.statusFailure?.rawValue as Any? ?? NSNull(),
+            "showingStartupCache": model.showingStartupCache,
+            "measurementAtMs": model.measurementDate.map { $0.timeIntervalSince1970 * 1_000 } as Any? ?? NSNull(),
+            "canActOnTasks": model.canActOnTasks,
+            "hasActionToken": model.payload?.actionToken != nil,
+            "detailsLoaded": model.detailsLoaded,
+            "detailsLoading": model.detailsLoading,
+            "detailsError": model.detailsError as Any? ?? NSNull(),
         ]
         do {
             let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
-            try data.write(to: URL(fileURLWithPath: reportPath), options: .atomic)
+            try data.write(to: URL(fileURLWithPath: outputPath), options: .atomic)
         } catch { exit(4) }
+        if phase != nil { return }
+        if waitingForDetails { Self.recordedFastFirst = true; return }
         if interactive != true { NSApp.terminate(nil) }
     }
 }

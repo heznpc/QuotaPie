@@ -968,7 +968,7 @@
 "automatic.resetStopExplanation" = "한도가 리셋되면 이 작업이 비활성화됩니다. 한도 회복을 기다렸다가 실행하려면 ‘계속’을 선택하세요.";
 "automatic.resetContinueExplanation" = "한도가 리셋된 뒤 새 사용량 정보, 연결한 목표, 남은 실행 예산이 허용하면 계속 진행합니다.";
 "autoResume.title" = "한도 회복 시 자동재개";
-"autoResume.description" = "켜진 뒤 한도로 멈춘 대화만 같은 계정에서 한 번 이어갑니다. 열린 대화는 ChatGPT의 대기열로 전달합니다. 이미 접수된 작업은 자동재개를 꺼도 실행될 수 있습니다.";
+"autoResume.description" = "켜진 뒤 한도로 멈춘 대화를 같은 계정·세션에서 이어갑니다. 재개 중 다시 한도에 걸려도 다음 회복을 기다립니다. 대기 기간 제한은 없으며, 이미 접수된 작업은 꺼도 실행될 수 있습니다.";
 "autoResume.unsupported" = "자동재개를 사용하려면 로컬 서비스를 업데이트하세요.";
 "autoResume.noAccounts" = "사용할 수 있는 Codex 계정이 없습니다.";
 "autoResume.empty" = "한도 회복을 기다리는 대화가 아직 발견되지 않았습니다.";
@@ -995,3 +995,10 @@
 "autoResume.reason.queueUnsupported" = "설치된 ChatGPT가 대화 대기열 연동을 지원하지 않습니다.";
 "autoResume.reason.limit" = "한 번 이어가기 횟수를 사용했습니다.";
 "autoResume.reason.review" = "Codex에서 대화를 열어 상태를 확인하세요.";
+
+"collection.previousReading" = "이전 측정값 · 현재 잔량 확인 중";
+"collection.refreshing" = "잔량 다시 측정 중…";
+"collection.requestFailed" = "새 측정을 요청하지 못했습니다. 다시 시도 중…";
+"collection.measuredAt" = "측정 시각 %@";
+"details.loading" = "작업 및 상세 정보 불러오는 중…";
+"details.refreshFailed" = "상세 정보를 갱신하지 못했습니다. 잔량은 계속 표시합니다.";

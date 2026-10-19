@@ -19,6 +19,15 @@ final class PopoverModel: ObservableObject {
     @Published var automaticWorkLoadedPolicyIDs: [String]?
 
     @Published var payload: StatusPayload?
+    @Published private(set) var showingStartupCache = false
+    @Published private(set) var detailsLoaded = false
+    @Published var detailsLoading = false
+    @Published var detailsError: String?
+    @Published var collectionRequestError: String?
+    private(set) var quotaRevision = 0
+    private(set) var poolPreferencesRevision = 0
+    private(set) var savingsPreferencesRevision = 0
+    private(set) var compactionPreferencesRevision = 0
     @Published var lastError: String?
     @Published var statusFailure: StatusFailure?
     @Published var notificationSaving = false
@@ -82,7 +91,63 @@ final class PopoverModel: ObservableObject {
         notificationSaving = false
     }
 
-    func applyStatus(_ status: StatusPayload, notificationRevision: Int) {
+    func beginPoolSave() { poolSaving = true; poolPreferencesRevision += 1 }
+    func finishPoolSave(_ value: AccountPoolPayload?) {
+        if let value { payload?.accountPool = value }
+        poolSaving = false
+        poolPreferencesRevision += 1
+    }
+
+    func beginSavingsSave() { savingsSaving = true; savingsPreferencesRevision += 1 }
+    func finishSavingsSave(_ value: TaskSavingsPolicy?) {
+        if let value { payload?.compaction?.savings?.policy = value }
+        savingsSaving = false
+        savingsPreferencesRevision += 1
+    }
+
+    func beginCompactionSave() { compactionSaving = true; compactionPreferencesRevision += 1 }
+    func finishCompactionSave(_ value: CompactionPolicy?) {
+        if let value { payload?.compaction?.policy = value }
+        compactionSaving = false
+        compactionPreferencesRevision += 1
+    }
+
+    func applyCachedQuota(_ status: StatusPayload) {
+        guard payload == nil, status.actionToken == nil else { return }
+        payload = status
+        showingStartupCache = true
+    }
+
+    /// Quota polls never erase detail data or preferences, and out-of-order
+    /// responses cannot put an older reading or action token back on screen.
+    func applyQuota(_ status: StatusPayload) {
+        guard showingStartupCache || (status.nowMs ?? 0) >= (payload?.nowMs ?? 0) else { return }
+        if var current = payload {
+            current.nowMs = status.nowMs
+            current.headline = status.headline
+            current.accounts = status.accounts.map { account in
+                account.preservingDetails(from: current.accounts.first { $0.id == account.id })
+            }
+            current.actionToken = status.actionToken
+            current.collection = status.collection
+            current.resumeTasks = status.resumeTasks
+            payload = current
+        } else { payload = status }
+        let activeTaskIDs = Set(status.resumeTasks.filter(\.isActive).map(\.id))
+        resumeActivities = resumeActivities.filter { activeTaskIDs.contains($0.key) }
+        showingStartupCache = false
+        quotaRevision += 1
+    }
+
+    var measurementDate: Date? {
+        guard let ms = selectedAccount?.overviewWindow?.observedAtMs ?? selectedAccount?.collection.lastSuccessAtMs,
+              ms > 0, ms.isFinite else { return nil }
+        return Date(timeIntervalSince1970: ms / 1_000)
+    }
+
+    func applyStatus(_ status: StatusPayload, notificationRevision: Int,
+                     quotaRevision requestedQuotaRevision: Int? = nil, poolRevision: Int? = nil,
+                     savingsRevision: Int? = nil, compactionRevision: Int? = nil) {
         var next = status
         // Keep other live status fields fresh while excluding preference
         // snapshots requested before or during the most recent save.
@@ -94,7 +159,33 @@ final class PopoverModel: ObservableObject {
         if autoResumeSaving || (autoResumeSavedAtMs > 0 && (status.nowMs ?? 0) <= autoResumeSavedAtMs) {
             next.autoResume = payload?.autoResume
         }
+        if poolSaving || (poolRevision != nil && poolRevision != poolPreferencesRevision) {
+            next.accountPool = payload?.accountPool
+        }
+        if compactionSaving || (compactionRevision != nil && compactionRevision != compactionPreferencesRevision) {
+            if next.compaction == nil { next.compaction = payload?.compaction }
+            next.compaction?.policy = payload?.compaction?.policy
+        }
+        if savingsSaving || (savingsRevision != nil && savingsRevision != savingsPreferencesRevision) {
+            if next.compaction == nil { next.compaction = payload?.compaction }
+            if next.compaction?.savings == nil { next.compaction?.savings = payload?.compaction?.savings }
+            next.compaction?.savings?.policy = payload?.compaction?.savings?.policy
+        }
+        if !showingStartupCache, let current = payload,
+           (status.nowMs ?? 0) < (current.nowMs ?? 0) || (requestedQuotaRevision != nil && requestedQuotaRevision != quotaRevision) {
+            next.nowMs = current.nowMs
+            next.headline = current.headline
+            next.accounts = current.accounts.map { account in
+                account.preservingDetails(from: status.accounts.first { $0.id == account.id })
+            }
+            next.actionToken = current.actionToken
+            next.collection = current.collection
+            next.resumeTasks = current.resumeTasks
+        }
         payload = next
+        showingStartupCache = false
+        detailsLoaded = true
+        detailsError = nil
     }
 
     var selectedAccount: AccountState? {
@@ -166,7 +257,7 @@ final class PopoverModel: ObservableObject {
                          String(tasks.filter(\.isApproved).count), String(tasks.filter(\.isWaiting).count))
     }
 
-    var canActOnTasks: Bool { lastError == nil && !(payload?.actionToken?.isEmpty ?? true) }
+    var canActOnTasks: Bool { !showingStartupCache && lastError == nil && !(payload?.actionToken?.isEmpty ?? true) }
 
     /// Use the database-backed recovery lookback, independent of the short
     /// recent-events feed that routine events can push a refill out of.

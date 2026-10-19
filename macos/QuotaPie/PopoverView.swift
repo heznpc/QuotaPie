@@ -74,6 +74,11 @@ struct PopoverView: View {
                 CompactionSummary(record: record, openHistory: { showDetails(.activity) })
                     .padding(.horizontal, 20).padding(.bottom, 12)
             }
+            if !model.detailsLoaded {
+                Text(model.detailsError ?? Strings.t("details.loading"))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal, 20).padding(.bottom, 12)
+            }
             if !model.activeTasks.isEmpty {
                 Divider().padding(.horizontal, 20)
                 taskOverview.padding(20)
@@ -113,7 +118,7 @@ struct PopoverView: View {
                     .accessibilityLabel(Strings.t("profiles.openAccount", account.accountLabel))
                 }
                 Spacer(minLength: 8)
-                if let last = model.lastSuccessAt {
+                if let last = model.measurementDate {
                     Text(DisplayFormat.age(since: last))
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -126,7 +131,17 @@ struct PopoverView: View {
                         .font(.callout).foregroundStyle(.secondary)
                     detailButton("overview.quotaDetail", section: .quota)
                 }
-                if model.lastError != nil || !account.collection.isHealthy {
+                if model.showingStartupCache {
+                    Text(Strings.t("collection.previousReading"))
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if model.payload?.collection?.refreshing == true {
+                    Label(Strings.t("collection.refreshing"), systemImage: "arrow.triangle.2.circlepath")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if let message = model.collectionRequestError {
+                    Text(message).font(.caption).foregroundStyle(.orange)
+                }
+                if !model.showingStartupCache && (model.lastError != nil || !account.collection.isHealthy) {
                     Button { showDetails(.quota) } label: {
                         Label(model.lastError != nil ? model.statusFailureText : account.collection.actionText,
                               systemImage: "exclamationmark.circle")
@@ -183,7 +198,7 @@ struct PopoverView: View {
     }
 
     private func quotaReading(account: AccountState, window: QuotaWindow) -> some View {
-        let current = model.lastError == nil && account.collection.isHealthy && window.freshness == "fresh"
+        let current = !model.showingStartupCache && model.lastError == nil && account.collection.isHealthy && window.freshness == "fresh"
         let percent = window.remainingPercent.map { min(100, max(0, $0)) }
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .bottom) {
@@ -213,6 +228,10 @@ struct PopoverView: View {
                 }
             }
             .frame(height: 5).accessibilityHidden(true)
+            if let measured = model.measurementDate {
+                Text(Strings.t("collection.measuredAt", measured.formatted(date: .abbreviated, time: .shortened)))
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
             Text(current && window.isExhausted ? Strings.t("window.exhausted") : DisplayFormat.resetStamp(window.resetsAtMs))
                 .font(.caption).foregroundStyle(.secondary)
         }
