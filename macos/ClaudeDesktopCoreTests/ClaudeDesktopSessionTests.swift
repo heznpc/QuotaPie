@@ -30,7 +30,10 @@ final class ClaudeDesktopSessionTests: XCTestCase {
         XCTAssertEqual(try DesktopSession.decryptCookie(encrypt("fixture-session"), password: password, host: ".claude.ai", version: 24), "fixture-session")
         XCTAssertThrowsError(try DesktopSession.decryptCookie(encrypt("fixture-session", host: ".example.com"), password: password, host: ".claude.ai", version: 24))
         XCTAssertThrowsError(try DesktopSession.decryptCookie(Data("v20bad".utf8), password: password, host: ".claude.ai", version: 24))
-        XCTAssertThrowsError(try DesktopSession.decryptCookie(encrypt("fixture-session").dropLast(), password: password, host: ".claude.ai", version: 24))
+        let encrypted = encrypt("fixture-session")
+        for removed in 1..<kCCBlockSizeAES128 {
+            XCTAssertThrowsError(try DesktopSession.decryptCookie(encrypted.dropLast(removed), password: password, host: ".claude.ai", version: 24))
+        }
     }
 
     func testBootstrapRequiresSelectedOrganizationMembership() throws {
@@ -38,6 +41,45 @@ final class ClaudeDesktopSessionTests: XCTestCase {
         XCTAssertEqual(try verifiedAccount(payload, organizationID: org), account)
         XCTAssertThrowsError(try verifiedAccount(payload, organizationID: account))
         XCTAssertThrowsError(try verifiedAccount(["account": ["uuid": account]], organizationID: org))
+    }
+
+    func testPlanRequiresVerifiedSelectedOrganizationCapabilities() throws {
+        func payload(_ capabilities: Any?, ravenType: Any? = nil) -> [String: Any] {
+            var organization: [String: Any] = ["uuid": org]
+            organization["capabilities"] = capabilities
+            organization["raven_type"] = ravenType
+            return ["account": ["uuid": account, "memberships": [["organization": organization],
+                ["organization": ["uuid": account, "capabilities": ["chat", "claude_max"]]]]]]
+        }
+        XCTAssertEqual(try verifiedPlan(payload(["chat"]), organizationID: org.uppercased()), "free")
+        XCTAssertEqual(try verifiedPlan(payload(["chat", "claude_pro"]), organizationID: org), "pro")
+        XCTAssertEqual(try verifiedPlan(payload(["chat", "claude_max"]), organizationID: org), "max")
+        XCTAssertEqual(try verifiedPlan(payload(["chat", "raven"], ravenType: "team"), organizationID: org), "team")
+        XCTAssertEqual(try verifiedPlan(payload(["chat", "raven"], ravenType: "enterprise"), organizationID: org), "enterprise")
+        for caps: Any? in [nil, [], ["api"], ["api", "chat"], ["chat", "raven"], ["chat", "claude_future"], ["chat", "future_paid_tier"], "chat", ["chat", true]] {
+            XCTAssertEqual(try verifiedPlan(payload(caps), organizationID: org), "unknown")
+        }
+        XCTAssertEqual(try verifiedPlan(payload(["chat", "raven"], ravenType: "future"), organizationID: org), "unknown")
+        XCTAssertThrowsError(try verifiedPlan(payload(["chat"]), organizationID: UUID().uuidString))
+        let duplicate: [String: Any] = ["account": ["uuid": account, "memberships": [
+            ["organization": ["uuid": org, "capabilities": ["chat"]]],
+            ["organization": ["uuid": org, "capabilities": ["chat", "claude_pro"]]]]]]
+        XCTAssertEqual(try verifiedPlan(duplicate, organizationID: org), "unknown")
+    }
+
+    func testLimitDiagnosticsNeverReadAnotherOrganizationOrPrivateFields() throws {
+        XCTAssertEqual(limitMetadata([:], organizationID: org)["provided"] as? Bool, false)
+        XCTAssertEqual(limitMetadata(["messageLimits": [account: ["type": "exceeded_limit"]]], organizationID: org)["provided"] as? Bool, false)
+        let input: [String: Any] = ["messageLimits": [org: ["type": "exceeded_limit", "resetsAt": 1_791_234_567,
+            "prompt": "private", "windows": ["5h": ["status": "exceeded_limit", "resets_at": "2026-10-21T10:00:00Z", "private": "private"],
+                "other": ["status": "private"]]]], "account": ["email": "private"]]
+        let result = limitMetadata(input, organizationID: org)
+        XCTAssertEqual(result["type"] as? String, "exceeded_limit")
+        XCTAssertEqual(result["resetsAt"] as? Int, 1_791_234_567)
+        XCTAssertEqual((result["windows"] as? [String: Any])?.count, 1)
+        XCTAssertFalse(String(data: try JSONSerialization.data(withJSONObject: result), encoding: .utf8)!.contains("private"))
+        let invalid = limitMetadata(["messageLimits": [org: ["type": "private", "resetsAt": true, "resets_at": "private"]]], organizationID: org)
+        XCTAssertEqual(invalid.count, 1)
     }
 
     func testUsageWhitelistKeepsEmptyAndRealWindowsWithoutPrivateFields() throws {
@@ -75,6 +117,9 @@ final class ClaudeDesktopSessionTests: XCTestCase {
         XCTAssertEqual(first.organizationID, org)
         XCTAssertEqual(first.usageRequest.url?.host, "claude.ai")
         XCTAssertEqual(first.usageRequest.url?.query, "skip_spend=1")
+        XCTAssertEqual(first.appStartRequest.url?.host, "claude.ai")
+        XCTAssertEqual(first.appStartRequest.url?.path, "/edge-api/bootstrap/\(org)/app_start")
+        XCTAssertTrue(first.appStartRequest.url!.query!.contains("include_system_prompts=false"))
         sql("DELETE FROM cookies WHERE name='sessionKey'")
         XCTAssertThrowsError(try DesktopSession.readCookies(password: password, path: path))
         insert("sessionKey", "fixture-new-session")

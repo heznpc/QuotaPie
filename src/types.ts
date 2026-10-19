@@ -216,7 +216,12 @@ export interface CollectionSourceStateRow {
   lastSuccessMs: number | null;
   lastError: string | null;
   lastErrorCategory: CollectionErrorCategory | null;
+  accountPlan?: AccountPlan & { identity: string };
 }
+
+export const ACCOUNT_PLAN_KINDS = ["free", "pro", "max", "team", "enterprise", "unknown"] as const;
+export type AccountPlanKind = typeof ACCOUNT_PLAN_KINDS[number];
+export interface AccountPlan { kind: AccountPlanKind; observedAtMs: number }
 
 export interface CollectionSourceState {
   source: string;
@@ -240,6 +245,7 @@ export interface AccountCollectionState {
 // The native UI needs to be able to render an honest empty or error state.
 export interface AccountState {
   connection?: "claude-desktop";
+  plan?: AccountPlan;
   nickname?: string;
   provider: Provider;
   account: string;

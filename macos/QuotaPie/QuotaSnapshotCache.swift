@@ -56,6 +56,8 @@ struct QuotaSnapshotCache {
                 windows: [], bottleneckBucket: nil, updatedAtMs: nil)
         }
         var copy = account
+        // A startup display cache is not a current verification of the plan.
+        copy.plan = nil
         collection.health = "stale-success"
         collection.errorCategory = "stale-success"
         copy.collection = collection

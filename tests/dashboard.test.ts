@@ -205,6 +205,82 @@ describe("dashboard automatic quota resumption", () => {
 });
 
 describe("dashboard localization", () => {
+  test("verified desktop Free plan is concise and missing quota is explained only in collapsed details", async () => {
+    const payload = statusPayload();
+    Object.assign(payload.accounts[0]!, { connection: "claude-desktop", plan: { kind: "free", observedAtMs: payload.nowMs } });
+    Object.assign(payload.accounts[0]!.collection, { health: "attempted-then-failed", errorCategory: "no-windows" });
+    for (const language of ["en-US", "ko-KR"]) {
+      const page = await render(language, payload), html = page.element("providers").innerHTML;
+      expect(html).toContain(`<p class="muted">${language === "ko-KR" ? "Free 플랜" : "Free plan"}</p>`);
+      expect(html).toContain('<details class="muted"><summary>');
+      expect(html).not.toContain("<details open");
+      expect(html).toContain(language === "ko-KR" ? "남은 메시지 수나 회복 시각이 없습니다" : "remaining message count or reset time");
+      expect(html).not.toContain("28.0");
+      expect(html).not.toContain('class="notice"');
+    }
+  });
+
+  test("desktop plan rendering rejects stale, unknown and mismatched metadata and clears it after refresh failure", async () => {
+    for (const kind of [undefined, "unknown", "<img src=x>"]) {
+      const payload = statusPayload();
+      Object.assign(payload.accounts[0]!, { connection: "claude-desktop", plan: { kind, observedAtMs: payload.nowMs } });
+      Object.assign(payload.accounts[0]!.collection, { health: "attempted-then-failed", errorCategory: "no-windows" });
+      const page = await render("ko-KR", payload);
+      expect(page.element("providers").innerHTML).not.toContain("Free 플랜");
+      expect(page.element("providers").innerHTML).not.toContain("<img");
+      expect(page.element("providers").innerHTML).not.toContain("28.0");
+    }
+    for (const category of ["network", "account-mismatch", "auth-expired", "stale-success"]) {
+      const payload = statusPayload();
+      Object.assign(payload.accounts[0]!, { connection: "claude-desktop", plan: { kind: "free", observedAtMs: payload.nowMs } });
+      Object.assign(payload.accounts[0]!.collection, { health: "attempted-then-failed", errorCategory: category });
+      const page = await render("ko-KR", payload);
+      expect(page.element("providers").innerHTML).not.toContain("Free 플랜");
+      expect(page.element("providers").innerHTML).not.toContain("28.0");
+    }
+    for (const observedAtMs of [Date.now() - 600_001, Date.now() + 60_000]) {
+      const payload = statusPayload();
+      Object.assign(payload.accounts[0]!, { connection: "claude-desktop", plan: { kind: "free", observedAtMs } });
+      Object.assign(payload.accounts[0]!.collection, { health: "attempted-then-failed", errorCategory: "no-windows" });
+      const page = await render("ko-KR", payload);
+      expect(page.element("providers").innerHTML).not.toContain("Free 플랜");
+    }
+    const payload = statusPayload();
+    Object.assign(payload.accounts[0]!, { connection: "claude-desktop", plan: { kind: "free", observedAtMs: payload.nowMs } });
+    Object.assign(payload.accounts[0]!.collection, { health: "attempted-then-failed", errorCategory: "no-windows" });
+    let fail = false;
+    const page = await render("ko-KR", payload, async () => {
+      if (fail) throw new Error("offline");
+      return { json: async () => payload };
+    });
+    expect(page.element("providers").innerHTML).toContain("Free 플랜");
+    fail = true;
+    await runInContext("refresh()", page.context);
+    expect(page.element("providers").innerHTML).not.toContain("Free 플랜");
+    expect(page.element("providers").innerHTML).not.toContain("28.0");
+  });
+
+  test("an older in-flight response cannot restore a plan after a newer refresh failed", async () => {
+    const payload = statusPayload();
+    Object.assign(payload.accounts[0]!, { connection: "claude-desktop", plan: { kind: "free", observedAtMs: payload.nowMs } });
+    Object.assign(payload.accounts[0]!.collection, { health: "attempted-then-failed", errorCategory: "no-windows" });
+    let mode = "normal", delayed: ((value: unknown) => void) | undefined;
+    const page = await render("ko-KR", payload, async () => {
+      if (mode === "delayed") return new Promise(resolve => { delayed = resolve; });
+      if (mode === "failed") throw new Error("offline");
+      return { json: async () => payload };
+    });
+    expect(page.element("providers").innerHTML).toContain("Free 플랜");
+    mode = "delayed";
+    const oldRefresh = runInContext("refresh()", page.context);
+    mode = "failed";
+    await runInContext("refresh()", page.context);
+    expect(page.element("providers").innerHTML).not.toContain("Free 플랜");
+    delayed!({ json: async () => payload });
+    await oldRefresh;
+    expect(page.element("providers").innerHTML).not.toContain("Free 플랜");
+  });
+
   test("unavailable Claude collection explains the Code connection without old quota cards or login prompts", async () => {
     for (const category of ["claude-code-unavailable", "access-denied"]) {
       const payload = statusPayload();

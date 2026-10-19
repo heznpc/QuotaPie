@@ -1225,13 +1225,14 @@ export class QuotaPieService {
     const observations = mapClaudeDesktopUsage(result.usage, profile.id, nowMs).map(item => ({
       ...item, metadata: { desktopIdentity: claudeDesktopIdentityKey(result) },
     }));
+    const accountPlan = { kind: result.plan, identity: claudeDesktopIdentityKey(result) };
     if (!observations.length) {
       this.collection.recordAttempt("claude", profile.id, CLAUDE_DESKTOP_SOURCE, nowMs,
-        new ClaudeDesktopError("no-windows").message, "no-windows");
+        new ClaudeDesktopError("no-windows").message, "no-windows", accountPlan);
       return [];
     }
     const snapshot = this.db.ingestFullSnapshot("claude", profile.id, observations, this.config, 1);
-    if (snapshot.accepted) this.collection.recordAttempt("claude", profile.id, CLAUDE_DESKTOP_SOURCE, nowMs, null, null);
+    if (snapshot.accepted) this.collection.recordAttempt("claude", profile.id, CLAUDE_DESKTOP_SOURCE, nowMs, null, null, accountPlan);
     return snapshot.events;
   }
 
@@ -1446,6 +1447,15 @@ export class QuotaPieService {
       const desktopBinding = profile.provider === "claude" ? this.config.accounts.claude.find(item => item.id === profile.id)?.desktopBinding : undefined;
       const desktop = !!desktopBinding;
       const desktopState = desktop ? sourceStates.find(row => row.provider === "claude" && row.account === profile.id && row.source === CLAUDE_DESKTOP_SOURCE) : undefined;
+      // A plan is current only when the latest authenticated response belongs
+      // to this binding. Empty numeric windows still carry verified plan data;
+      // errors, a changed account and stale reads must not retain the old badge.
+      const observedPlan = desktopState?.accountPlan;
+      const plan = desktopBinding && observedPlan &&
+        observedPlan.identity === claudeDesktopIdentityKey(desktopBinding) &&
+        (desktopState.lastError === null || desktopState.lastErrorCategory === "no-windows") &&
+        nowMs >= observedPlan.observedAtMs && nowMs - observedPlan.observedAtMs <= staleAfterMs
+        ? { kind: observedPlan.kind, observedAtMs: observedPlan.observedAtMs } : undefined;
       const accountWindows = windows
         .filter((window) => window.provider === profile.provider && window.account === profile.id)
         .filter(window => !desktopBinding || (window.source === CLAUDE_DESKTOP_SOURCE &&
@@ -1495,6 +1505,7 @@ export class QuotaPieService {
       )[0];
       return {
         ...(desktop ? { connection: "claude-desktop" as const } : {}),
+        ...(plan ? { plan } : {}),
         provider: profile.provider,
         account: profile.id,
         accountLabel: this.accountLabel(profile.provider, profile.id),

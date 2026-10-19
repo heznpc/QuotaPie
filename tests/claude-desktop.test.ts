@@ -12,6 +12,7 @@ import { resumeProfileKey } from "../src/resume-gate";
 import { jobProfile } from "../src/jobs/runner";
 import { inspectWorkTarget } from "../src/work/runtime";
 import { planTriggers } from "../src/triggers";
+import { ACCOUNT_PLAN_KINDS } from "../src/types";
 
 const identity = { accountId: "11111111-1111-4111-8111-111111111111", organizationId: "22222222-2222-4222-8222-222222222222" };
 const otherIdentity = { ...identity, accountId: "33333333-3333-4333-8333-333333333333" };
@@ -32,6 +33,19 @@ function fixture(read: (connect: boolean) => Promise<unknown>) {
 }
 
 describe("Claude desktop adapter", () => {
+  test("plan metadata is allowlisted and absent numeric limits never imply a Free plan", async () => {
+    for (const plan of ACCOUNT_PLAN_KINDS) {
+      const result = await readClaudeDesktop(false, { read: async () => ({ ...success({ limits: [] }), plan }) });
+      expect(result.plan).toBe(plan);
+      expect(mapClaudeDesktopUsage(result.usage, "bound")).toEqual([]);
+    }
+    for (const plan of [undefined, null, "secret-provider-value", "Free", { kind: "free" }]) {
+      const result = await readClaudeDesktop(false, { read: async () => ({ ...success({ limits: [] }), plan }) });
+      expect(result.plan).toBe("unknown");
+      expect(JSON.stringify(result)).not.toContain("secret-provider-value");
+    }
+  });
+
   test("legacy and scoped desktop limits retain observed periods without invented windows", () => {
     const mapped = mapClaudeDesktopUsage({ seven_day: { utilization: 51, resets_at: null }, limits: [
       { kind: "weekly_all", group: "weekly", percent: 90 },
@@ -89,6 +103,60 @@ describe("Claude desktop adapter", () => {
 });
 
 describe("Claude desktop binding and collection", () => {
+  test("verified Free plan survives no-windows and restart, but expires without fresh collection", async () => {
+    const f = fixture(async () => ({ ...success({ five_hour: null, seven_day: null, limits: [] }), plan: "free" }));
+    try {
+      const result = await f.service.connectClaudeDesktop(f.path);
+      expect(result.quotaAvailable).toBe(false);
+      expect(result.account.plan?.kind).toBe("free");
+      expect(result.account.windows).toEqual([]);
+      expect(result.account.collection.errorCategory).toBe("no-windows");
+      expect(f.service.analyses()).toEqual([]);
+      expect(f.service.quotaAccounts().find(account => account.account === "default")?.plan).toBeUndefined();
+      expect(readFileSync(f.path, "utf8")).not.toContain('"plan"');
+      const observedAtMs = result.account.plan!.observedAtMs;
+      const restarted = new QuotaPieService(loadConfig(f.path), new QuotaDatabase(f.databasePath), { quota: null, workState: null });
+      try {
+        const current = (now: number) => restarted.quotaAccounts(now).find(account => account.account === result.account.account)!;
+        expect(current(observedAtMs + 1).plan).toEqual(result.account.plan);
+        expect(current(observedAtMs + f.config.collection.staleAfterSeconds * 1_000 + 1).plan).toBeUndefined();
+        expect(current(observedAtMs - 1).plan).toBeUndefined();
+        restarted.config.accounts.claude.find(account => account.id === result.account.account)!.desktopBinding = otherIdentity;
+        expect(current(observedAtMs + 1).plan).toBeUndefined();
+      } finally { await restarted.close(); }
+    } finally { await f.close(); }
+  });
+
+  test("a failed or mismatched desktop collection clears the old plan until another verified read", async () => {
+    let response: unknown = { ...success(usage), plan: "max" };
+    const f = fixture(async () => response);
+    try {
+      const result = await f.service.connectClaudeDesktop(f.path), account = result.account.account;
+      expect(result.account.plan?.kind).toBe("max");
+      let pollAt = Date.now();
+      const poll = async () => { pollAt += 300_001; await f.service.pollClaudeDesktop(pollAt); };
+      const state = () => f.service.quotaAccounts().find(item => item.account === account)!;
+      for (const category of ["network", "rate-limited", "auth-expired", "access-denied", "account-mismatch"] as const) {
+        response = { ok: false, category, error: "not-safe-to-display" };
+        await poll();
+        expect(state().plan).toBeUndefined();
+        expect(f.service.collection.sourceStates().find(row => row.account === account)?.accountPlan).toBeUndefined();
+        response = { ...success({ limits: [] }), plan: "free" };
+        await poll();
+        expect(state().plan?.kind).toBe("free");
+        expect(state().windows).toEqual([]);
+      }
+      response = { ...success({ limits: [] }, otherIdentity), plan: "pro" };
+      await poll();
+      expect(state().collection.errorCategory).toBe("account-mismatch");
+      expect(state().plan).toBeUndefined();
+      response = success({ limits: [] });
+      await poll();
+      expect(state().plan?.kind).toBe("unknown");
+      expect(state().windows).toEqual([]);
+    } finally { await f.close(); }
+  });
+
   test("connection is explicit, distinct from Code, atomic and idempotent", async () => {
     let reads = 0;
     const f = fixture(async connect => { reads++; expect(connect).toBe(true); return success(); });
@@ -245,7 +313,7 @@ describe("Claude desktop binding and collection", () => {
 
   test("protected API rejects foreign origins and identity overrides; connect remains single flight", async () => {
     let calls = 0;
-    const f = fixture(async () => { calls++; await Bun.sleep(20); return success({ limits: [] }); });
+    const f = fixture(async () => { calls++; await Bun.sleep(20); return { ...success({ limits: [] }), plan: "free" }; });
     f.config.dashboard.port = 0;
     const server = startDashboard(f.service, f.config, { preferencesPath: f.path, compactionRoot: f.root,
       poolDatabasePath: join(f.root, "pool.db"), poolPolicyPath: join(f.root, "pool.json") });
@@ -265,6 +333,10 @@ describe("Claude desktop binding and collection", () => {
       expect(payload.connected).toBe(true);
       expect(payload.quotaAvailable).toBe(false);
       expect(payload.account.collection.errorCategory).toBe("no-windows");
+      expect(payload.account.plan.kind).toBe("free");
+      expect(typeof payload.account.plan.observedAtMs).toBe("number");
+      const quota = await (await fetch(origin + "/api/quota")).json() as any;
+      expect(quota.accounts.find((account: any) => account.account === payload.account.account).plan).toEqual(payload.account.plan);
       expect(f.config.accounts.claude).toHaveLength(2);
     } finally { server.stop(true); await f.close(); }
   });

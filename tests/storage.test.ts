@@ -13,6 +13,22 @@ function storage(): QuotaStorage {
   return new QuotaStorage(":memory:");
 }
 
+test("collection plan migration preserves existing attempts and is idempotent", () => {
+  const db = new Database(":memory:");
+  try {
+    db.run(`CREATE TABLE collection_source_state (
+      provider TEXT NOT NULL, account TEXT NOT NULL, source TEXT NOT NULL,
+      last_attempt_ms INTEGER, last_success_ms INTEGER, last_error TEXT, last_error_category TEXT,
+      PRIMARY KEY(provider,account,source))`);
+    db.run("INSERT INTO collection_source_state VALUES ('claude','existing','claude-oauth',100,90,'unchanged','network')");
+    migrate(db); migrate(db);
+    expect(db.query("SELECT * FROM collection_source_state WHERE account='existing'").get()).toEqual({
+      provider: "claude", account: "existing", source: "claude-oauth", last_attempt_ms: 100, last_success_ms: 90,
+      last_error: "unchanged", last_error_category: "network", account_plan_kind: null, account_plan_identity: null,
+    });
+  } finally { db.close(); }
+});
+
 function event(overrides: Partial<QuotaEvent> = {}): QuotaEvent {
   return {
     provider: "codex",

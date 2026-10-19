@@ -1361,6 +1361,12 @@
 "claudeDesktop.permission" = "For automatic refresh, choose Always Allow for QuotaPieClaudeSessionHelper in the macOS permission prompt.";
 "claudeDesktop.state.connected" = "Claude app connected";
 "claudeDesktop.state.noQuota" = "Connected · quota not provided";
+"claudeDesktop.plan.free" = "Free plan";
+"claudeDesktop.plan.pro" = "Pro plan";
+"claudeDesktop.plan.max" = "Max plan";
+"claudeDesktop.plan.team" = "Team plan";
+"claudeDesktop.plan.enterprise" = "Enterprise plan";
+"claudeDesktop.plan.noQuota.detail" = "%@ verified. This response did not provide the remaining message count or reset time.";
 "claudeDesktop.state.keychain" = "Keychain permission needed";
 "claudeDesktop.detail.keychain" = "macOS Keychain access needs approval. In QuotaPie Settings, choose Connect Claude app and allow access in the macOS prompt. This is separate from Claude's quota lookup permission.";
 "claudeDesktop.state.unavailable" = "Claude app connection needed";

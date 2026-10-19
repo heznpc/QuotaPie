@@ -86,7 +86,8 @@ public struct DesktopSession: Equatable {
     }
 
     static func decryptCookie(_ encrypted: Data, password: Data, host: String, version: Int) throws -> String {
-        guard encrypted.starts(with: Data("v10".utf8)), encrypted.count > 3 else { throw DesktopFailure("provider-error", "Claude cookie encryption is unsupported") }
+        guard encrypted.starts(with: Data("v10".utf8)), encrypted.count > 3,
+              (encrypted.count - 3).isMultiple(of: kCCBlockSizeAES128) else { throw DesktopFailure("provider-error", "Claude cookie encryption is unsupported") }
         var key = Data(count: 16)
         defer { key.resetBytes(in: 0..<key.count) }
         let salt = Data("saltysalt".utf8)
@@ -134,6 +135,11 @@ public struct DesktopSession: Equatable {
 
     public var bootstrapRequest: URLRequest { request(path: "/api/bootstrap") }
     public var usageRequest: URLRequest { request(path: "/api/organizations/\(organizationID)/usage?skip_spend=1") }
+    // The desktop app's alternate bootstrap path. Only explicit diagnostics use
+    // this larger response; regular collection needs just identity and usage.
+    public var appStartRequest: URLRequest {
+        request(path: "/edge-api/bootstrap/\(organizationID)/app_start?statsig_hashing_algorithm=djb2&growthbook_format=sdk&cache_bust=1&include_system_prompts=false")
+    }
     private func request(path: String) -> URLRequest {
         var request = URLRequest(url: URL(string: "https://claude.ai" + path)!)
         request.timeoutInterval = 15
@@ -154,6 +160,66 @@ public func verifiedAccount(_ payload: [String: Any], organizationID: String) th
         throw DesktopFailure("access-denied", "Claude account does not match the active organization")
     }
     return id.lowercased()
+}
+
+// Claude's desktop renderer classifies the selected organization's capabilities,
+// not an absent usage window or billing record. Keep this projection independent
+// of quota availability and never expose the rest of the bootstrap response.
+public func verifiedPlan(_ payload: [String: Any], organizationID: String) throws -> String {
+    _ = try verifiedAccount(payload, organizationID: organizationID)
+    let account = payload["account"] as! [String: Any]
+    let memberships = account["memberships"] as! [[String: Any]]
+    let organizations = memberships.compactMap { $0["organization"] as? [String: Any] }
+        .filter { ($0["uuid"] as? String)?.lowercased() == organizationID.lowercased() }
+    guard organizations.count == 1, let org = organizations.first,
+          let capabilities = org["capabilities"] as? [String], !capabilities.isEmpty,
+          capabilities.count <= 128,
+          capabilities.allSatisfy({ shortString($0) != nil }) else { return "unknown" }
+    let caps = Set(capabilities)
+    guard caps.contains("chat"), !caps.contains("api") else { return "unknown" }
+    if caps.contains("raven") {
+        guard let type = org["raven_type"] as? String else { return "unknown" }
+        // Fail closed for new organization types instead of calling them Team.
+        switch type {
+        case "enterprise": return "enterprise"
+        case "team": return "team"
+        default: return "unknown"
+        }
+    }
+    if caps.contains("claude_max") { return "max" }
+    if caps.contains("claude_pro") { return "pro" }
+    // Free has only the consumer chat capability. Additional unrecognized
+    // capabilities may represent a new paid tier; never silently call it Free.
+    return caps == Set(["chat"]) ? "free" : "unknown"
+}
+
+// Inspect only server-supplied limit metadata for the exact selected org. The
+// renderer merges cached state into bootstrap; such cache is not current proof.
+// This projection is diagnostic, never a percentage or a recovery assertion.
+public func limitMetadata(_ payload: [String: Any], organizationID: String) -> [String: Any] {
+    guard let limits = payload["messageLimits"] as? [String: Any],
+          let entry = limits[organizationID] as? [String: Any] else {
+        return ["provided": false]
+    }
+    var result: [String: Any] = ["provided": true]
+    if let type = entry["type"] as? String, ["within_limit", "approaching_limit", "exceeded_limit"].contains(type) { result["type"] = type }
+    for key in ["resetsAt", "resets_at"] {
+        if let date = timestamp(entry[key]) { result[key] = date }
+        else if let number = entry[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue.isFinite, number.doubleValue > 0 { result[key] = number }
+    }
+    if let windows = entry["windows"] as? [String: Any] {
+        var projected: [String: Any] = [:]
+        for key in ["5h", "7d"] {
+            guard let window = windows[key] as? [String: Any] else { continue }
+            var safe: [String: Any] = [:]
+            if let status = window["status"] as? String, ["within_limit", "approaching_limit", "exceeded_limit"].contains(status) { safe["status"] = status }
+            if let date = timestamp(window["resets_at"]) { safe["resets_at"] = date }
+            else if let number = window["resets_at"] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue.isFinite, number.doubleValue > 0 { safe["resets_at"] = number }
+            if !safe.isEmpty { projected[key] = safe }
+        }
+        if !projected.isEmpty { result["windows"] = projected }
+    }
+    return result
 }
 
 // Provider responses may contain personal data or future unknown fields.

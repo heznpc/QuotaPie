@@ -1361,6 +1361,12 @@
 "claudeDesktop.permission" = "자동 갱신을 사용하려면 macOS 요청 창에서 QuotaPieClaudeSessionHelper에 ‘항상 허용’을 선택해 주세요.";
 "claudeDesktop.state.connected" = "Claude 앱 연결됨";
 "claudeDesktop.state.noQuota" = "앱 연결됨 · 한도 수치 미제공";
+"claudeDesktop.plan.free" = "Free 플랜";
+"claudeDesktop.plan.pro" = "Pro 플랜";
+"claudeDesktop.plan.max" = "Max 플랜";
+"claudeDesktop.plan.team" = "Team 플랜";
+"claudeDesktop.plan.enterprise" = "Enterprise 플랜";
+"claudeDesktop.plan.noQuota.detail" = "%@으로 확인되었습니다. 이번 응답에는 남은 메시지 수나 회복 시각이 없습니다.";
 "claudeDesktop.state.keychain" = "macOS 키체인 접근 허용 필요";
 "claudeDesktop.detail.keychain" = "macOS 키체인 접근 허용이 필요합니다. QuotaPie 설정에서 ‘Claude 앱 연결’을 누르고 macOS 요청 창에서 접근을 허용해 주세요. Claude 서버의 한도 조회 권한과는 별개입니다.";
 "claudeDesktop.state.unavailable" = "Claude 앱 연결 필요";

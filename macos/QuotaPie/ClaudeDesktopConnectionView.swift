@@ -58,8 +58,10 @@ final class ClaudeDesktopConnectionModel: ObservableObject {
                     self.busy = false
                     self.client = nil
                     switch result {
-                    case .success(let reply):
-                        self.message = Strings.t(reply.quotaAvailable ? "claudeDesktop.state.connected" : "claudeDesktop.state.noQuota")
+                    case .success:
+                        // This is the result of the explicit connection action;
+                        // current plan verification belongs to the live account row.
+                        self.message = Strings.t("claudeDesktop.state.connected")
                         service.fetchQuota { [weak model] refreshed in
                             DispatchQueue.main.async {
                                 if case .success(let payload) = refreshed { model?.applyQuota(payload) }

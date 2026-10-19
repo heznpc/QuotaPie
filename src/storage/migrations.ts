@@ -136,6 +136,11 @@ export function migrate(db: Database): void {
         PRIMARY KEY(provider, account, source)
       )
     `);
+    const collectionColumns = db.query<{ name: string }, []>("PRAGMA table_info(collection_source_state)").all();
+    for (const name of ["account_plan_kind", "account_plan_identity"]) {
+      if (!collectionColumns.some(column => column.name === name))
+        db.run(`ALTER TABLE collection_source_state ADD COLUMN ${name} TEXT`);
+    }
     // Move history that was only recorded per account onto per-source rows.
     // The original source is unknowable, so attribute it to the provider's
     // primary source name.

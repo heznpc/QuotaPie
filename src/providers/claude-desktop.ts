@@ -2,14 +2,14 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
-import type { CollectionErrorCategory, QuotaObservation } from "../types";
+import { ACCOUNT_PLAN_KINDS, type AccountPlanKind, type CollectionErrorCategory, type QuotaObservation } from "../types";
 import { mapClaudeUsage } from "./claude-oauth";
 
 export const CLAUDE_DESKTOP_SOURCE = "claude-desktop";
 export const CLAUDE_DESKTOP_MIN_INTERVAL_MS = 5 * 60_000;
 export const CLAUDE_DESKTOP_UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 export interface ClaudeDesktopIdentity { accountId: string; organizationId: string }
-export interface ClaudeDesktopRead extends ClaudeDesktopIdentity { usage: Record<string, unknown> }
+export interface ClaudeDesktopRead extends ClaudeDesktopIdentity { usage: Record<string, unknown>; plan: AccountPlanKind }
 export interface ClaudeDesktopOptions {
   helperPath?: string;
   timeoutMs?: number;
@@ -99,7 +99,11 @@ export async function readClaudeDesktop(connect = false, options: ClaudeDesktopO
     throw new ClaudeDesktopError("provider-error");
   // Validate before a successful connection can be persisted.
   mapClaudeDesktopUsage(result.usage, "validation", 0);
-  return { accountId: result.accountId.toLowerCase(), organizationId: result.organizationId.toLowerCase(), usage: result.usage };
+  // Older helpers have no plan field. Missing or unrecognized metadata must
+  // never turn an empty usage response into a guessed Free subscription.
+  const plan = typeof result.plan === "string" && ACCOUNT_PLAN_KINDS.includes(result.plan as AccountPlanKind)
+    ? result.plan as AccountPlanKind : "unknown";
+  return { accountId: result.accountId.toLowerCase(), organizationId: result.organizationId.toLowerCase(), usage: result.usage, plan };
 }
 
 const LEGACY_BUCKETS = new Set(["five_hour", "seven_day", "seven_day_opus", "seven_day_oauth_apps",

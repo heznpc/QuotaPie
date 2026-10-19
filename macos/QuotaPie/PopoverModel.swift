@@ -30,7 +30,19 @@ final class PopoverModel: ObservableObject {
     private(set) var savingsPreferencesRevision = 0
     private(set) var compactionPreferencesRevision = 0
     private var compactionProjectionAtMs: Double?
-    @Published var lastError: String?
+    @Published var lastError: String? {
+        didSet {
+            guard lastError != nil else { return }
+            // A failed local quota read cannot keep a verified plan badge alive.
+            // Bump the quota revision so an in-flight detail response cannot
+            // restore that badge while the quota transport remains unavailable.
+            quotaRevision += 1
+            if var current = payload {
+                for index in current.accounts.indices { current.accounts[index].plan = nil }
+                payload = current
+            }
+        }
+    }
     @Published var statusFailure: StatusFailure?
     @Published var notificationSaving = false
     @Published var notificationSaveMessage: String?
@@ -262,6 +274,9 @@ final class PopoverModel: ObservableObject {
         } else { next.compaction = payload?.compaction }
         if next.collection?.supersedes(payload?.collection) != true {
             next.collection = payload?.collection
+        }
+        if lastError != nil, requestedQuotaRevision != nil {
+            for index in next.accounts.indices { next.accounts[index].plan = nil }
         }
         payload = next
         showingStartupCache = false

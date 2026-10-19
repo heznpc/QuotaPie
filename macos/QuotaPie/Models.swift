@@ -665,9 +665,26 @@ struct Headline: Decodable {
     }
 }
 
+struct AccountPlan: Codable {
+    // Background desktop reads are at most once every five minutes. Stop
+    // presenting verification if the UI has not received one for ten minutes,
+    // even when a formerly successful local snapshot remains in memory.
+    static let maximumVerificationAgeMs: Double = 10 * 60_000
+    let kind: String
+    let observedAtMs: Double
+
+    func title(atMs nowMs: Double = Date().timeIntervalSince1970 * 1_000) -> String? {
+        guard observedAtMs.isFinite, observedAtMs > 0,
+              nowMs >= observedAtMs, nowMs - observedAtMs <= Self.maximumVerificationAgeMs,
+              ["free", "pro", "max", "team", "enterprise"].contains(kind) else { return nil }
+        return Strings.t("claudeDesktop.plan." + kind)
+    }
+}
+
 struct AccountState: Codable, Identifiable {
     var nickname: String? = nil
     var connection: String? = nil
+    var plan: AccountPlan? = nil
     let provider: String
     let account: String
     let accountLabel: String
@@ -682,6 +699,14 @@ struct AccountState: Codable, Identifiable {
     var isClaudeDesktop: Bool { provider == "claude" && connection == "claude-desktop" }
     var isClaudeDesktopWithoutQuota: Bool { isClaudeDesktop && collection.errorCategory == "no-windows" }
 
+    /// Empty usage is not evidence of a Free plan. Only a current, identity-bound
+    /// plan observation supplied by the desktop collector can name the plan.
+    var verifiedPlanTitle: String? {
+        guard isClaudeDesktop,
+              ["recent-success", "no-windows"].contains(collection.errorCategory ?? collection.health) else { return nil }
+        return plan?.title()
+    }
+
     var hasUnavailableQuotaAccess: Bool {
         if isClaudeDesktop {
             let category = collection.errorCategory ?? collection.health
@@ -691,10 +716,14 @@ struct AccountState: Codable, Identifiable {
     }
 
     var collectionStatusText: String {
-        isClaudeDesktop ? ClaudeDesktopCollectionText.title(category: collection.errorCategory ?? collection.health) : collection.actionText
+        if isClaudeDesktopWithoutQuota, let verifiedPlanTitle { return verifiedPlanTitle }
+        return isClaudeDesktop ? ClaudeDesktopCollectionText.title(category: collection.errorCategory ?? collection.health) : collection.actionText
     }
 
     var collectionExplanation: String? {
+        if isClaudeDesktopWithoutQuota, let verifiedPlanTitle {
+            return Strings.t("claudeDesktop.plan.noQuota.detail", verifiedPlanTitle)
+        }
         if isClaudeDesktop && hasUnavailableQuotaAccess {
             return ClaudeDesktopCollectionText.detail(category: collection.errorCategory ?? collection.health)
         }

@@ -3,7 +3,8 @@ import XCTest
 @testable import QuotaPie
 
 final class ClaudeDesktopConnectionTests: XCTestCase {
-    private func account(category: String?, desktop: Bool = true, withHistoricalWindow: Bool = false) throws -> AccountState {
+    private func account(category: String?, desktop: Bool = true, withHistoricalWindow: Bool = false,
+                         planKind: String? = nil, planObservedAtMs: Double = Date().timeIntervalSince1970 * 1_000) throws -> AccountState {
         var collection: [String: Any] = ["health": category == nil ? "recent-success" : "attempted-then-failed",
             "activeSource": desktop ? "claude-desktop" : "claude-oauth", "lastSuccessAtMs": 900]
         if let category { collection["errorCategory"] = category }
@@ -12,7 +13,89 @@ final class ClaudeDesktopConnectionTests: XCTestCase {
             "windows": withHistoricalWindow ? [["provider": "claude", "account": "fixture", "bucket": "five_hour", "label": "5h",
                 "windowSeconds": 18000, "freshness": "fresh", "observedAtMs": 900, "remainingPercent": 98]] : []]
         if desktop { object["connection"] = "claude-desktop" }
+        if let planKind { object["plan"] = ["kind": planKind, "observedAtMs": planObservedAtMs] }
         return try JSONDecoder().decode(AccountState.self, from: JSONSerialization.data(withJSONObject: object))
+    }
+
+    func testVerifiedFreePlanWithoutQuotaNamesPlanWithoutInventingUsage() throws {
+        let value = try account(category: "no-windows", withHistoricalWindow: true, planKind: "free")
+        XCTAssertEqual(value.verifiedPlanTitle, Strings.t("claudeDesktop.plan.free"))
+        XCTAssertEqual(value.collectionStatusText, Strings.t("claudeDesktop.plan.free"))
+        XCTAssertEqual(value.collectionExplanation, Strings.t("claudeDesktop.plan.noQuota.detail", Strings.t("claudeDesktop.plan.free")))
+        XCTAssertEqual(MenuBarAccountStatus.title(for: value), value.collectionStatusText)
+        XCTAssertTrue(value.isClaudeDesktopWithoutQuota)
+        XCTAssertTrue(AccountListPresentation(account: value).visibleWindows.isEmpty)
+        XCTAssertNil(value.overviewWindow)
+        XCTAssertEqual(value.windows.count, 1, "Naming the plan must not make historical quota current")
+    }
+
+    func testEmptyUsageAndUnknownPlanNeverImplyFree() throws {
+        for kind in [nil, "unknown", "future-plan"] as [String?] {
+            let value = try account(category: "no-windows", planKind: kind)
+            XCTAssertNil(value.verifiedPlanTitle)
+            XCTAssertEqual(value.collectionStatusText, Strings.t("claudeDesktop.state.noQuota"))
+            XCTAssertEqual(value.collectionExplanation, Strings.t("claudeDesktop.detail.noQuota"))
+        }
+        let unobserved = try account(category: "no-windows", planKind: "free", planObservedAtMs: 0)
+        XCTAssertNil(unobserved.verifiedPlanTitle)
+    }
+
+    func testPlanRequiresCurrentDesktopCollectionAndKnownKind() throws {
+        for kind in ["free", "pro", "max", "team", "enterprise"] {
+            XCTAssertEqual(try account(category: nil, planKind: kind).verifiedPlanTitle, Strings.t("claudeDesktop.plan." + kind))
+            XCTAssertEqual(try account(category: "no-windows", planKind: kind).collectionStatusText, Strings.t("claudeDesktop.plan." + kind))
+        }
+        for category in ["stale-success", "network", "access-denied", "account-mismatch", "auth-expired", "claude-desktop-keychain"] {
+            let value = try account(category: category, planKind: "free")
+            XCTAssertNil(value.verifiedPlanTitle)
+            XCTAssertEqual(value.collectionStatusText, ClaudeDesktopCollectionText.title(category: category))
+        }
+        XCTAssertNil(try account(category: "no-windows", desktop: false, planKind: "free").verifiedPlanTitle)
+    }
+
+    func testPlanVerificationExpiresLocallyAndRejectsFutureObservation() throws {
+        let nowMs = Date().timeIntervalSince1970 * 1_000
+        for observedAtMs in [nowMs - 11 * 60_000, nowMs + 60_000] {
+            let value = try account(category: "no-windows", planKind: "free", planObservedAtMs: observedAtMs)
+            XCTAssertNil(value.verifiedPlanTitle)
+            XCTAssertEqual(value.collectionStatusText, Strings.t("claudeDesktop.state.noQuota"))
+        }
+    }
+
+    func testTransportFailureClearsPlanAndLateDetailsCannotRestoreItBeforeQuotaRecovery() throws {
+        let model = PopoverModel()
+        var live = try JSONDecoder().decode(StatusPayload.self, from: Data(#"{"nowMs":1000,"actionToken":"fixture"}"#.utf8))
+        live.accounts = [try account(category: "no-windows", withHistoricalWindow: true, planKind: "free")]
+        model.applyQuota(live)
+        let oldDetailsRevision = model.quotaRevision
+        XCTAssertNotNil(model.payload?.accounts.first?.verifiedPlanTitle)
+        model.lastError = "Local quota transport timed out"
+        XCTAssertNil(model.payload?.accounts.first?.plan)
+        XCTAssertEqual(model.payload?.accounts.first?.windows.count, 1, "Transport failure only removes plan verification, not quota history")
+        XCTAssertEqual(model.payload?.actionToken, "fixture")
+        live.nowMs = 2000
+        model.applyStatus(live, notificationRevision: 0, quotaRevision: oldDetailsRevision)
+        XCTAssertNil(model.payload?.accounts.first?.plan)
+        model.applyStatus(live, notificationRevision: 0, quotaRevision: model.quotaRevision)
+        XCTAssertNil(model.payload?.accounts.first?.plan, "A rich detail response is not recovery of the independent quota transport")
+        model.applyQuota(live)
+        model.lastError = nil
+        XCTAssertEqual(model.payload?.accounts.first?.verifiedPlanTitle, Strings.t("claudeDesktop.plan.free"))
+    }
+
+    func testStartupCacheDoesNotPresentAStoredPlanAsCurrentVerification() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = QuotaSnapshotCache(endpoint: "http://127.0.0.1:1", url: directory.appendingPathComponent("quota.json"))
+        for category in [nil, "no-windows"] as [String?] {
+            var payload = try JSONDecoder().decode(StatusPayload.self, from: Data(#"{"nowMs":1000}"#.utf8))
+            payload.accounts = [try account(category: category, planKind: "free")]
+            try cache.save(payload)
+            let restored = try XCTUnwrap(cache.load()?.accounts.first)
+            XCTAssertNil(restored.plan)
+            XCTAssertNil(restored.verifiedPlanTitle)
+            XCTAssertNotEqual(restored.collectionStatusText, Strings.t("claudeDesktop.plan.free"))
+        }
     }
 
     func testDesktopWithoutNumbersNeverBorrowsHistoricalQuotaOrCodeLoginInstructions() throws {
