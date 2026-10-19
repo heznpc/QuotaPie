@@ -1,6 +1,6 @@
 import type { MessageKey, MessageParams, WindowKind } from "./i18n";
 
-import type { Provider, SourceQuality } from "../packages/quota-core/src/quota-types.js";
+import type { Provider, SourceQuality, QuotaObservation } from "../packages/quota-core/src/quota-types.js";
 export type { Provider, SourceQuality, QuotaObservation } from "../packages/quota-core/src/quota-types.js";
 
 export type EventKind =
@@ -76,6 +76,8 @@ export interface WindowAnalysis {
   windowSeconds: number | null;
   source: string;
   quality: SourceQuality;
+  /** Provider quota associations and permissions from this exact reading. */
+  metadata?: QuotaObservation["metadata"];
   freshness: Freshness;
   observedAtMs: number;
   usedPercent: number | null;

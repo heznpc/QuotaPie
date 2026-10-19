@@ -1,6 +1,9 @@
 import { inspectManagedSession } from "./dots/managed-continuation";
 import { AutoResumeController, type QuotaResumeIncident } from "./quota-resume/controller";
-import { readQuotaResumeEvidence } from "./quota-resume/evidence";
+import { readQuotaResumeEvidence, type QuotaResumeEvidence, type QuotaResumeEvidenceOptions } from "./quota-resume/evidence";
+import { QuotaRecoveryStore } from "./quota-resume/recovery";
+import { workPolicyExpiresAtMs } from "./work/lifetime";
+import { planQuotaResumeBudgets } from "./work/quota-budgets";
 import { executeHostQueuedQuotaResume, observeHostQueueReceipt, removeOwnHostQueuedInput, type HostQueueReceipt } from "./quota-resume/host-queue";
 import { planWork, workWindows as scopedWorkWindows } from "./work/admission";
 import { evaluateWorkPerformance } from "./work/performance";
@@ -140,6 +143,7 @@ export class QuotaPieService {
   readonly jobRunner: ManagedJobRunner;
   readonly work: WorkController;
   readonly autoResume: AutoResumeController;
+  private readonly quotaRecovery: QuotaRecoveryStore;
   private autoResumeTimer: ReturnType<typeof setInterval> | null = null;
   private autoResumeGoalRefresh: Promise<void> | null = null;
   private hostQueueRefresh: Promise<void> | null = null;
@@ -208,6 +212,7 @@ export class QuotaPieService {
     this.hostGoalLinks = new HostGoalLinkStore(this.storage);
     this.workHostGoalLinks = new WorkHostGoalLinkStore(this.storage);
     this.jobs = new JobStore(this.storage);
+    this.quotaRecovery = new QuotaRecoveryStore(this.storage);
     this.work = new WorkController(new WorkStore(this.storage), config, {
       windows: () => this.workWindows(),
       inspect: p => this.inspectWork(p),
@@ -247,8 +252,7 @@ export class QuotaPieService {
       evidence: (account,threadId) => {
         const profile=this.config.accounts.codex.find(p=>p.enabled&&p.id===account);
         if(!profile) throw new Error("account-unavailable");
-        return readQuotaResumeEvidence(this.config,account,threadId,{allowNativeWriter:true,
-          readLatestTurn:()=>this.goalClient(profile).readLatestTurn(threadId)});
+        return this.readAutoResumeEvidence(account,threadId,{allowNativeWriter:true});
       },
       latestTurn: (account,threadId) => {
         const profile=this.config.accounts.codex.find(p=>p.enabled&&p.id===account);
@@ -331,10 +335,32 @@ export class QuotaPieService {
         client:this.goalClient(profile),stillAuthorized:authorized,signal,
         beforeEnqueue:()=>this.validateAutoResume(p),
         onReceipt:receipt=>this.work.store.recordHostQueue(id,receipt),
+        readEvidence:(_config,account,threadId,options)=>this.readAutoResumeEvidence(account,threadId,options),
       });
     }
     return executeCodexWork(this.config,p,id,authorized,()=>this.workGate(p),undefined,
-      p.purpose==="quota-resume" ? ()=>this.readAutoResumeGoal(p) : undefined);
+      p.purpose==="quota-resume" ? ()=>this.readAutoResumeGoal(p) : undefined,
+      {readEvidence:(_config,account,threadId,options)=>this.readAutoResumeEvidence(account,threadId,options),
+       onManagedQuotaTurn:receipt=>this.work.store.recordManagedTurn(id,receipt)});
+  }
+  private readAutoResumeEvidence(account: string, threadId: string, options: QuotaResumeEvidenceOptions = {}) {
+    const profile=this.config.accounts.codex.find(p=>p.enabled&&p.id===account);
+    if(!profile) throw new Error("account-unavailable");
+    return readQuotaResumeEvidence(this.config,account,threadId,{...options,
+      readLatestTurn:()=>this.goalClient(profile).readLatestTurn(threadId),
+      authorizeRecoveryTurn:options.authorizeRecoveryTurn ?? (e=>!!this.recoveryParentExecution(account,e)),
+    });
+  }
+  private recoveryParentExecution(account: string, evidence: QuotaResumeEvidence) {
+    const parent=this.autoResume.authorizedRecoveryParent(account,evidence);
+    if(!parent) return null;
+    const matches=this.work.store.executions().filter(e=>e.policyId===parent.policyId && e.status==="finished" &&
+      e.result?.status==="quota-blocked" && e.dispatchedAtMs!==undefined && e.dispatchedAtMs<=evidence.failedAtMs &&
+      e.policySnapshot.accountKey===parent.accountKey && e.policySnapshot.profileKey===parent.profileKey &&
+      e.policySnapshot.account===account && e.policySnapshot.nativeSessionId===evidence.threadId &&
+      (e.hostQueue?.threadId===evidence.threadId && e.hostQueue.turnId===evidence.turnId ||
+       e.managedTurn?.threadId===evidence.threadId && e.managedTurn.turnId===evidence.turnId));
+    return matches.length===1 ? matches[0]! : null;
   }
   /** After a collector restart only observe the existing intent. Never enqueue
    * again, and never interrupt the host that owns the conversation. */
@@ -354,7 +380,7 @@ export class QuotaPieService {
             onReceipt:(receipt:HostQueueReceipt)=>this.work.store.recordHostQueue(execution.id,receipt),
           };
           if(!receipt.turnId) {
-            const deadline=Math.min(p.expiresAtMs,p.workDeadline??Infinity,
+            const deadline=Math.min(workPolicyExpiresAtMs(p),p.workDeadline??Infinity,
               (execution.dispatchedAtMs??execution.claimedAtMs)+Math.min(p.maxDurationSeconds,p.maxTotalDurationSeconds-p.state.totalDurationSeconds)*1000);
             let revoked=Date.now()>=deadline || !!this.autoResume.blockPolicy(p);
             if(!revoked) {
@@ -399,6 +425,15 @@ export class QuotaPieService {
   private refreshAutoResumeGoals(): Promise<void> {
     if(this.autoResumeGoalRefresh) return this.autoResumeGoalRefresh;
     if(this.closing) return Promise.resolve();
+    const pending=this.work.store.list().filter(p=>p.purpose==="quota-resume" && p.enabled && !this.autoResume.blockPolicy(p));
+    this.work.store.migratePendingQuotaResumeLifetime(pending.map(p=>p.id));
+    for(const previous of pending) {
+      const p=this.work.store.get(previous.id)!;
+      const incident=this.autoResume.incidents().find(i=>i.id===p.id);
+      if(!incident) continue;
+      const plan=planQuotaResumeBudgets(p,this.workWindows(),{afterMs:incident.detectedAtMs,nowMs:Date.now()});
+      this.work.store.refreshQuotaResumeBudgets(p.id,plan.budgets,{expectedRevision:p.revision,replacements:plan.replacements});
+    }
     const policies=this.work.store.list().filter(p=>p.purpose==="quota-resume" && p.enabled);
     const ids=new Set(policies.map(p=>p.id));
     for(const id of this.autoResumeGoals.keys()) if(!ids.has(id)) this.autoResumeGoals.delete(id);
@@ -422,13 +457,19 @@ export class QuotaPieService {
     // Clock expiry alone never grants capacity: every required lane must have
     // an authoritative observation taken after this particular failed turn.
     if(failedAt===null || !windows.length || windows.some(w=>w.observedAtMs<=failedAt)) return "quota-recovery-unconfirmed";
+    const incident=this.autoResume.incidents().find(i=>i.id===policy.id);
+    if(incident?.evidence.recoveryIncidentId && policy.state.turns===0) {
+      const parent=this.recoveryParentExecution(policy.account,incident.evidence);
+      if(!parent || !this.quotaRecovery.recovered(incident.id,failedAt,
+          parent.policySnapshot.state.baselines,windows,now)) return "quota-recovery-unconfirmed";
+    }
     return null;
   }
   private async registerAutoResume(incident: QuotaResumeIncident): Promise<void> {
     const evidence=incident.evidence;
-    const windows=scopedWorkWindows({provider:"codex",account:incident.account,model:evidence.model,budgetByBucket:{}} as WorkPolicyInput,this.workWindows());
+    const windows=scopedWorkWindows({provider:"codex",purpose:"quota-resume",account:incident.account,model:evidence.model,budgetByBucket:{}} as WorkPolicyInput,this.workWindows());
     if(!windows.length) throw new Error("quota-unknown");
-    const policy:WorkPolicyInput={id:incident.policyId,purpose:"quota-resume",quotaResume:{turnId:evidence.turnId,stamp:evidence.stamp},
+    const policy:WorkPolicyInput={id:incident.policyId,purpose:"quota-resume",quotaResume:{turnId:evidence.turnId,stamp:evidence.stamp,waitUntilRecovered:true},
       provider:"codex",account:incident.account,profileKey:incident.profileKey,accountKey:incident.accountKey,
       nativeSessionId:incident.threadId,cwd:evidence.cwd,model:evidence.model,
       prompt:`[QuotaPie quota recovery:${incident.id}]\n한도가 회복되어 같은 대화를 자동으로 이어갑니다. 마지막 사용자 요청의 미완료 작업을 계속하세요. 이미 끝낸 작업과 실행 결과를 먼저 확인해 중복 실행하지 마세요. 새 목표를 만들거나 작업 범위를 넓히지 마세요. 작업이 완료됐거나 사용자 답변·승인이 필요하면 그 상태를 알리고 멈추세요.`,
@@ -436,7 +477,7 @@ export class QuotaPieService {
       completionCriteria:["동일 계정과 세션에서 한 턴 재개가 종료됨; 목표 완료 여부는 별도 판단"],
       dispatchOwner:"local",enabled:true,trigger:"quota-ready",resetWithinMinutes:0,
       budgetByBucket:Object.fromEntries(windows.map(w=>[w.bucket,{reservePercent:Math.max(0,w.reservePercent),maxUsagePercent:100}])),
-      maxTurns:1,maxDurationSeconds:3600,maxTotalDurationSeconds:3600,expiresAtMs:incident.detectedAtMs+8*86400000,
+      maxTurns:1,maxDurationSeconds:3600,maxTotalDurationSeconds:3600,expiresAtMs:incident.detectedAtMs,
       priority:0,activityMode:"unrestricted",onReset:"continue"};
     await this.work.save(policy,null,incident.id);
   }

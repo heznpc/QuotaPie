@@ -1,5 +1,6 @@
 import type { WindowAnalysis } from "../types";
 import type { WorkObservation, WorkPolicy, WorkPolicyInput, WorkForecast, WorkPlanning } from "./types";
+import { workPolicyExpiresAtMs } from "./lifetime";
 
 export interface WorkAdmissionOptions {
   maxAgeMs?: number;
@@ -20,22 +21,35 @@ export interface WorkAdmission { ready: boolean; reason: string; windows: Window
 function general(policy: WorkPolicyInput, window: WindowAnalysis): boolean {
   return policy.provider === "codex" ? window.bucket.startsWith("codex:") : ["five_hour", "seven_day"].includes(window.bucket);
 }
+
+function modelWindow(policy: WorkPolicyInput, window: WindowAnalysis): boolean {
+  if (policy.provider !== "codex") return window.bucket.startsWith("seven_day_") && (!policy.model ||
+    ["opus", "sonnet", "haiku"].some(family => policy.model!.toLowerCase().includes(family) && window.bucket.includes(family)));
+  const limitId = typeof window.metadata?.limitId === "string" ? window.metadata.limitId : window.bucket.split(":")[0];
+  const normalModelSlug = typeof window.metadata?.normalModelSlug === "string" && window.metadata.normalModelSlug.length > 0
+    ? window.metadata.normalModelSlug : undefined;
+  if (!policy.model || policy.model === limitId || policy.model === normalModelSlug) return true;
+  // An opaque quota alias without a provider association cannot safely be
+  // declared unrelated to an automatic recovery. Fail closed by observing it
+  // too, rather than maintaining a guessed alias/model table.
+  return policy.purpose === "quota-resume" && normalModelSlug === undefined;
+}
+
 export function workWindows(policy: WorkPolicyInput, windows: WindowAnalysis[]): WindowAnalysis[] {
   return windows.filter(window => window.provider === policy.provider && window.account === policy.account && (
-    Object.hasOwn(policy.budgetByBucket, window.bucket) || general(policy, window) ||
-    (policy.provider === "codex" ? !!policy.model && window.bucket.startsWith(policy.model + ":") :
-      window.bucket.startsWith("seven_day_") && (!policy.model || ["opus", "sonnet", "haiku"].some(family => policy.model!.toLowerCase().includes(family) && window.bucket.includes(family))))
+    Object.hasOwn(policy.budgetByBucket, window.bucket) || general(policy, window) || modelWindow(policy, window)
   ));
 }
 
 export function evaluateWorkAdmission(policy: WorkPolicy, windows: WindowAnalysis[], nowMs = Date.now(), options: WorkAdmissionOptions = {}): WorkAdmission {
   const scoped = workWindows(policy, windows);
   const planning = options.frozenPlanning ?? planWork(policy, nowMs, options);
+  const expiresAtMs = workPolicyExpiresAtMs(policy);
   const timeoutSeconds = Math.max(0, Math.min(policy.maxDurationSeconds, policy.maxTotalDurationSeconds - policy.state.totalDurationSeconds,
-    (policy.expiresAtMs - nowMs) / 1000, planning.finishAtMs === null ? Infinity : (planning.finishAtMs - nowMs) / 1000));
+    (expiresAtMs - nowMs) / 1000, planning.finishAtMs === null ? Infinity : (planning.finishAtMs - nowMs) / 1000));
   const answer = (reason: string): WorkAdmission => ({ ready: reason === "ready", reason, windows: scoped, timeoutSeconds, planning });
   if (!policy.enabled) return answer("disabled");
-  if (policy.expiresAtMs <= nowMs || (policy.workDeadline !== undefined && policy.workDeadline <= nowMs)) return answer("expired");
+  if (expiresAtMs <= nowMs || (policy.workDeadline !== undefined && policy.workDeadline <= nowMs)) return answer("expired");
   if (policy.state.totalDurationSeconds >= policy.maxTotalDurationSeconds || timeoutSeconds <= 0) return answer("time-budget-ended");
   // The running turn has already consumed its ordinal and may finish it.
   if (!options.running && policy.state.turns >= policy.maxTurns) return answer("turn-budget-ended");
@@ -45,6 +59,7 @@ export function evaluateWorkAdmission(policy: WorkPolicy, windows: WindowAnalysi
   if (policy.activityMode === "inherit" && !(options.inheritedActivitySchedules ?? []).some(schedule => withinActivitySchedule({activitySchedule:schedule}, nowMs))) return answer("activity-paused");
   if (policy.activityMode !== "unrestricted" && policy.activityMode !== "inherit" && !withinActivitySchedule(policy, nowMs)) return answer("activity-paused");
   if (!scoped.some(window => general(policy, window)) || Object.keys(policy.budgetByBucket).some(bucket => !scoped.some(window => window.bucket === bucket))) return answer("quota-unknown");
+  if (new Set(scoped.map(window => window.bucket)).size !== scoped.length) return answer("quota-unknown");
   // Providers can introduce another general/model window after registration.
   // Never apply it as an unbudgeted lane while an existing run keeps going.
   if (scoped.some(window => !Object.hasOwn(policy.budgetByBucket, window.bucket))) return answer("work-bucket-budget-required");
@@ -54,6 +69,12 @@ export function evaluateWorkAdmission(policy: WorkPolicy, windows: WindowAnalysi
     window.resetsAtMs === null || !Number.isFinite(window.resetsAtMs))) return answer("quota-unknown");
   if (scoped.some(window => window.freshness === "reset_due" || window.resetsAtMs! <= nowMs)) return answer("reset-unconfirmed");
   if (scoped.some(window => window.freshness !== "fresh" || !Number.isFinite(window.observedAtMs) || window.observedAtMs > nowMs || nowMs - window.observedAtMs > maxAgeMs)) return answer("quota-stale");
+  // Explicit provider restrictions take precedence over apparently available
+  // percentages. In a newer permission-bearing response, null is unknown,
+  // never permission to retry; legacy responses may omit the field entirely.
+  if (scoped.some(window => window.metadata?.ordinaryUsageAllowed === false || window.metadata?.spendControlReached === true)) return answer("reserve-reached");
+  if (policy.purpose === "quota-resume" && scoped.some(window => window.metadata &&
+    Object.hasOwn(window.metadata, "ordinaryUsageAllowed") && window.metadata.ordinaryUsageAllowed !== true)) return answer("quota-unknown");
   for (const window of scoped) {
     // An explicit task reserve, including zero, overrides the account preference.
     // Separate mandatory account restrictions are applied by the service.

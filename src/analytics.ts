@@ -306,6 +306,7 @@ export function analyzeWindow(
     windowSeconds: latest.windowSeconds,
     source: latest.source,
     quality: latest.quality,
+    ...(latest.metadata ? { metadata: { ...latest.metadata } } : {}),
     freshness,
     observedAtMs: latest.observedAtMs,
     usedPercent: latest.usedPercent,

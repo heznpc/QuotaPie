@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { QuotaStorage } from "../storage/database";
-import type { LegacyWorkFence, WorkExecution, WorkObservation, WorkOwner, WorkPolicy, WorkPolicyInput, WorkResult, WorkPreferences, WorkPreferenceValues } from "./types";
+import type { LegacyWorkFence, WorkBudget, WorkExecution, WorkObservation, WorkOwner, WorkPolicy, WorkPolicyInput, WorkResult, WorkPreferences, WorkPreferenceValues } from "./types";
+import { workPolicyExpiresAtMs } from "./lifetime";
+import { codexQuotaLane, stricterQuotaBudget, type QuotaBudgetReplacement } from "./quota-budgets";
 
 export class WorkRevisionConflict extends Error {
   constructor(readonly current: WorkPolicy | null) { super("work-revision-conflict"); }
@@ -70,6 +72,59 @@ export class WorkStore {
   }
   list(): WorkPolicy[] {
     return this.storage.db.query<{ value: string }, []>("SELECT value FROM work_policies ORDER BY rowid").all().map(r => JSON.parse(r.value));
+  }
+  /** Upgrade only untouched, still-enabled automatic waits. Never reopen an
+   * attempted, skipped, revoked, or unresolved recovery during installation. */
+  migratePendingQuotaResumeLifetime(ids: readonly string[]): number {
+    return this.storage.transaction(() => {
+      let changed = 0;
+      for (const id of new Set(ids)) {
+        const policy = this.get(id);
+        if (!policy || !this.untouchedQuotaResume(policy) || policy.quotaResume!.waitUntilRecovered === true) continue;
+        policy.quotaResume = { ...policy.quotaResume!, waitUntilRecovered: true };
+        validate(policy);
+        policy.revision++;
+        this.write(policy);
+        changed++;
+      }
+      return changed;
+    });
+  }
+  private untouchedQuotaResume(policy: WorkPolicy): boolean {
+    return policy.purpose === "quota-resume" && !!policy.quotaResume && policy.enabled && policy.state.status === "waiting" &&
+      policy.state.turns === 0 && policy.state.activeExecutionId === null && this.executions(policy.id).length === 0;
+  }
+  /** Newly reported constraints may narrow an untouched recovery, but never
+   * erase existing requirements or change a dispatched execution's budgets. */
+  refreshQuotaResumeBudgets(id: string, budgets: Record<string, WorkBudget>,
+    options: { expectedRevision?: number; replacements?: QuotaBudgetReplacement[] } = {}): WorkPolicy | null {
+    return this.storage.transaction(() => {
+      const policy = this.get(id);
+      if (!policy || !this.untouchedQuotaResume(policy) ||
+          (options.expectedRevision !== undefined && options.expectedRevision !== policy.revision)) return null;
+      const replacements = options.replacements ?? [];
+      if (replacements.length && (options.expectedRevision === undefined ||
+          new Set(replacements.map(r => r.previousBucket)).size !== replacements.length ||
+          new Set(replacements.map(r => r.nextBucket)).size !== replacements.length))
+        throw new Error("work-quota-budget-replacement-invalid");
+      const additions = Object.fromEntries(Object.entries(budgets).filter(([bucket]) => !Object.hasOwn(policy.budgetByBucket, bucket)));
+      for (const { previousBucket, nextBucket } of replacements) {
+        const previous = codexQuotaLane(previousBucket), next = codexQuotaLane(nextBucket);
+        if (!previous || !next || previous.limitId !== next.limitId || previous.lane !== next.lane ||
+            previous.durationMinutes === next.durationMinutes || !Object.hasOwn(policy.budgetByBucket, previousBucket) ||
+            !Object.hasOwn(budgets, nextBucket) || replacements.some(r => r.previousBucket === nextBucket))
+          throw new Error("work-quota-budget-replacement-invalid");
+        additions[nextBucket] = stricterQuotaBudget(policy.budgetByBucket[previousBucket]!, budgets[nextBucket]!,
+          ...(policy.budgetByBucket[nextBucket] ? [policy.budgetByBucket[nextBucket]!] : []));
+      }
+      if (!Object.keys(additions).length && !replacements.length) return policy;
+      policy.budgetByBucket = { ...policy.budgetByBucket, ...structuredClone(additions) };
+      for (const { previousBucket } of replacements) delete policy.budgetByBucket[previousBucket];
+      validate(policy);
+      policy.revision++;
+      this.write(policy);
+      return policy;
+    });
   }
   advanceRevision(id: string, expectedRevision: number): WorkPolicy {
     return this.storage.transaction(() => {
@@ -171,7 +226,7 @@ export class WorkStore {
     return this.storage.transaction(() => {
       const policy = this.get(id);
       if (!policy || policy.revision !== expectedRevision) throw new WorkRevisionConflict(policy);
-      if (!policy.enabled || policy.dispatchOwner !== owner || policy.expiresAtMs <= nowMs || (policy.workDeadline !== undefined && policy.workDeadline <= nowMs)
+      if (!policy.enabled || policy.dispatchOwner !== owner || workPolicyExpiresAtMs(policy) <= nowMs || (policy.workDeadline !== undefined && policy.workDeadline <= nowMs)
         || policy.state.activeExecutionId || policy.state.turns >= policy.maxTurns || policy.state.totalDurationSeconds >= policy.maxTotalDurationSeconds
         || ["objective-completed", "needs-user-input", "uncertain", "failed", "time-budget-ended", "quota-blocked"].includes(policy.state.status)) return null;
       for (const [bucket, budget] of Object.entries(policy.budgetByBucket)) {
@@ -204,7 +259,7 @@ export class WorkStore {
       if (execution.status === "dispatched") return execution;
       if (execution.status !== "claimed") throw new Error("work-execution-not-claimable");
       const policy = this.get(execution.policyId)!;
-      if (!policy.enabled || policy.revision !== execution.policyRevision || policy.expiresAtMs <= nowMs || (policy.workDeadline !== undefined && policy.workDeadline <= nowMs)) throw new Error("work-policy-changed-before-dispatch");
+      if (!policy.enabled || policy.revision !== execution.policyRevision || workPolicyExpiresAtMs(policy) <= nowMs || (policy.workDeadline !== undefined && policy.workDeadline <= nowMs)) throw new Error("work-policy-changed-before-dispatch");
       execution.status = "dispatched";
       execution.dispatchedAtMs = nowMs;
       policy.state.turns++;
@@ -220,7 +275,7 @@ export class WorkStore {
     this.storage.transaction(() => {
       const execution = this.getExecution(id);
       if (!execution || !["dispatched", "uncertain"].includes(execution.status) ||
-          execution.policySnapshot.purpose !== "quota-resume" ||
+          execution.policySnapshot.purpose !== "quota-resume" || execution.managedTurn !== undefined ||
           receipt.threadId !== execution.policySnapshot.nativeSessionId ||
           !/^[a-zA-Z0-9_-]{1,128}$/.test(receipt.clientUserMessageId) ||
           !Number.isSafeInteger(receipt.sentAtMs) || receipt.sentAtMs < execution.claimedAtMs ||
@@ -232,6 +287,22 @@ export class WorkStore {
         throw new Error("work-host-queue-receipt-conflict");
       execution.hostQueue = structuredClone(receipt);
       this.writeExecution(execution, "host-queue", Date.now());
+    });
+  }
+  /** The adapter supplies this only after proving the exact turn belongs to
+   * its stopped child. It cannot be inferred from a prompt marker alone. */
+  recordManagedTurn(id: string, receipt: NonNullable<WorkExecution["managedTurn"]>): void {
+    this.storage.transaction(() => {
+      const execution = this.getExecution(id);
+      if (!execution || !["dispatched", "uncertain"].includes(execution.status) || execution.policySnapshot.purpose !== "quota-resume" ||
+          execution.hostQueue !== undefined || receipt.threadId !== execution.policySnapshot.nativeSessionId ||
+          ![receipt.threadId, receipt.turnId].every(value => /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value)) ||
+          receipt.turnId === execution.policySnapshot.quotaResume?.turnId)
+        throw new Error("work-managed-turn-receipt-invalid");
+      if (execution.managedTurn && (execution.managedTurn.threadId !== receipt.threadId || execution.managedTurn.turnId !== receipt.turnId))
+        throw new Error("work-managed-turn-receipt-conflict");
+      execution.managedTurn = structuredClone(receipt);
+      this.writeExecution(execution, "managed-turn", Date.now());
     });
   }
   /** Call only after the adapter proves its owned process stopped or the exact
@@ -328,7 +399,7 @@ export class WorkStore {
           if (policy.enabled) { policy.enabled = false; policy.revision++; }
           if (!policy.state.activeExecutionId) policy.state.status = "stopped";
         }
-        if (reset && policy.state.status === "quota-blocked" && atMs > (policy.state.quotaBlockedAtMs ?? 0)) policy.state.status = "waiting";
+        if (reset && policy.purpose !== "quota-resume" && policy.state.status === "quota-blocked" && atMs > (policy.state.quotaBlockedAtMs ?? 0)) policy.state.status = "waiting";
       }
       this.write(policy);
       return policy;
@@ -366,7 +437,8 @@ function validate(input: WorkPolicyInput) {
     const evidence = input.quotaResume;
     if (input.provider !== "codex" || input.dispatchOwner !== "local" || input.trigger !== "quota-ready" || input.maxTurns !== 1 ||
         !evidence || typeof evidence !== "object" || Array.isArray(evidence) ||
-        Object.keys(evidence).some(key => !["turnId", "stamp"].includes(key)) ||
+        Object.keys(evidence).some(key => !["turnId", "stamp", "waitUntilRecovered"].includes(key)) ||
+        (evidence.waitUntilRecovered !== undefined && evidence.waitUntilRecovered !== true) ||
         typeof evidence.turnId !== "string" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(evidence.turnId) ||
         typeof evidence.stamp !== "string" || !evidence.stamp.trim() || evidence.stamp.length > 4096 || /[\u0000-\u001f\u007f]/.test(evidence.stamp))
       throw new Error("work-invalid-quota-resume");

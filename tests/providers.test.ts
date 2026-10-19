@@ -65,6 +65,28 @@ describe("provider normalization", () => {
     expect(observations[0]?.label).toBe("Codex monthly");
   });
 
+  test("retains provider model association and same-read usage permission without guessing aliases", () => {
+    const observations = parseCodexRateLimits({
+      ordinaryUsageAllowed: true,
+      rateLimitsByLimitId: { codex_model_pool: {
+        limitId: "codex_model_pool", normalModelSlug: "gpt-6-sol", spendControlReached: false,
+        primary: { usedPercent: 10, windowDurationMins: 300, resetsAt: 1_800_000_000 },
+        secondary: { usedPercent: 20, windowDurationMins: 10080, resetsAt: 1_800_600_000 },
+      } },
+    });
+    expect(observations).toHaveLength(2);
+    for (const observation of observations) expect(observation.metadata).toMatchObject({
+      limitId: "codex_model_pool", normalModelSlug: "gpt-6-sol", ordinaryUsageAllowed: true, spendControlReached: false,
+    });
+    const unavailable = parseCodexRateLimits({ ordinaryUsageAllowed: null, rateLimits: {
+      limitId: "opaque", normalModelSlug: 123, spendControlReached: null,
+      primary: { usedPercent: 0, windowDurationMins: 300, resetsAt: 1_800_000_000 },
+    } });
+    expect(unavailable[0]?.metadata).toMatchObject({ normalModelSlug: null, ordinaryUsageAllowed: null, spendControlReached: null });
+    const legacy = parseCodexRateLimits({ rateLimits: { primary: { usedPercent: 0 } } });
+    expect(Object.hasOwn(legacy[0]!.metadata!, "ordinaryUsageAllowed")).toBe(false);
+  });
+
   test("does not turn absent Claude limits into fake 0% usage", () => {
     expect(parseClaudeStatusLine({ context_window: { used_percentage: 10 } })).toEqual([]);
   });

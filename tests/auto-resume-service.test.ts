@@ -31,17 +31,18 @@ function fixture(persistent = false) {
   config.dashboard.host = "127.0.0.1"; config.dashboard.port = 0;
   const databasePath = persistent ? join(root, "quota.sqlite3") : ":memory:";
   let service = new QuotaPieService(config, new QuotaDatabase(databasePath), { workState: null, quota: null });
-  let failedAtMs = Date.now() - 2000, runs = 0, listReads = 0, turnReads = 0;
+  let failedAtMs = Date.now() - 2000, runs = 0, listReads = 0, turnReads = 0, latestTurnId = TURN;
   let goal: CodexThreadGoal | null = null, goalError = false;
-  const writeFailure = (at: number) => {
+  const writeFailure = (at: number, turnId = TURN, recoveryIncidentId?: string) => {
     failedAtMs = at;
+    latestTurnId = turnId;
     const record = (type: string, payload: Record<string, unknown>, timestamp = at) =>
       JSON.stringify({ timestamp: new Date(timestamp).toISOString(), type, payload });
     writeFileSync(rollout, [record("session_meta", { id: THREAD, cwd: root }),
-      record("event_msg", { type: "task_started", turn_id: TURN }, at - 1000),
+      record("event_msg", { type: "task_started", turn_id: turnId }, at - 1000),
       record("turn_context", { model: "gpt-6.1-sol", effort: "high" }, at - 900),
-      record("response_item", { type: "message", role: "user", content: [{ type: "input_text", text: "Synthetic unfinished request" }] }, at - 800),
-      record("event_msg", { type: "task_complete", turn_id: TURN,
+      record("response_item", { type: "message", role: "user", content: [{ type: "input_text", text: recoveryIncidentId ? `[QuotaPie quota recovery:${recoveryIncidentId}]\nSynthetic continuation` : "Synthetic unfinished request" }] }, at - 800),
+      record("event_msg", { type: "task_complete", turn_id: turnId,
         error: { codex_error_info: "usage_limit_exceeded", message: "Synthetic quota failure" } })].join("\n") + "\n");
   };
   writeFailure(failedAtMs);
@@ -51,7 +52,7 @@ function fixture(persistent = false) {
       listReads++; return { data: [{ id: THREAD, cwd: root, name: "Fixture task", updatedAtMs: failedAtMs }], nextCursor: null };
     },
     readLatestTurn: async (): Promise<CodexThreadTurnSummary> => {
-      turnReads++; return { threadId: THREAD, turnId: TURN, status: "failed", errorCode: "usageLimitExceeded",
+      turnReads++; return { threadId: THREAD, turnId: latestTurnId, status: "failed", errorCode: "usageLimitExceeded",
         completedAtMs: Math.floor(failedAtMs / 1000) * 1000 };
     },
     readThreadGoal: async (): Promise<CodexThreadGoal | null> => {
@@ -60,7 +61,7 @@ function fixture(persistent = false) {
     },
     close: async () => {},
   };
-  const executeHostAdapter=service.work.deps.execute;
+  let executeHostAdapter=service.work.deps.execute;
   // Both metadata paths are fakes; no installed CLI or external service runs.
   const installFakes = () => {
     (service as any).goalClients.set(ACCOUNT, client);
@@ -101,6 +102,7 @@ function fixture(persistent = false) {
       if (!persistent) throw new Error("Persistent fixture required");
       await service.close();
       service = new QuotaPieService(config, new QuotaDatabase(databasePath), { workState: null, quota: null });
+      executeHostAdapter=service.work.deps.execute;
       installFakes();
     } };
 }
@@ -166,7 +168,7 @@ test("the service sends one recovery through the owning host queue and records i
   const f=fixture();
   const lock=join(f.profile,"thread-writer-locks",THREAD+".lock"); writeFileSync(lock,"");
   const incident=await f.enableAndDiscover();
-  f.observe(Date.now()+1);
+  await Bun.sleep(2); f.observe(Date.now());
   let adds=0, clientId="";
   const resumed="cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa";
   Object.assign(f.client,{
@@ -212,6 +214,105 @@ test("restart removes only its revoked queued input without replaying or clearin
   expect(f.service.work.store.getExecution(execution.id)?.status).not.toBe("finished");
   expect(f.service.work.store.get(incident.policyId)?.state.activeExecutionId).toBe(execution.id);
   expect(f.service.autoResume.status().incidents[0]?.state).toBe("needs-review");
+});
+
+test("repeated host quota failures wait for distinct recovery and retain the session across restart and long waits", async () => {
+  let now=Date.now();
+  const clock=spyOn(Date,"now").mockImplementation(()=>now);
+  try {
+    const f=fixture(true);
+    writeFileSync(join(f.profile,"thread-writer-locks",THREAD+".lock"),"");
+    const first=await f.enableAndDiscover();
+    const turns=["cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa","dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb","eeeeeeee-ffff-4aaa-8bbb-cccccccccccc"];
+    const clients=new Set<string>(); let sends=0;
+    let terminal:CodexThreadTurnSummary|null=null;
+    Object.assign(f.client,{
+      addThreadQueue:async(thread:string,id:string,prompt:string,beforeWrite?:()=>void)=>{
+        beforeWrite?.(); expect(thread).toBe(THREAD); expect(clients.has(id)).toBe(false); clients.add(id);
+        const marker=/^\[QuotaPie quota recovery:([^\]]+)\]/.exec(prompt)![1]!;
+        now+=2000;
+        const turnId=turns[sends++]!;
+        if(sends<3) f.writeFailure(now,turnId,marker);
+        terminal={threadId:THREAD,turnId,status:sends<3?"failed":"completed",
+          errorCode:sends<3?"usageLimitExceeded":null,completedAtMs:Math.floor(now/1000)*1000};
+        return {id:turnId,clientUserMessageId:id};
+      },
+      readTurnForClientMessage:async()=>terminal,
+      deleteThreadQueue:async()=>{throw Error("A terminal host turn must not be cancelled");},
+    });
+    f.useRealExecutionAdapter();
+    const run=async(id:string)=>{
+      const p=f.service.work.store.get(id)!;
+      await f.service.work.dispatch(id,"local",p.revision,"chain-"+sends);
+      await f.service.work.settle();
+    };
+    now+=2000; f.observe(now,20);
+    await run(first.id);
+    expect(sends).toBe(1);
+    expect(f.service.work.store.executions()[0]?.result?.status).toBe("quota-blocked");
+    await f.service.autoResume.poll();
+    const second=f.service.autoResume.incidents().find(i=>i.evidence.turnId===turns[0])!;
+    expect(second).toBeDefined();
+    now+=2000;f.observe(now,20);
+    expect(f.service.work.admission(f.service.work.store.get(second.id)!).reason).toBe("quota-recovery-unconfirmed");
+    f.service.work.tick();await f.service.work.settle();expect(sends).toBe(1);
+    // A lower balance is remembered; an identical later poll is still no recovery.
+    now+=2000;f.observe(now,100);
+    f.service.work.admission(f.service.work.store.get(second.id)!);
+    await f.restart(); f.useRealExecutionAdapter();
+    await (f.service as any).refreshAutoResumeGoals();
+    now+=2000;f.observe(now,100);
+    expect(f.service.work.admission(f.service.work.store.get(second.id)!).ready).toBe(false);
+    now+=2000;f.observe(now,10);
+    await run(second.id); expect(sends).toBe(2);
+    await f.service.autoResume.poll();
+    const third=f.service.autoResume.incidents().find(i=>i.evidence.turnId===turns[1])!;
+    expect(third).toBeDefined();
+    expect(f.service.work.store.get(third.id)?.quotaResume?.waitUntilRecovered).toBe(true);
+    now+=35*86400000;f.observe(now,0);
+    await (f.service as any).refreshAutoResumeGoals();
+    await run(third.id); expect(sends).toBe(3);
+    expect(f.service.work.store.executions()).toHaveLength(3);
+    expect(f.service.work.store.executions().every(e=>e.policySnapshot.nativeSessionId===THREAD)).toBe(true);
+    expect(f.service.autoResume.status().incidents).toMatchObject([{state:"resumed"}]);
+    f.service.work.tick();await f.service.work.settle();expect(sends).toBe(3);
+  } finally {clock.mockRestore();}
+});
+
+test("automatic recovery waits for all overlapping account and associated model windows, including newly discovered lanes", async () => {
+  let now=Date.now(); const clock=spyOn(Date,"now").mockImplementation(()=>now);
+  try {
+    const f=fixture(), incident=await f.enableAndDiscover();
+    const weekly="codex:secondary:10080", model="quota_alias:primary:300";
+    const observe=(weeklyUsed:number,modelUsed:number)=>{
+      now+=2000;f.observe(now,1);
+      f.observe(now,weeklyUsed,{bucket:weekly,windowSeconds:604800});
+      f.observe(now,modelUsed,{bucket:model,metadata:{limitId:"quota_alias",lane:"primary",normalModelSlug:"gpt-6.1-sol",ordinaryUsageAllowed:true}});
+    };
+    observe(100,5);
+    await (f.service as any).refreshAutoResumeGoals();
+    let policy=f.service.work.store.get(incident.id)!;
+    expect(Object.keys(policy.budgetByBucket).sort()).toEqual([BUCKET,weekly,model].sort());
+    expect(f.service.work.admission(policy).ready).toBe(false);
+    observe(5,100); expect(f.service.work.admission(policy).ready).toBe(false);
+    f.service.work.tick();await f.service.work.settle();expect(f.runs()).toBe(0);
+    observe(5,5);
+    policy=f.service.work.store.get(incident.id)!;
+    expect(f.service.work.admission(policy).ready).toBe(true);
+    await f.service.work.dispatch(policy.id,"local",policy.revision,"overlap-recovered");
+    await f.service.work.settle();expect(f.runs()).toBe(1);
+  } finally {clock.mockRestore();}
+});
+
+test("a forged recovery marker cannot create a child without the exact persisted host turn receipt", async () => {
+  const f=fixture(), incident=await f.enableAndDiscover();
+  const claim=f.service.work.store.claim(incident.id,"local",1)!;
+  f.service.work.store.markDispatched(claim.id);
+  f.service.work.store.finish(claim.id,{status:"quota-blocked",reason:"test"});
+  f.writeFailure(Date.now(),"cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa",incident.id);
+  await f.service.autoResume.poll();
+  expect(f.service.autoResume.incidents()).toHaveLength(1);
+  expect(f.service.work.store.list()).toHaveLength(1);
 });
 
 test("invalid auto-resume requests never change consent", async () => {

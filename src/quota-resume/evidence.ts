@@ -12,6 +12,9 @@ export interface QuotaResumeEvidence {
   stamp: string;
   cwd: string;
   model: string;
+  /** Present only after the caller verifies this failed turn belongs to its
+   * durable prior recovery execution. A prompt marker is not authorization. */
+  recoveryIncidentId?: string;
 }
 export interface QuotaResumeEvidenceOptions {
   /** Must retain the provider client's account/credential identity fence. */
@@ -19,11 +22,13 @@ export interface QuotaResumeEvidenceOptions {
   now?: () => number;
   /** Discovery may display an idle host-owned failure. Execution stays strict. */
   allowNativeWriter?: boolean;
+  /** Bind a marked turn to the exact prior execution, not merely its prompt. */
+  authorizeRecoveryTurn?: (evidence: QuotaResumeEvidence) => boolean | Promise<boolean>;
 }
 
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const TAIL_BYTES = 16 * 1024 * 1024;
-const RECOVERY_PREFIX = /^\[QuotaPie quota recovery:[a-zA-Z0-9_-]{1,128}\]\r?\n/;
+const RECOVERY_PREFIX = /^\[QuotaPie quota recovery:([a-zA-Z0-9_-]{1,128})\]\r?\n/;
 function stamp(stat: Stats): string {
   return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
 }
@@ -67,7 +72,8 @@ function readLocal(config: AppConfig, account: string, threadId: string, nowMs: 
     if (start) lines.shift(); // Never treat a partial JSON record as evidence.
     let model: string | null = null, started: { id: string; atMs: number } | null = null;
     let terminal: { turnId: string; failedAtMs: number } | null = null;
-    let sawUser = false, turnOpen = false, currentTurnIsRecovery = false, pendingRecovery = false;
+    let sawUser = false, turnOpen = false;
+    let currentRecovery: string | null | undefined, pendingRecovery: string | null | undefined;
     const pendingInput = new Set<string>();
     for (const line of lines) {
       if (!line) continue;
@@ -82,9 +88,12 @@ function readLocal(config: AppConfig, account: string, threadId: string, nowMs: 
         sawUser = true;
         // The host can append environment/context as another role=user record.
         // Once marked, the entire turn remains automatic until its terminal.
-        if (RECOVERY_PREFIX.test(text)) {
-          if (turnOpen) currentTurnIsRecovery = true;
-          else pendingRecovery = true;
+        const marker = RECOVERY_PREFIX.exec(text)?.[1];
+        if (marker) {
+          const prior = turnOpen ? currentRecovery : pendingRecovery;
+          const value = prior !== undefined && prior !== marker ? null : marker;
+          if (turnOpen) currentRecovery = value;
+          else pendingRecovery = value;
         }
       }
       if (entry.type === "turn_context") {
@@ -103,7 +112,7 @@ function readLocal(config: AppConfig, account: string, threadId: string, nowMs: 
       if (!Number.isFinite(atMs) || atMs > nowMs || !UUID.test(p.turn_id ?? "")) return null;
       if (p.type === "task_started") {
         started = { id: p.turn_id, atMs }; pendingInput.clear();
-        turnOpen = true; currentTurnIsRecovery = pendingRecovery; pendingRecovery = false;
+        turnOpen = true; currentRecovery = pendingRecovery; pendingRecovery = undefined;
         continue;
       }
       if (!started || started.id !== p.turn_id || atMs < started.atMs) return null;
@@ -111,7 +120,7 @@ function readLocal(config: AppConfig, account: string, threadId: string, nowMs: 
       if (p.type === "task_complete" && p.error?.codex_error_info === "usage_limit_exceeded" && !pendingInput.size)
         terminal = { turnId: p.turn_id, failedAtMs: atMs };
     }
-    if (!terminal || !model || !sawUser || currentTurnIsRecovery) return null;
+    if (!terminal || !model || !sawUser || currentRecovery === null) return null;
     const after = fstatSync(fd);
     if (stamp(before) !== stamp(after) || stamp(statSync(path)) !== stamp(after) || (!allowNativeWriter && !writerAbsent(root, threadId)) ||
         metadataPath(root, threadId) !== path) return null;
@@ -123,7 +132,8 @@ function readLocal(config: AppConfig, account: string, threadId: string, nowMs: 
       if (!row || !isAbsolute(row.cwd) || realpathSync(row.rollout_path) !== path) return null;
       const cwd = realpathSync(row.cwd);
       if (!statSync(cwd).isDirectory()) return null;
-      return { threadId, ...terminal, stamp: `${path}:${stamp(after)}`, cwd, model };
+      return { threadId, ...terminal, stamp: `${path}:${stamp(after)}`, cwd, model,
+        ...(currentRecovery !== undefined ? { recoveryIncidentId: currentRecovery } : {}) };
     } finally { db.close(); }
   } finally { if (fd !== undefined) closeSync(fd); }
 }
@@ -139,6 +149,7 @@ export async function readQuotaResumeEvidence(config: AppConfig, account: string
     const root = realpathSync(codexProfileRoot(profile)), credentials = credentialStamp(root);
     const before = readLocal(config, account, threadId, (options.now ?? Date.now)(), options.allowNativeWriter);
     if (!before) return null;
+    if (before.recoveryIncidentId !== undefined && !options.authorizeRecoveryTurn) return null;
     const read = options.readLatestTurn ?? ((id: string) => {
       client ??= new CodexAppServerClient(config.collection.codexCommand, account, 8_000, root);
       return client.readLatestTurn(id);
@@ -146,6 +157,7 @@ export async function readQuotaResumeEvidence(config: AppConfig, account: string
     const turn = await read(threadId);
     if (!turn || turn.threadId !== threadId || turn.turnId !== before.turnId || turn.status !== "failed" ||
         turn.errorCode !== "usageLimitExceeded" || turn.completedAtMs !== Math.floor(before.failedAtMs / 1000) * 1000) return null;
+    if (before.recoveryIncidentId !== undefined && await options.authorizeRecoveryTurn?.(before) !== true) return null;
     const after = readLocal(config, account, threadId, (options.now ?? Date.now)(), options.allowNativeWriter);
     if (!after || JSON.stringify(before) !== JSON.stringify(after) || credentials !== credentialStamp(root) ||
         realpathSync(codexProfileRoot(profile)) !== root) return null;

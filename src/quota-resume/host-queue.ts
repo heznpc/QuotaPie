@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { codexProfileRoot, type AppConfig } from "../config";
 import { CodexAppServerClient, type CodexThreadTurnSummary } from "../providers/codex-appserver";
 import type { WorkPolicy, WorkResult } from "../work/types";
+import { workPolicyExpiresAtMs } from "../work/lifetime";
 import { readQuotaResumeEvidence } from "./evidence";
 import { metadataPath } from "../dots/thread-reader";
 
@@ -143,7 +144,7 @@ export async function executeHostQueuedQuotaResume(
   if (policy.purpose !== "quota-resume" || policy.provider !== "codex" || policy.dispatchOwner !== "local" ||
       policy.trigger !== "quota-ready" || policy.maxTurns !== 1 || !policy.quotaResume || !UUID.test(policy.nativeSessionId) || !claimId)
     return done({ status: "failed", reason: "quota-resume-evidence-required" });
-  const deadline = Math.min(policy.expiresAtMs, policy.workDeadline ?? Infinity,
+  const deadline = Math.min(workPolicyExpiresAtMs(policy), policy.workDeadline ?? Infinity,
     startedAt + Math.min(policy.maxDurationSeconds, policy.maxTotalDurationSeconds - policy.state.totalDurationSeconds) * 1000);
   if (!Number.isFinite(deadline) || deadline <= startedAt) return done({ status: "time-budget-ended", reason: "host-queue-time-budget-ended" });
   let root: string;

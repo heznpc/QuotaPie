@@ -299,6 +299,100 @@ test("successful one-turn resumption is distinct from objective completion and r
   await expect(f.controller.skip(incident.id)).rejects.toThrow("auto-resume-already-attempted");
 });
 
+test("a failed automatic turn creates one new incident in the same session across repeated recovery and restart", async () => {
+  const f=fixture(), first=await f.enroll();
+  const fail=(incident:QuotaResumeIncident,atMs:number)=>{
+    const policy=f.work.get(incident.policyId)!;
+    const execution=f.work.claim(policy.id,"local",policy.revision,atMs)!;
+    f.work.markDispatched(execution.id,atMs+1);
+    f.work.finish(execution.id,{status:"quota-blocked",reason:"host-queue-quota-blocked"},atMs+500);
+  };
+  fail(first,2_001);
+  expect(f.controller.status().incidents[0]).toMatchObject({state:"waiting",reason:"quota-recovery-unconfirmed"});
+  f.state.now=3_000;
+  f.state.evidence={...first.evidence,turnId:nextTurnId,failedAtMs:2_500,stamp:"second-failure",recoveryIncidentId:first.id};
+  await f.controller.poll();
+  const second=f.controller.incidents()[0]!;
+  expect(second.id).not.toBe(first.id);
+  expect(second.evidence.recoveryIncidentId).toBe(first.id);
+  expect(second.threadId).toBe(threadId);
+  expect(f.state.registrationCalls).toBe(2);
+  expect(f.controller.status().incidents.map(i=>i.id)).toEqual([second.id]);
+  await f.controller.poll(); expect(f.state.registrationCalls).toBe(2);
+  fail(second,3_001);
+  f.state.now=4_000;
+  const thirdTurn="55555555-5555-4555-8555-555555555555";
+  f.state.evidence={...second.evidence,turnId:thirdTurn,failedAtMs:3_500,stamp:"third-failure",recoveryIncidentId:second.id};
+  await f.controller.close(); const restarted=f.create(); await restarted.poll();
+  expect(f.state.registrationCalls).toBe(3);
+  const third=restarted.incidents()[0]!;
+  expect(third.evidence.recoveryIncidentId).toBe(second.id);
+  expect(restarted.status().incidents.map(i=>i.id)).toEqual([third.id]);
+  expect(f.work.executions()).toHaveLength(2);
+  expect(f.work.claim(first.id,"local",f.work.get(first.id)!.revision,4_001)).toBeNull();
+  expect(f.work.claim(second.id,"local",f.work.get(second.id)!.revision,4_001)).toBeNull();
+});
+
+test("recovery lineage rejects unknown parents, another session and non-new failures", async () => {
+  for(const patch of [{recoveryIncidentId:"invented"},{threadId:nextThreadId},{turnId},{failedAtMs:1_500}]) {
+    const f=fixture(), parent=await f.enroll();
+    const execution=f.work.claim(parent.id,"local",1,2_001)!;
+    f.work.markDispatched(execution.id,2_002);
+    f.work.finish(execution.id,{status:"quota-blocked"},2_500);
+    f.state.now=3_000;
+    f.state.evidence={...parent.evidence,turnId:nextTurnId,failedAtMs:2_500,stamp:"new",recoveryIncidentId:parent.id,...patch};
+    expect(f.controller.authorizedRecoveryParent("plus",f.state.evidence)).toBeNull();
+    await f.controller.poll();
+    expect(f.state.registrationCalls).toBe(1);
+  }
+});
+
+test("an older disabled parent's reset observation cannot erase its proven quota failure", async () => {
+  const f=fixture(), parent=await f.enroll();
+  f.work.observe(parent.id,{id:"before",atMs:2_000,buckets:{weekly:{remainingPercent:10,epoch:"2500"}}});
+  const execution=f.work.claim(parent.id,"local",1,2_001)!;
+  f.work.markDispatched(execution.id,2_002);
+  f.work.finish(execution.id,{status:"quota-blocked"},2_500);
+  f.work.observe(parent.id,{id:"reset",atMs:3_000,buckets:{weekly:{remainingPercent:100,epoch:"5000"}}});
+  f.state.now=3_000;
+  f.state.evidence={...parent.evidence,turnId:nextTurnId,failedAtMs:2_500,stamp:"new",recoveryIncidentId:parent.id};
+  expect(f.controller.authorizedRecoveryParent("plus",f.state.evidence)?.id).toBe(parent.id);
+  await f.controller.poll(); expect(f.state.registrationCalls).toBe(2);
+});
+
+test("running, uncertain, completed and user-paused parents cannot authorize another automatic message", async () => {
+  for(const status of ["running","uncertain","turn-finished","activity-paused","failed"] as const) {
+    const f=fixture(), parent=await f.enroll();
+    const execution=f.work.claim(parent.id,"local",1,2_001)!;
+    f.work.markDispatched(execution.id,2_002);
+    if(status!=="running") f.work.finish(execution.id,{status,remainingWork:"Completion remains unverified"},2_500);
+    f.state.now=3_000;
+    f.state.evidence={...parent.evidence,turnId:nextTurnId,failedAtMs:2_500,stamp:"new",recoveryIncidentId:parent.id};
+    await f.controller.poll();
+    expect(f.state.registrationCalls).toBe(1);
+    expect(f.controller.authorizedRecoveryParent("plus",f.state.evidence)).toBeNull();
+  }
+});
+
+test("disabling or replacing consent ends the whole recovery chain without historical re-enrollment", async () => {
+  const f=fixture(), parent=await f.enroll();
+  const execution=f.work.claim(parent.id,"local",1,2_001)!;
+  f.work.markDispatched(execution.id,2_002);
+  f.work.finish(execution.id,{status:"quota-blocked"},2_500);
+  f.state.now=3_000;
+  f.state.evidence={...parent.evidence,turnId:nextTurnId,failedAtMs:2_500,stamp:"new",recoveryIncidentId:parent.id};
+  await f.controller.poll(); const child=f.controller.incidents()[0]!;
+  await f.controller.setEnabled("plus",false);
+  expect(f.controller.blockPolicy(f.work.get(child.id)!)).toBe("auto-resume-disabled");
+  expect(f.controller.authorizedRecoveryParent("plus",f.state.evidence)).toBeNull();
+  await f.controller.setEnabled("plus",true);
+  // Even a later fabricated marker cannot revive the old opt-in revision.
+  f.state.now=4_000; f.state.evidence.failedAtMs=3_500;
+  await f.controller.poll();
+  expect(f.state.registrationCalls).toBe(2);
+  expect(f.controller.authorizedRecoveryParent("plus",f.state.evidence)).toBeNull();
+});
+
 test("a restarted collector cannot describe an unowned durable execution as still running", async () => {
   const f = fixture(), incident = await f.enroll();
   const execution = f.work.claim(incident.policyId, "local", 1, 2_001)!;

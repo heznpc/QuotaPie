@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { evaluateWorkAdmission, withinActivitySchedule, workObservation } from "../src/work/admission";
+import { evaluateWorkAdmission, withinActivitySchedule, workObservation, workWindows } from "../src/work/admission";
+import { analyzeWindow } from "../src/analytics";
+import { DEFAULT_CONFIG } from "../src/config";
+import { parseCodexRateLimits } from "../src/providers/codex-appserver";
 import type { WorkPolicy } from "../src/work/types";
 import type { WindowAnalysis } from "../src/types";
 
@@ -145,4 +148,97 @@ test("planning uses the earliest opted-in forecast, personal assumption and hard
  const p=policy();p.expectedWorkMinutes=5;p.usePersonalDeadlineForPlanning=true;p.personalDeadline=NOW+1200000;p.earlyResetQuantile=0.2;
  const result=evaluateWorkAdmission(p,windows(),NOW,{forecast:{actionProbabilityEstimate:0.8,horizonAtMs:NOW+300000,quantileAtMs:NOW+600000}});
  expect(result.planning.deadlineAtMs).toBe(NOW+600000);expect(result.planning.deadlineSource).toBe("forecast");
+});
+
+function codexRecovery() {
+  const p = policy();
+  p.provider = "codex"; p.model = "gpt-6-sol"; p.purpose = "quota-resume";
+  p.quotaResume = { turnId: "failed-turn", stamp: "failed-stamp" };
+  const response = {
+    ordinaryUsageAllowed: true,
+    rateLimitsByLimitId: {
+      codex: { limitId: "codex", spendControlReached: false,
+        primary: { usedPercent: 50, windowDurationMins: 300, resetsAt: (NOW + 18000000) / 1000 },
+        secondary: { usedPercent: 50, windowDurationMins: 10080, resetsAt: (NOW + 604800000) / 1000 } },
+      codex_model_pool: { limitId: "codex_model_pool", normalModelSlug: "gpt-6-sol", spendControlReached: false,
+        primary: { usedPercent: 50, windowDurationMins: 43200, resetsAt: (NOW + 2592000000) / 1000 } },
+    },
+  };
+  const w = parseCodexRateLimits(response, NOW - 1000).map(observation => analyzeWindow(observation, [], DEFAULT_CONFIG, NOW));
+  p.budgetByBucket = Object.fromEntries(w.map(window => [window.bucket, { reservePercent: 5, maxUsagePercent: 100 }]));
+  return { p, w };
+}
+
+test("five-hour, weekly, and provider-associated model windows must all recover", () => {
+  const { p, w } = codexRecovery();
+  expect(workWindows(p, w)).toHaveLength(3);
+  expect(evaluateWorkAdmission(p, w, NOW).ready).toBe(true);
+  for (let index = 0; index < w.length; index++) {
+    const blocked = w.map((window, i) => ({ ...window, remainingPercent: i === index ? 0 : 95 }));
+    expect(evaluateWorkAdmission(p, blocked, NOW).reason).toBe("reserve-reached");
+    blocked[index]!.remainingPercent = 6;
+    expect(evaluateWorkAdmission(p, blocked, NOW).ready).toBe(true);
+  }
+  // Two windows recover; the third window still independently owns the hold.
+  const overlapping = w.map(window => ({ ...window, remainingPercent: 0 }));
+  overlapping[0]!.remainingPercent = 100;
+  expect(evaluateWorkAdmission(p, overlapping, NOW).ready).toBe(false);
+  overlapping[1]!.remainingPercent = 100;
+  expect(evaluateWorkAdmission(p, overlapping, NOW).ready).toBe(false);
+  overlapping[2]!.remainingPercent = 100;
+  expect(evaluateWorkAdmission(p, overlapping, NOW).ready).toBe(true);
+});
+
+test("model quota uses provider association, exact alias, or conservative unknown scope", () => {
+  const { p, w } = codexRecovery();
+  const alias = w[2]!;
+  const unrelated = { ...alias, bucket: "different-pool:primary:300", metadata: { limitId: "different-pool", normalModelSlug: "gpt-6-luna" }, remainingPercent: 0 };
+  expect(workWindows(p, [...w, unrelated])).toHaveLength(3);
+  const opaque = { ...unrelated, metadata: { limitId: "different-pool", normalModelSlug: null } };
+  expect(evaluateWorkAdmission(p, [...w, opaque], NOW).reason).toBe("work-bucket-budget-required");
+  p.budgetByBucket[opaque.bucket] = { reservePercent: 0, maxUsagePercent: 100 };
+  expect(evaluateWorkAdmission(p, [...w, opaque], NOW).reason).toBe("reserve-reached");
+  delete p.budgetByBucket[opaque.bucket];
+  p.model = "different-pool";
+  expect(workWindows(p, [w[0]!, unrelated])).toContain(unrelated);
+  delete p.model;
+  expect(workWindows(p, [...w, unrelated])).toHaveLength(4);
+});
+
+test("a reset estimate, missing model lane, stale lane, or duplicate lane never grants admission", () => {
+  const { p, w } = codexRecovery();
+  expect(evaluateWorkAdmission(p, w.slice(0, 2), NOW).reason).toBe("quota-unknown");
+  expect(evaluateWorkAdmission(p, [...w, { ...w[2]!, remainingPercent: 100 }], NOW).reason).toBe("quota-unknown");
+  for (let index = 0; index < w.length; index++) {
+    const stale = w.map((window, i) => i === index ? { ...window, observedAtMs: NOW - 120001 } : window);
+    expect(evaluateWorkAdmission(p, stale, NOW).reason).toBe("quota-stale");
+    const unconfirmed = w.map((window, i) => i === index ? { ...window, remainingPercent: 100, resetsAtMs: NOW } : window);
+    expect(evaluateWorkAdmission(p, unconfirmed, NOW).reason).toBe("reset-unconfirmed");
+  }
+});
+
+test("provider permission overrides positive percentages and unavailable permission fails closed", () => {
+  const { p, w } = codexRecovery();
+  const denials: NonNullable<WindowAnalysis["metadata"]>[] = [{ ordinaryUsageAllowed: false }, { spendControlReached: true }];
+  for (const patch of denials) {
+    const denied = w.map(window => ({ ...window, metadata: { ...window.metadata, ...patch } }));
+    expect(evaluateWorkAdmission(p, denied, NOW).reason).toBe("reserve-reached");
+  }
+  const unknown = w.map(window => ({ ...window, metadata: { ...window.metadata, ordinaryUsageAllowed: null } }));
+  expect(evaluateWorkAdmission(p, unknown, NOW).reason).toBe("quota-unknown");
+  const legacy = w.map(window => { const metadata = { ...window.metadata }; delete metadata.ordinaryUsageAllowed; return { ...window, metadata }; });
+  expect(evaluateWorkAdmission(p, legacy, NOW).ready).toBe(true);
+});
+
+test("continuous automatic recovery can wait beyond eight days while ordinary policy expiry stays enforced", () => {
+  const { p, w } = codexRecovery();
+  p.expiresAtMs = NOW - 1;
+  p.quotaResume!.waitUntilRecovered = true;
+  expect(evaluateWorkAdmission(p, w, NOW).ready).toBe(true);
+  expect(evaluateWorkAdmission(p, w, NOW).timeoutSeconds).toBe(60);
+  p.workDeadline = NOW - 1;
+  expect(evaluateWorkAdmission(p, w, NOW).reason).toBe("expired");
+  delete p.workDeadline;
+  delete p.purpose;
+  expect(evaluateWorkAdmission(p, w, NOW).reason).toBe("expired");
 });

@@ -184,7 +184,7 @@ describe("quota-resume Codex adapter", () => {
 
   test("quota and uncertain failures retain their existing execution semantics", async () => {
     for (const [outcome, status] of [
-      [{ ...completed, outcome: "quota-blocked", reason: "upstream-quota-hold" }, "quota-blocked"],
+      [{ ...completed, outcome: "quota-blocked", processStopped: true, reason: "upstream-quota-hold" }, "quota-blocked"],
       [{ ...completed, outcome: "failed", attempts: 1, reason: "response-missing" }, "uncertain"],
       [{ ...completed, outcome: "failed", attempts: 0, reason: "quota-resume-evidence-changed" }, "failed"],
       [{ ...completed, outcome: "failed", attempts: 1, processStopped: true, reason: "authorization-ended" }, "activity-paused"],
@@ -193,6 +193,26 @@ describe("quota-resume Codex adapter", () => {
       expect(result.status).toBe(status);
       expect(result.reason).toBe(outcome.reason);
     }
+  });
+
+  test("managed repeated-quota proof is persisted before return and an unverified stop keeps its fence", async () => {
+    const policy = executable();
+    const receipts: Array<{threadId:string;turnId:string}> = [];
+    const readEvidence = async () => null;
+    const result = await executeCodexWork(DEFAULT_CONFIG, policy, "claim", () => true, () => gate, async (_request, options) => {
+      expect(options.readQuotaResumeEvidence).toBe(readEvidence);
+      return { ...completed, outcome: "quota-blocked", processStopped: true, quotaTurnId: nextTurnId };
+    }, undefined, { readEvidence, onManagedQuotaTurn: receipt => { receipts.push(receipt); } });
+    expect(result.status).toBe("quota-blocked");
+    expect(receipts).toEqual([{ threadId, turnId: nextTurnId }]);
+    const uncertain = await executeCodexWork(DEFAULT_CONFIG, policy, "claim", () => true, () => gate, async () =>
+      ({ ...completed, outcome: "quota-blocked", quotaTurnId: nextTurnId }), undefined,
+      { onManagedQuotaTurn: receipt => { receipts.push(receipt); } });
+    expect(uncertain.status).toBe("uncertain"); expect(receipts).toHaveLength(1);
+    const missingProof = await executeCodexWork(DEFAULT_CONFIG, policy, "claim", () => true, () => gate, async () =>
+      ({ ...completed, outcome: "quota-blocked", processStopped: true }), undefined,
+      { onManagedQuotaTurn: receipt => { receipts.push(receipt); } });
+    expect(missingProof.status).toBe("quota-blocked"); expect(receipts).toHaveLength(1);
   });
 
   test("ordinary work keeps structured progress and claim validation", async () => {

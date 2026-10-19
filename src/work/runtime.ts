@@ -7,6 +7,7 @@ import { readClaudeCredentialsAsync, fetchClaudeUsage } from "../providers/claud
 import { resumeProfileKey } from "../resume-gate";
 import { findClaudeResumeTarget, resumeTaskKey, resumeWorkingDirectoryAvailable } from "../session-discovery";
 import type { WorkPolicy, WorkProvider, WorkResult } from "./types";
+import { workPolicyExpiresAtMs } from "./lifetime";
 
 export interface WorkTarget { provider: WorkProvider; account: string; nativeSessionId: string }
 export interface WorkBinding {
@@ -161,7 +162,7 @@ export async function executeWorkTurn(config: AppConfig, policy: WorkPolicy, opt
   if (policy.provider !== "claude") return result({ status: "failed", reason: "codex-managed-adapter-required" });
   const timeoutMs = Math.min(options.timeoutMs, policy.maxDurationSeconds * 1000,
     (policy.maxTotalDurationSeconds - policy.state.totalDurationSeconds) * 1000,
-    policy.expiresAtMs - start, (policy.workDeadline ?? Infinity) - start);
+    workPolicyExpiresAtMs(policy) - start, (policy.workDeadline ?? Infinity) - start);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return result({ status: "time-budget-ended", reason: "time-budget-ended" });
   if (options.policyRevision !== policy.revision || options.signal?.aborted || !await options.stillAuthorized())
     return result({ status: "uncertain", reason: "authorization-ended" });

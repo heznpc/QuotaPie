@@ -5,7 +5,7 @@ export interface WorkBudget { reservePercent: number; maxUsagePercent: number; t
 export interface WorkPolicyInput {
   id: string; provider: WorkProvider; account: string; profileKey: string; accountKey: string;
   purpose?: "quota-resume";
-  quotaResume?: { turnId: string; stamp: string };
+  quotaResume?: { turnId: string; stamp: string; waitUntilRecovered?: true };
   nativeSessionId: string; cwd: string; model?: string; prompt: string; objective: string;
   completionCriteria: string[]; dispatchOwner: WorkOwner; enabled: boolean;
   trigger: "quota-ready" | "public-announcement" | "scheduled" | "forecast-probability" | "notify-only";
@@ -62,6 +62,8 @@ export interface WorkExecution {
   /** Durable intent/receipt for the existing host's queue. The client message
    * ID correlates a turn; the provider does not deduplicate submissions. */
   hostQueue?: {threadId:string;clientUserMessageId:string;sentAtMs:number;queuedSubmissionId?:string;turnId?:string};
+  /** Exact native turn proven by the owned managed process after it stopped. */
+  managedTurn?: {threadId:string;turnId:string};
   minimumRemainingByBucket?: Record<string,number>; effectiveReserveByBucket?: Record<string,number>;
   status: "claimed" | "dispatched" | "finished" | "uncertain";
 }

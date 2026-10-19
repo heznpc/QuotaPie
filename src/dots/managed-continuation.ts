@@ -64,6 +64,8 @@ export interface ManagedContinuationResult {
   attempts: 0 | 1;
   report?: string;
   processStopped?: true;
+  /** Exact API + stable rollout proof collected after this owned child exited. */
+  quotaTurnId?: string;
 }
 
 /** A lock file's absence and a completed rollout are only a snapshot. The
@@ -243,7 +245,7 @@ export function spawnManagedChild(plan: ManagedProcessPlan): ManagedChild {
 /** Executes one already-dispatched claim. The caller owns the durable single-use
  * lease; this adapter never claims, schedules, retries or chooses another task. */
 export async function runManagedContinuation(input: { config: AppConfig; policy: DotPolicy; claimId: string }, options: ManagedRunOptions): Promise<ManagedContinuationResult> {
-  const { config, policy } = input, now = options.now ?? Date.now;
+  const { config, policy } = input, now = options.now ?? Date.now, startedAtMs = now();
   const reportOnly = policy.executionPurpose !== "continue-work";
   const durationSeconds = policy.maxDurationSeconds ?? (reportOnly ? 60 : NaN);
   let attempts: 0 | 1 = 0;
@@ -337,11 +339,12 @@ export async function runManagedContinuation(input: { config: AppConfig; policy:
       return failed("dispatch-precondition-changed");
     const child = (options.spawn ?? spawnManagedChild)(plan);
     attempts = 1;
-    let stopped: string | null = null, finished = false, exited = false, matched = false, complete = false, report = "", quota = false;
+    let stopped: string | null = null, nonQuotaStop: string | null = null, finished = false, exited = false, matched = false, complete = false, report = "", quota = false;
     let hardKill: ReturnType<typeof setTimeout> | undefined, stopDeadline: ReturnType<typeof setTimeout> | undefined;
     let resolveStopped!: (value: { code: number; exited: false }) => void;
     const stoppedExit = new Promise<{ code: number; exited: false }>(resolve => { resolveStopped = resolve; });
     const stop = (reason: string) => {
+      if (reason !== "subscription-quota-blocked") nonQuotaStop ??= reason;
       if (finished || stopped) return;
       stopped = reason;
       if (!exited) {
@@ -415,7 +418,25 @@ export async function runManagedContinuation(input: { config: AppConfig; policy:
         return result;
       };
       if (blockedReason && !QUOTA_HOLDS.has(blockedReason)) return await stoppedResult(blockedReason);
-      if (blocked || quota) return { nativeThreadId: policy.threadId, outcome: "quota-blocked", reason: blocked ?? "subscription-quota-blocked", attempts };
+      if (nonQuotaStop) return await stoppedResult(nonQuotaStop);
+      if (blocked || quota) {
+        if (!matched) return failed("continuation-thread-unverified");
+        await child.cleanup?.();
+        const processStopped = exited && child.ownedGroupStopped?.() === true;
+        const stoppedAtMs = now();
+        let quotaTurnId: string | undefined;
+        if (processStopped && options.quotaResume) {
+          const evidence = await (options.readQuotaResumeEvidence ?? readQuotaResumeEvidence)(config, policy.account, policy.threadId, {
+            now,
+            authorizeRecoveryTurn: e => e.recoveryIncidentId === policy.id && e.threadId === policy.threadId &&
+              e.turnId !== options.quotaResume!.turnId && e.failedAtMs >= startedAtMs && e.failedAtMs <= stoppedAtMs &&
+              e.model === snapshot.model && e.cwd === snapshot.cwd,
+          });
+          if (evidence?.recoveryIncidentId === policy.id) quotaTurnId = evidence.turnId;
+        }
+        return { nativeThreadId: policy.threadId, outcome: "quota-blocked", reason: blocked ?? "subscription-quota-blocked", attempts,
+          ...(processStopped ? {processStopped:true as const} : {}), ...(quotaTurnId ? {quotaTurnId} : {}) };
+      }
       if (stopped) return await stoppedResult(stopped);
       if (code !== 0 || !matched || !complete || !report.trim()) return failed("continuation-completion-unverified");
       return { nativeThreadId: policy.threadId, outcome: "completed", reason: "completed", attempts, report };

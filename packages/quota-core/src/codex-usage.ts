@@ -91,6 +91,16 @@ export function parseCodexRateLimits(
         metadata: {
           limitId,
           lane,
+          // Quota aliases need not be model slugs. Preserve the provider's
+          // association instead of guessing from the display name or ID.
+          normalModelSlug: typeof value.normalModelSlug === "string" && value.normalModelSlug.length > 0
+            ? value.normalModelSlug : null,
+          ...(Object.hasOwn(result, "ordinaryUsageAllowed") ? {
+            ordinaryUsageAllowed: typeof result.ordinaryUsageAllowed === "boolean" ? result.ordinaryUsageAllowed : null,
+          } : {}),
+          ...(Object.hasOwn(value, "spendControlReached") ? {
+            spendControlReached: typeof value.spendControlReached === "boolean" ? value.spendControlReached : null,
+          } : {}),
           planType: normalizeCodexPlanType(value.planType),
           rateLimitReachedType:
             typeof value.rateLimitReachedType === "string" ? value.rateLimitReachedType : null,

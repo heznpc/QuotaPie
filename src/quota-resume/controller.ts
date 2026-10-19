@@ -91,7 +91,26 @@ export class AutoResumeController {
     const p=this.checkedPreference(incident.account);
     return !this.closed && incident.state==="waiting" && !!p?.enabled && p.revision===incident.authorizationRevision &&
       this.matches(p) && incident.accountKey===p.accountKey && incident.profileKey===p.profileKey &&
-      incident.evidence.failedAtMs>=p.enabledAtMs;
+      incident.evidence.failedAtMs>=p.enabledAtMs && (incident.evidence.recoveryIncidentId===undefined ||
+        this.authorizedRecoveryParent(incident.account,incident.evidence)!==null);
+  }
+  /** The marker identifies a candidate only. The service must separately bind
+   * the new turn to the exact, durably completed parent execution. */
+  authorizedRecoveryParent(account: string, evidence: QuotaResumeEvidence): QuotaResumeIncident | null {
+    if(this.closed || !evidence.recoveryIncidentId) return null;
+    const parent=this.incident(evidence.recoveryIncidentId), preference=this.checkedPreference(account);
+    if(!parent || !preference?.enabled || !this.matches(preference) || parent.state!=="waiting" ||
+      parent.account!==account || parent.profileKey!==preference.profileKey || parent.accountKey!==preference.accountKey ||
+      parent.authorizationRevision!==preference.revision || parent.threadId!==evidence.threadId ||
+      parent.evidence.failedAtMs<preference.enabledAtMs || parent.evidence.failedAtMs>=evidence.failedAtMs ||
+      parent.evidence.turnId===evidence.turnId) return null;
+    const policy=this.deps.policy(parent.policyId);
+    if(!policy || policy.purpose!=="quota-resume" || policy.account!==parent.account || policy.profileKey!==parent.profileKey ||
+      policy.accountKey!==parent.accountKey || policy.nativeSessionId!==parent.threadId ||
+      policy.quotaResume?.turnId!==parent.evidence.turnId || policy.quotaResume.stamp!==parent.evidence.stamp ||
+      !["quota-blocked","waiting"].includes(policy.state.status) || policy.state.lastResult?.status!=="quota-blocked" ||
+      policy.state.turns<1 || policy.state.activeExecutionId!==null) return null;
+    return parent;
   }
   async setEnabled(account: string, enabled: boolean): Promise<void> {
     if(typeof enabled!=="boolean") throw new Error("auto-resume-invalid-enabled");
@@ -153,7 +172,11 @@ export class AutoResumeController {
       return {account:account.account,label:account.label,enabled:p?.enabled??false,enabledAtMs:p?.enabledAtMs??null,
         lastScanAtMs:p?.lastScanAtMs??null,lastError:p?.enabled&&!this.matches(p)?"account-binding-changed":p?.lastError??null};
     });
-    const incidents=this.incidents().slice(0,100).map(i=>{
+    const allIncidents=this.incidents();
+    // Keep the chain in the durable ledger, but show its latest continuation
+    // once a new incident supersedes the quota-blocked parent.
+    const continuedParents=new Set(allIncidents.map(i=>i.evidence.recoveryIncidentId).filter((id):id is string=>id!==undefined));
+    const incidents=allIncidents.filter(i=>!continuedParents.has(i.id)).slice(0,100).map(i=>{
       const policy=this.deps.policy(i.policyId);
       let state:string=i.state,reason=i.reason;
       if(policy?.state.status==="uncertain") {state="needs-review";reason=policy.state.lastResult?.reason;}
@@ -164,8 +187,8 @@ export class AutoResumeController {
         if(state==="running" && receipt && !receipt.turnId) {state="queued";reason="host-queue-awaiting-turn";}
       }
       else if((policy?.state.turns??0)>0) {
-        state=policy?.state.status==="turn-finished"?"resumed":"needs-review";
-        reason=policy?.state.lastResult?.reason;
+        state=policy?.state.status==="turn-finished"?"resumed":policy?.state.lastResult?.status==="quota-blocked"&&this.authorized(i)?"waiting":"needs-review";
+        reason=state==="waiting"?"quota-recovery-unconfirmed":policy?.state.lastResult?.reason;
       } else if(i.state==="waiting" && policy) reason=this.deps.admissionReason(policy);
       return {id:i.id,account:i.account,threadId:i.threadId,projectLabel:i.projectLabel,state,reason,detectedAtMs:i.detectedAtMs,policyId:i.policyId};
     });

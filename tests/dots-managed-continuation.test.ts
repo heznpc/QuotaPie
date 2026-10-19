@@ -11,6 +11,7 @@ import { readConfiguredThread, readExecutionConfiguration, type ProfileThreadSta
 import type { SubscriptionGuardState } from "../src/subscription-guard";
 import { AccountPool, type PoolAccount } from "../src/account-pool";
 import { createCompactionHandler } from "../src/codex-compaction";
+import type { QuotaResumeEvidence } from "../src/quota-resume/evidence";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -478,5 +479,74 @@ test("intentional managed stop requires owned group proof independently of leade
     const result=await runManagedContinuation(f.input,f.options);
     expect(result.reason).toBe("continuation-authorization-ended");
     expect(result.processStopped).toBe(proven?true:undefined);
+  }
+});
+
+test("a repeated quota failure supplies exact native-turn proof only after the owned group stops", async () => {
+  for (const groupStopped of [false, true]) {
+    const f = fixture();
+    let clock = now; f.options.now = () => clock;
+    Object.assign(f.policy, { executionPurpose: "continue-work", maxDurationSeconds: 60 });
+    f.options.quotaResume = { turnId, stamp: "reviewed-failure" };
+    f.output.splice(1, f.output.length, JSON.stringify({ type: "turn.failed", error: { code: "usage_limit_exceeded" } }));
+    const spawn = f.options.spawn!; let cleaned = false, proofReads = 0;
+    f.options.spawn = plan => ({ ...spawn(plan), async cleanup() { cleaned = true; }, ownedGroupStopped: () => cleaned && groupStopped });
+    f.options.readQuotaResumeEvidence = async (_config, _account, _thread, options) => {
+      const before: QuotaResumeEvidence = { threadId, turnId, failedAtMs: now - 1000, stamp: "reviewed-failure", cwd: f.root, model: "gpt-6.1-sol" };
+      if (!options?.authorizeRecoveryTurn) return before;
+      proofReads++; expect(cleaned).toBe(true);
+      // A delayed metadata response must not extend the already stopped
+      // process's ownership interval to a later native turn.
+      clock = now + 100;
+      const after = { ...before, turnId: claimId, failedAtMs: now, stamp: "new-failure", recoveryIncidentId: f.policy.id };
+      expect(await options.authorizeRecoveryTurn(after)).toBe(true);
+      for (const patch of [
+        { recoveryIncidentId: "foreign" }, { threadId: claimId }, { turnId }, { failedAtMs: now - 1 },
+        { failedAtMs: now + 1 }, { cwd: "/foreign" }, { model: "foreign-model" },
+      ]) expect(await options.authorizeRecoveryTurn({ ...after, ...patch })).toBe(false);
+      return after;
+    };
+    const result = await runManagedContinuation(f.input, f.options);
+    expect(result.outcome).toBe("quota-blocked");
+    expect(result.processStopped).toBe(groupStopped ? true : undefined);
+    expect(result.quotaTurnId).toBe(groupStopped ? claimId : undefined);
+    expect(proofReads).toBe(groupStopped ? 1 : 0);
+    expect(f.plans).toHaveLength(1); expect(f.prompts).toHaveLength(1);
+  }
+});
+
+test("an unmatched post-stop native quota failure never creates lineage proof", async () => {
+  const f = fixture();
+  Object.assign(f.policy, { executionPurpose: "continue-work", maxDurationSeconds: 60 });
+  f.options.quotaResume = { turnId, stamp: "reviewed-failure" };
+  f.output.splice(1, f.output.length, JSON.stringify({ type: "turn.failed", error: { code: "usage_limit_exceeded" } }));
+  const spawn = f.options.spawn!;
+  f.options.spawn = plan => ({ ...spawn(plan), ownedGroupStopped: () => true });
+  f.options.readQuotaResumeEvidence = async (_config, _account, _thread, options) => options?.authorizeRecoveryTurn ? null :
+    { threadId, turnId, failedAtMs: now - 1000, stamp: "reviewed-failure", cwd: f.root, model: "gpt-6.1-sol" };
+  const result = await runManagedContinuation(f.input, f.options);
+  expect(result).toMatchObject({ outcome: "quota-blocked", processStopped: true, attempts: 1 });
+  expect(result.quotaTurnId).toBeUndefined(); expect(f.plans).toHaveLength(1);
+});
+
+test("missing or conflicting thread identity wins over quota errors and cannot authorize another turn", async () => {
+  for (const order of ["missing", "wrong-before", "wrong-after"] as const) {
+    const f = fixture();
+    Object.assign(f.policy, { executionPurpose: "continue-work", maxDurationSeconds: 60 });
+    f.options.quotaResume = { turnId, stamp: "reviewed-failure" };
+    const quota = JSON.stringify({ type: "turn.failed", error: { code: "usage_limit_exceeded" } });
+    const wrong = JSON.stringify({ type: "thread.started", thread_id: claimId });
+    const output = order === "missing" ? [quota] : order === "wrong-before" ? [wrong, quota] : [f.output[0]!, quota, wrong];
+    f.output.splice(0, f.output.length, ...output);
+    const spawn = f.options.spawn!; let proofReads = 0;
+    f.options.spawn = plan => ({ ...spawn(plan), ownedGroupStopped: () => true });
+    f.options.readQuotaResumeEvidence = async (_config, _account, _thread, options) => {
+      if (options?.authorizeRecoveryTurn) { proofReads++; throw new Error("unexpected-proof-read"); }
+      return { threadId, turnId, failedAtMs: now - 1000, stamp: "reviewed-failure", cwd: f.root, model: "gpt-6.1-sol" };
+    };
+    const result = await runManagedContinuation(f.input, f.options);
+    expect(result).toMatchObject({ outcome: "failed", attempts: 1,
+      reason: order === "missing" ? "continuation-thread-unverified" : "continuation-thread-mismatch" });
+    expect(result.quotaTurnId).toBeUndefined(); expect(proofReads).toBe(0); expect(f.plans).toHaveLength(1);
   }
 });
