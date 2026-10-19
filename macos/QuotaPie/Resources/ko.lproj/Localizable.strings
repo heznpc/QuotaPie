@@ -1286,3 +1286,30 @@
 "accounts.list.resetTicketPending" = "리셋권 사용 감지 · 한도 재확인 중";
 "resetTickets.pending" = " 한도를 재확인하고 있습니다.";
 "event.resetTicketRecovery" = "%@ 한도가 리셋권 사용 후 회복됐습니다.";
+
+"settings.organized.general" = "일반";
+"settings.organized.notifications" = "알림";
+"settings.organized.accounts" = "계정 및 연결";
+"settings.organized.automation" = "작업 및 모델";
+"settings.organized.power" = "전원";
+"settings.organized.advanced" = "고급";
+"settings.organized.menu" = "설정…";
+"settings.organized.open" = "설정 창 열기";
+"settings.organized.description" = "계정, 알림, 작업과 전원 설정을 별도 창에서 관리합니다.";
+"settings.organized.connectionUnavailable" = "연결을 확인한 뒤 설정을 변경할 수 있습니다.";
+"settings.organized.behaviorDetails" = "동작 범위 및 제한";
+"settings.organized.tools" = "관리 도구";
+"settings.organized.toolsDescription" = "구성 파일을 확인하거나 현재 상태를 복사합니다.";
+"settings.organized.openConfig" = "구성 파일 열기";
+
+"detail.overview.activityAndNews" = "앱 활동 및 소식";
+"detail.overview.collectionHelp" = "수집 상세 및 복구 방법";
+"detail.overview.openConfig" = "설정 파일 열기";
+"detail.overview.otherLimits" = "기타 한도 %@개";
+"detail.overview.usagePace" = "사용 속도";
+"detail.overview.globalActivity" = "전체 계정 활동";
+"detail.overview.compactionsRunning" = "요청 %@개 압축 중";
+"detail.overview.resetsAt" = "%@ 초기화";
+"settings.organized.historyCount" = "기록 %@개 보기";
+"settings.organized.finishedJobs" = "종료된 자동 작업 %@개";
+"settings.organized.activityHistory" = "활동 기록";

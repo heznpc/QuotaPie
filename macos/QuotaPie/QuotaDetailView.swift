@@ -8,7 +8,7 @@ struct AccountSection: View {
     let onCopyCommand: (String) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text("\(account.providerTitle) · \(account.accountLabel)")
                     .font(.system(size: 12, weight: .semibold))
@@ -25,32 +25,41 @@ struct AccountSection: View {
                 }
             }
             if account.windows.isEmpty || !account.collection.isHealthy {
-                CalloutView(
-                    text: account.collection.actionText,
-                    detail: account.collection.recoveryCommand.map { Strings.t("popover.runCommand", $0) }
-                        ?? account.collection.errorDetail,
-                    tone: account.collection.isHealthy ? .neutral : .warning
-                )
-                HStack(spacing: 8) {
-                    if let command = account.collection.recoveryCommand {
-                        Button { onCopyCommand(command) } label: {
-                            Label(Strings.t("action.copyCommand"), systemImage: "doc.on.doc")
+                Label(account.windows.isEmpty && account.collection.isHealthy ? Strings.t("popover.noWindows") : account.collection.actionText,
+                      systemImage: "exclamationmark.circle")
+                    .font(.caption).foregroundStyle(account.collection.isHealthy ? Color.secondary : Color.orange)
+                DisclosureGroup(Strings.t("detail.overview.collectionHelp")) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if let detail = account.collection.errorDetail {
+                            Text(detail).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
                         }
-                        .help(Strings.t("action.copyCommandHelp"))
+                        if let command = account.collection.recoveryCommand {
+                            Text(Strings.t("popover.runCommand", command)).font(.caption2).foregroundStyle(.secondary)
+                        }
+                        HStack(spacing: 8) {
+                            if let command = account.collection.recoveryCommand {
+                                Button { onCopyCommand(command) } label: {
+                                    Label(Strings.t("action.copyCommand"), systemImage: "doc.on.doc")
+                                }.help(Strings.t("action.copyCommandHelp"))
+                            }
+                            Button(action: onOpenConfig) {
+                                Label(Strings.t("detail.overview.openConfig"), systemImage: "doc.text")
+                            }
+                        }.buttonStyle(.bordered).controlSize(.small)
                     }
-                    Button(action: onOpenConfig) {
-                        Label(Strings.t("action.openSettings"), systemImage: "gearshape")
-                    }
-                    .help(Strings.t("action.openSettingsHelp"))
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                    .padding(.top, 6)
+                }.font(.caption)
             }
-            if account.collection.isHealthy {
-                quotaRows
-            } else if !account.windows.isEmpty {
-                DisclosureGroup(Strings.t("account.previousReadings")) { quotaRows }
-                    .font(.caption)
+            if !account.collection.isHealthy && !account.windows.isEmpty {
+                Text(Strings.t("account.previousReadings")).font(.caption2).foregroundStyle(.secondary)
+            }
+            ForEach(primaryAndAttentionWindows) { window in quotaRow(window) }
+            if !otherWindows.isEmpty {
+                DisclosureGroup(Strings.t("detail.overview.otherLimits", String(otherWindows.count))) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(otherWindows) { window in quotaRow(window) }
+                    }.padding(.top, 8)
+                }.font(.caption)
             }
             if let recovery {
                 AccountRecoveryView(account: recovery, transportUnavailable: transportUnavailable)
@@ -64,13 +73,31 @@ struct AccountSection: View {
         return "\(account.collection.sourceLabel) · \(age)"
     }
 
-    private var quotaRows: some View {
-        ForEach(account.windows.sorted { left, right in
+    private var orderedWindows: [QuotaWindow] {
+        account.windows.sorted { left, right in
             let leftPrimary = left.bucket.hasPrefix("codex:")
             let rightPrimary = right.bucket.hasPrefix("codex:")
             if leftPrimary != rightPrimary { return leftPrimary }
             return (left.windowSeconds ?? 0) < (right.windowSeconds ?? 0)
-        }) { WindowRow(window: $0, current: !transportUnavailable && account.collection.isHealthy && $0.freshness == "fresh") }
+        }
+    }
+
+    private var primaryAndAttentionWindows: [QuotaWindow] {
+        let presentation = AccountListPresentation(account: account)
+        let primaryIDs = Set(presentation.visibleWindows.map(\.id))
+        return orderedWindows.filter {
+            primaryIDs.contains($0.id) || $0.isResetTicketPending || $0.isUsageBlocked || $0.isUsagePermissionUnknown ||
+                $0.freshness != "fresh" || $0.isLowRemaining || $0.remainingPercent == nil
+        }
+    }
+
+    private var otherWindows: [QuotaWindow] {
+        let visibleIDs = Set(primaryAndAttentionWindows.map(\.id))
+        return orderedWindows.filter { !visibleIDs.contains($0.id) }
+    }
+
+    private func quotaRow(_ window: QuotaWindow) -> some View {
+        WindowRow(window: window, current: !transportUnavailable && account.collection.isHealthy && window.freshness == "fresh")
     }
 }
 
@@ -90,24 +117,27 @@ private struct WindowRow: View {
             }
             RemainingBar(window: window, current: current)
             VStack(alignment: .leading, spacing: 1) {
-                Text(DisplayFormat.resetStamp(window.resetsAtMs))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                if let resetText {
+                    Text(resetText).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                }
                 if window.isResetTicketPending || window.isUsageBlocked || window.isUsagePermissionUnknown {
                     Text(Strings.t(window.isResetTicketPending ? "accounts.list.resetTicketPending" : window.isUsageBlocked ? "accounts.list.limitBlocked" : "accounts.list.permissionUnknown"))
                         .font(.caption2).foregroundStyle(.orange)
                 }
-                if let pace = window.paceText {
-                    Text(pace)
-                        .font(.caption2)
-                        .foregroundStyle(paceTone)
-                }
                 if window.freshness != "fresh" {
                     Text(freshnessText).font(.caption2).foregroundStyle(.orange)
                 }
+                if current && window.isExhausted {
+                    Text(Strings.t("window.exhausted")).font(.caption2).foregroundStyle(.red)
+                }
+                if let pace = window.paceText, !window.isExhausted {
+                    DisclosureGroup(Strings.t("detail.overview.usagePace")) {
+                        Text(pace).font(.caption2).foregroundStyle(.secondary).padding(.top, 4)
+                    }.font(.caption2)
+                }
             }
         }
-        .accessibilityElement(children: .ignore)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(window.shortLabel)
         .accessibilityValue(accessibilityValue)
     }
@@ -128,15 +158,17 @@ private struct WindowRow: View {
         }
     }
 
-    private var paceTone: Color {
-        if current && window.isExhausted { return .red }
-        return .secondary
+    private var resetText: String? {
+        guard current, window.freshness == "fresh",
+              let reset = AccountListPresentation.knownResetTime(window.resetsAtMs) else { return nil }
+        return Strings.t("detail.overview.resetsAt", reset)
     }
 
     private var accessibilityValue: String {
         let permission = window.isResetTicketPending ? Strings.t("accounts.list.resetTicketPending") : window.isUsageBlocked ? Strings.t("accounts.list.limitBlocked") :
             window.isUsagePermissionUnknown ? Strings.t("accounts.list.permissionUnknown") : nil
-        let pieces = [remainingText, usedText, DisplayFormat.resetStamp(window.resetsAtMs), window.paceText, permission]
+        let pieces = [remainingText, usedText, resetText, window.paceText, permission,
+                      window.freshness == "fresh" ? nil : freshnessText]
         return pieces.compactMap { $0 }.joined(separator: ", ")
     }
 }
@@ -165,7 +197,7 @@ private struct RemainingBar: View {
                 }
             }
         }
-        .frame(height: 7)
+        .frame(height: 4)
         .accessibilityHidden(true)
     }
 

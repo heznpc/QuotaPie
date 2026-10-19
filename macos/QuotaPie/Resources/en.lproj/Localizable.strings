@@ -1286,3 +1286,30 @@
 "accounts.list.resetTicketPending" = "Reset pass used · checking quota";
 "resetTickets.pending" = " Rechecking quota.";
 "event.resetTicketRecovery" = "%@ recovered after a reset pass was used.";
+
+"settings.organized.general" = "General";
+"settings.organized.notifications" = "Notifications";
+"settings.organized.accounts" = "Accounts & Connections";
+"settings.organized.automation" = "Work & Models";
+"settings.organized.power" = "Power";
+"settings.organized.advanced" = "Advanced";
+"settings.organized.menu" = "Settings…";
+"settings.organized.open" = "Open Settings";
+"settings.organized.description" = "Manage accounts, notifications, work, and power in the settings window.";
+"settings.organized.connectionUnavailable" = "Settings are available after the connection is verified.";
+"settings.organized.behaviorDetails" = "Behavior and limitations";
+"settings.organized.tools" = "Management tools";
+"settings.organized.toolsDescription" = "Inspect the configuration file or copy the current status.";
+"settings.organized.openConfig" = "Open Configuration File";
+
+"detail.overview.activityAndNews" = "Activity and news";
+"detail.overview.collectionHelp" = "Collection details and recovery";
+"detail.overview.openConfig" = "Open configuration file";
+"detail.overview.otherLimits" = "Other limits (%@)";
+"detail.overview.usagePace" = "Usage pace";
+"detail.overview.globalActivity" = "Across accounts";
+"detail.overview.compactionsRunning" = "Compacting %@ requests";
+"detail.overview.resetsAt" = "Resets %@";
+"settings.organized.historyCount" = "View %@ records";
+"settings.organized.finishedJobs" = "Finished automatic jobs (%@)";
+"settings.organized.activityHistory" = "Activity history";

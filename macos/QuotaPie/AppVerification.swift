@@ -10,6 +10,7 @@ struct AppVerification: Decodable {
     let runningProfileIDs: [String]
     let frontmostProfileID: String?
     let initialSection: String?
+    let settingsCategory: String?
     let initialAccountID: String?
     let navigationClicks: [NavigationClick]?
     struct NavigationClick: Decodable { let x: Double; let y: Double }
@@ -93,7 +94,11 @@ struct AppVerification: Decodable {
             if let appearance { window.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua) }
             let fittingSize = content.view.fittingSize
             let height = contentHeight ?? Double(fittingSize.height)
-            window.setContentSize(NSSize(width: fittingSize.width, height: min(1200, max(1, height))))
+            // Preserve the production settings window's viewport. Sizing it to
+            // unconstrained text would hide wrapping and scrolling regressions.
+            if window.identifier?.rawValue != "quotapie.settings" {
+                window.setContentSize(NSSize(width: fittingSize.width, height: min(1200, max(1, height))))
+            }
             if interactive == true, Self.interactiveWindow == nil {
                 Self.interactiveWindow = window
                 NSApp.setActivationPolicy(.regular)
@@ -188,6 +193,9 @@ struct AppVerification: Decodable {
             "appearance": content?.view.effectiveAppearance.name.rawValue ?? "",
             "scrollRegions": scrollRegions,
             "viewRendered": rendered,
+            "windowTitle": mountedContentWindow?.title ?? "",
+            "windowIdentifier": mountedContentWindow?.identifier?.rawValue ?? "",
+            "settingsCategory": settingsCategory as Any? ?? NSNull(),
             "detailSection": model.detailSection?.rawValue as Any? ?? NSNull(),
             "isShowingAccountList": model.isShowingAccountList,
             "inspectedAccount": model.inspectedAccountID as Any? ?? NSNull(),

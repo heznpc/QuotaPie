@@ -9,7 +9,7 @@ struct AccountNicknamesView: View {
             Text(Strings.t("accounts.nicknames.title")).font(.headline)
             Text(Strings.t("accounts.nicknames.hint")).font(.caption).foregroundStyle(.secondary)
             ForEach(model.payload?.accounts ?? []) { account in
-                AccountNicknameRow(account: account, token: model.payload?.actionToken, refresh: refresh)
+                AccountNicknameRow(account: account, token: model.canActOnTasks ? model.payload?.actionToken : nil, service: model.statusClient, refresh: refresh)
             }
         }
     }
@@ -18,6 +18,7 @@ struct AccountNicknamesView: View {
 private struct AccountNicknameRow: View {
     let account: AccountState
     let token: String?
+    let service: StatusClient?
     let refresh: () -> Void
     @State private var draft: String
     @State private var saved: String
@@ -25,8 +26,8 @@ private struct AccountNicknameRow: View {
     @State private var message: String?
     @State private var client: StatusClient?
 
-    init(account: AccountState, token: String?, refresh: @escaping () -> Void) {
-        self.account = account; self.token = token; self.refresh = refresh
+    init(account: AccountState, token: String?, service: StatusClient?, refresh: @escaping () -> Void) {
+        self.account = account; self.token = token; self.service = service; self.refresh = refresh
         _draft = State(initialValue: account.nickname ?? "")
         _saved = State(initialValue: account.nickname ?? "")
     }
@@ -40,15 +41,15 @@ private struct AccountNicknameRow: View {
                 Button(Strings.t("accounts.nicknames.save"), action: save).disabled(!canSave)
             }
             if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
-        }.disabled(saving || token == nil)
+            if service == nil { Text(Strings.t("settings.organized.connectionUnavailable")).font(.caption).foregroundStyle(.secondary) }
+        }.disabled(saving || token == nil || service == nil)
     }
-    private var canSave: Bool { !saving && token != nil && draft.count <= 80 && draft.trimmingCharacters(in: .whitespacesAndNewlines) != saved }
+    private var canSave: Bool { !saving && token != nil && service != nil && draft.count <= 80 && draft.trimmingCharacters(in: .whitespacesAndNewlines) != saved }
     private func save() {
         guard canSave, let token else { return }
         saving = true; message = nil
         let nickname = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        do {
-            let connection = try StatusClient()
+        if let connection = service {
             client = connection
             connection.saveNickname(provider: account.provider, account: account.account, nickname: nickname, actionToken: token) { result in
                 DispatchQueue.main.async {
@@ -62,6 +63,6 @@ private struct AccountNicknameRow: View {
                     }
                 }
             }
-        } catch { saving = false; message = Strings.t("accounts.nicknames.error") }
+        } else { saving = false; message = Strings.t("accounts.nicknames.error") }
     }
 }

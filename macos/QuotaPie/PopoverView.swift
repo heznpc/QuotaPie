@@ -4,20 +4,24 @@ import SwiftUI
 struct PopoverView: View {
     @ObservedObject var model: PopoverModel
     @ObservedObject private var awake = AwakeController.shared
+    @State private var overviewSupplementaryExpanded = false
     let actions: PopoverActions
 
     var body: some View {
-        if model.detailSection != nil {
-            DetailsView(model: model, section: Binding(
-                get: { model.detailSection ?? .quota },
-                set: { model.detailSection = $0 }
-            ), actions: actions, back: model.showOverview)
-                .frame(width: 460, height: AppVerification.current?.contentHeight.map { CGFloat(min(1200, max(560, $0))) } ?? model.popoverDetailHeight)
-        } else if model.isShowingAccountList {
-            accountList
-        } else {
-            overview
+        Group {
+            if model.detailSection != nil {
+                DetailsView(model: model, section: Binding(
+                    get: { model.detailSection ?? .quota },
+                    set: { model.detailSection = $0 }
+                ), actions: actions, back: model.showOverview)
+                    .frame(width: 460, height: AppVerification.current?.contentHeight.map { CGFloat(min(1200, max(560, $0))) } ?? model.popoverDetailHeight)
+            } else if model.isShowingAccountList {
+                accountList
+            } else {
+                overview
+            }
         }
+        .onChange(of: model.inspectedAccountID) { _ in overviewSupplementaryExpanded = false }
     }
 
     private var accountList: some View {
@@ -60,21 +64,36 @@ struct PopoverView: View {
 
     private var accountListContent: some View {
         VStack(spacing: 0) {
+            if model.lastError != nil {
+                Label(model.statusFailureText + (model.enabledAccounts.contains(where: { !$0.windows.isEmpty }) ?
+                    " · " + Strings.t("accounts.list.previous") : ""), systemImage: "exclamationmark.circle")
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(16)
+                    .accessibilityIdentifier("accounts.transportFailure")
+                if !model.enabledAccounts.isEmpty { Divider().padding(.horizontal, 16) }
+            }
             if model.enabledAccounts.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text(model.lastError == nil ? Strings.t("popover.noAccounts") : model.statusFailureText)
-                        .font(.callout).foregroundStyle(.secondary)
+                    if model.lastError == nil {
+                        Text(Strings.t("popover.noAccounts"))
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
                     Button(Strings.t("action.openSettings")) { showDetails(.settings) }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(16)
             } else {
                 ForEach(model.enabledAccounts) { account in
                     AccountListRow(account: account, showingStartupCache: model.showingStartupCache,
-                                   transportFailure: model.lastError == nil ? nil : model.statusFailureText,
+                                   transportUnavailable: model.lastError != nil,
                                    select: { model.showAccount(account) })
                     if account.id != model.enabledAccounts.last?.id { Divider().padding(.horizontal, 16) }
                 }
             }
-            if let message = model.collectionRequestError ?? model.accountOpenError {
+            if let message = model.collectionRequestError, model.lastError == nil {
+                Text(message).font(.caption).foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.bottom, 12)
+            }
+            if let message = model.accountOpenError {
                 Text(message).font(.caption).foregroundStyle(.orange)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.bottom, 12)
             }
@@ -99,137 +118,199 @@ struct PopoverView: View {
     }
 
     private var overview: some View {
+        ViewThatFits(in: .vertical) {
+            overviewFrame {
+                overviewContent.fixedSize(horizontal: false, vertical: true)
+            }
+            overviewFrame {
+                ScrollView(.vertical) { overviewContent }
+                    .frame(height: max(1, model.popoverDetailHeight - 86))
+            }
+        }
+        .frame(width: 360)
+        .frame(maxHeight: model.popoverDetailHeight)
+    }
+
+    private func overviewFrame<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(spacing: 0) {
             HStack {
                 Button(action: model.showAccountList) {
                     Label(Strings.t("navigation.accounts"), systemImage: "chevron.left")
                 }.buttonStyle(.plain).accessibilityIdentifier("navigation.accountsBack")
                 Spacer()
-            }.padding(.horizontal, 20).padding(.top, 16)
-            ScrollView(.vertical) {
-                overviewContent
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }.padding(.horizontal, 16).frame(height: 44)
             Divider()
-            footer.padding(.horizontal, 16).padding(.vertical, 12)
+            content()
+            Divider()
+            footer.padding(.horizontal, 12).frame(height: 40)
         }
-        .frame(width: 360, height: model.popoverDetailHeight)
+        .frame(width: 360)
     }
 
     private var overviewContent: some View {
-        VStack(alignment: .leading, spacing: 0) {
-#if DEBUG
-            if ProcessInfo.processInfo.environment["QUOTAPIE_DEBUG_AUTO_OPEN"] == "1" {
-                Text(Strings.t("overview.preview"))
-                    .font(.caption).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 20).padding(.top, 12)
+        VStack(alignment: .leading, spacing: 16) {
+            quotaOverview
+            if let error = model.accountOpenError {
+                Text(error).font(.caption).foregroundStyle(.orange)
             }
-#endif
-            quotaOverview.padding(20)
+            if !model.detailsLoaded {
+                Text(model.detailsError ?? Strings.t("details.loading"))
+                    .font(.caption).foregroundStyle(model.detailsError == nil ? Color.secondary : Color.orange)
+            }
             if let account = model.displayedAccount, account.provider == "codex" {
-                AutoResumeSummary(accountID: account.account, payload: model.payload?.autoResume,
-                                  current: model.canActOnTasks, openWork: { showDetails(.work) })
-                    .padding(.horizontal, 20).padding(.bottom, 16)
+                AccountOverviewContinuation(accountID: account.account, payload: model.payload?.autoResume,
+                    current: model.canActOnTasks, openWork: { showDetails(.work) })
             }
+            if !accountTasks.isEmpty { taskOverview }
+            if model.payload?.accountPool?.error != nil || model.payload?.compaction?.latest?.active == true || model.payload?.compaction?.latest?.errorCode != nil {
+                Text(Strings.t("detail.overview.globalActivity")).font(.caption2).foregroundStyle(.secondary)
+            }
+            if let error = model.payload?.accountPool?.error {
+                Button(action: actions.openSettings) {
+                    Label(poolErrorText(error), systemImage: "exclamationmark.circle")
+                        .font(.caption).foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }.buttonStyle(.plain)
+            }
+            if let record = model.payload?.compaction?.latest, record.active || record.errorCode != nil {
+                compactActivity(record)
+            }
+            if hasSupplementaryDetails {
+                Divider()
+                DisclosureGroup(Strings.t("detail.overview.activityAndNews"), isExpanded: $overviewSupplementaryExpanded) {
+                    supplementaryDetails.padding(.top, 10)
+                }.font(.system(size: 12, weight: .medium))
+                    .accessibilityIdentifier("account.detail.supplementary")
+            }
+            if awake.enabled || model.notificationsAllowed == false { statusLinks }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var accountTasks: [ResumeTask] {
+        guard let account = model.displayedAccount else { return [] }
+        return model.activeTasks.filter { $0.provider == account.provider && $0.account == account.account }
+    }
+
+    private var hasSupplementaryDetails: Bool {
+        let pool = model.payload?.accountPool
+        let savings = model.payload?.compaction?.savings
+        let latest = model.payload?.compaction?.latest
+        return pool.map { $0.enabled || !$0.recent.isEmpty } == true ||
+            savings.map { $0.policy?.enabled == true || !($0.insights ?? []).isEmpty } == true ||
+            latest.map { !$0.active && $0.errorCode == nil } == true ||
+            model.displayedRecovery != nil || model.payload?.resetSignals?.enabled == true
+    }
+
+    private func poolErrorText(_ error: String) -> String {
+        Strings.t(error == "pool_reserve_reached" ? "pool.settings.blocked" :
+            error == "pool_reserve_quota_unavailable" ? "pool.settings.stale" :
+            ["pool_request_failed", "pool_response_unverified"].contains(error) ? "pool.requestFailed" : "pool.blocked")
+    }
+
+    private var supplementaryDetails: some View {
+        VStack(alignment: .leading, spacing: 14) {
             if let pool = model.payload?.accountPool, pool.enabled || !pool.recent.isEmpty {
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 4) {
                     Label(Strings.t(pool.enabled ? "pool.enabled" : "pool.disabled"), systemImage: "arrow.triangle.branch")
-                    if let error = pool.error {
-                        Text(Strings.t(error == "pool_reserve_reached" ? "pool.settings.blocked" :
-                            error == "pool_reserve_quota_unavailable" ? "pool.settings.stale" :
-                            ["pool_request_failed", "pool_response_unverified"].contains(error) ? "pool.requestFailed" : "pool.blocked")).foregroundStyle(.orange)
-                    }
                     if let request = pool.recent.first {
                         Text(Strings.t(request.state == "completed" ? "pool.lastCompleted" : "pool.lastRouted", request.accountLabel))
+                            .foregroundStyle(.secondary)
                         if let headline = model.latestRoutedHeadline {
                             Text(headline.localizedTitle).foregroundStyle(.secondary)
                         }
-                        Text(Strings.t("pool.loginUnchanged")).foregroundStyle(.secondary)
-                    } else { Text(Strings.t("pool.waiting")).foregroundStyle(.secondary) }
-                }.font(.caption).padding(.horizontal, 20).padding(.bottom, 12)
-            }
-            if let error = model.accountOpenError {
-                Text(error).font(.caption).foregroundStyle(.orange)
-                    .padding(.horizontal, 20).padding(.bottom, 12)
+                    }
+                }.font(.caption)
             }
             if let savings = model.payload?.compaction?.savings, savings.policy?.enabled == true || !(savings.insights ?? []).isEmpty {
                 Button { showDetails(.activity) } label: {
                     Label(savings.insights?.first.map { Strings.t("savings.insight." + $0.kind, String($0.count)) }
-                          ?? savings.latest?.summary ?? Strings.t("savings.waiting"),
-                          systemImage: (savings.insights ?? []).isEmpty ? "leaf" : "exclamationmark.bubble")
+                        ?? savings.latest?.summary ?? Strings.t("savings.waiting"), systemImage: "leaf")
                         .font(.caption).frame(maxWidth: .infinity, alignment: .leading)
-                }.buttonStyle(.plain).padding(.horizontal, 20).padding(.bottom, 12)
+                }.buttonStyle(.plain)
             }
-            if let record = model.payload?.compaction?.latest {
-                CompactionSummary(record: record, openHistory: { showDetails(.activity) })
-                    .padding(.horizontal, 20).padding(.bottom, 12)
+            if let record = model.payload?.compaction?.latest, !record.active && record.errorCode == nil {
+                compactActivity(record)
             }
-            if !model.detailsLoaded {
-                Text(model.detailsError ?? Strings.t("details.loading"))
-                    .font(.caption).foregroundStyle(.secondary)
-                    .padding(.horizontal, 20).padding(.bottom, 12)
-            }
-            if !model.activeTasks.isEmpty {
-                Divider().padding(.horizontal, 20)
-                taskOverview.padding(20)
+            if let recovery = model.displayedRecovery {
+                Button { showDetails(.activity) } label: {
+                    Label(Strings.t("recovery.overview") + " · " + recovery.evidence.remainingText,
+                          systemImage: "arrow.up.circle")
+                        .font(.caption).frame(maxWidth: .infinity, alignment: .leading)
+                }.buttonStyle(.plain)
             }
             if let feed = model.payload?.resetSignals, feed.enabled {
-                Divider().padding(.horizontal, 20)
-                ResetSignalSummary(feed: feed, openHistory: { showDetails(.resets) }, openWork: { showDetails(.work) })
-                    .padding(.horizontal, 20).padding(.vertical, 16)
-            }
-            if awake.enabled || model.notificationsAllowed == false {
-                Divider().padding(.horizontal, 20)
-                statusLinks.padding(.horizontal, 20).padding(.vertical, 10)
+                Button { showDetails(.resets) } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label(Strings.t("overview.resetNews"), systemImage: "newspaper")
+                        Text(feed.latestSignal.map { Strings.t($0.summaryKey(nowMs: Date().timeIntervalSince1970 * 1_000)) }
+                            ?? Strings.t(feed.state == "ready" ? "signal.empty" : "signal.health." + feed.state))
+                            .foregroundStyle(.secondary)
+                    }.font(.caption).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                }.buttonStyle(.plain)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func compactActivity(_ record: CompactionRecord) -> some View {
+        let activeCount = model.payload?.compaction?.active.filter(\.active).count ?? 0
+        let title = record.active && activeCount > 1 ? Strings.t("detail.overview.compactionsRunning", String(activeCount)) :
+            Strings.t(record.phaseKey) + " · " + record.modelText
+        return Button { showDetails(.activity) } label: {
+            HStack(spacing: 8) {
+                Label(title,
+                      systemImage: record.active ? "arrow.triangle.2.circlepath" : "doc.text.magnifyingglass")
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right").font(.caption2)
+            }
+            .font(.caption).foregroundStyle(record.errorCode == nil ? Color.primary : Color.orange)
+            .contentShape(Rectangle())
+        }.buttonStyle(.plain)
     }
 
     private func showDetails(_ section: DetailSection, taskID: String? = nil) {
+        if section == .settings { actions.openSettings(); return }
         model.showDetails(section, taskID: taskID)
     }
 
     private var quotaOverview: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .center, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
                 if let account = model.displayedAccount {
                     Image(nsImage: AccountBadge(accountID: account.id, name: account.accountLabel).image(size: 20))
                         .accessibilityHidden(true)
                 }
                 accountIdentity
+                Spacer(minLength: 4)
                 if let account = model.displayedAccount, account.provider == "codex" {
                     Button { actions.openAccount(account) } label: {
-                        Image(systemName: "arrow.up.forward.app")
+                        Image(systemName: "arrow.up.forward.app").frame(width: 24, height: 24)
                     }
-                    .buttonStyle(.borderless)
-                    .disabled(model.openingAccount)
+                    .buttonStyle(.borderless).disabled(model.openingAccount)
                     .help(Strings.t("profiles.openAccount", account.accountLabel))
                     .accessibilityLabel(Strings.t("profiles.openAccount", account.accountLabel))
                 }
-                Spacer(minLength: 8)
-                if let last = model.displayedMeasurementDate {
-                    Text(DisplayFormat.age(since: last))
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+            }
+            HStack {
+                Text(Strings.t("accounts.list.remaining")).font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                detailButton("overview.quotaDetail", section: .quota)
             }
             if let account = model.displayedAccount {
-                if let window = account.overviewWindow {
-                    quotaReading(account: account, window: window)
-                } else {
-                    Text(account.collection.isHealthy ? Strings.t("overview.noGeneralQuota") : account.collection.actionText)
-                        .font(.callout).foregroundStyle(.secondary)
-                    detailButton("overview.quotaDetail", section: .quota)
-                }
+                AccountOverviewQuota(account: account,
+                    current: !model.showingStartupCache && model.lastError == nil && account.collection.isHealthy)
                 if model.showingStartupCache {
-                    Text(Strings.t("collection.previousReading"))
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text(Strings.t("collection.previousReading")).font(.caption).foregroundStyle(.secondary)
                 } else if model.payload?.collection?.refreshing == true {
                     Label(Strings.t("collection.refreshing"), systemImage: "arrow.triangle.2.circlepath")
                         .font(.caption).foregroundStyle(.secondary)
+                } else if let measured = model.displayedMeasurementDate {
+                    Text(Strings.t("accounts.list.measured", DisplayFormat.age(since: measured)))
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .help(Strings.t("collection.measuredAt", measured.formatted(date: .abbreviated, time: .shortened)))
                 }
-                if let message = model.collectionRequestError {
+                if let message = model.collectionRequestError, model.lastError == nil {
                     Text(message).font(.caption).foregroundStyle(.orange)
                 }
                 if account.windows.contains(where: \.isResetTicketPending) || account.windows.contains(where: \.isUsageBlocked) || account.windows.contains(where: \.isUsagePermissionUnknown) {
@@ -237,39 +318,26 @@ struct PopoverView: View {
                         "accounts.list.permissionUnknown"), systemImage: "exclamationmark.circle")
                         .font(.caption).foregroundStyle(.orange)
                 }
-                if !model.showingStartupCache && (model.lastError != nil || !account.collection.isHealthy) {
-                    Button { showDetails(.quota) } label: {
-                        Label(model.lastError != nil ? model.statusFailureText : account.collection.actionText,
-                              systemImage: "exclamationmark.circle")
-                            .font(.caption).foregroundStyle(.orange)
-                            .multilineTextAlignment(.leading)
-                    }
-                    .buttonStyle(.plain)
+                if model.lastError != nil {
+                    Label(model.statusFailureText + " · " + Strings.t("accounts.list.previous"),
+                          systemImage: "exclamationmark.circle")
+                        .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                 }
-                if let recovery = model.displayedRecovery {
-                    Button { showDetails(.activity) } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: "arrow.up.circle.fill").foregroundStyle(.green)
-                            VStack(alignment: .leading, spacing: 3) {
-                                HStack(spacing: 8) {
-                                    Text(Strings.t("recovery.overview")).fontWeight(.medium)
-                                    Text(DisplayFormat.age(since: Date(timeIntervalSince1970: recovery.evidence.observedByMs / 1_000)))
-                                        .foregroundStyle(.secondary)
-                                }
-                                Text("\(recovery.label) · \(recovery.evidence.remainingText)")
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer(minLength: 0)
-                            Text(Strings.t("overview.history")).foregroundStyle(Color.accentColor)
-                        }
-                        .font(.caption).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
+                if !account.collection.isHealthy && !(model.lastError != nil &&
+                    ["network", "stale-success", "attempted-then-failed"].contains(account.collection.errorCategory ?? account.collection.health)) {
+                    Button { showDetails(.quota) } label: {
+                        Label(account.collection.actionText + (model.lastError == nil && !account.windows.isEmpty ?
+                            " · " + Strings.t("accounts.list.previous") : ""),
+                              systemImage: "exclamationmark.circle")
+                            .font(.caption).foregroundStyle(.orange).multilineTextAlignment(.leading)
+                    }.buttonStyle(.plain)
+                }
+                if account.windows.isEmpty {
+                    Text(Strings.t("popover.noWindows")).font(.caption).foregroundStyle(.secondary)
                 }
             } else {
-                Text(model.lastError == nil ? Strings.t("popover.noAccounts") : model.statusFailureText)
+                Text(model.lastError == nil ? Strings.t("accounts.list.unavailable") : model.statusFailureText)
                     .font(.callout).foregroundStyle(.secondary)
-                detailButton("overview.quotaDetail", section: .quota)
             }
         }
     }
@@ -285,61 +353,20 @@ struct PopoverView: View {
         }.help(model.displayedAccount.map { "\($0.providerTitle) · \($0.accountLabel)" } ?? "QuotaPie")
     }
 
-    private func quotaReading(account: AccountState, window: QuotaWindow) -> some View {
-        let current = !model.showingStartupCache && model.lastError == nil && account.collection.isHealthy && window.freshness == "fresh"
-        let percent = window.remainingPercent.map { min(100, max(0, $0)) }
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .bottom) {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 2) {
-                        Text(percent.map { String(Int($0.rounded())) } ?? "—")
-                            .font(.system(size: 40, weight: .semibold, design: .rounded).monospacedDigit())
-                        if percent != nil {
-                            Text("%").font(.system(size: 21, weight: .medium))
-                        }
-                    }
-                    .foregroundStyle(current ? (window.isLowRemaining ? Color.red : Color.primary) : Color.secondary)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(Strings.t(current ? "overview.remaining" : "overview.cachedRemaining", window.shortLabel))
-                    .accessibilityValue(percent.map { "\(Int($0.rounded()))%" } ?? "—")
-                    Text(Strings.t(current ? "overview.remaining" : "overview.cachedRemaining", window.shortLabel))
-                        .font(.callout).foregroundStyle(.secondary)
-                }
-                Spacer()
-                detailButton("overview.quotaDetail", section: .quota).padding(.bottom, 3)
-            }
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.10))
-                    Capsule().fill(current && window.isLowRemaining ? Color.red : Color.primary.opacity(current ? 0.75 : 0.28))
-                        .frame(width: geometry.size.width * (percent ?? 0) / 100)
-                }
-            }
-            .frame(height: 5).accessibilityHidden(true)
-            if let measured = model.displayedMeasurementDate {
-                Text(Strings.t("collection.measuredAt", measured.formatted(date: .abbreviated, time: .shortened)))
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
-            Text(current && window.isExhausted ? Strings.t("window.exhausted") : DisplayFormat.resetStamp(window.resetsAtMs))
-                .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
     private var taskOverview: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(Strings.t("resume.sectionTitle")).font(.system(size: 12, weight: .semibold))
-                Text(model.taskOverviewSummary)
+                Text(Strings.t("overview.taskCounts", String(accountTasks.filter(\.isReady).count),
+                    String(accountTasks.filter(\.isApproved).count), String(accountTasks.filter(\.isWaiting).count)))
                     .font(.caption).foregroundStyle(.secondary)
             }
-            ForEach(Array(model.activeTasks.prefix(3))) { task in
+            ForEach(Array(accountTasks.prefix(2))) { task in
                 Button { showDetails(.work, taskID: task.id) } label: {
                     HStack(spacing: 10) {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(task.projectLabel).font(.system(size: 13, weight: .medium))
                                 .foregroundStyle(.primary).lineLimit(1)
-                            Text("\(task.providerTitle) · \(task.accountLabel)")
-                                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                         }
                         Spacer(minLength: 8)
                         Text(Strings.t(task.isReady ? "overview.taskReady" : task.isApproved ? "overview.taskApproved" : "overview.taskWaiting"))
@@ -353,7 +380,7 @@ struct PopoverView: View {
                 .buttonStyle(.plain)
                 .help("\(task.projectLabel) · \(task.shortReference)")
             }
-            if model.activeTasks.count > 3 {
+            if accountTasks.count > 2 {
                 detailButton("overview.allTasks", section: .work)
             }
         }
@@ -396,7 +423,7 @@ struct PopoverView: View {
             }
             .menuStyle(.borderlessButton).fixedSize()
             .accessibilityIdentifier("footer.more")
-            Button { showDetails(.settings) } label: { Image(systemName: "gearshape").frame(width: 24, height: 24) }
+            Button(action: actions.openSettings) { Image(systemName: "gearshape").frame(width: 24, height: 24) }
                 .accessibilityLabel(Strings.t("detail.settings"))
                 .accessibilityIdentifier("footer.settings")
                 .help(Strings.t("detail.settings"))

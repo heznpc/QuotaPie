@@ -59,8 +59,9 @@ struct DotsConnectionView: View {
             }
             if busy { ProgressView().controlSize(.small) }
             if failed { Text(Strings.t("dots.error")).font(.caption).foregroundStyle(.secondary) }
+            if model.statusClient == nil { Text(Strings.t("settings.organized.connectionUnavailable")).font(.caption).foregroundStyle(.secondary) }
         }
-        .disabled(busy || !model.canActOnTasks)
+        .disabled(busy || !model.canActOnTasks || model.statusClient == nil)
         .onAppear { if connection == nil { request() } }
     }
 
@@ -70,17 +71,19 @@ struct DotsConnectionView: View {
     }
 
     private func request(_ action: String? = nil) {
-        guard !busy, model.canActOnTasks, let token = model.payload?.actionToken else { return }
+        guard !busy, model.canActOnTasks, let service = model.statusClient, let token = model.payload?.actionToken else { return }
         busy = true; failed = false
         do {
-            let service = try StatusClient(operationTimeout: 50)
-            client = service
-            service.dotsConnection(action: action, actionToken: token) { result in
+            // Keep the longer connection timeout while using this window's
+            // existing endpoint, including an isolated verification service.
+            let connection = try StatusClient(environment: ["QUOTAPIE_API_URL": service.baseURL.absoluteString], operationTimeout: 50)
+            client = connection
+            connection.dotsConnection(action: action, actionToken: token) { result in
                 DispatchQueue.main.async {
                     busy = false; client = nil
                     switch result {
-                    case .success(let status): connection = status
-                    case .failure: failed = true; connection = nil
+                    case .success(let status): self.connection = status
+                    case .failure: failed = true; self.connection = nil
                     }
                 }
             }

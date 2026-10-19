@@ -30,8 +30,8 @@ struct NotificationPreferencesView: View {
                     get: { preferences.enabled }, set: { save("enabled", $0) }))
                 Text(Strings.t("notification.preferences.history")).font(.caption).foregroundStyle(.secondary)
                 ForEach(groups, id: \.0) { group in
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text(Strings.t("notification.preferences.group." + group.0)).font(.subheadline).bold()
+                    DisclosureGroup(Strings.t("notification.preferences.group." + group.0)) {
+                        VStack(alignment: .leading, spacing: 8) {
                         ForEach(group.1, id: \.self) { topic in
                             Toggle(Strings.t("notification.topic." + topic), isOn: Binding(
                                 get: { preferences.topics[topic] ?? !["rapidConsumption", "studentBenefits", "discounts", "rewardEvents"].contains(topic) }, set: { save(topic, $0) }))
@@ -41,6 +41,7 @@ struct NotificationPreferencesView: View {
                                 get: { preferences.paceForecasts ?? false }, set: { save("paceForecasts", $0) }))
                                 .disabled(preferences.topics["quotaWarnings"] == false)
                         }
+                        }.padding(.top, 6)
                     }.disabled(!preferences.enabled)
                 }
                 if !preferences.desktopEnabled {

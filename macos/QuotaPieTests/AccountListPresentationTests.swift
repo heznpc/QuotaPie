@@ -3,7 +3,7 @@ import XCTest
 @testable import QuotaPie
 
 final class AccountListPresentationTests: XCTestCase {
-    func testGeneralFiveHourAndWeeklyColumnsRemainStableAcrossInputOrder() throws {
+    func testGeneralFiveHourAndWeeklySelectionRemainsStableAcrossInputOrder() throws {
         let short = try window("codex:primary", seconds: 18_000, remaining: 73)
         let weekly = try window("codex:secondary", seconds: 604_800, remaining: 42)
         let model = try window("codex_bengalfox:primary", seconds: 18_000, remaining: 2)
@@ -12,24 +12,27 @@ final class AccountListPresentationTests: XCTestCase {
             XCTAssertEqual(presentation.fiveHour?.bucket, short.bucket)
             XCTAssertEqual(presentation.weekly?.bucket, weekly.bucket)
             XCTAssertEqual(presentation.additionalLimitCount, 1)
+            XCTAssertEqual(presentation.visibleWindows.map(\.bucket), [short.bucket, weekly.bucket])
         }
     }
 
-    func testMissingColumnNeverBorrowsAWindowFromAnotherDurationOrModel() throws {
+    func testMissingLimitNeverBorrowsAWindowFromAnotherDurationOrModel() throws {
         let weekly = try window("codex:secondary", seconds: 604_800, remaining: 42)
         let unknown = try window("codex:unknown", seconds: nil, remaining: 99)
         let model = try window("codex_bengalfox:primary", seconds: 18_000, remaining: 2)
         let presentation = AccountListPresentation(account: try account(windows: [weekly, unknown, model]))
         XCTAssertNil(presentation.fiveHour)
         XCTAssertEqual(presentation.weekly?.remainingPercent, 42)
+        XCTAssertEqual(presentation.visibleWindows.map(\.bucket), [weekly.bucket])
         XCTAssertEqual(presentation.additionalLimitCount, 2)
         let modelOnly = AccountListPresentation(account: try account(windows: [model]))
         XCTAssertNil(modelOnly.fiveHour)
         XCTAssertNil(modelOnly.weekly)
-        XCTAssertEqual(modelOnly.additionalLimitCount, 1)
+        XCTAssertEqual(modelOnly.visibleWindows.map(\.bucket), [model.bucket])
+        XCTAssertEqual(modelOnly.additionalLimitCount, 0)
     }
 
-    func testClaudeModelWeeklyQuotaDoesNotReplaceItsGeneralWeeklyColumn() throws {
+    func testClaudeModelWeeklyQuotaDoesNotReplaceItsGeneralWeeklyLimit() throws {
         let short = try window("five_hour", provider: "claude", seconds: 18_000, remaining: 53)
         let model = try window("seven_day_sonnet", provider: "claude", seconds: 604_800, remaining: 99)
         let presentation = AccountListPresentation(account: try account(provider: "claude", windows: [model, short]))

@@ -3,7 +3,7 @@ import SwiftUI
 struct AccountListRow: View {
     let account: AccountState
     let showingStartupCache: Bool
-    let transportFailure: String?
+    let transportUnavailable: Bool
     let select: () -> Void
     @State private var hovering = false
 
@@ -30,9 +30,10 @@ struct AccountListRow: View {
                     Image(systemName: "chevron.right").font(.system(size: 9, weight: .medium))
                         .foregroundStyle(.tertiary)
                 }
-                HStack(alignment: .top, spacing: 20) {
-                    quotaSummary(presentation.fiveHour, label: Strings.t("window.five-hour"))
-                    quotaSummary(presentation.weekly, label: Strings.t("window.weekly"))
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(presentation.visibleWindows) { window in
+                        quotaSummary(window)
+                    }
                 }
                 if let warning = warningText {
                     Label(warning, systemImage: "exclamationmark.circle")
@@ -54,12 +55,23 @@ struct AccountListRow: View {
     }
 
     private var warningText: String? {
-        if let transportFailure { return historicalWarning(transportFailure) }
+        var warnings: [String] = []
+        let category = account.collection.errorCategory ?? account.collection.health
+        let sharedFailure = transportUnavailable && ["network", "stale-success", "attempted-then-failed"].contains(category)
+        if !account.collection.isHealthy && !sharedFailure {
+            warnings.append(historicalWarning(account.collection.actionText))
+        }
+        if account.windows.contains(where: \.isResetTicketPending) {
+            warnings.append(Strings.t("accounts.list.resetTicketPending"))
+        } else if account.windows.contains(where: \.isUsageBlocked) {
+            warnings.append(Strings.t("accounts.list.usageBlocked"))
+        } else if account.windows.contains(where: \.isUsagePermissionUnknown) {
+            warnings.append(Strings.t("accounts.list.permissionUnknown"))
+        }
+        if !warnings.isEmpty { return warnings.joined(separator: " · ") }
+        // A shared connection failure is explained once above the account list.
+        if transportUnavailable { return nil }
         if showingStartupCache { return Strings.t("collection.previousReading") }
-        if !account.collection.isHealthy { return historicalWarning(account.collection.actionText) }
-        if account.windows.contains(where: \.isResetTicketPending) { return Strings.t("accounts.list.resetTicketPending") }
-        if account.windows.contains(where: \.isUsageBlocked) { return Strings.t("accounts.list.usageBlocked") }
-        if account.windows.contains(where: \.isUsagePermissionUnknown) { return Strings.t("accounts.list.permissionUnknown") }
         if account.windows.contains(where: { $0.freshness == "reset_due" }) { return Strings.t("window.resetDue") }
         if account.windows.contains(where: { $0.freshness == "stale" }) { return Strings.t("window.stale") }
         if account.windows.contains(where: { $0.freshness != "fresh" }) { return Strings.t("window.unknown") }
@@ -67,24 +79,25 @@ struct AccountListRow: View {
     }
 
     private func historicalWarning(_ warning: String) -> String {
-        let hasReading = [presentation.fiveHour, presentation.weekly].contains { $0?.remainingPercent != nil }
-        return hasReading ? "\(warning) · \(Strings.t("accounts.list.previous"))" : warning
+        let hasReading = presentation.visibleWindows.contains { $0.remainingPercent != nil }
+        return hasReading && !transportUnavailable ? "\(warning) · \(Strings.t("accounts.list.previous"))" : warning
     }
 
-    private func isCurrent(_ window: QuotaWindow?) -> Bool {
-        window != nil && !showingStartupCache && transportFailure == nil && account.collection.isHealthy && window?.freshness == "fresh"
+    private func isCurrent(_ window: QuotaWindow) -> Bool {
+        !showingStartupCache && !transportUnavailable && account.collection.isHealthy && window.freshness == "fresh"
     }
 
-    private func remainingText(_ window: QuotaWindow?) -> String {
-        guard let remaining = window?.remainingPercent, remaining.isFinite else { return "—" }
+    private func remainingText(_ window: QuotaWindow) -> String {
+        guard let remaining = window.remainingPercent, remaining.isFinite else { return "—" }
         return "\(Int(min(100, max(0, remaining)).rounded()))%"
     }
 
-    private func quotaSummary(_ window: QuotaWindow?, label: String) -> some View {
+    private func quotaSummary(_ window: QuotaWindow) -> some View {
+        let label = window.shortLabel
         let current = isCurrent(window)
-        let remaining = window?.remainingPercent.flatMap { $0.isFinite ? min(100, max(0, $0)) : nil }
-        let tone = current ? (window?.isUsageBlocked == true || window?.isUsagePermissionUnknown == true ? Color.orange :
-            window?.isLowRemaining == true ? Color.red : Color.primary) : Color.secondary
+        let remaining = window.remainingPercent.flatMap { $0.isFinite ? min(100, max(0, $0)) : nil }
+        let tone = current ? (window.isResetTicketPending || window.isUsageBlocked || window.isUsagePermissionUnknown ? Color.orange :
+            window.isLowRemaining ? Color.red : Color.primary) : Color.secondary
         return VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(label).font(.caption2).foregroundStyle(.secondary)
@@ -101,20 +114,21 @@ struct AccountListRow: View {
                     }
                 }
             }.frame(height: 3).accessibilityHidden(true)
-            Label(current ? AccountListPresentation.resetTime(window?.resetsAtMs) : "—", systemImage: "arrow.clockwise")
-                .font(.caption2.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
+            if current, let reset = AccountListPresentation.knownResetTime(window.resetsAtMs) {
+                Text(Strings.t("detail.overview.resetsAt", reset))
+                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .help("\(label) · \(DisplayFormat.resetStamp(window?.resetsAtMs))")
     }
 
     private var accessibilityValue: String {
-        var values = [
-            "\(Strings.t("overview.remaining", Strings.t("window.five-hour"))) \(remainingText(presentation.fiveHour))",
-            "\(Strings.t("overview.remaining", Strings.t("window.weekly"))) \(remainingText(presentation.weekly))"
-        ]
-        for window in [presentation.fiveHour, presentation.weekly].compactMap({ $0 }) {
-            values.append("\(window.shortLabel) · \(DisplayFormat.resetStamp(window.resetsAtMs))")
+        var values: [String] = []
+        for window in presentation.visibleWindows {
+            values.append("\(Strings.t(isCurrent(window) ? "overview.remaining" : "overview.cachedRemaining", window.shortLabel)) \(remainingText(window))")
+            if isCurrent(window), let reset = AccountListPresentation.knownResetTime(window.resetsAtMs) {
+                values.append(Strings.t("detail.overview.resetsAt", reset))
+            }
         }
         if let warning = warningText { values.append(warning) }
         if let measured = account.collection.lastSuccessAtMs, measured.isFinite, measured > 0 {

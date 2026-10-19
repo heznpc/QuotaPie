@@ -48,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let userNotificationCenter = UNUserNotificationCenter.current()
     private var client: StatusClient?
     private var usageWindow: UsageWindowController?
+    private var settingsWindow: SettingsWindowController?
     private var notificationPresenter: NotificationPresenter?
     private var notificationTimer: Timer?
     private var refreshTimer: Timer?
@@ -179,7 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         render()
         if verification?.fastQuota == true, popoverModel.showingStartupCache {
-            verification?.record(model: popoverModel, item: statusItem, content: popover.contentViewController, phase: "cache")
+            recordVerification(phase: "cache")
         }
         refresh()
         if !isFixturePreview {
@@ -294,7 +295,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             configurePool: { [weak self] enabled, account, reserve in self?.configurePool(enabled, account, reserve) },
             configureNotifications: { [weak self] key, enabled in self?.configureNotifications(key, enabled: enabled) },
             openRecentWork: { [weak self] item in self?.openRecentWork(item) },
-            openUsageReport: { [weak self] in self?.openUsageReport() }
+            openUsageReport: { [weak self] in self?.openUsageReport() },
+            openSettings: { [weak self] in self?.openSettingsWindow() }
         )
     }
 
@@ -325,13 +327,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     @objc private func refreshVisibleSurface() {
         if usageWindow?.window?.isKeyWindow == true { usageWindow?.refreshReport() }
-        else { refresh() }
+        else {
+            if settingsWindow?.window?.isKeyWindow == true { lastDetailsFetchAt = nil }
+            requestFreshCollection(reason: "manual")
+            refreshDetailsIfNeeded()
+        }
+    }
+
+    @objc private func openSettingsWindow() {
+        popover.performClose(nil)
+        if popoverModel.detailSection == .settings { popoverModel.showOverview() }
+        if settingsWindow == nil { settingsWindow = SettingsWindowController(model: popoverModel, actions: popoverActions) }
+        settingsWindow?.present()
+        lastDetailsFetchAt = nil
+        refreshDetailsIfNeeded()
     }
 
     private func openUsageReport() {
         popover.performClose(nil)
         if usageWindow == nil { usageWindow = UsageWindowController(model: popoverModel) }
         usageWindow?.present()
+    }
+
+    private func recordVerification(phase: String? = nil) {
+        guard let verification else { return }
+        if verification.initialSection == "settings" {
+            if settingsWindow == nil {
+                settingsWindow = SettingsWindowController(model: popoverModel, actions: popoverActions,
+                    initialCategory: verification.settingsCategory.flatMap(SettingsCategory.init(rawValue:)) ?? .general)
+            }
+            verification.record(model: popoverModel, item: statusItem,
+                content: settingsWindow?.window?.contentViewController, mountedWindow: settingsWindow?.window, phase: phase)
+        } else {
+            verification.record(model: popoverModel, item: statusItem, content: popover.contentViewController, phase: phase)
+        }
     }
 
     private func installPopoverContent() {
@@ -354,6 +383,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
+        appMenu.addItem(withTitle: Strings.t("settings.organized.menu"), action: #selector(openSettingsWindow), keyEquivalent: ",")
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: Strings.t("action.refresh"), action: #selector(refreshVisibleSurface), keyEquivalent: "r")
         appMenu.addItem(withTitle: Strings.t("action.copy"), action: #selector(copyStatus), keyEquivalent: "c")
         appMenu.addItem(.separator())
@@ -618,7 +649,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                         }
                     }
                     self.submitPendingCollectionRequest()
-                    self.scheduleRefresh(after: payload.collection?.refreshing == true || self.popover.isShown || self.verification?.fastQuota == true ? 2 : 10)
+                    self.scheduleRefresh(after: payload.collection?.refreshing == true || (self.popover.isShown || self.settingsWindow?.window?.isVisible == true) || self.verification?.fastQuota == true ? 2 : 10)
                 case .failure(let error):
                     let diagnostic = StatusFailure.diagnostic(error)
                     if self.lastStatusDiagnostic != diagnostic {
@@ -639,8 +670,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     try? self.quotaCache?.save(payload)
                     self.refreshDetailsIfNeeded()
                 }
-                self.verification?.record(model: self.popoverModel, item: self.statusItem,
-                                          content: self.popover.contentViewController)
+                self.recordVerification()
             }
         }
         if !usesFastQuota { client.fetch(completion: receive) }
@@ -649,7 +679,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func refreshDetailsIfNeeded() {
         guard usesFastQuota, !recoveryPolling.isActive(uptime: ProcessInfo.processInfo.systemUptime),
-              (popover.isShown || verification?.fastQuota == true), !isFetchingDetails, let client,
+              (popover.isShown || settingsWindow?.window?.isVisible == true || verification?.fastQuota == true), !isFetchingDetails, let client,
               lastDetailsFetchAt.map({ Date().timeIntervalSince($0) >= 10 }) ?? true else { return }
         isFetchingDetails = true
         popoverModel.detailsLoading = true
@@ -678,7 +708,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     self.popoverModel.detailsError = Strings.t("details.refreshFailed")
                 }
                 if self.verification?.fastQuota == true {
-                    self.verification?.record(model: self.popoverModel, item: self.statusItem, content: self.popover.contentViewController)
+                    self.recordVerification()
                 }
             }
         }

@@ -3,9 +3,9 @@ import SwiftUI
 struct DetailsView: View {
     @ObservedObject var model: PopoverModel
     @Binding var section: DetailSection
-    @ObservedObject private var awake = AwakeController.shared
     let actions: PopoverActions
     let back: () -> Void
+    @State private var compactionExpanded = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -14,13 +14,17 @@ struct DetailsView: View {
                     Label(model.detailBackTitle, systemImage: "chevron.left")
                 }.buttonStyle(.plain).accessibilityIdentifier("navigation.detailBack")
                 Spacer()
+                Button(action: actions.openSettings) { Image(systemName: "gearshape") }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel(Strings.t("detail.settings"))
+                    .accessibilityIdentifier("details.openSettings")
                 if section == .quota, model.inspectedAccountID != nil, let account = model.displayedAccount {
                     Text("\(account.providerTitle) · \(account.accountLabel)")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }.padding(.horizontal, 16).padding(.top, 14)
             Picker("", selection: $section) {
-                ForEach(DetailSection.allCases) { section in
+                ForEach(DetailSection.allCases.filter { $0 != .settings && $0 != .usage }) { section in
                     Text(section.title).tag(section)
                 }
             }
@@ -34,7 +38,7 @@ struct DetailsView: View {
                     if let error = model.detailsError {
                         Text(error).font(.caption).foregroundStyle(.orange)
                     }
-                    if section != .quota && section != .usage && !model.detailsLoaded {
+                    if section != .quota && section != .usage && section != .settings && !model.detailsLoaded {
                         if model.detailsLoading { ProgressView() }
                         Text(model.detailsError ?? Strings.t("details.loading")).foregroundStyle(.secondary)
                     } else { detailContent }
@@ -60,7 +64,10 @@ struct DetailsView: View {
             }
             .buttonStyle(.borderless).padding(.horizontal, 20).padding(.vertical, 12)
         }
-        .onChange(of: section) { if $0 == .usage { actions.openUsageReport() } }
+        .onChange(of: section) {
+            if $0 == .usage { actions.openUsageReport() }
+            if $0 == .settings { actions.openSettings() }
+        }
 
     }
 
@@ -80,7 +87,7 @@ struct DetailsView: View {
                 }
             } else {
                 Text(Strings.t("popover.noAccountsDetail")).foregroundStyle(.secondary)
-                Button(Strings.t("action.openSettings"), action: actions.openConfig)
+                Button(Strings.t("action.openSettings"), action: actions.openSettings)
             }
         case .work:
             if model.focusedResumeTaskID != nil { pausedWork }
@@ -96,7 +103,14 @@ struct DetailsView: View {
             }
             if model.focusedResumeTaskID == nil { pausedWork }
             if let jobs = model.payload?.jobs, !jobs.isEmpty {
-                ManagedJobsSection(jobs: jobs)
+                let current = jobs.filter { !["succeeded", "cancelled"].contains($0.state) }
+                let finished = jobs.filter { ["succeeded", "cancelled"].contains($0.state) }
+                if !current.isEmpty { ManagedJobsSection(jobs: current) }
+                if !finished.isEmpty {
+                    DisclosureGroup(Strings.t("settings.organized.finishedJobs", String(finished.count))) {
+                        ManagedJobsSection(jobs: finished).padding(.top, 8)
+                    }
+                }
                 Divider()
             }
             RecentWorkSection(items: model.payload?.recentWork ?? [],
@@ -107,15 +121,57 @@ struct DetailsView: View {
                               onOpen: actions.openRecentWork)
         case .activity:
             if let savings = model.payload?.compaction?.savings {
-                TaskSavingsHistory(payload: savings, busy: model.savingsSaving, undo: { actions.configureSavings(nil, $0, nil) })
+                VStack(alignment: .leading, spacing: 10) {
+                    if !savings.active.isEmpty {
+                        TaskSavingsHistory(payload: TaskSavingsPayload(policy: savings.policy, insights: nil, active: savings.active, recent: []),
+                            busy: model.savingsSaving, undo: { actions.configureSavings(nil, $0, nil) })
+                    } else {
+                        Text(Strings.t("savings.title")).font(.headline)
+                        if let latest = savings.latest {
+                            Text(latest.summary).font(.callout)
+                            Text(Strings.t("savings.phase." + latest.phase))
+                                .font(.caption).foregroundStyle(latest.phase == "failed" || latest.phase == "unverified" ? Color.orange : Color.secondary)
+                        } else { Text(Strings.t("savings.waiting")).foregroundStyle(.secondary) }
+                    }
+                    if let message = model.savingsMessage {
+                        Text(message).font(.callout)
+                            .foregroundStyle(message == Strings.t("savings.error") || message == Strings.t("savings.pending") ? Color.orange : Color.secondary)
+                    }
+                    if !savings.recent.isEmpty || !(savings.insights ?? []).isEmpty {
+                        DisclosureGroup(Strings.t("settings.organized.activityHistory")) {
+                            TaskSavingsHistory(payload: TaskSavingsPayload(policy: savings.policy, insights: savings.insights, active: [], recent: savings.recent),
+                                busy: model.savingsSaving, undo: { actions.configureSavings(nil, $0, nil) }).padding(.top, 8)
+                        }
+                    }
+                }
                 Divider()
             }
             if !model.recentRecoveries.isEmpty {
-                RecentRecoveriesView(recoveries: model.recentRecoveries)
+                RecentRecoveriesView(recoveries: Array(model.recentRecoveries.prefix(1)))
+                if model.recentRecoveries.count > 1 {
+                    DisclosureGroup(Strings.t("settings.organized.historyCount", String(model.recentRecoveries.count - 1))) {
+                        RecentRecoveriesView(recoveries: Array(model.recentRecoveries.dropFirst())).padding(.top, 8)
+                    }
+                }
                 Divider()
             }
             if let compaction = model.payload?.compaction, compaction.generations > 0 {
-                CompactionHistory(payload: compaction)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(Strings.t("compaction.title")).font(.headline)
+                    if compaction.reachable < compaction.generations {
+                        Text(Strings.t("compaction.partial")).font(.callout).foregroundStyle(.orange)
+                    }
+                    ForEach(compaction.active.isEmpty ? Array(compaction.recent.prefix(1)) : compaction.active) { record in
+                        CompactionSummary(record: record, openHistory: { compactionExpanded = true })
+                        if let error = record.errorCode {
+                            Text(Strings.t("compaction.evidence", error)).font(.caption).foregroundStyle(.orange)
+                        }
+                    }
+                    if compaction.latest == nil { Text(Strings.t("compaction.empty")).foregroundStyle(.secondary) }
+                    DisclosureGroup(Strings.t("settings.organized.historyCount", String(compaction.recent.count)), isExpanded: $compactionExpanded) {
+                        CompactionHistory(payload: compaction).padding(.top, 8)
+                    }
+                }
                 Divider()
             }
             Text(Strings.t("popover.recentChanges")).font(.headline)
@@ -134,7 +190,10 @@ struct DetailsView: View {
         case .resets:
             ResetSignalHistory(feed: model.payload?.resetSignals)
         case .settings:
-            settingsContent
+            Button(action: actions.openSettings) {
+                Label(Strings.t("settings.organized.open"), systemImage: "gearshape")
+            }.buttonStyle(.borderedProminent)
+            Text(Strings.t("settings.organized.description")).foregroundStyle(.secondary)
         }
     }
 
@@ -164,62 +223,13 @@ struct DetailsView: View {
 
     private var orderedAccounts: [AccountState] {
         let accounts = model.payload?.accounts ?? []
-        return accounts.filter { $0.id == model.displayedAccount?.id }
-            + accounts.filter { $0.id != model.displayedAccount?.id }
+        if let inspectedID = model.inspectedAccountID {
+            return accounts.filter { $0.id == inspectedID }
+        }
+        return accounts
     }
 
-    private var settingsContent: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            AccountNicknamesView(model: model, refresh: actions.refresh)
-            Divider()
-            VStack(alignment: .leading, spacing: 8) {
-                NotificationPreferencesView(model: model, save: actions.configureNotifications)
-                Text(Strings.t(model.notificationsAllowed == false ? "notification.disabled" :
-                                model.notificationsAllowed == true ? "notification.enabled" : "notification.checking"))
-                    .font(.callout).foregroundStyle(.secondary)
-                Button(Strings.t("notification.settings"), action: actions.openNotificationSettings)
-            }
-            Divider()
-            CodexProfilesView(status: model, actions: actions)
-            Divider()
-            DotsConnectionView(model: model)
-            Divider()
-            AccountPoolSettingsView(model: model, save: actions.configurePool)
-            Divider()
-            TaskSavingsSettingsView(model: model, save: { actions.configureSavings($0, nil, nil) }, saveTests: { actions.configureSavings(nil, nil, $0) })
-            Divider()
-            CompactionSettingsView(model: model, save: actions.configureCompaction)
-            Divider()
-            VStack(alignment: .leading, spacing: 10) {
-                Toggle(Strings.t("awake.title"), isOn: $awake.enabled).toggleStyle(.switch)
-                Text(awake.summary).font(.callout).foregroundStyle(.secondary)
-                if awake.enabled {
-                    Toggle(Strings.t("awake.closedLid"), isOn: $awake.closedLid).toggleStyle(.switch)
-                    if awake.closedLid || awake.helperState != "not-installed" {
-                        Text(awake.lidSummary).font(.caption).foregroundStyle(.secondary)
-                    }
-                    HStack {
-                        Button(Strings.t("awake.connect")) { awake.connectAgents() }
-                        if awake.helperState == "not-installed" {
-                            Button(Strings.t("awake.install")) { awake.installHelper() }
-                        }
-                    }.disabled(awake.busy)
-                    Text(Strings.t("awake.limits")).font(.caption).foregroundStyle(.secondary)
-                }
-                if let message = awake.message {
-                    Text(message).font(.caption).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            Divider()
-            HStack {
-                Button(Strings.t("action.openSettings"), action: actions.openConfig)
-                Button(Strings.t("action.copy"), action: actions.copy)
-                Spacer()
-                Button(Strings.t("action.quit"), action: actions.quit)
-            }
-        }
-        .buttonStyle(.bordered).controlSize(.small)
-    }
+
 }
 
 private struct ManagedJobsSection: View {

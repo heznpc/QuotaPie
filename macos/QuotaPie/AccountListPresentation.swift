@@ -1,10 +1,11 @@
 import Foundation
 
-/// Stable general-quota columns never substitute a model allowance or an
-/// unknown duration for a missing five-hour or weekly reading.
+/// Show only observed limits. Model-only accounts keep their own limit label;
+/// a model allowance never substitutes for a missing general quota.
 struct AccountListPresentation {
     let fiveHour: QuotaWindow?
     let weekly: QuotaWindow?
+    let visibleWindows: [QuotaWindow]
     let additionalLimitCount: Int
 
     init(account: AccountState) {
@@ -24,12 +25,24 @@ struct AccountListPresentation {
         }
         fiveHour = reading(seconds: 5 * 3_600)
         weekly = reading(seconds: 7 * 86_400)
-        let shownIDs = Set([fiveHour, weekly].compactMap { $0?.id })
+        let generalReadings = [fiveHour, weekly].compactMap { $0 }
+        if generalReadings.isEmpty {
+            let fallback = account.windows.first { $0.bucket == account.bottleneckBucket }
+                ?? account.windows.sorted { $0.bucket < $1.bucket }.first
+            visibleWindows = fallback.map { [$0] } ?? []
+        } else {
+            visibleWindows = generalReadings
+        }
+        let shownIDs = Set(visibleWindows.map(\.id))
         additionalLimitCount = account.windows.filter { !shownIDs.contains($0.id) }.count
     }
 
     static func resetTime(_ timestampMs: Double?, now: Date = Date()) -> String {
-        guard let timestampMs, timestampMs.isFinite, timestampMs > 0 else { return "—" }
+        knownResetTime(timestampMs, now: now) ?? "—"
+    }
+
+    static func knownResetTime(_ timestampMs: Double?, now: Date = Date()) -> String? {
+        guard let timestampMs, timestampMs.isFinite, timestampMs > 0 else { return nil }
         let date = Date(timeIntervalSince1970: timestampMs / 1_000)
         let clock = DisplayFormat.clock(timestampMs)
         return Calendar.current.isDate(date, inSameDayAs: now) ? clock : "\(DisplayFormat.day(timestampMs)) \(clock)"

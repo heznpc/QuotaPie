@@ -7,6 +7,14 @@ struct AccountPoolSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(Strings.t("pool.settings.title")).font(.headline)
+            if let error = model.payload?.accountPool?.error {
+                Text(Strings.t(["pool_request_failed", "pool_response_unverified"].contains(error) ? "pool.requestFailed" : "pool.blocked"))
+                    .font(.callout).foregroundStyle(.orange)
+            }
+            if let unresolved = model.payload?.accountPool?.unresolvedRejections, unresolved.count > 0 {
+                Text(Strings.t("pool.history.unresolved", String(unresolved.count)))
+                    .font(.caption).foregroundStyle(.orange)
+            }
             if let pool = model.payload?.accountPool, pool.accounts.count >= 2 {
                 Toggle(Strings.t("pool.settings.enabled"), isOn: Binding(
                     get: { pool.enabled }, set: { save($0, nil, nil) }
@@ -28,8 +36,12 @@ struct AccountPoolSettingsView: View {
                     }.disabled(!pool.enabled)
                 }
                 Text(Strings.t("pool.settings.whenBlocked")).font(.caption).foregroundStyle(.secondary)
-                Text(Strings.t("pool.settings.limits")).font(.caption).foregroundStyle(.secondary)
-                Text(Strings.t("pool.settings.upgrade")).font(.caption).foregroundStyle(.secondary)
+                DisclosureGroup(Strings.t("settings.organized.behaviorDetails")) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(Strings.t("pool.settings.limits"))
+                        Text(Strings.t("pool.settings.upgrade"))
+                    }.font(.caption).foregroundStyle(.secondary).padding(.top, 6)
+                }
                 if pool.recent.first?.reason == "reserve" {
                     Text(Strings.t("pool.settings.switched")).font(.caption).foregroundStyle(.secondary)
                 }
@@ -37,12 +49,7 @@ struct AccountPoolSettingsView: View {
                 Text(Strings.t("pool.settings.unavailable")).font(.callout).foregroundStyle(.secondary)
             }
             if let pool = model.payload?.accountPool, let rejected = pool.rejected, !rejected.isEmpty {
-                Divider()
-                Text(Strings.t("pool.history.title")).font(.subheadline)
-                if let unresolved = pool.unresolvedRejections {
-                    Text(Strings.t("pool.history.unresolved", String(unresolved.count)))
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+                DisclosureGroup(Strings.t("pool.history.title")) {
                 ForEach(rejected) { request in
                     let label = model.payload?.accounts.first { $0.provider == "codex" && $0.account == request.sourceAccount }?.accountLabel ?? request.sourceAccount
                     VStack(alignment: .leading, spacing: 2) {
@@ -51,7 +58,8 @@ struct AccountPoolSettingsView: View {
                         Text(Strings.t(request.reasonKey))
                         Text(Strings.t(request.recovered == true ? "pool.history.recovered" : "pool.history.unverified"))
                             .foregroundStyle(.secondary)
-                    }.font(.caption).help(request.code)
+                    }.font(.caption).help(request.code).padding(.vertical, 4)
+                }
                 }
             }
             if let message = model.poolSaveMessage { Text(message).font(.caption).foregroundStyle(.secondary) }
