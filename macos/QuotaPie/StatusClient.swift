@@ -101,10 +101,14 @@ final class StatusClient {
     }
 
     @discardableResult
-    func fetchOfficialUsage(startDate: String, endDate: String, actionToken: String, refresh: Bool = false,
+    func fetchOfficialUsage(startDate: String, endDate: String, actionToken: String, refresh: Bool = false, analysisDate: String? = nil, analysisTimeZone: String? = nil,
                             completion: @escaping (Result<OfficialUsageReport, Error>) -> Void) -> URLSessionDataTask? {
         var components = URLComponents(url: baseURL.appendingPathComponent("api/official-usage"), resolvingAgainstBaseURL: false)
         components?.queryItems = [URLQueryItem(name: "startDate", value: startDate), URLQueryItem(name: "endDate", value: endDate), URLQueryItem(name: "refresh", value: refresh ? "1" : "0")]
+        if let analysisDate {
+            components?.queryItems?.append(URLQueryItem(name: "analysisDate", value: analysisDate))
+            components?.queryItems?.append(URLQueryItem(name: "analysisTimeZone", value: analysisTimeZone ?? "UTC"))
+        }
         guard let url = components?.url else { completion(.failure(StatusClientError.invalidLocalURL)); return nil }
         var request = URLRequest(url: url)
         request.setValue(actionToken, forHTTPHeaderField: "x-quotapie-action-token")

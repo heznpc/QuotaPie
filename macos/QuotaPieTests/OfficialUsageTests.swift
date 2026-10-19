@@ -84,6 +84,15 @@ final class OfficialUsageTests: XCTestCase {
         let secondQuery = try XCTUnwrap(requests[1]["query"] as? [String: [String]])
         XCTAssertEqual(firstQuery["refresh"], ["0"])
         XCTAssertEqual(secondQuery["refresh"], ["1"])
+        XCTAssertEqual(firstQuery["analysisTimeZone"], [TimeZone.current.identifier])
+        let localFormatter = DateFormatter()
+        localFormatter.locale = Locale(identifier: "en_US_POSIX")
+        localFormatter.dateFormat = "yyyy-MM-dd"
+        let now = Date()
+        let distance = (Calendar.current.component(.weekday, from: now) - 5 + 7) % 7
+        let thursday = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: -(distance == 0 ? 7 : distance), to: now))
+        XCTAssertEqual(firstQuery["analysisDate"], [localFormatter.string(from: thursday)])
+        XCTAssertNil(firstQuery["analysisBoundaryMs"], "The client asks for an observed recovery, never invents a midnight reset")
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
@@ -111,5 +120,40 @@ final class OfficialUsageTests: XCTestCase {
         wait(for: [settled], timeout: 2)
         XCTAssertNil(store.report)
         XCTAssertNotNil(store.error)
+    }
+
+    func testAnalysisKeepsIndependentBasesAndUnavailableEvidence() throws {
+        var payload: [String: Any] = [
+            "status": "observed_days", "reason": NSNull(), "boundaryMs": 1792044858922,
+            "timezone": "UTC", "currentStartDate": "2026-10-16", "currentEndDate": "2026-10-18",
+            "previousStartDate": "2026-10-12", "previousEndDate": "2026-10-14",
+            "excludedDates": ["2026-10-15", "2026-10-19"],
+            "currentTotal": 100.9775583, "previousTotal": 136.4128484, "changePercent": -25.9765,
+            "currentFeatureTotal": 98.729475, "previousFeatureTotal": 134.3413408, "featureChangePercent": -26.5085,
+            "models": [["key": "gpt-6-astra", "current": 100.1745, "previous": 129.574, "delta": -29.3995, "changePercent": -22.69]],
+            "features": [["key": "subagent", "current": 38.5537, "previous": 49.5569, "delta": -11.0032, "changePercent": -22.20]],
+            "speeds": [], "triggers": [], "conversationStatus": "unavailable",
+            "conversationReason": "lifetime_no_date_filter", "freshnessConfirmed": false,
+            "basis": "separate_model_and_attribution_relative_scales"
+        ]
+        let observed = try JSONDecoder().decode(OfficialUsageAnalysis.self, from: JSONSerialization.data(withJSONObject: payload))
+        XCTAssertEqual(observed.changePercent, -25.9765)
+        XCTAssertEqual(observed.featureChangePercent, -26.5085)
+        XCTAssertNotEqual(observed.currentTotal, observed.currentFeatureTotal)
+        XCTAssertFalse(observed.freshnessConfirmed)
+        XCTAssertEqual(observed.conversationStatus, "unavailable")
+        XCTAssertEqual(observed.excludedDates, ["2026-10-15", "2026-10-19"])
+        payload["status"] = "unavailable"
+        payload["reason"] = "recovery_not_observed"
+        payload["boundaryMs"] = NSNull()
+        payload["changePercent"] = NSNull()
+        payload["featureChangePercent"] = NSNull()
+        payload["models"] = []
+        payload["features"] = []
+        let unavailable = try JSONDecoder().decode(OfficialUsageAnalysis.self, from: JSONSerialization.data(withJSONObject: payload))
+        XCTAssertNil(unavailable.boundaryMs)
+        XCTAssertNil(unavailable.changePercent, "Unavailable evidence must not decode as a zero change")
+        XCTAssertEqual(unavailable.reason, "recovery_not_observed")
+        XCTAssertTrue(unavailable.models.isEmpty)
     }
 }

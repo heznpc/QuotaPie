@@ -9,6 +9,7 @@ struct OfficialUsageView: View {
     @State private var selectedAccount = ""
     @State private var days = 7
     @State private var grouping = Grouping.features
+    @State private var showOriginal = false
 
     private enum Grouping: String, CaseIterable, Identifiable {
         case features, models, surfaces, triggers
@@ -40,8 +41,8 @@ struct OfficialUsageView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(Strings.t("usage.title")).font(.system(size: 26, weight: .bold))
-                    Text(Strings.t("usage.dashboard.officialSubtitle")).foregroundStyle(.secondary)
+                    Text(Strings.t("usage.analysis.title")).font(.system(size: 26, weight: .bold))
+                    Text(Strings.t("usage.analysis.subtitle")).foregroundStyle(.secondary)
                 }
                 Spacer()
                 if let report = store.report, report.accounts.count > 1 {
@@ -52,16 +53,6 @@ struct OfficialUsageView: View {
                 Button { store.load(client: client, actionToken: actionToken, days: days, refresh: true) } label: {
                     Image(systemName: "arrow.clockwise")
                 }.help(Strings.t("action.refresh")).disabled(store.loading)
-            }
-            HStack {
-                Picker(Strings.t("usage.range"), selection: $days) {
-                    Text(Strings.t("usage.dashboard.sevenDays")).tag(7)
-                    Text(Strings.t("usage.dashboard.thirtyDays")).tag(30)
-                }.pickerStyle(.segmented).frame(width: 150)
-                Spacer()
-                if let report = store.report {
-                    Text(report.startDate + " – " + report.endDate).font(.callout).foregroundStyle(.secondary)
-                }
             }
             if store.loading {
                 HStack { ProgressView().controlSize(.small); Text(Strings.t("usage.dashboard.officialLoading")).foregroundStyle(.secondary) }
@@ -80,7 +71,22 @@ struct OfficialUsageView: View {
                         Text(Strings.t("usage.dashboard.officialEmptyHelp")).foregroundStyle(.secondary)
                     }.frame(maxWidth: .infinity).padding(50)
                 } else {
-                    chart(account)
+                    OfficialUsageAnalysisView(analysis: account.analysis)
+                    DisclosureGroup(Strings.t("usage.analysis.original"), isExpanded: $showOriginal) {
+                        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Picker(Strings.t("usage.range"), selection: $days) {
+                    Text(Strings.t("usage.dashboard.sevenDays")).tag(7)
+                    Text(Strings.t("usage.dashboard.thirtyDays")).tag(30)
+                }.pickerStyle(.segmented).frame(width: 150)
+                Spacer()
+                if let report = store.report {
+                    Text(report.startDate + " – " + report.endDate).font(.callout).foregroundStyle(.secondary)
+                }
+            }
+                            chart(account)
+                        }.padding(.top, 12)
+                    }.font(.callout)
                 }
                 Text(Strings.t("usage.dashboard.officialScope")).font(.caption).foregroundStyle(.secondary)
                 if let freshness = account.dataFreshnessMs {

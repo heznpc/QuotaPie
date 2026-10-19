@@ -33,6 +33,7 @@ struct OfficialUsageAccount: Decodable, Identifiable {
     let periodsAsOfMs: Double?
     let periodsComplete: Bool
     let periodsApproximate: Bool
+    let analysis: OfficialUsageAnalysis?
     var id: String { account }
 }
 
@@ -73,8 +74,11 @@ final class OfficialUsageStore: ObservableObject {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
+        let calendar = Calendar.current
+        let weekdayDistance = (calendar.component(.weekday, from: now) - 5 + 7) % 7
+        let thursday = calendar.date(byAdding: .day, value: -(weekdayDistance == 0 ? 7 : weekdayDistance), to: now) ?? now
         let start = Calendar.current.date(byAdding: .day, value: -(days - 1), to: now) ?? now
-        request = client.fetchOfficialUsage(startDate: formatter.string(from: start), endDate: formatter.string(from: now), actionToken: actionToken, refresh: refresh) { [weak self] result in
+        request = client.fetchOfficialUsage(startDate: formatter.string(from: start), endDate: formatter.string(from: now), actionToken: actionToken, refresh: refresh, analysisDate: formatter.string(from: thursday), analysisTimeZone: TimeZone.current.identifier) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self, expected == self.generation else { return }
                 self.loading = false
