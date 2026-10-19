@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 struct UsageReportView: View {
     @ObservedObject var store: UsageReportStore
@@ -15,32 +16,51 @@ struct UsageReportView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(Strings.t("usage.title")).font(.title3.bold())
-            Text(Strings.t(store.resetSelection == nil ? "usage.scope" : "usage.scopeFiltered")).font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            controls
+        VStack(alignment: .leading, spacing: 24) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(Strings.t("usage.title")).font(.largeTitle.bold())
+                    Text(Strings.t("usage.dashboard.subtitle")).foregroundStyle(.secondary)
+                }
+                Spacer()
+                controls
+            }
             if let error = store.error {
-                Text(error).font(.callout).foregroundStyle(.orange)
-                Button(Strings.t("action.refresh")) { store.load(client: client, actionToken: actionToken, refresh: true) }
+                HStack {
+                    Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.orange)
+                    Button(Strings.t("action.refresh")) { store.load(client: client, actionToken: actionToken, refresh: true) }
+                }
             }
             if store.loading {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text(Strings.t("usage.loading")).font(.caption)
+                    Text(Strings.t("usage.loading")).font(.callout).foregroundStyle(.secondary)
                 }
             }
             if let report = store.report {
                 summary(report)
-                Divider()
-                Picker(Strings.t("usage.breakdown"), selection: $breakdown) {
-                    ForEach(Breakdown.allCases) { Text($0.title).tag($0) }
-                }.pickerStyle(.segmented).labelsHidden()
-                buckets(report)
-                Divider()
-                activity(report)
-                Divider()
-                coverage(report)
+                VStack(alignment: .leading, spacing: 20) {
+                    HStack {
+                        Text(Strings.t("usage.dashboard.explore")).font(.headline)
+                        Spacer()
+                        Picker(Strings.t("usage.breakdown"), selection: $breakdown) {
+                            ForEach(Breakdown.allCases) { Text($0.title).tag($0) }
+                        }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 360)
+                    }
+                    buckets(report)
+                }.padding(22).background(.background, in: RoundedRectangle(cornerRadius: 16))
+                HStack(alignment: .top, spacing: 20) {
+                    drivers(report).frame(maxWidth: .infinity, alignment: .topLeading)
+                    topSessions(report).frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+                DisclosureGroup(Strings.t("usage.dashboard.evidence")) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        tokenDetails(report.total)
+                        Text(Strings.t("usage.tokenCaveat")).font(.caption).foregroundStyle(.secondary)
+                        activity(report)
+                        coverage(report)
+                    }.padding(.top, 12)
+                }.font(.callout)
             } else if !store.loading && store.error == nil {
                 Text(Strings.t("usage.empty")).foregroundStyle(.secondary)
             }
@@ -90,34 +110,165 @@ struct UsageReportView: View {
     }
 
     private func summary(_ report: UsageReport) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(interval(report.fromMs, report.toMs, zone: report.timeZone))
-                .font(.callout).foregroundStyle(.secondary)
-            HStack(alignment: .firstTextBaseline) {
-                Text(number(report.total.totalTokens)).font(.system(size: 26, weight: .semibold, design: .rounded)).monospacedDigit()
-                Text(Strings.t("usage.tokens")).foregroundStyle(.secondary)
-            }.accessibilityElement(children: .combine)
-            Text(report.coverage.filesPending > 0 ? Strings.t("usage.comparisonPending")
-                : comparison(current: report.total.totalTokens, previous: report.previous.totalTokens))
-                .font(.callout).foregroundStyle(.secondary)
-            Text(Strings.t("usage.previousInterval", interval(report.fromMs - (report.toMs - report.fromMs), report.fromMs, zone: report.timeZone)))
-                .font(.caption).foregroundStyle(.secondary)
-            tokenDetails(report.total)
-            Text(Strings.t("usage.tokenCaveat"))
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            if report.total.totalTokens == 0 {
-                Text(Strings.t("usage.empty")).font(.callout).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text(interval(report.fromMs, report.toMs, zone: report.timeZone)).font(.callout).foregroundStyle(.secondary)
+                Spacer()
+                Text(Strings.t(report.coverage.filesPending > 0 ? "usage.dashboard.partial" : "usage.dashboard.localOnly"))
+                    .font(.caption.weight(.medium)).padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(Color.secondary.opacity(0.09), in: Capsule())
             }
+            HStack(alignment: .top, spacing: 14) {
+                metric(Strings.t("usage.dashboard.change"), value: changeLabel(report), detail: Strings.t("usage.dashboard.equalPeriod"))
+                metric(Strings.t("usage.dashboard.subagentShare"), value: percent(report.total.subagentTokens, of: report.total.totalTokens), detail: Strings.t("usage.dashboard.localShare"))
+                metric(Strings.t("usage.dashboard.cacheShare"), value: percent(report.total.cachedInputTokens, of: report.total.inputTokens), detail: Strings.t("usage.dashboard.inputShare"))
+                metric(Strings.t("usage.dashboard.requests"), value: number(Double(report.total.requests)), detail: Strings.t("usage.dashboard.observedRequests"))
+            }
+            Text(Strings.t("usage.dashboard.measureNote")).font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    private func metric(_ title: String, value: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title).font(.callout).foregroundStyle(.secondary)
+            Text(value).font(.system(size: 28, weight: .semibold, design: .rounded)).monospacedDigit()
+            Text(detail).font(.caption).foregroundStyle(.secondary)
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(18)
+            .background(.background, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func changeLabel(_ report: UsageReport) -> String {
+        guard report.coverage.filesPending == 0, report.previous.totalTokens > 0 else { return "—" }
+        let change = (report.total.totalTokens / report.previous.totalTokens - 1) * 100
+        return String(format: "%+.1f%%", change)
+    }
+
+    private func percent(_ value: Double, of total: Double) -> String {
+        guard total > 0 else { return "—" }
+        return String(format: "%.1f%%", value / total * 100)
+    }
+
+    private struct ChartDay: Identifiable {
+        let label: String
+        let total: Double
+        let subagent: Double
+        var id: String { label }
+    }
+
+    private func chartDays(_ report: UsageReport) -> [ChartDay] {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: report.timeZone) ?? .current
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        let recorded = Dictionary(report.days.map { ($0.label, $0) }, uniquingKeysWith: { first, _ in first })
+        var date = calendar.startOfDay(for: Date(timeIntervalSince1970: report.fromMs / 1000))
+        let end = Date(timeIntervalSince1970: report.toMs / 1000)
+        var result: [ChartDay] = []
+        while date < end, result.count < 92 {
+            let label = formatter.string(from: date)
+            let bucket = recorded[label]
+            result.append(ChartDay(label: label, total: bucket?.totals.totalTokens ?? 0, subagent: bucket?.totals.subagentTokens ?? 0))
+            guard let next = calendar.date(byAdding: .day, value: 1, to: date) else { break }
+            date = next
+        }
+        return result
+    }
+
+    private func dailyChart(_ report: UsageReport) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(Strings.t("usage.dashboard.dailyTitle")).font(.callout).foregroundStyle(.secondary)
+            Chart(chartDays(report)) { day in
+                BarMark(x: .value("Day", day.label), y: .value("Tokens", max(0, day.total - day.subagent)))
+                    .foregroundStyle(by: .value("Kind", Strings.t("usage.dashboard.main")))
+                BarMark(x: .value("Day", day.label), y: .value("Tokens", day.subagent))
+                    .foregroundStyle(by: .value("Kind", Strings.t("usage.subagent")))
+            }
+            .chartForegroundStyleScale([Strings.t("usage.dashboard.main"): Color.blue, Strings.t("usage.subagent"): Color.orange])
+            .chartYAxis {
+                AxisMarks(position: .leading) { value in
+                    AxisGridLine()
+                    AxisValueLabel { if let count = value.as(Double.self) { Text(compact(count)) } }
+                }
+            }
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: min(7, report.days.count))) { value in
+                    AxisValueLabel { if let day = value.as(String.self) { Text(String(day.suffix(5)).replacingOccurrences(of: "-", with: "/")) } }
+                }
+            }
+            .chartLegend(position: .bottom, alignment: .leading, spacing: 14)
+            .frame(height: 230)
+            .accessibilityLabel(Strings.t("usage.dashboard.dailyTitle"))
+            DisclosureGroup(Strings.t("usage.dashboard.dailyDetails")) {
+                ForEach(report.days) { day in
+                    HStack {
+                        Text(day.label)
+                        Spacer()
+                        Text(compact(day.totals.totalTokens) + " " + Strings.t("usage.tokens")).monospacedDigit()
+                        Text(Strings.t("usage.dashboard.records", String(day.totals.requests))).foregroundStyle(.secondary)
+                    }.font(.callout).padding(.vertical, 5)
+                }
+            }.font(.caption)
+        }
+    }
+
+    private func drivers(_ report: UsageReport) -> some View {
+        let increases = report.sessions.filter { $0.totals.totalTokens > ($0.previousTotalTokens ?? 0) }
+            .sorted { $0.totals.totalTokens - ($0.previousTotalTokens ?? 0) > $1.totals.totalTokens - ($1.previousTotalTokens ?? 0) }
+        return VStack(alignment: .leading, spacing: 14) {
+            Text(Strings.t("usage.dashboard.drivers")).font(.headline)
+            if report.coverage.filesPending > 0 {
+                Text(Strings.t("usage.comparisonPending")).font(.callout).foregroundStyle(.secondary)
+            } else if increases.isEmpty {
+                Text(Strings.t("usage.dashboard.noIncreases")).font(.callout).foregroundStyle(.secondary)
+            } else {
+                Text(Strings.t("usage.dashboard.driversHelp")).font(.caption).foregroundStyle(.secondary)
+                ForEach(Array(increases.prefix(3))) { session in
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(session.label).lineLimit(2)
+                            Text(session.isSubagent == true ? Strings.t("usage.subagent") : Strings.t("usage.dashboard.main"))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text("+" + compact(session.totals.totalTokens - (session.previousTotalTokens ?? 0)))
+                            .font(.callout.weight(.medium)).monospacedDigit().fixedSize()
+                    }
+                    Divider()
+                }
+            }
+        }.padding(20).background(.background, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func topSessions(_ report: UsageReport) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text(Strings.t("usage.dashboard.topSessions")).font(.headline)
+                Spacer()
+                Button(Strings.t("usage.dashboard.seeAll")) { breakdown = .sessions }.buttonStyle(.link)
+            }
+            Text(Strings.t("usage.dashboard.localShare")).font(.caption).foregroundStyle(.secondary)
+            ForEach(Array(report.sessions.sorted { $0.totals.totalTokens > $1.totals.totalTokens }.prefix(3))) { session in
+                HStack(alignment: .top) {
+                    Text(session.label).lineLimit(2)
+                    Spacer()
+                    Text(percent(session.totals.totalTokens, of: report.total.totalTokens)).monospacedDigit().fixedSize()
+                }
+                Divider()
+            }
+        }.padding(20).background(.background, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func compact(_ value: Double) -> String {
+        value.formatted(.number.notation(.compactName).precision(.fractionLength(0...1)).locale(Locale(identifier: Strings.localeIdentifier())))
     }
 
     @ViewBuilder private func buckets(_ report: UsageReport) -> some View {
         switch breakdown {
         case .days:
             if report.days.isEmpty { Text(Strings.t("usage.empty")).foregroundStyle(.secondary) }
-            ForEach(report.days) { bucket in
-                bucketRow(bucket, maximum: report.days.map { $0.totals.totalTokens }.max() ?? 0, compare: false)
-            }
+            else { dailyChart(report) }
         case .models:
             Text(Strings.t("usage.modelHelp")).font(.caption).foregroundStyle(.secondary)
             ForEach(report.models) { bucket in
@@ -156,13 +307,13 @@ struct UsageReportView: View {
         }
     }
 
-    private func bucketRow(_ bucket: UsageBucket, maximum: Double, compare: Bool) -> some View {
+    private func bucketRow(_ bucket: UsageBucket, maximum: Double, compare: Bool, denominator: Double? = nil) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline) {
                 Text(bucket.label.isEmpty ? Strings.t("usage.unknown") : bucket.label)
                     .fontWeight(.medium).lineLimit(2).help(bucket.label).textSelection(.enabled)
                 Spacer(minLength: 8)
-                Text(number(bucket.totals.totalTokens)).monospacedDigit().fixedSize()
+                Text(percent(bucket.totals.totalTokens, of: denominator ?? store.report?.total.totalTokens ?? 0)).monospacedDigit().fixedSize()
             }
             if bucket.provider != nil || bucket.account != nil || bucket.isSubagent == true {
                 Text([bucket.provider, bucket.accountLabel ?? accountTitle(provider: bucket.provider, account: bucket.account), bucket.isSubagent == true ? Strings.t("usage.subagent") : nil]
@@ -177,7 +328,7 @@ struct UsageReportView: View {
                 }
             }.frame(height: 5).accessibilityHidden(true)
             if compare, store.report?.coverage.filesPending == 0, let previous = bucket.previousTotalTokens {
-                Text(comparison(current: bucket.totals.totalTokens, previous: previous)).font(.caption).foregroundStyle(.secondary)
+                Text(Strings.t("usage.dashboard.delta", (bucket.totals.totalTokens >= previous ? "+" : "") + compact(bucket.totals.totalTokens - previous))).font(.caption).foregroundStyle(.secondary)
             }
             DisclosureGroup(Strings.t("usage.tokenDetails")) {
                 VStack(alignment: .leading, spacing: 5) {
@@ -217,8 +368,9 @@ struct UsageReportView: View {
                 DisclosureGroup(Strings.t("usage.relayModels")) {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(Strings.t("usage.relayModelsHelp")).font(.caption).foregroundStyle(.secondary)
+                        Text(Strings.t("usage.dashboard.relayShare")).font(.caption).foregroundStyle(.secondary)
                         ForEach(models) { model in
-                            bucketRow(model, maximum: models.map { $0.totals.totalTokens }.max() ?? 0, compare: false)
+                            bucketRow(model, maximum: models.map { $0.totals.totalTokens }.max() ?? 0, compare: false, denominator: models.reduce(0) { $0 + $1.totals.totalTokens })
                         }
                     }
                 }.font(.callout)

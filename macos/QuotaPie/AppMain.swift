@@ -47,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let accountLauncher = CodexProfileLauncher()
     private let userNotificationCenter = UNUserNotificationCenter.current()
     private var client: StatusClient?
+    private var usageWindow: UsageWindowController?
     private var notificationPresenter: NotificationPresenter?
     private var notificationTimer: Timer?
     private var refreshTimer: Timer?
@@ -292,7 +293,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             configureSavings: { [weak self] enabled, thread, tests in self?.configureSavings(enabled, thread, tests) },
             configurePool: { [weak self] enabled, account, reserve in self?.configurePool(enabled, account, reserve) },
             configureNotifications: { [weak self] key, enabled in self?.configureNotifications(key, enabled: enabled) },
-            openRecentWork: { [weak self] item in self?.openRecentWork(item) }
+            openRecentWork: { [weak self] item in self?.openRecentWork(item) },
+            openUsageReport: { [weak self] in self?.openUsageReport() }
         )
     }
 
@@ -321,6 +323,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
+    @objc private func refreshVisibleSurface() {
+        if usageWindow?.window?.isKeyWindow == true { usageWindow?.refreshReport() }
+        else { refresh() }
+    }
+
+    private func openUsageReport() {
+        popover.performClose(nil)
+        if usageWindow == nil { usageWindow = UsageWindowController(model: popoverModel) }
+        usageWindow?.present()
+    }
+
     private func installPopoverContent() {
         let actions = popoverActions
         let view = PopoverView(model: popoverModel, actions: actions)
@@ -341,7 +354,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: Strings.t("action.refresh"), action: #selector(refresh), keyEquivalent: "r")
+        appMenu.addItem(withTitle: Strings.t("action.refresh"), action: #selector(refreshVisibleSurface), keyEquivalent: "r")
         appMenu.addItem(withTitle: Strings.t("action.copy"), action: #selector(copyStatus), keyEquivalent: "c")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: Strings.t("action.quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -350,6 +363,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         appMenuItem.submenu = appMenu
         mainMenu.addItem(appMenuItem)
+        let windowMenuItem = NSMenuItem()
+        let windowMenu = NSMenu()
+        windowMenu.addItem(withTitle: Strings.t("usage.window.close"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuItem)
 
         NSApp.mainMenu = mainMenu
     }

@@ -47,6 +47,7 @@ final class StatusClient {
     let baseURL: URL
     var notificationsAuthorized = false
     private let session: URLSession
+    private let usageSession: URLSession
     private var quotaSession: URLSession
     private let quotaConfiguration: URLSessionConfiguration
     private let sessionDelegate: LocalOnlySessionDelegate
@@ -67,6 +68,11 @@ final class StatusClient {
         let delegate = LocalOnlySessionDelegate()
         sessionDelegate = delegate
         session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+        let usageConfiguration = URLSessionConfiguration.ephemeral
+        usageConfiguration.timeoutIntervalForRequest = 30
+        usageConfiguration.timeoutIntervalForResource = 60
+        usageConfiguration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        usageSession = URLSession(configuration: usageConfiguration, delegate: delegate, delegateQueue: nil)
         quotaConfiguration = configuration
         quotaSession = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
     }
@@ -92,6 +98,27 @@ final class StatusClient {
                 completion(.failure(error))
             }
         }
+    }
+
+    @discardableResult
+    func fetchOfficialUsage(startDate: String, endDate: String, actionToken: String, refresh: Bool = false,
+                            completion: @escaping (Result<OfficialUsageReport, Error>) -> Void) -> URLSessionDataTask? {
+        var components = URLComponents(url: baseURL.appendingPathComponent("api/official-usage"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "startDate", value: startDate), URLQueryItem(name: "endDate", value: endDate), URLQueryItem(name: "refresh", value: refresh ? "1" : "0")]
+        guard let url = components?.url else { completion(.failure(StatusClientError.invalidLocalURL)); return nil }
+        var request = URLRequest(url: url)
+        request.setValue(actionToken, forHTTPHeaderField: "x-quotapie-action-token")
+        request.timeoutInterval = 30
+        let task = usageSession.dataTask(with: request) { data, response, error in
+            completion(Result {
+                if let error { throw error }
+                guard let response = response as? HTTPURLResponse, let data else { throw StatusClientError.invalidResponse }
+                guard (200..<300).contains(response.statusCode) else { throw StatusClientError.httpStatus(response.statusCode) }
+                return try JSONDecoder().decode(OfficialUsageReport.self, from: data)
+            })
+        }
+        task.resume()
+        return task
     }
 
     @discardableResult

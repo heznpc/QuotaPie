@@ -387,6 +387,8 @@ struct PopoverView: View {
             .help(Strings.t("action.refreshHelp"))
             Button(Strings.t("detail.work")) { showDetails(.work) }
                 .accessibilityIdentifier("footer.work")
+            Button(Strings.t("detail.usage"), action: actions.openUsageReport)
+                .accessibilityIdentifier("footer.usage")
             Spacer(minLength: 0)
             Menu(Strings.t("action.more")) {
                 Button(Strings.t("overview.activityDetail")) { showDetails(.activity) }

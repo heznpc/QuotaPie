@@ -387,6 +387,7 @@ struct PopoverActions {
     var configurePool: (Bool?, String?, Int?) -> Void = { _, _, _ in }
     var configureNotifications: (String, Bool) -> Void = { _, _ in }
     var openRecentWork: (RecentWork) -> Void = { _ in }
+    var openUsageReport: () -> Void = {}
 }
 
 extension AccountState {

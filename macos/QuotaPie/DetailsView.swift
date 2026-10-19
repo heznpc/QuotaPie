@@ -4,7 +4,6 @@ struct DetailsView: View {
     @ObservedObject var model: PopoverModel
     @Binding var section: DetailSection
     @ObservedObject private var awake = AwakeController.shared
-    @StateObject private var usageReport = UsageReportStore()
     let actions: PopoverActions
     let back: () -> Void
 
@@ -49,21 +48,19 @@ struct DetailsView: View {
             Divider()
             HStack {
                 Button(action: {
-                    if section == .usage { usageReport.load(client: model.statusClient, actionToken: model.payload?.actionToken, refresh: true) }
+                    if section == .usage { actions.openUsageReport() }
                     else { actions.refresh() }
                 }) {
                     Label(Strings.t("action.refresh"), systemImage: "arrow.clockwise")
                 }
                 Spacer()
-                if section == .usage, let report = usageReport.report {
-                    Text(DisplayFormat.age(since: Date(timeIntervalSince1970: report.generatedAtMs / 1_000)))
-                        .font(.caption).foregroundStyle(.secondary)
-                } else if let last = model.displayedMeasurementDate {
+                if let last = model.displayedMeasurementDate {
                     Text(DisplayFormat.age(since: last)).font(.caption).foregroundStyle(.secondary)
                 }
             }
             .buttonStyle(.borderless).padding(.horizontal, 20).padding(.vertical, 12)
         }
+        .onChange(of: section) { if $0 == .usage { actions.openUsageReport() } }
 
     }
 
@@ -130,8 +127,10 @@ struct DetailsView: View {
             Button(Strings.t("action.openDashboard"), action: actions.openDashboard)
                 .buttonStyle(.link)
         case .usage:
-            UsageReportView(store: usageReport, client: model.statusClient, actionToken: model.payload?.actionToken,
-                            accounts: model.payload?.accounts ?? [])
+            Button(action: actions.openUsageReport) {
+                Label(Strings.t("usage.window.open"), systemImage: "chart.bar.xaxis")
+            }.buttonStyle(.borderedProminent)
+            Text(Strings.t("usage.window.description")).foregroundStyle(.secondary)
         case .resets:
             ResetSignalHistory(feed: model.payload?.resetSignals)
         case .settings:

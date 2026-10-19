@@ -17,6 +17,7 @@ import { ResumeTargetError } from "./service";
 import { ResumeTaskStoreError } from "./storage/resume-task-store";
 import { DotsConnection } from "./dots/connection";
 import { UsageReportAPI, parseUsageQuery } from "./usage-report-api";
+import { OfficialUsageAPI, parseOfficialUsageQuery } from "./official-usage";
 
 // Deprecated compatibility aliases for the one consumer that can be a version
 // behind this daemon: the menu bar app, during the seconds between the backend
@@ -51,6 +52,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
   const compaction = new CompactionStatusReader(options.compactionRoot);
   const dots = new DotsConnection({ config: () => config });
   const usageReports = new UsageReportAPI(config, service.db.db, options.compactionRoot);
+  const officialUsage = new OfficialUsageAPI(config);
   const dashboardFile = Bun.file(new URL("./dashboard.html", import.meta.url));
   const actionToken = randomBytes(32).toString("base64url");
   const tokenMatches = (candidate: string | null): boolean => {
@@ -70,6 +72,14 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
       const allowedHosts = new Set(["127.0.0.1", "localhost", "::1", config.dashboard.host.toLowerCase()]);
       if (!hostname || !allowedHosts.has(hostname)) return json({ error: "invalid_host" }, 403);
       const url = new URL(request.url);
+      if (url.pathname === "/api/official-usage") {
+        if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
+        const origin = request.headers.get("origin");
+        if ((origin !== null && origin !== url.origin) || !tokenMatches(request.headers.get("x-quotapie-action-token")))
+          return json({ error: "forbidden" }, 403);
+        try { return json(await officialUsage.read(parseOfficialUsageQuery(url, config), Date.now(), url.searchParams.get("refresh") === "1")); }
+        catch { return json({ error: "invalid_official_usage_query" }, 400); }
+      }
       if (url.pathname === "/api/usage-report") {
         if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
         const origin = request.headers.get("origin");
