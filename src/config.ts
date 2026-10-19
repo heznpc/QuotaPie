@@ -29,6 +29,8 @@ export interface ClaudeAccountConfig {
   // Escape hatch for profiles whose credentials live somewhere non-standard.
   // The value is used to look them up and is never stored.
   keychainService: string | null;
+  // Explicit, read-only desktop connection. It is never a Claude Code profile.
+  desktopBinding?: { accountId: string; organizationId: string };
 }
 
 export interface AppConfig {
@@ -261,6 +263,16 @@ function validateAccounts(config: AppConfig): void {
           throw new Error(`claude account ${id} has an invalid keychainService`);
         }
         home = resolveUserPath(profile.configDir);
+        if (profile.desktopBinding !== undefined) {
+          const binding = profile.desktopBinding as Record<string, unknown> | null;
+          const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+          if (!binding || typeof binding !== "object" || Array.isArray(binding) ||
+              Object.keys(binding).some(key => key !== "accountId" && key !== "organizationId") ||
+              typeof binding.accountId !== "string" || !uuid.test(binding.accountId) ||
+              typeof binding.organizationId !== "string" || !uuid.test(binding.organizationId) ||
+              profile.keychainService != null) throw new Error(`claude account ${id} has an invalid desktopBinding`);
+          home = `desktop:${binding.accountId.toLowerCase()}:${binding.organizationId.toLowerCase()}`;
+        }
       }
       if (!profile.enabled) continue;
       const previous = activeHomes.get(home);

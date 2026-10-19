@@ -45,7 +45,7 @@ struct QuotaRecoveryPolling {
 
     private static func canCollect(_ account: AccountState) -> Bool {
         let requiresSetup = ["auth-required", "auth-expired", "not-configured", "isolation-unsafe", "claude-code-unavailable", "access-denied"]
-        return account.enabled && !requiresSetup.contains(account.collection.errorCategory ?? account.collection.health)
+        return account.enabled && !account.hasUnavailableQuotaAccess && !requiresSetup.contains(account.collection.errorCategory ?? account.collection.health)
     }
 
     private static func observations(_ payload: StatusPayload?, requireFresh: Bool = false) -> [String: Double] {

@@ -242,6 +242,9 @@ const CATALOG = {
   "collection.auth-required": { en: () => "Sign-in required", ko: () => "로그인이 필요합니다" },
   "collection.auth-expired": { en: () => "Sign-in expired", ko: () => "로그인이 만료됐습니다" },
   "collection.claude-code-unavailable": { en: () => "Claude Code not connected", ko: () => "Claude Code 연결 없음" },
+  "collection.claude-desktop-unavailable": { en: () => "Claude desktop connection unavailable", ko: () => "Claude 앱 연결 확인 필요" },
+  "collection.claude-desktop-keychain": { en: () => "Claude session access needs permission", ko: () => "Claude 세션 접근 허용 필요" },
+  "collection.account-mismatch": { en: () => "Claude account changed", ko: () => "Claude 앱 계정이 변경됨" },
   "collection.claude-code-unavailable.detail": {
     en: () => "This collector uses Claude Code's subscription connection separately from Claude app sign-in. The Free plan does not support this collection method.",
     ko: () => "Claude 앱 로그인과 별개로 Claude Code의 구독 연결을 사용합니다. Free 플랜은 이 수집 방식을 지원하지 않습니다.",
@@ -263,6 +266,7 @@ const CATALOG = {
     ko: () => "공급자 응답을 읽지 못했습니다",
   },
   "collection.no-windows": { en: () => "The response carried no limit windows", ko: () => "응답에 한도 창이 없습니다" },
+  "collection.desktop-no-windows": { en: () => "Connected · numeric limits not provided", ko: () => "연결됨 · 한도 수치 미제공" },
   "collection.never-attempted": { en: () => "Not collected yet", ko: () => "아직 수집을 시도하지 않았습니다" },
   "collection.stale-success": { en: () => "Quota could not be refreshed", ko: () => "잔량을 새로 조회하지 못했습니다" },
   "collection.attempted-then-failed": { en: () => "Collection failed", ko: () => "수집에 실패했습니다" },

@@ -35,6 +35,7 @@ build_bundle() {
   source_hash="$(bun "$ROOT_DIR/script/macos-source-identity.ts")"
   swift build -c "$BUILD_CONFIGURATION" --product "$APP_NAME"
   swift build -c "$BUILD_CONFIGURATION" --product QuotaPiePowerHelper
+  swift build -c "$BUILD_CONFIGURATION" --product QuotaPieClaudeSessionHelper
   local build_binary
   build_binary="$(swift build -c "$BUILD_CONFIGURATION" --show-bin-path)/$APP_NAME"
 
@@ -49,6 +50,7 @@ build_bundle() {
   cp -R "$ROOT_DIR/macos/QuotaPie/Resources/ko.lproj" "$APP_CONTENTS/Resources/ko.lproj"
   mkdir -p "$APP_CONTENTS/Helpers"
   cp "$(dirname "$build_binary")/QuotaPiePowerHelper" "$APP_CONTENTS/Helpers/QuotaPiePowerHelper"
+  cp "$(dirname "$build_binary")/QuotaPieClaudeSessionHelper" "$APP_CONTENTS/Helpers/QuotaPieClaudeSessionHelper"
   cp "$ROOT_DIR/script/install_power_helper.sh" "$APP_CONTENTS/Resources/"
   bun "$ROOT_DIR/script/macos-source-identity.ts" "$APP_CONTENTS/Resources/source-identity.json" "$source_hash"
   chmod +x "$APP_BINARY"
@@ -71,6 +73,7 @@ esac
 # Keep the installed app available until its replacement has built successfully.
 build_bundle
 codesign --force --sign - --timestamp=none "$APP_CONTENTS/Helpers/QuotaPiePowerHelper"
+codesign --force --sign - --timestamp=none "$APP_CONTENTS/Helpers/QuotaPieClaudeSessionHelper"
 codesign --force --sign - --timestamp=none "$APP_BUNDLE" >/dev/null
 
 development_pids() {

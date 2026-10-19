@@ -500,6 +500,8 @@ export function collectionErrorText(
   collection: AccountCollectionState,
   locale: Locale = DEFAULT_LOCALE,
 ): string {
+  if (collection.activeSource === "claude-desktop" && collection.errorCategory === "no-windows")
+    return t("collection.desktop-no-windows", {}, locale);
   const key = collection.errorCategory ?? collection.health;
   return t(`collection.${key}`, {}, locale);
 }

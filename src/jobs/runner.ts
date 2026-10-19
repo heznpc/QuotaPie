@@ -15,6 +15,7 @@ export function jobProfile(config: AppConfig, spec: Pick<JobSpec, "provider" | "
     ? config.accounts.codex.find(p => p.enabled && p.id === spec.account)
     : config.accounts.claude.find(p => p.enabled && p.id === spec.account);
   if (!profile) throw new Error("account-unavailable");
+  if ("desktopBinding" in profile && profile.desktopBinding) throw new Error("desktop-connection-read-only");
   if ("keychainService" in profile && profile.keychainService) throw new Error("custom-credentials-unsupported");
   // Registration and the resident collector must agree even when a caller
   // happens to run inside another Codex profile.

@@ -42,7 +42,7 @@ import { ResetSignalCollector } from "./signals/collector";
 import { signalDecision } from "./signals/presentation";
 import { analyzeWindow, analysisHistoryStart, buildHeadline, groupStatuses } from "./analytics";
 import { buildQuotaBoundary, cachedLeaderboard, collectionHealth, defaultBoundaryPath, writeQuotaBoundary } from "./boundary";
-import type { AppConfig, CodexAccountConfig } from "./config";
+import type { AppConfig, CodexAccountConfig, ClaudeAccountConfig } from "./config";
 import { codexProfileRoot, codexUsesFileCredentials, resolveUserPath } from "./config";
 import { QuotaDatabase } from "./db";
 import { selectClaudeConsensus } from "./domain/claude-consensus";
@@ -53,6 +53,9 @@ import type { QuotaStorage } from "./storage/database";
 import { ResumeTaskStore, ResumeTaskStoreError } from "./storage/resume-task-store";
 import { CodexAppServerClient, CodexSnapshotUnavailableError, CodexGoalUnsupportedError } from "./providers/codex-appserver";
 import { ClaudeUsageError, fetchClaudeUsage, mapClaudeUsage, readClaudeCredentialsAsync } from "./providers/claude-oauth";
+import { CLAUDE_DESKTOP_SOURCE, CLAUDE_DESKTOP_MIN_INTERVAL_MS, ClaudeDesktopError,
+  readClaudeDesktop, mapClaudeDesktopUsage, sameClaudeDesktopIdentity, claudeDesktopIdentityKey, type ClaudeDesktopOptions, type ClaudeDesktopRead } from "./providers/claude-desktop";
+import { saveClaudeDesktopConnection } from "./claude-desktop-connection";
 import { claudeProfileEnvironment } from "./providers/claude-profile";
 import { resolveLocale, t } from "./i18n";
 import type { Locale } from "./i18n";
@@ -118,6 +121,7 @@ const HEALTH_RANK: Record<CollectionHealth, number> = {
 // If the order values are accepted in differs from the order they are
 // displayed in, the UI reports the wrong collection path.
 const SOURCE_AUTHORITY: Record<string, number> = {
+  [CLAUDE_DESKTOP_SOURCE]: 2,
   [CLAUDE_OAUTH_SOURCE]: 2,
   [CODEX_SOURCE]: 2,
   [CLAUDE_STATUSLINE_SOURCE]: 1,
@@ -182,6 +186,9 @@ export class QuotaPieService {
   private nativeNotificationTransportAvailable = false;
   private codexPollState = new Map<string, { count: number; error: string | null }>();
   private claudeOAuthLastPollMs = new Map<string, number>();
+  private claudeDesktopLastPollMs = -Infinity;
+  private claudeDesktopRead: Promise<ClaudeDesktopRead> | null = null;
+  private claudeDesktopConnect: Promise<{ account: AccountState; connected: true; quotaAvailable: boolean }> | null = null;
   // The official usage endpoint is rate limited on the provider side, so this
   // polls more loosely than Codex does.
   static readonly CLAUDE_OAUTH_MIN_INTERVAL_MS = 5 * 60_000;
@@ -195,6 +202,7 @@ export class QuotaPieService {
     readonly config: AppConfig,
     database?: QuotaDatabase,
     boundaryPaths: ServiceBoundaryPaths = {},
+    private readonly claudeDesktopOptions: ClaudeDesktopOptions = {},
   ) {
     this.db = database ?? new QuotaDatabase();
     // An injected memory/fixture database does not own the installed app's
@@ -1008,7 +1016,8 @@ export class QuotaPieService {
   /// selectClaudeConsensus decides which of them wins.
   private reconcileClaudeSessions(observations: QuotaObservation[]): QuotaObservation[] {
     const valid = observations.filter((observation) =>
-      observation.provider === "claude" && typeof observation.metadata?.sessionHash === "string"
+      observation.provider === "claude" && typeof observation.metadata?.sessionHash === "string" &&
+      !this.config.accounts.claude.find(profile => profile.id === observation.account)?.desktopBinding
     );
     if (!valid.length) return [];
     const ttlMs = this.config.collection.claudeSessionTtlSeconds * 1_000;
@@ -1141,7 +1150,7 @@ export class QuotaPieService {
     // of sharing.
     if (!this.config.collection.claudeOAuthEnabled) return [];
     const emitted: QuotaEvent[] = [];
-    for (const profile of this.config.accounts.claude.filter((item) => item.enabled)) {
+    for (const profile of this.config.accounts.claude.filter((item) => item.enabled && !item.desktopBinding)) {
       const lastPollMs = this.claudeOAuthLastPollMs.get(profile.id) ?? 0;
       if (!force && nowMs - lastPollMs < QuotaPieService.CLAUDE_OAUTH_MIN_INTERVAL_MS) continue;
       this.claudeOAuthLastPollMs.set(profile.id, nowMs);
@@ -1201,6 +1210,94 @@ export class QuotaPieService {
     return emitted;
   }
 
+  private readDesktop(connect: boolean): Promise<ClaudeDesktopRead> {
+    if (this.claudeDesktopRead) return this.claudeDesktopRead;
+    const read = readClaudeDesktop(connect, this.claudeDesktopOptions);
+    this.claudeDesktopRead = read;
+    void read.finally(() => { if (this.claudeDesktopRead === read) this.claudeDesktopRead = null; }).catch(() => {});
+    return read;
+  }
+
+  private recordDesktop(profile: ClaudeAccountConfig, result: ClaudeDesktopRead, nowMs: number): QuotaEvent[] {
+    const current = this.config.accounts.claude.find(item => item.id === profile.id && item.enabled);
+    if (this.closing || !current?.desktopBinding || !sameClaudeDesktopIdentity(current.desktopBinding, result))
+      throw new ClaudeDesktopError("account-mismatch");
+    const observations = mapClaudeDesktopUsage(result.usage, profile.id, nowMs).map(item => ({
+      ...item, metadata: { desktopIdentity: claudeDesktopIdentityKey(result) },
+    }));
+    if (!observations.length) {
+      this.collection.recordAttempt("claude", profile.id, CLAUDE_DESKTOP_SOURCE, nowMs,
+        new ClaudeDesktopError("no-windows").message, "no-windows");
+      return [];
+    }
+    const snapshot = this.db.ingestFullSnapshot("claude", profile.id, observations, this.config, 1);
+    if (snapshot.accepted) this.collection.recordAttempt("claude", profile.id, CLAUDE_DESKTOP_SOURCE, nowMs, null, null);
+    return snapshot.events;
+  }
+
+  async connectClaudeDesktop(path?: string): Promise<{ account: AccountState; connected: true; quotaAvailable: boolean }> {
+    if (this.claudeDesktopConnect) return this.claudeDesktopConnect;
+    const connect = (async () => {
+      // A background lookup must never acquire the interactive connect flag.
+      // Finish any such lookup before starting the explicit user action.
+      if (this.claudeDesktopRead) await this.claudeDesktopRead.catch(() => {});
+      let result: ClaudeDesktopRead;
+      try { result = await this.readDesktop(true); }
+      catch (error) {
+        if (!this.closing && error instanceof ClaudeDesktopError) for (const profile of this.config.accounts.claude) {
+          if (profile.enabled && profile.desktopBinding) this.collection.recordAttempt("claude", profile.id,
+            CLAUDE_DESKTOP_SOURCE, Date.now(), error.message, error.category);
+        }
+        throw error;
+      }
+      if (this.closing) throw new ClaudeDesktopError("claude-desktop-unavailable");
+      const profile = saveClaudeDesktopConnection(this.config, result, path);
+      const nowMs = Date.now();
+      this.claudeDesktopLastPollMs = nowMs;
+      this.recordDesktop(profile, result, nowMs);
+      for (const other of this.config.accounts.claude) if (other.enabled && other.desktopBinding && other.id !== profile.id) {
+        const mismatch = new ClaudeDesktopError("account-mismatch");
+        this.collection.recordAttempt("claude", other.id, CLAUDE_DESKTOP_SOURCE, nowMs, mismatch.message, mismatch.category);
+      }
+      const account = this.quotaAccounts(nowMs).find(item => item.provider === "claude" && item.account === profile.id)!;
+      await this.publishBoundary(nowMs);
+      return { account, connected: true as const, quotaAvailable: account.windows.length > 0 };
+    })();
+    this.claudeDesktopConnect = connect;
+    try { return await connect; }
+    finally { if (this.claudeDesktopConnect === connect) this.claudeDesktopConnect = null; }
+  }
+
+  async pollClaudeDesktop(nowMs = Date.now()): Promise<QuotaEvent[]> {
+    const profiles = this.config.accounts.claude.filter(profile => profile.enabled && profile.desktopBinding);
+    if (!profiles.length || this.closing || this.claudeDesktopConnect || this.claudeDesktopRead) return [];
+    const persistedAttempt = Math.max(-Infinity, ...this.collection.sourceStates()
+      .filter(row => row.source === CLAUDE_DESKTOP_SOURCE).map(row => row.lastAttemptMs ?? -Infinity));
+    // Persisted attempts also prevent a daemon restart or manual refresh from
+    // turning the desktop endpoint into a high-frequency poll.
+    if (nowMs - Math.max(this.claudeDesktopLastPollMs, persistedAttempt) < CLAUDE_DESKTOP_MIN_INTERVAL_MS) return [];
+    this.claudeDesktopLastPollMs = nowMs;
+    let result: ClaudeDesktopRead;
+    try { result = await this.readDesktop(false); }
+    catch (error) {
+      if (this.closing) return [];
+      const failure = error instanceof ClaudeDesktopError ? error : new ClaudeDesktopError("provider-error");
+      for (const profile of profiles) this.collection.recordAttempt("claude", profile.id, CLAUDE_DESKTOP_SOURCE,
+        Date.now(), failure.message, failure.category);
+      return [];
+    }
+    if (this.closing) return [];
+    const events: QuotaEvent[] = [];
+    for (const profile of profiles) {
+      try { events.push(...this.recordDesktop(profile, result, Date.now())); }
+      catch (error) {
+        const failure = error instanceof ClaudeDesktopError ? error : new ClaudeDesktopError("provider-error");
+        this.collection.recordAttempt("claude", profile.id, CLAUDE_DESKTOP_SOURCE, Date.now(), failure.message, failure.category);
+      }
+    }
+    return events;
+  }
+
   private createCodexClient(profile: CodexAccountConfig): CodexAppServerClient {
     const client = new CodexAppServerClient(
       this.config.collection.codexCommand,
@@ -1237,17 +1334,31 @@ export class QuotaPieService {
 
   private currentObservations(provider?: Provider): QuotaObservation[] {
     const latestWindows = this.db.latestAll();
+    const desktopProfiles = new Map(this.config.accounts.claude.filter(profile => profile.desktopBinding)
+      .map(profile => [profile.id, profile.desktopBinding!]));
+    const desktopStates = new Map((desktopProfiles.size ? this.collection.sourceStates() : []).filter(row => row.source === CLAUDE_DESKTOP_SOURCE)
+      .map(row => [row.account, row]));
     const codexEpochs = new Map<string, unknown>();
     for (const item of [...latestWindows].sort((a, b) => b.observedAtMs - a.observedAtMs)) {
       if (item.provider === "codex" && !codexEpochs.has(item.account)) {
         codexEpochs.set(item.account, item.metadata?.collectorEpoch);
       }
     }
-    return latestWindows.filter((latest) => (
+    return latestWindows.filter(latest => {
+      const binding = latest.provider === "claude" ? desktopProfiles.get(latest.account) : undefined;
+      if (binding) {
+        const state = desktopStates.get(latest.account);
+        // Shared by forecasts, triggers and the menu: a retained history row
+        // is not current quota after an empty response, sign-out or failure.
+        if (!state || state.lastError !== null || state.lastSuccessMs !== latest.observedAtMs ||
+            latest.source !== CLAUDE_DESKTOP_SOURCE || latest.metadata?.desktopIdentity !== claudeDesktopIdentityKey(binding)) return false;
+      }
+      return (
       (provider == null || latest.provider === provider) &&
       (latest.provider !== "codex" || latest.metadata?.collectorEpoch === codexEpochs.get(latest.account)) &&
       this.isEnabledAccount(latest.provider, latest.account)
-    ));
+      );
+    });
   }
 
   private currentQuotaWindows(nowMs: number): WindowAnalysis[] {
@@ -1332,15 +1443,22 @@ export class QuotaPieService {
       })),
     ];
     return profiles.filter((profile) => profile.enabled).map((profile) => {
+      const desktopBinding = profile.provider === "claude" ? this.config.accounts.claude.find(item => item.id === profile.id)?.desktopBinding : undefined;
+      const desktop = !!desktopBinding;
+      const desktopState = desktop ? sourceStates.find(row => row.provider === "claude" && row.account === profile.id && row.source === CLAUDE_DESKTOP_SOURCE) : undefined;
       const accountWindows = windows
         .filter((window) => window.provider === profile.provider && window.account === profile.id)
+        .filter(window => !desktopBinding || (window.source === CLAUDE_DESKTOP_SOURCE &&
+          desktopState?.lastError === null && desktopState.lastSuccessMs === window.observedAtMs &&
+          window.metadata?.desktopIdentity === claudeDesktopIdentityKey(desktopBinding)))
         .sort((left, right) => (left.windowSeconds ?? 0) - (right.windowSeconds ?? 0));
       const rows = sourceStates.filter((row) =>
-        row.provider === profile.provider && row.account === profile.id
+        row.provider === profile.provider && row.account === profile.id &&
+        (desktop ? row.source === CLAUDE_DESKTOP_SOURCE : row.source !== CLAUDE_DESKTOP_SOURCE)
       );
       const sources: CollectionSourceState[] = rows.map((row) => ({
         source: row.source,
-        health: collectionHealth(row, nowMs, staleAfterMs),
+        health: desktop && row.lastError !== null ? "attempted-then-failed" : collectionHealth(row, nowMs, staleAfterMs),
         lastAttemptAtMs: row.lastAttemptMs,
         lastSuccessAtMs: row.lastSuccessMs,
         errorCategory: row.lastErrorCategory,
@@ -1360,7 +1478,7 @@ export class QuotaPieService {
       // OAuth off with no fallback samples is not broken, it is unconfigured.
       // The user has to be pointed at one of the two routes, so it gets its
       // own category.
-      const optedOut = profile.provider === "claude" &&
+      const optedOut = profile.provider === "claude" && !desktop &&
         !this.config.collection.claudeOAuthEnabled &&
         best == null;
       const errorCategory = best?.health === "recent-success"
@@ -1369,12 +1487,14 @@ export class QuotaPieService {
       // A lost Code connection cannot describe the desktop app's current plan.
       // Keep history in storage, but don't present its former limits as current.
       const visibleWindows = profile.provider === "claude" &&
-        (errorCategory === "claude-code-unavailable" || errorCategory === "access-denied")
+        (errorCategory === "claude-code-unavailable" || errorCategory === "access-denied" ||
+          (desktop && errorCategory !== null))
         ? [] : accountWindows;
       const bottleneck = [...visibleWindows].sort((left, right) =>
         right.bottleneckScore - left.bottleneckScore
       )[0];
       return {
+        ...(desktop ? { connection: "claude-desktop" as const } : {}),
         provider: profile.provider,
         account: profile.id,
         accountLabel: this.accountLabel(profile.provider, profile.id),
@@ -1382,7 +1502,7 @@ export class QuotaPieService {
         enabled: profile.enabled,
         collection: {
           health: best?.health ?? "never-attempted",
-          activeSource: best && best.lastSuccessAtMs != null ? best.source : null,
+          activeSource: desktop ? CLAUDE_DESKTOP_SOURCE : best && best.lastSuccessAtMs != null ? best.source : null,
           lastSuccessAtMs: best?.lastSuccessAtMs ?? null,
           // For a healthy account, a past error on the fallback source is not
           // worth surfacing.
@@ -1437,6 +1557,8 @@ export class QuotaPieService {
     // Explicit QuotaPie opt-in only; observing another host's session or quota
     // must never call this as an automatic transfer of execution ownership.
     const account = input.account ?? "default";
+    if (input.provider === "claude" && this.config.accounts.claude.find(profile => profile.id === account)?.desktopBinding)
+      throw new Error("desktop-connection-read-only");
     if (!this.isEnabledAccount(input.provider, account)) {
       throw new Error(`unknown or disabled ${input.provider} account alias: ${account}`);
     }
@@ -1774,6 +1896,7 @@ export class QuotaPieService {
     }
     const profile = this.config.accounts.claude.find((item) => item.id === task.account && item.enabled);
     if (!profile) throw new ResumeTargetError("the Claude account is disabled or no longer configured");
+    if (profile.desktopBinding) throw new ResumeTargetError("desktop-connection-read-only");
     const configDir = resolveUserPath(profile.configDir);
     target = await findClaudeResumeTarget(configDir, task.account, task.taskKey);
     if (!target) throw new ResumeTargetError("the Claude task is no longer available in this account");
@@ -2371,11 +2494,14 @@ export class QuotaPieService {
   }
 
   async evaluateTriggers(nowMs = Date.now(), analysed?: WindowAnalysis[]): Promise<TriggerDecision[]> {
-    const windows = analysed ?? this.analyses(nowMs);
+    const windows = this.accountStates(nowMs, analysed ?? this.analyses(nowMs)).flatMap(account => account.windows);
     this.rearmRecovered(windows, nowMs);
     const decisions = planTriggers(
       windows,
-      this.alerts.pendingEvents().filter((event) => this.isEnabledAccount(event.provider, event.account)),
+      this.alerts.pendingEvents().filter(event => this.isEnabledAccount(event.provider, event.account) &&
+        (event.provider !== "claude" || !this.config.accounts.claude.find(profile => profile.id === event.account)?.desktopBinding ||
+          windows.some(window => window.provider === "claude" && window.account === event.account &&
+            window.bucket === event.bucket))),
       this.notificationConfig(),
       0,
       nowMs,
@@ -2447,6 +2573,7 @@ export class QuotaPieService {
       }
       // Waking the Mac must not bypass Claude's provider-specific minimum.
       events = events.concat(await this.pollClaudeOAuth(collectionStartedAtMs));
+      events = events.concat(await this.pollClaudeDesktop(collectionStartedAtMs));
     } finally {
       this.collecting = false;
       this.collectionFinishedAtMs = Date.now();

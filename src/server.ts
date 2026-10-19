@@ -20,6 +20,7 @@ import { UsageReportAPI, parseUsageQuery } from "./usage-report-api";
 import { OfficialUsageAPI, parseOfficialUsageQuery } from "./official-usage";
 import { officialUsageBoundary } from "./official-usage-boundary";
 import { readOfficialThreadCandidates } from "./official-thread-usage";
+import { ClaudeDesktopError } from "./providers/claude-desktop";
 
 // Deprecated compatibility aliases for the one consumer that can be a version
 // behind this daemon: the menu bar app, during the seconds between the backend
@@ -67,7 +68,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
   const server = Bun.serve({
     hostname: config.dashboard.host,
     port: config.dashboard.port,
-    async fetch(request) {
+    async fetch(request, server) {
       const host = (request.headers.get("host") ?? "").toLowerCase();
       const hostname = host.startsWith("[")
         ? host.slice(1, host.indexOf("]"))
@@ -120,6 +121,28 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
         }
         service.requestCollection(true);
         return json({ collection: service.collectionStatus() }, 202);
+      }
+      if (url.pathname === "/api/claude/desktop/connect") {
+        if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+        const origin = request.headers.get("origin");
+        if ((origin !== null && origin !== url.origin) || !tokenMatches(request.headers.get("x-quotapie-action-token")))
+          return json({ error: "forbidden" }, 403);
+        const body = await request.text();
+        try {
+          const input = JSON.parse(body || "{}");
+          if (body.length > 128 || !input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length)
+            return json({ error: "invalid_connection_action" }, 400);
+        } catch { return json({ error: "invalid_connection_action" }, 400); }
+        // Explicit connection may wait for a running background read and then
+        // the user's Keychain decision. Other HTTP requests retain Bun's short
+        // idle limit and the normal collection path never permits auth UI.
+        server.timeout(request, 180);
+        try { return json(await service.connectClaudeDesktop(options.preferencesPath)); }
+        catch (error) {
+          if (error instanceof ClaudeDesktopError) return json({ error: error.message, category: error.category }, 409);
+          return json({ error: error instanceof Error && error.message === "settings_changed" ? "settings_changed" : "connection_action_failed",
+            category: "provider-error" }, 409);
+        }
       }
       if(url.pathname === "/api/auto-resume") {
         const origin=request.headers.get("origin");

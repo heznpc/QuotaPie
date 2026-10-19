@@ -16,6 +16,7 @@ enum ResumeTaskActivity: Equatable {
 
 final class PopoverModel: ObservableObject {
     var statusClient: StatusClient?
+    let claudeDesktopConnection = ClaudeDesktopConnectionModel()
     @Published var automaticWorkLoadedPolicyIDs: [String]?
 
     @Published var payload: StatusPayload?
@@ -205,14 +206,14 @@ final class PopoverModel: ObservableObject {
     }
 
     var measurementDate: Date? {
-        guard selectedAccount?.collection.hasUnavailableQuotaAccess != true else { return nil }
+        guard selectedAccount?.hasUnavailableQuotaAccess != true else { return nil }
         guard let ms = selectedAccount?.overviewWindow?.observedAtMs ?? selectedAccount?.collection.lastSuccessAtMs,
               ms > 0, ms.isFinite else { return nil }
         return Date(timeIntervalSince1970: ms / 1_000)
     }
 
     var displayedMeasurementDate: Date? {
-        guard displayedAccount?.collection.hasUnavailableQuotaAccess != true else { return nil }
+        guard displayedAccount?.hasUnavailableQuotaAccess != true else { return nil }
         guard let ms = displayedAccount?.overviewWindow?.observedAtMs ?? displayedAccount?.collection.lastSuccessAtMs,
               ms > 0, ms.isFinite else { return nil }
         return Date(timeIntervalSince1970: ms / 1_000)
@@ -396,6 +397,7 @@ struct PopoverActions {
 extension AccountState {
     /// A separate model allowance must not stand in for the general Codex quota.
     var overviewWindow: QuotaWindow? {
+        guard !hasUnavailableQuotaAccess else { return nil }
         let eligible = provider == "codex" ? windows.filter { $0.bucket.hasPrefix("codex:") } : windows
         return eligible.sorted {
             if ($0.freshness == "fresh") != ($1.freshness == "fresh") { return $0.freshness == "fresh" }

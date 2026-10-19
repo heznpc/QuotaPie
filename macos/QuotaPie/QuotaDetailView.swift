@@ -18,22 +18,22 @@ struct AccountSection: View {
                     Text(statusTrail)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                } else {
+                } else if !account.isClaudeDesktopWithoutQuota {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.caption2)
                         .foregroundStyle(.orange)
-                        .help(account.collection.actionText)
+                        .help(account.collectionStatusText)
                 }
             }
-            if account.collection.accessExplanation != nil {
-                CollectionAccessNotice(collection: account.collection)
+            if account.collectionExplanation != nil {
+                CollectionAccessNotice(account: account)
                 if let onOpenAccount {
                     Button(action: onOpenAccount) {
                         Label(Strings.t("collection.openClaude"), systemImage: "arrow.up.forward.app")
                     }.buttonStyle(.bordered).controlSize(.small)
                 }
             } else if account.windows.isEmpty || !account.collection.isHealthy {
-                Label(account.windows.isEmpty && account.collection.isHealthy ? Strings.t("popover.noWindows") : account.collection.actionText,
+                Label(account.windows.isEmpty && account.collection.isHealthy ? Strings.t("popover.noWindows") : account.collectionStatusText,
                       systemImage: "exclamationmark.circle")
                     .font(.caption).foregroundStyle(account.collection.isHealthy ? Color.secondary : Color.orange)
                 DisclosureGroup(Strings.t("detail.overview.collectionHelp")) {
@@ -58,7 +58,7 @@ struct AccountSection: View {
                     .padding(.top, 6)
                 }.font(.caption)
             }
-            if account.collection.accessExplanation == nil && !account.collection.isHealthy && !account.windows.isEmpty {
+            if account.collectionExplanation == nil && !account.collection.isHealthy && !account.windows.isEmpty {
                 Text(Strings.t("account.previousReadings")).font(.caption2).foregroundStyle(.secondary)
             }
             ForEach(primaryAndAttentionWindows) { window in quotaRow(window) }
@@ -69,7 +69,7 @@ struct AccountSection: View {
                     }.padding(.top, 8)
                 }.font(.caption)
             }
-            if account.collection.accessExplanation == nil, let recovery {
+            if account.collectionExplanation == nil, let recovery {
                 AccountRecoveryView(account: recovery, transportUnavailable: transportUnavailable)
             }
         }
@@ -82,7 +82,7 @@ struct AccountSection: View {
     }
 
     private var orderedWindows: [QuotaWindow] {
-        guard account.collection.accessExplanation == nil else { return [] }
+        guard account.collectionExplanation == nil else { return [] }
         return account.windows.sorted { left, right in
             let leftPrimary = left.bucket.hasPrefix("codex:")
             let rightPrimary = right.bucket.hasPrefix("codex:")
@@ -113,20 +113,20 @@ struct AccountSection: View {
 /// Keep the unsupported collection path visible instead of showing an empty
 /// quota card or making a desktop app login look like a Code login failure.
 struct CollectionAccessNotice: View {
-    let collection: CollectionState
+    let account: AccountState
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label(collection.actionText, systemImage: "info.circle")
+            Label(account.collectionStatusText, systemImage: "info.circle")
                 .font(.system(size: 12, weight: .medium))
-            if let explanation = collection.accessExplanation {
+            if let explanation = account.collectionExplanation {
                 Text(explanation).font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("collection.accessNotice." + (collection.errorCategory ?? collection.health))
+        .accessibilityIdentifier("collection.accessNotice." + (account.collection.errorCategory ?? account.collection.health))
     }
 }
 

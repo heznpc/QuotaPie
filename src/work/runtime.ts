@@ -95,6 +95,7 @@ export async function inspectWorkTarget(config: AppConfig, target: WorkTarget, o
   if (target.provider !== "claude") throw new Error("codex-managed-adapter-required");
   if (!UUID.test(target.nativeSessionId)) throw new Error("invalid-native-session");
   const profile = config.accounts.claude.find(p => p.enabled && p.id === target.account);
+  if (profile?.desktopBinding) throw new Error("desktop-connection-read-only");
   const profileKey = resumeProfileKey(config, "claude", target.account);
   if (!profile || !profileKey) throw new Error("profile-unavailable");
   // The native CLI cannot be told to use an arbitrary collector-only Keychain

@@ -78,7 +78,7 @@ function resumeAccount(
       // trying to identify a different active profile.
       root: resolveUserPath(profile.codexHome ?? "~/.codex"),
     }))
-    : config.accounts.claude.filter((profile) => profile.enabled).map((profile) => ({
+    : config.accounts.claude.filter((profile) => profile.enabled && !profile.desktopBinding).map((profile) => ({
       id: profile.id,
       root: resolveUserPath(profile.configDir),
     }));
@@ -267,7 +267,7 @@ async function main(): Promise<number> {
     chmodSync(dataDirectory(), 0o700);
     console.log(t("cli.init.config", { path }, outputLocale));
     console.log(t("cli.init.data", { path: dataDirectory() }, outputLocale));
-    for (const profile of initialized.accounts.claude.filter((item) => item.enabled)) {
+    for (const profile of initialized.accounts.claude.filter((item) => item.enabled && !item.desktopBinding)) {
       const settingsPath = resolve(resolveUserPath(profile.configDir), "settings.json");
       console.log(`\n${t("cli.init.merge", {
         path: settingsPath,
@@ -382,7 +382,7 @@ async function main(): Promise<number> {
       case "claude-statusline": {
         const account = selectedAccount ?? "default";
         const profile = config.accounts.claude.find((item) => item.id === account && item.enabled);
-        if (!profile) {
+        if (!profile || profile.desktopBinding) {
           throw new Error(t("cli.error.unknown-claude-account", { account }, outputLocale));
         }
         const input = await Bun.stdin.text();
@@ -562,6 +562,7 @@ async function main(): Promise<number> {
         // With the gate off, this call returns immediately without reading
         // any credentials.
         await service.pollClaudeOAuth(Date.now(), true);
+        await service.pollClaudeDesktop();
         for (const account of service.accountStates().filter((state) => state.provider === "claude")) {
           const oauth = account.collection.sources.find((source) => source.source === CLAUDE_OAUTH_SOURCE);
           const statusLine = account.collection.sources.find(
@@ -611,7 +612,7 @@ async function main(): Promise<number> {
           // With OAuth off, the status line is the only path left, so report
           // whether the hook is configured — otherwise the user cannot tell
           // which of the two routes to take.
-          if (!config.collection.claudeOAuthEnabled) {
+          if (!config.collection.claudeOAuthEnabled && account.connection !== "claude-desktop") {
             const profile = config.accounts.claude.find((item) => item.id === account.account)!;
             const claudeSettings = resolve(resolveUserPath(profile.configDir), "settings.json");
             let statusCommand = "";

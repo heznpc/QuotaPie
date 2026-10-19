@@ -46,12 +46,12 @@ struct QuotaSnapshotCache {
     private func displayOnlyAccount(_ account: AccountState) -> AccountState {
         var collection = account.collection
         collection.errorDetail = nil
-        if collection.hasUnavailableQuotaAccess {
+        if account.hasUnavailableQuotaAccess {
             // A previous allowance is not evidence of access through the current
             // connection. Reassert this on load as well as on save.
             collection.errorCategory = collection.errorCategory ?? collection.health
             collection.health = "attempted-then-failed"
-            return AccountState(nickname: account.nickname, provider: account.provider, account: account.account,
+            return AccountState(nickname: account.nickname, connection: account.connection, provider: account.provider, account: account.account,
                 accountLabel: account.accountLabel, enabled: account.enabled, collection: collection,
                 windows: [], bottleneckBucket: nil, updatedAtMs: nil)
         }

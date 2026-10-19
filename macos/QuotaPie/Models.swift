@@ -667,6 +667,7 @@ struct Headline: Decodable {
 
 struct AccountState: Codable, Identifiable {
     var nickname: String? = nil
+    var connection: String? = nil
     let provider: String
     let account: String
     let accountLabel: String
@@ -678,6 +679,27 @@ struct AccountState: Codable, Identifiable {
 
     var id: String { "\(provider)/\(account)" }
     var providerTitle: String { provider == "codex" ? "Codex" : provider == "claude" ? "Claude" : provider }
+    var isClaudeDesktop: Bool { provider == "claude" && connection == "claude-desktop" }
+    var isClaudeDesktopWithoutQuota: Bool { isClaudeDesktop && collection.errorCategory == "no-windows" }
+
+    var hasUnavailableQuotaAccess: Bool {
+        if isClaudeDesktop {
+            let category = collection.errorCategory ?? collection.health
+            return !["recent-success", "stale-success"].contains(category)
+        }
+        return collection.hasUnavailableQuotaAccess
+    }
+
+    var collectionStatusText: String {
+        isClaudeDesktop ? ClaudeDesktopCollectionText.title(category: collection.errorCategory ?? collection.health) : collection.actionText
+    }
+
+    var collectionExplanation: String? {
+        if isClaudeDesktop && hasUnavailableQuotaAccess {
+            return ClaudeDesktopCollectionText.detail(category: collection.errorCategory ?? collection.health)
+        }
+        return isClaudeDesktop ? nil : collection.accessExplanation
+    }
 }
 
 extension AccountState {
@@ -739,6 +761,7 @@ struct CollectionState: Codable {
     var sourceLabel: String {
         switch activeSource {
         case "claude-oauth", "codex-appserver": return Strings.t("source.official")
+        case "claude-desktop": return Strings.t("source.claudeDesktop")
         case "claude-statusline": return Strings.t("source.statusline")
         default: return activeSource ?? "—"
         }

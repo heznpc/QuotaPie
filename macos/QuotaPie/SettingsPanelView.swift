@@ -95,6 +95,8 @@ struct SettingsPanelView: View {
         case .accounts:
             CodexProfilesView(status: model, actions: actions).disabled(fixture)
             Divider()
+            ClaudeDesktopConnectionView(model: model).disabled(fixture)
+            Divider()
             DotsConnectionView(model: model)
         case .automation:
             AccountPoolSettingsView(model: model, save: actions.configurePool)

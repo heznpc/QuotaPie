@@ -36,8 +36,8 @@ struct AccountListRow: View {
                     }
                 }
                 if let warning = warningText {
-                    Label(warning, systemImage: "exclamationmark.circle")
-                        .font(.caption2).foregroundStyle(.orange)
+                    Label(warning, systemImage: account.isClaudeDesktopWithoutQuota ? "info.circle" : "exclamationmark.circle")
+                        .font(.caption2).foregroundStyle(account.isClaudeDesktopWithoutQuota ? Color.secondary : Color.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -55,11 +55,12 @@ struct AccountListRow: View {
     }
 
     private var warningText: String? {
+        if account.hasUnavailableQuotaAccess { return account.collectionStatusText }
         var warnings: [String] = []
         let category = account.collection.errorCategory ?? account.collection.health
         let sharedFailure = transportUnavailable && ["network", "stale-success", "attempted-then-failed"].contains(category)
         if !account.collection.isHealthy && !sharedFailure {
-            warnings.append(historicalWarning(account.collection.actionText))
+            warnings.append(historicalWarning(account.collectionStatusText))
         }
         if account.windows.contains(where: \.isResetTicketPending) {
             warnings.append(Strings.t("accounts.list.resetTicketPending"))
@@ -131,7 +132,7 @@ struct AccountListRow: View {
             }
         }
         if let warning = warningText { values.append(warning) }
-        if !account.collection.hasUnavailableQuotaAccess,
+        if !account.hasUnavailableQuotaAccess,
            let measured = account.collection.lastSuccessAtMs, measured.isFinite, measured > 0 {
             values.append(Strings.t("collection.measuredAt", Date(timeIntervalSince1970: measured / 1_000)
                 .formatted(date: .abbreviated, time: .shortened)))

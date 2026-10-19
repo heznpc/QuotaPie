@@ -164,6 +164,7 @@ done < <(find "${APP}" -depth \( -name '*.framework' -o -name '*.xpc' -o -name '
 
 # Fixed-function privileged helper must carry the same release signature.
 sign "${APP}/Contents/Helpers/QuotaPiePowerHelper"
+sign "${APP}/Contents/Helpers/QuotaPieClaudeSessionHelper"
 
 # Then the main executable, then the wrapper with the app's entitlements.
 sign "${APP}/Contents/MacOS/${EXECUTABLE}"

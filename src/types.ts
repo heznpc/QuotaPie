@@ -194,6 +194,9 @@ export type CollectionErrorCategory =
   | "auth-required"
   | "auth-expired"
   | "claude-code-unavailable"
+  | "claude-desktop-unavailable"
+  | "claude-desktop-keychain"
+  | "account-mismatch"
   | "access-denied"
   | "rate-limited"
   | "network"
@@ -236,6 +239,7 @@ export interface AccountCollectionState {
 // A configured account never disappears just because it has no snapshots.
 // The native UI needs to be able to render an honest empty or error state.
 export interface AccountState {
+  connection?: "claude-desktop";
   nickname?: string;
   provider: Provider;
   account: string;

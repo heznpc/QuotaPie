@@ -6,7 +6,7 @@ import { codexProfileRoot, resolveUserPath, type AppConfig } from "./config";
 export function resumeProfileKey(config: AppConfig, provider: Provider, accountId: string): string | null {
   const profile = (provider === "codex" ? config.accounts.codex : config.accounts.claude)
     .find(p => p.id === accountId && p.enabled);
-  if (!profile) return null;
+  if (!profile || ("desktopBinding" in profile && profile.desktopBinding)) return null;
   try {
     const root = realpathSync("codexHome" in profile ? codexProfileRoot(profile) : resolveUserPath(profile.configDir));
     return createHash("sha256").update(root).digest("hex");

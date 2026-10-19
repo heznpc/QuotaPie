@@ -185,6 +185,32 @@ final class StatusClient {
         } catch { completion(.failure(error)) }
     }
 
+    func connectClaudeDesktop(actionToken: String,
+                              completion: @escaping (Result<ClaudeDesktopConnectionReply, Error>) -> Void) {
+        do {
+            var request = try authenticatedPOST(pathComponents: ["api", "claude", "desktop", "connect"], actionToken: actionToken)
+            request.httpBody = Data("{}".utf8)
+            request.setValue(nil, forHTTPHeaderField: "content-length")
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            session.dataTask(with: request) { data, response, error in
+                if let error { completion(.failure(error)); return }
+                guard let http = response as? HTTPURLResponse, let data else {
+                    completion(.failure(StatusClientError.invalidResponse)); return
+                }
+                guard http.statusCode == 200 else {
+                    struct Failure: Decodable { let category: String? }
+                    let category = (try? JSONDecoder().decode(Failure.self, from: data))?.category ?? "provider-error"
+                    completion(.failure(ClaudeDesktopConnectionError(category: category))); return
+                }
+                completion(Result {
+                    let reply = try JSONDecoder().decode(ClaudeDesktopConnectionReply.self, from: data)
+                    guard reply.connected, reply.account.isClaudeDesktop else { throw StatusClientError.invalidResponse }
+                    return reply
+                })
+            }.resume()
+        } catch { completion(.failure(error)) }
+    }
+
     func automaticWork(actionToken: String, completion: @escaping (Result<AutomaticWorkResponse, Error>) -> Void) {
         workRequest(actionToken: actionToken, completion: completion)
     }

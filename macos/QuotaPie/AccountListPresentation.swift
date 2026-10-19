@@ -9,7 +9,7 @@ struct AccountListPresentation {
     let additionalLimitCount: Int
 
     init(account: AccountState) {
-        guard !account.collection.hasUnavailableQuotaAccess else {
+        guard !account.hasUnavailableQuotaAccess else {
             fiveHour = nil
             weekly = nil
             visibleWindows = []

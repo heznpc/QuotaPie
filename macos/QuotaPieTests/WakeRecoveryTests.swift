@@ -66,6 +66,22 @@ final class WakeRecoveryTests: XCTestCase {
         XCTAssertTrue(polling.isActive(uptime:20.1),"A later network recovery can start another attempt")
     }
 
+    func testDesktopConnectionWithoutNumbersOrWithChangedIdentityDoesNotHoldCodexRecovery() throws {
+        for category in ["no-windows", "account-mismatch", "claude-desktop-unavailable", "auth-expired", "network"] {
+            var before = try status([1000,1000,100])
+            before.accounts[2].connection = "claude-desktop"
+            var polling = QuotaRecoveryPolling()
+            polling.begin(payload: before, atMs: 2000, uptime: 10)
+            var after = try status([2500,2500,100])
+            after.accounts[2].connection = "claude-desktop"
+            after.accounts[2].collection.health = "attempted-then-failed"
+            after.accounts[2].collection.errorCategory = category
+            after.accounts[2].windows = []
+            XCTAssertTrue(polling.observe(after, uptime: 10.5), category)
+            XCTAssertEqual(after.accounts[2].collection.errorCategory, category)
+        }
+    }
+
     func testWakeSignalsCoalesceButNextRealSleepCycleIsNotSuppressed() {
         var polling = QuotaRecoveryPolling()
         XCTAssertTrue(polling.acceptWake(uptime:10))

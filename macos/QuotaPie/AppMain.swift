@@ -825,7 +825,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         } else if let accountAttention {
             title = accountAttention
             color = .secondaryLabelColor
-            toolTip = [selected?.collection.isHealthy == false ? selected?.collection.actionText : accountAttention,
+            toolTip = [selected?.collection.isHealthy == false ? selected?.collectionStatusText : accountAttention,
                        headline?.localizedTitle, popoverModel.measurementDate.map {
                            Strings.t("collection.measuredAt", $0.formatted(date: .abbreviated, time: .shortened))
                        }].compactMap { $0 }.joined(separator: "\n")
@@ -1049,7 +1049,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         for account in payload.accounts {
             lines.append("\(account.providerTitle) · \(account.accountLabel)")
             if !account.collection.isHealthy {
-                lines.append("  \(account.collection.actionText)")
+                lines.append("  \(account.collectionStatusText)")
             }
             for window in account.windows {
                 let used = window.usedPercent.map { Strings.t("window.used", String(Int($0.rounded()))) } ?? Strings.t("window.usageUnknown")

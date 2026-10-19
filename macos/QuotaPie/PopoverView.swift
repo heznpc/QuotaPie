@@ -293,19 +293,19 @@ struct PopoverView: View {
                 }
             }
             HStack {
-                Text(Strings.t(model.displayedAccount?.collection.accessExplanation == nil ? "accounts.list.remaining" : "collection.availability"))
+                Text(Strings.t(model.displayedAccount?.collectionExplanation == nil ? "accounts.list.remaining" : "collection.availability"))
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 detailButton("overview.quotaDetail", section: .quota)
             }
             if let account = model.displayedAccount {
-                if account.collection.accessExplanation != nil {
-                    CollectionAccessNotice(collection: account.collection)
+                if account.collectionExplanation != nil {
+                    CollectionAccessNotice(account: account)
                 } else {
                     AccountOverviewQuota(account: account,
                         current: !model.showingStartupCache && model.lastError == nil && account.collection.isHealthy)
                 }
-                if account.collection.accessExplanation == nil {
+                if account.collectionExplanation == nil {
                     if model.showingStartupCache {
                         Text(Strings.t("collection.previousReading")).font(.caption).foregroundStyle(.secondary)
                     } else if model.payload?.collection?.refreshing == true {
@@ -330,16 +330,16 @@ struct PopoverView: View {
                           systemImage: "exclamationmark.circle")
                         .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                 }
-                if account.collection.accessExplanation == nil && !account.collection.isHealthy && !(model.lastError != nil &&
+                if account.collectionExplanation == nil && !account.collection.isHealthy && !(model.lastError != nil &&
                     ["network", "stale-success", "attempted-then-failed"].contains(account.collection.errorCategory ?? account.collection.health)) {
                     Button { showDetails(.quota) } label: {
-                        Label(account.collection.actionText + (model.lastError == nil && !account.windows.isEmpty ?
+                        Label(account.collectionStatusText + (model.lastError == nil && !account.windows.isEmpty ?
                             " · " + Strings.t("accounts.list.previous") : ""),
                               systemImage: "exclamationmark.circle")
                             .font(.caption).foregroundStyle(.orange).multilineTextAlignment(.leading)
                     }.buttonStyle(.plain)
                 }
-                if account.windows.isEmpty && account.collection.accessExplanation == nil {
+                if account.windows.isEmpty && account.collectionExplanation == nil {
                     Text(Strings.t("popover.noWindows")).font(.caption).foregroundStyle(.secondary)
                 }
             } else {

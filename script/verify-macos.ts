@@ -67,7 +67,7 @@ async function sourceHash(root: string) {
       else if (entry.isFile()) { hash.update(path + "\0"); hash.update(await readFile(join(root, path))); }
     }
   }
-  for (const directory of ["macos/QuotaPie", "macos/PowerCore", "macos/QuotaPiePowerHelper"]) await walk(directory);
+  for (const directory of ["macos/QuotaPie", "macos/PowerCore", "macos/QuotaPiePowerHelper", "macos/ClaudeDesktopCore", "macos/QuotaPieClaudeSessionHelper"]) await walk(directory);
   for (const file of ["Package.swift", "script/build_and_run.sh", "script/verify-macos.ts"]) hash.update(await readFile(join(root, file)));
   return hash.digest("hex");
 }
@@ -250,6 +250,7 @@ async function run() {
     await exec(["/usr/libexec/PlistBuddy", "-c", `Set :CFBundleIdentifier ${bundleID}`, plist]);
     await exec(["/usr/libexec/PlistBuddy", "-c", "Delete :CFBundleURLTypes", plist]);
     await exec(["codesign", "--force", "--sign", "-", "--timestamp=none", join(app, "Contents/Helpers/QuotaPiePowerHelper")]);
+    await exec(["codesign", "--force", "--sign", "-", "--timestamp=none", join(app, "Contents/Helpers/QuotaPieClaudeSessionHelper")]);
     await exec(["codesign", "--force", "--sign", "-", "--timestamp=none", app]);
     await exec(["/usr/bin/defaults", "write", bundleID, "local.quotapie.codex-desktop-profiles.v1", "-data", Buffer.from(JSON.stringify(profiles)).toString("hex")]);
     for (const scenario of [

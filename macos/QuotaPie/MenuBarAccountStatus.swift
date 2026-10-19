@@ -5,6 +5,7 @@ import Foundation
 /// label cannot imply that a denied or unverified account is ready to use.
 enum MenuBarAccountStatus {
     static func title(for account: AccountState) -> String? {
+        if account.isClaudeDesktop && account.hasUnavailableQuotaAccess { return account.collectionStatusText }
         let message: String
         if !account.collection.isHealthy {
             switch account.collection.errorCategory ?? account.collection.health {

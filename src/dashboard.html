@@ -105,6 +105,10 @@
           "collection.auth-required": "Sign-in required",
           "collection.auth-expired": "Sign-in expired",
           "collection.claude-code-unavailable": "Claude Code connection unavailable",
+          "collection.claude-desktop-unavailable": "Claude desktop connection unavailable",
+          "collection.claude-desktop-keychain": "Claude session access needs permission",
+          "collection.account-mismatch": "Claude app account changed; connect the current account separately",
+          "collection.desktop-no-windows": "Connected · numeric limits not provided",
           "collection.access-denied": "Usage access unavailable",
           "collection.claude-code-unavailable.detail": "This collector uses Claude Code's subscription connection separately from Claude app sign-in. The Free plan does not support this collection method.",
           "collection.access-denied.detail": "The current connection does not have permission to read quota usage.",
@@ -210,6 +214,10 @@
           "collection.auth-required": "로그인이 필요합니다",
           "collection.auth-expired": "로그인이 만료됐습니다",
           "collection.claude-code-unavailable": "Claude Code 연결 없음",
+          "collection.claude-desktop-unavailable": "Claude 앱 연결 확인 필요",
+          "collection.claude-desktop-keychain": "Claude 세션 접근 허용 필요",
+          "collection.account-mismatch": "Claude 앱 계정이 변경됨 · 현재 계정을 별도로 연결하세요",
+          "collection.desktop-no-windows": "연결됨 · 한도 수치 미제공",
           "collection.access-denied": "한도 조회 권한 없음",
           "collection.claude-code-unavailable.detail": "Claude 앱 로그인과 별개로 Claude Code의 구독 연결을 사용합니다. Free 플랜은 이 수집 방식을 지원하지 않습니다.",
           "collection.access-denied.detail": "현재 연결에는 한도 조회 권한이 없습니다.",
@@ -584,16 +592,17 @@
           document.getElementById("providers").innerHTML = accounts.length
             ? accounts.map((account) => {
                 const label = escapeHtml(account.accountLabel ?? account.account);
+                const desktopEmpty = account.connection === "claude-desktop" && account.collection?.errorCategory === "no-windows";
                 const accessUnavailable = account.collection?.health !== "recent-success" &&
                   ["claude-code-unavailable", "access-denied"].includes(account.collection?.errorCategory);
                 const notice = account.collection && account.collection.health !== "recent-success"
-                  ? `<p class="notice">${escapeHtml(collectionText(account.collection))}</p>`
+                  ? `<p class="notice">${escapeHtml(desktopEmpty ? t("collection.desktop-no-windows") : collectionText(account.collection))}</p>`
                   : "";
                 const windows = accessUnavailable
                   ? `<p class="muted">${escapeHtml(t("collection." + account.collection.errorCategory + ".detail"))}</p>`
                   : (account.windows ?? []).length
                   ? account.windows.map((window) => windowHtml(window, window.bucket === account.bottleneckBucket)).join("")
-                  : `<p class="notice">${t("window.noWindows")}</p>`;
+                  : desktopEmpty ? "" : `<p class="notice">${t("window.noWindows")}</p>`;
                 return `<article class="provider"><h2>${escapeHtml(account.provider)} · ${label}</h2>${notice}${windows}</article>`;
               }).join("")
             : `<div class="empty">${escapeHtml(t("empty"))}</div>`;

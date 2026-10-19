@@ -8,9 +8,13 @@ let package = Package(
     products: [
         .executable(name: "QuotaPie", targets: ["QuotaPie"]),
         .executable(name: "QuotaPiePowerHelper", targets: ["QuotaPiePowerHelper"]),
+        .executable(name: "QuotaPieClaudeSessionHelper", targets: ["QuotaPieClaudeSessionHelper"]),
     ],
     targets: [
         .target(name: "PowerCore", path: "macos/PowerCore"),
+        .target(name: "ClaudeDesktopCore", path: "macos/ClaudeDesktopCore", linkerSettings: [.linkedLibrary("sqlite3")]),
+        .executableTarget(name: "QuotaPieClaudeSessionHelper", dependencies: ["ClaudeDesktopCore"], path: "macos/QuotaPieClaudeSessionHelper"),
+        .testTarget(name: "ClaudeDesktopCoreTests", dependencies: ["ClaudeDesktopCore"], path: "macos/ClaudeDesktopCoreTests"),
         .executableTarget(name: "QuotaPiePowerHelper", dependencies: ["PowerCore"], path: "macos/QuotaPiePowerHelper"),
         .executableTarget(
             name: "QuotaPie",

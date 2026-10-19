@@ -37,6 +37,7 @@ function fixture(existing = true) {
     file(join(path, "Contents/Info.plist"), JSON.stringify({ CFBundleIdentifier: labels[1], CFBundleExecutable: "QuotaPie" }));
     file(join(path, "Contents/MacOS/QuotaPie"), version);
     file(join(path, "Contents/Helpers/QuotaPiePowerHelper"), "helper");
+    file(join(path, "Contents/Helpers/QuotaPieClaudeSessionHelper"), "desktop-helper");
   }
   tree(source, "new-runtime"); application(supplied, "new-app");
   file(join(data, "sentinel.sqlite3"), "private data");
@@ -407,6 +408,16 @@ test("lost maintenance during verification cannot trigger rollback that interrup
     expect(readFileSync(join(f.runtime,"src/cli.ts"),"utf8")).toBe("new-runtime");
     expect(existsSync(join(dirname(f.runtime),".quotapie-install.lock"))).toBe(true);
   } finally {f.close();}
+});
+
+test("a prebuilt app without its desktop session helper is rejected before stopping services", async () => {
+  const f = fixture();
+  try {
+    rmSync(join(f.supplied, "Contents/Helpers/QuotaPieClaudeSessionHelper"));
+    await expect(f.run()).rejects.toThrow("missing its Claude desktop session helper");
+    expect(f.calls.some(command => command[0] === "/bin/launchctl" && command[1] === "bootout")).toBe(false);
+    expect(readFileSync(join(f.app, "Contents/MacOS/QuotaPie"), "utf8")).toBe("old-app");
+  } finally { f.close(); }
 });
 
 test("prebuilt installation preserves config, credentials and data, pins paths and can be repeated", async () => {

@@ -309,11 +309,16 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
       await run(["/bin/bash", join(source, "script/build_and_run.sh"), "bundle", join(work, "build")]);
       await run(["/usr/bin/ditto", join(work, "build/QuotaPie.app"), stagedApp]);
       await run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", join(stagedApp, "Contents/Helpers/QuotaPiePowerHelper")]);
+      await run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", join(stagedApp, "Contents/Helpers/QuotaPieClaudeSessionHelper")]);
       await run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", stagedApp]);
     }
     const appInfo = await plist(join(stagedApp, "Contents/Info.plist"));
     if (appInfo.CFBundleIdentifier !== LABELS[1] || appInfo.CFBundleExecutable !== "QuotaPie"
         || !statSync(join(stagedApp, "Contents/MacOS/QuotaPie")).isFile()) throw new Error("The supplied app is not QuotaPie.");
+    const desktopHelper = join(stagedApp, "Contents/Helpers/QuotaPieClaudeSessionHelper");
+    if (!present(desktopHelper) || lstatSync(desktopHelper).isSymbolicLink() || !statSync(desktopHelper).isFile()) {
+      throw new Error("The supplied app is missing its Claude desktop session helper.");
+    }
     await run(["/usr/bin/codesign", "--verify", "--deep", "--strict", stagedApp]);
     const stagedConfig = join(work, "initial-config.json");
     if (!existsSync(config)) {

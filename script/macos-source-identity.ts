@@ -16,7 +16,7 @@ export function macOSSourceHash(root: string): string {
       hash.update(`${relative}\0${bytes.length}\0`).update(bytes);
     }
   }
-  for (const relative of ["Package.swift", "macos/QuotaPie", "macos/PowerCore", "macos/QuotaPiePowerHelper",
+  for (const relative of ["Package.swift", "macos/QuotaPie", "macos/PowerCore", "macos/QuotaPiePowerHelper", "macos/ClaudeDesktopCore", "macos/QuotaPieClaudeSessionHelper",
     "script/build_and_run.sh", "script/install_power_helper.sh", "script/macos-source-identity.ts"]) add(relative);
   return hash.digest("hex");
 }
