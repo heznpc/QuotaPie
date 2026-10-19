@@ -408,7 +408,7 @@
         return bits.length ? ` · ${bits.join(" · ")}` : "";
       };
       const autoWords = LOCALE === "ko" ? {
-        title: "한도 회복 시 자동재개", description: "켜진 뒤 한도로 멈춘 대화를 같은 계정·세션에서 이어갑니다. 재개 중 다시 한도에 걸려도 다음 회복을 기다립니다. 대기 기간 제한은 없으며, 이미 접수된 작업은 꺼도 실행될 수 있습니다.",
+        title: "한도 회복 시 자동재개", description: "켠 뒤 새로 한도에 걸린 작업을 같은 대화에서 이어갑니다. 계정 풀이 켜져 있으면 허용한 다른 계정의 한도도 확인합니다. 재개 중 다시 한도에 걸려도 다음 회복을 기다립니다. 대기 기간 제한은 없으며, 이미 접수된 작업은 꺼도 실행될 수 있습니다.",
         unsupported: "자동재개를 사용하려면 로컬 서비스를 업데이트하세요.", noAccounts: "사용할 수 있는 Codex 계정이 없습니다.",
         empty: "한도 회복을 기다리는 대화가 아직 발견되지 않았습니다.", skip: "이 대화 건너뛰기", saving: "저장 중…",
         failed: "변경 결과를 확인하지 못했습니다. 다시 시도하기 전에 상태를 새로고침하세요.",
@@ -419,7 +419,7 @@
           goal: "호스트 목표가 현재 이어하기를 허용하지 않습니다.", busy: "Codex가 아직 이 대화를 사용하고 있습니다.",
           queued: "ChatGPT 대기열에 전달했습니다. 같은 대화에서 시작되는지 확인 중입니다.", queueBusy: "이 대화에 이미 보낼 메시지가 있어 기다립니다.", queueUnsupported: "설치된 ChatGPT가 대화 대기열 연동을 지원하지 않습니다.", limit: "한 번 이어가기 횟수를 사용했습니다.", review: "Codex에서 대화를 열어 상태를 확인하세요." }
       } : {
-        title: "Resume automatically when quota recovers", description: "After you turn this on, quota-stopped work continues in the same account and conversation. If quota runs out again, it waits for the next recovery without a waiting deadline. Accepted work may still run after you turn this off.",
+        title: "Resume automatically when quota recovers", description: "After you turn this on, quota-stopped work continues in the same conversation. An enabled account pool can supply another verified allowance account. If quota runs out again, it waits for the next recovery without a waiting deadline. Accepted work may still run after you turn this off.",
         unsupported: "Update the local service to use automatic quota resumption.", noAccounts: "No Codex accounts are available.",
         empty: "No conversations waiting for quota recovery have been detected.", skip: "Skip this conversation", saving: "Saving…",
         failed: "Could not confirm the change. Refresh the status before trying again.",
@@ -434,9 +434,28 @@
         const keys = { "auto-resume-disabled": "disabled", "account-binding-changed": "accountChanged", superseded: "superseded",
           "quota-recovery-unconfirmed": "quota", "subscription-quota-blocked": "quota", "reserve-reached": "quota", "quota-stale": "quota", "quota-unknown": "quota", "reset-unconfirmed": "quota",
           "host-goal-not-active": "goal", "host-goal-stale": "goal", "host-goal-unavailable": "goal",
+          "execution-target-relay-unavailable": "targetRoute", "execution-target-native-route-unverified": "targetRoute", "execution-target-lease-unavailable": "targetRoute",
+          "execution-target-policy-changed": "targetChanged", "execution-target-identity-changed": "targetChanged",
+          "execution-target-quota-period-changed": "targetQuota", "execution-target-expired": "targetQuota", "execution-target-quota-unavailable": "targetQuota",
           "host-queue-awaiting-turn": "queued", "host-queue-busy": "queueBusy", "host-queue-unsupported": "queueUnsupported", "native-writer-present": "busy", "native-turn-active": "busy", "work-turn-limit": "limit" };
         const key = Object.hasOwn(keys, reason) ? keys[reason] : "review";
         return autoWords.reasons[key];
+      };
+      Object.assign(autoWords.reasons, LOCALE === "ko" ? {
+        targetRoute: "이 대화를 처리하는 앱 연결을 확인 중입니다. 확인 전에는 재개 입력을 보내지 않습니다.",
+        targetChanged: "지정한 계정 또는 계정 풀 설정이 바뀌어 재개를 보류했습니다.",
+        targetQuota: "지정한 계정의 최신 한도와 리셋 구간을 다시 확인하고 있습니다."
+      } : {
+        targetRoute: "Verifying the app connection for this conversation before sending resume input.",
+        targetChanged: "Resume is paused because the assigned account or pool settings changed.",
+        targetQuota: "Rechecking the assigned account's current allowance and reset period."
+      });
+      const autoTarget = incident => {
+        if (!incident.quotaAccount || incident.quotaAccount === incident.account) return "";
+        const labels = LOCALE === "ko" ? { candidate: "재개 후보 계정", confirmed: "재개에 지정한 한도 계정", used: "재개 요청을 처리한 계정" }
+          : { candidate: "Resume candidate", confirmed: "Assigned allowance account", used: "Account that handled the resume request" };
+        return Object.hasOwn(labels, incident.quotaTargetState)
+          ? labels[incident.quotaTargetState] + ": " + (incident.quotaAccountLabel || incident.quotaAccount) : "";
       };
       const autoState = state => Object.hasOwn(autoWords.states, state) ? autoWords.states[state] : autoWords.states.unknown;
       let latestStatus = null, statusAvailable = false, autoResumeSaving = false, autoResumeMessage = "", autoResumeRevision = 0;
@@ -446,7 +465,7 @@
         let contents = `<p class="muted">${autoWords.unsupported}</p>`;
         if (value && Array.isArray(value.accounts) && Array.isArray(value.incidents)) {
           contents = value.accounts.map(account => `<div class="auto-account"><label><input type="checkbox" data-auto-account="${escapeHtml(account.account)}" aria-label="${escapeHtml(autoWords.title + " · " + account.label)}" ${account.enabled === true ? "checked" : ""} ${disabled}><strong>${escapeHtml(account.label)}</strong></label>${account.lastError ? `<p class="notice">${account.lastError === "account-binding-changed" ? autoWords.reasons.accountChanged : autoWords.scanError}</p>` : account.enabled ? `<p class="muted">${account.lastScanAtMs ? `${autoWords.lastScan}: ${escapeHtml(exactTime(account.lastScanAtMs))}` : autoWords.scanWaiting}</p>` : ""}</div>`).join("") || `<p class="muted">${autoWords.noAccounts}</p>`;
-          contents += value.incidents.map(incident => `<div class="auto-incident"><div class="row"><strong>${escapeHtml(incident.projectLabel)}</strong><span class="badge">${escapeHtml(autoState(incident.state))}</span></div><span class="muted">${escapeHtml(value.accounts.find(account => account.account === incident.account)?.label ?? incident.account)} · ${escapeHtml(exactTime(incident.detectedAtMs))}</span><code>${escapeHtml(incident.threadId)}</code>${incident.reason && incident.reason !== "ready" ? `<p class="muted">${escapeHtml(autoReason(incident.reason))}</p>` : ""}${incident.state === "waiting" ? `<button type="button" data-auto-skip="${escapeHtml(incident.id)}" ${disabled}>${autoWords.skip}</button>` : ""}</div>`).join("") || `<p class="muted">${autoWords.empty}</p>`;
+          contents += value.incidents.map(incident => `<div class="auto-incident"><div class="row"><strong>${escapeHtml(incident.projectLabel)}</strong><span class="badge">${escapeHtml(autoState(incident.state))}</span></div><span class="muted">${escapeHtml(value.accounts.find(account => account.account === incident.account)?.label ?? incident.account)} · ${escapeHtml(exactTime(incident.detectedAtMs))}</span><code>${escapeHtml(incident.threadId)}</code>${autoTarget(incident) ? `<p class="muted">${escapeHtml(autoTarget(incident))}</p>` : ""}${incident.reason && incident.reason !== "ready" ? `<p class="muted">${escapeHtml(autoReason(incident.reason))}</p>` : ""}${incident.state === "waiting" ? `<button type="button" data-auto-skip="${escapeHtml(incident.id)}" ${disabled}>${autoWords.skip}</button>` : ""}</div>`).join("") || `<p class="muted">${autoWords.empty}</p>`;
         }
         section.innerHTML = `<article class="provider"><h2>${autoWords.title}</h2><p class="muted">${autoWords.description}</p>${contents}<p role="status">${escapeHtml(autoResumeSaving ? autoWords.saving : autoResumeMessage)}</p></article>`;
         section.onchange = event => {

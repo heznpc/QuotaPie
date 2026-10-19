@@ -985,7 +985,7 @@
 "automatic.resetStopExplanation" = "A quota reset disables this work. Choose Continue if it should wait for quota recovery and then run.";
 "automatic.resetContinueExplanation" = "After a quota reset, this work may continue once fresh quota, the linked goal and the remaining execution budget allow it.";
 "autoResume.title" = "Resume automatically when quota recovers";
-"autoResume.description" = "After you turn this on, quota-stopped work continues in the same account and conversation. If quota runs out again, it waits for the next recovery without a waiting deadline. Accepted work may still run after you turn this off.";
+"autoResume.description" = "New quota-stopped work continues in the same conversation. An enabled account pool can supply another verified allowance account. If quota runs out again, it waits for recovery. Accepted work may still run after you turn this off.";
 "autoResume.unsupported" = "Update the local service to use automatic quota resumption.";
 "autoResume.noAccounts" = "No Codex accounts are available.";
 "autoResume.empty" = "No conversations waiting for quota recovery have been detected.";
