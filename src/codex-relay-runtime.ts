@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { readCodexForkParent } from "./account-pool-lineage";
-import type { AccountPool } from "./account-pool";
+import { AccountPool, poolAccounts, readPoolPolicy } from "./account-pool";
 import { createSourceHistoryGuard } from "./source-history-guard";
 import { interactiveRelayPolicy } from "./interactive-relay-policy";
 import { codexProfileRoot, dataDirectory, loadConfig } from "./config";
@@ -22,6 +22,8 @@ export interface RuntimeMemory {
   savings?: Map<string, TaskState>;
   sourceAccount?: string | null;
   accountPool?: AccountPool;
+  interactivePool?: AccountPool;
+  poolGuards?: Map<string, ReturnType<typeof createSubscriptionGuard>>;
   dispose?: () => void;
   diagnostics?: RelayDiagnostics;
 }
@@ -51,11 +53,35 @@ export const createRelayRuntime: RuntimeFactory = (settings, memory) => {
   // Old listener bootstraps can reload this handler without knowing the new
   // diagnostic contract. Their fallback log is also bounded and per-listener.
   memory.diagnostics ??= createRelayDiagnostics(rotatingRelayLog(join(dataDirectory(), "relay-logs", `${settings.port}.jsonl`)));
-  // Historical pool connections belong to retiring handlers. New interactive
-  // requests never initialize a routing DB or repeat source authentication there.
+  // Pool enrollment is explicit and resolved per request. Historical handler
+  // connections remain untouched while their in-flight requests finish.
+  const resolveAccountPool = () => {
+    const policy = readPoolPolicy();
+    if (!sourceAccount || !policy.enabled || !policy.accounts.includes(sourceAccount)) return undefined;
+    if (!memory.interactivePool) {
+      memory.interactivePool = new AccountPool({ sourceAccount, accounts: () => poolAccounts(config()), policy: readPoolPolicy,
+        forkParentAsync: thread => readCodexForkParent(home, thread) });
+      const pool = memory.interactivePool, previousDispose = memory.dispose;
+      memory.dispose = () => { pool.close(); previousDispose?.(); };
+    }
+    return memory.interactivePool;
+  };
+  const poolSubscriptionGuard = (account: string, identity: string) => {
+    const profile = config().accounts.codex.find(p => p.enabled && p.id === account);
+    if (!profile) throw new Error("pool-target-unavailable");
+    memory.poolGuards ??= new Map();
+    const key = account + ":" + identity;
+    let guard = memory.poolGuards.get(key);
+    if (!guard) {
+      guard = createSubscriptionGuard({ codexHome: codexProfileRoot(profile), sourceAccount: account, config,
+        quotaObservationMode: "required", executionMode: "managed", requireKnownModelQuotaScope: true });
+      memory.poolGuards.set(key, guard);
+    }
+    return guard;
+  };
   const handler = createCompactionHandler({ ...settings, savingsState: memory.savings,
-      executionMode: "interactive",
-      sourceHistoryGuard: createSourceHistoryGuard({ forkParent: thread => readCodexForkParent(home, thread) }),
+      executionMode: "interactive", resolveAccountPool, poolSubscriptionGuard,
+      sourceHistoryGuard: createSourceHistoryGuard({ denyUnavailableDatabase: true, forkParent: thread => readCodexForkParent(home, thread) }),
       sourceHistoryPolicy: "authenticated-source",
       subscriptionGuard: createSubscriptionGuard({ codexHome: home, sourceAccount, config, memory: memory.guard, quotaObservationMode: "advisory", executionMode: "interactive" }),
       savingsModelSupported: createSavingsModelSupport(join(home, "models_cache.json")),

@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { readPoolPolicy, type PoolPolicy } from "./account-pool";
+import { hasUnknownCodexModelScope, isCodexQuotaWindowForModel, readPoolPolicy, type PoolPolicy } from "./account-pool";
 import { codexProfileRoot, codexUsesFileCredentials, type AppConfig } from "./config";
 import { evaluateResumeGate, type ResumeGate } from "./resume-gate";
 import { defaultWorkBoundaryPath, profileReference } from "./work-boundary";
@@ -71,6 +71,7 @@ export function createSubscriptionGuard(options: {
   intervalMs?: number;
   quotaObservationMode?: "required" | "advisory";
   executionMode?: "interactive" | "managed";
+  requireKnownModelQuotaScope?: boolean;
   minimumReserveByBucket?: Record<string, number>;
   baselineResetsAtByBucket?: Record<string, number>;
 }): SubscriptionGuard {
@@ -188,7 +189,7 @@ export function createSubscriptionGuard(options: {
       if (boundary?.schemaVersion === 1 && Number.isFinite(boundary.generatedAtMs) && boundary.generatedAtMs <= at && Array.isArray(boundary.accounts)) {
         const matching = boundary.accounts.filter((a: any) => a?.provider === "codex" && a.account === options.sourceAccount && a.profileKey === profileKey);
         if (matching.length === 1 && Array.isArray(matching[0].windows)) knownExhaustion = matching[0].windows.some((w: any) =>
-          typeof w?.bucket === "string" && (w.bucket.startsWith("codex:") || request.model != null && w.bucket.startsWith(request.model + ":")) &&
+          typeof w?.bucket === "string" && isCodexQuotaWindowForModel(w, request.model) &&
           w.quality === "authoritative" && w.freshness === "fresh" && w.remainingPercent === 0 &&
           Number.isFinite(w.observedAtMs) && w.observedAtMs >= memory.boundAuthAtMs! && w.observedAtMs <= at && at-w.observedAtMs <= config.collection.staleAfterSeconds*1000 &&
           Number.isFinite(w.validUntilMs) && w.validUntilMs > at && Number.isFinite(w.resetsAtMs) && w.resetsAtMs > at);
@@ -204,8 +205,15 @@ export function createSubscriptionGuard(options: {
           ["network", "provider-error"].includes(row.collectionErrorCategory))) return observationHold("collection-unavailable");
       // General limits apply to every subscription model. A named model limit
       // applies only to that model, never to unrelated models or features.
+      if (options.requireKnownModelQuotaScope && hasUnknownCodexModelScope(row.windows)) return hold("quota-unknown");
       const relevant = row.windows.filter((w: any) => typeof w?.bucket === "string" &&
-        (w.bucket.startsWith("codex:") || request.model != null && w.bucket.startsWith(request.model + ":")));
+        isCodexQuotaWindowForModel(w, request.model));
+      if (relevant.some((w: any) => w.metadata?.ordinaryUsageAllowed === false || w.metadata?.spendControlReached === true))
+        return hold("quota-exhausted");
+      if (relevant.some((w: any) => w.metadata &&
+          (Object.hasOwn(w.metadata, "ordinaryUsageAllowed") && w.metadata.ordinaryUsageAllowed !== true ||
+            Object.hasOwn(w.metadata, "spendControlReached") && w.metadata.spendControlReached !== false)))
+        return hold("quota-unknown");
       if (hasBudget && (relevant.length !== budgetKeys.length || relevant.some((w: any) =>
           !Object.hasOwn(baselineResets, w.bucket) || w.resetsAtMs !== baselineResets[w.bucket])))
         return hold("budget-baseline-changed");

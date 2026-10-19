@@ -12,6 +12,7 @@ export interface PoolPolicy { enabled: boolean; accounts: string[]; reservePerce
 export interface PoolAccount {
   id: string; label: string; identity: string; accessToken: string; upstreamAccount: string;
   tokenExpiresAt: number; models: string[]; remaining: number | null; validUntil: number; observedAtMs?: number;
+  modelQuota?: Record<string, { remaining: number | null; validUntil: number; observedAtMs?: number }>;
 }
 export interface PoolRoute { sourceAccount: string; account: string; accountLabel: string; reason: "new" | "pinned" | "existing" | "source_fallback" | "recovered" | "reserve"; previousAccountLabel?: string }
 const POOL_ERROR_BRAND = Symbol.for("quotapie.pool-error.v1");
@@ -27,7 +28,20 @@ export class PoolError extends Error {
 }
 export const poolPolicyPath = () => join(dataDirectory(), "account-pool.json");
 export const poolDatabasePath = () => join(dataDirectory(), "account-pool.sqlite3");
-const SHARED_QUOTA_MODELS = new Set(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]);
+const SHARED_QUOTA_MODELS = new Set(["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]);
+export function isCodexQuotaWindowForModel(window: any, model?: string): boolean {
+  return typeof window?.bucket === "string" && (window.bucket.startsWith("codex:") || model != null &&
+    (window.bucket.startsWith(model + ":") || window.metadata?.normalModelSlug === model));
+}
+export function hasUnknownCodexModelScope(windows: any[]): boolean {
+  return windows.some(w => typeof w?.bucket === "string" && !w.bucket.startsWith("codex:") &&
+    !(typeof w.metadata?.normalModelSlug === "string" && w.metadata.normalModelSlug.length > 0) &&
+    ![...SHARED_QUOTA_MODELS].some(model => w.bucket.startsWith(model + ":")));
+}
+const quotaPermission = (windows: any[]): "allowed" | "denied" | "unknown" =>
+  windows.some(w => w.metadata?.ordinaryUsageAllowed === false || w.metadata?.spendControlReached === true) ? "denied" :
+  windows.some(w => w.metadata && (Object.hasOwn(w.metadata, "ordinaryUsageAllowed") && w.metadata.ordinaryUsageAllowed !== true ||
+    Object.hasOwn(w.metadata, "spendControlReached") && w.metadata.spendControlReached !== false)) ? "unknown" : "allowed";
 const credentialDigest = (token: string) => createHash("sha256").update(token).digest("hex");
 export function readPoolPolicy(path = poolPolicyPath()): PoolPolicy {
   if (!existsSync(path)) return { enabled: false, accounts: [] };
@@ -95,16 +109,36 @@ export function poolAccounts(config: AppConfig, boundaryPath = defaultWorkBounda
         ? boundary.accounts?.find((a: any) => a.provider === "codex" && a.account === profile.id && a.profileKey === profileReference(root)) : null;
       const windows = row?.windows?.filter((w: any) => typeof w.bucket === "string" && w.bucket.startsWith("codex:")) ?? [];
       const fresh = row?.collectionState === "recent-success" && windows.length > 0 && windows.every((w: any) =>
-        w.freshness === "fresh" && Number.isFinite(w.remainingPercent) && w.remainingPercent >= 0 && w.remainingPercent <= 100 &&
+        w.quality === "authoritative" && w.freshness === "fresh" && Number.isFinite(w.remainingPercent) && w.remainingPercent >= 0 && w.remainingPercent <= 100 &&
         Number.isFinite(w.observedAtMs) && w.observedAtMs >= stamp.mtimeMs && w.observedAtMs <= now + 5000 &&
         Number.isFinite(w.validUntilMs) && w.validUntilMs > now && (w.resetsAtMs == null || w.resetsAtMs > now));
-      const remaining = fresh ? Math.min(...windows.map((w: any) => w.remainingPercent)) : null;
+      const permission = quotaPermission(windows);
+      const remaining = fresh && permission !== "unknown" ? permission === "denied" ? 0 : Math.min(...windows.map((w: any) => w.remainingPercent)) : null;
       // Remember the newest exhausted window; recovery needs positive evidence
       // strictly newer for every window so old relay snapshots cannot reset it.
       const observedAtMs = fresh ? remaining === 0
-        ? Math.max(...windows.filter((w: any) => w.remainingPercent === 0).map((w: any) => w.observedAtMs))
+        ? Math.max(...windows.filter((w: any) => w.remainingPercent === 0 || w.metadata?.ordinaryUsageAllowed === false || w.metadata?.spendControlReached === true).map((w: any) => w.observedAtMs))
         : Math.min(...windows.map((w: any) => w.observedAtMs)) : undefined;
-      return [{ id: profile.id, label: profile.label, identity, accessToken: token, upstreamAccount,
+      const modelQuota: NonNullable<PoolAccount["modelQuota"]> = {};
+      const unknownModelScope = hasUnknownCodexModelScope(row?.windows ?? []);
+      for (const model of models) {
+        const named = row?.windows?.filter((w: any) => !w.bucket?.startsWith("codex:") && isCodexQuotaWindowForModel(w, model)) ?? [];
+        if (!named.length && !unknownModelScope) continue;
+        const valid = fresh && !unknownModelScope && named.every((w: any) => w.quality === "authoritative" && w.freshness === "fresh" &&
+          Number.isFinite(w.remainingPercent) && w.remainingPercent >= 0 && w.remainingPercent <= 100 &&
+          Number.isFinite(w.observedAtMs) && w.observedAtMs >= stamp.mtimeMs && w.observedAtMs <= now + 5000 &&
+          Number.isFinite(w.validUntilMs) && w.validUntilMs > now && (w.resetsAtMs == null || w.resetsAtMs > now));
+        const modelPermission = quotaPermission(windows.concat(named));
+        modelQuota[model] = { remaining: valid && remaining != null && modelPermission !== "unknown" ? modelPermission === "denied" ? 0 : Math.min(remaining, ...named.map((w: any) => w.remainingPercent)) : null,
+          validUntil: valid ? Math.min(...windows.concat(named).map((w: any) => w.validUntilMs)) : 0,
+          observedAtMs: valid ? Math.min(...windows.concat(named).map((w: any) => w.observedAtMs)) : undefined };
+        if (valid && modelQuota[model]!.remaining === 0) {
+          modelQuota[model]!.observedAtMs = Math.max(...windows.concat(named).filter((w: any) =>
+            w.remainingPercent === 0 || w.metadata?.ordinaryUsageAllowed === false || w.metadata?.spendControlReached === true)
+            .map((w: any) => w.observedAtMs));
+        }
+      }
+      return [{ id: profile.id, label: profile.label, identity, accessToken: token, upstreamAccount, modelQuota,
         tokenExpiresAt: claims.exp * 1000, models, remaining,
         validUntil: fresh ? Math.min(...windows.map((w: any) => w.validUntilMs)) : 0, observedAtMs }];
     } catch { return []; }
@@ -140,8 +174,10 @@ function hasUnverifiedAttachments(body: any): boolean {
     [item?.content, item?.output].some(parts => Array.isArray(parts) && parts.some(unverified)));
 }
 
-type Binding = { account: string; identity: string; source_identity: string; label: string; foreignReasoning?: string[] };
-type PoolSelectInput = { threadId: string | null; requestId: string; body: unknown; model: string; headers: Headers };
+type Binding = { account: string; identity: string; source_identity: string; label: string; foreignReasoning?: string[]; confirmed?: boolean };
+type PoolSelectInput = { threadId: string | null; requestId: string; body: unknown; model: string; headers: Headers;
+  /** Internal proof from the source guard; never read from request content. */
+  verifiedSource?: { identity: string; credentialDigest: string } };
 export type SourceHistoryPolicy = "strict" | "authenticated-source";
 export type SourceContinuationInput = {
   threadId: string | null; body: unknown; headers: Headers;
@@ -154,6 +190,8 @@ export class AccountPool {
   private db: Database;
   private closed = false;
   private readonly pendingWrites = new Map<string, Promise<void>>();
+  private readonly pendingSelections = new Map<string, { source: string; thread: string; account: string; identity: string;
+    previous: (Binding & { updated_ms: number }) | null; proof: Binding | null; replay: string | null }>();
   constructor(private options: {
     path?: string; sourceAccount: string; accounts: () => PoolAccount[]; policy: () => PoolPolicy; now?: () => number; contentionWaitMs?: number; forkParent?: (threadId: string) => CodexForkParentResult; forkParentAsync?: (threadId: string) => Promise<CodexForkParentResult>;
   }) {
@@ -177,6 +215,9 @@ export class AccountPool {
     this.db.run("CREATE INDEX IF NOT EXISTS requests_rejected_at_ms ON requests(at_ms) WHERE state='rejected'");
     this.db.run("CREATE INDEX IF NOT EXISTS requests_failures_at_ms ON requests(at_ms) WHERE state IN ('rejected','failed','unverified')");
     this.db.run("CREATE TABLE IF NOT EXISTS errors (source TEXT PRIMARY KEY, code TEXT NOT NULL, at_ms INTEGER NOT NULL)");
+    this.db.run(`CREATE TABLE IF NOT EXISTS binding_proofs (source TEXT NOT NULL,thread TEXT NOT NULL,account TEXT NOT NULL,
+      identity TEXT NOT NULL,source_identity TEXT NOT NULL,PRIMARY KEY(source,thread))`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS request_identities (id TEXT PRIMARY KEY,identity TEXT NOT NULL,source_identity TEXT NOT NULL)`);
     this.db.run(`CREATE TABLE IF NOT EXISTS quota_observations (identity TEXT PRIMARY KEY, observed_ms INTEGER NOT NULL, exhausted INTEGER NOT NULL)`);
     this.db.run(`CREATE TABLE IF NOT EXISTS source_credentials (source TEXT NOT NULL, identity TEXT NOT NULL,
       digest TEXT NOT NULL, expires_ms INTEGER NOT NULL, PRIMARY KEY(source,identity,digest))`);
@@ -253,6 +294,28 @@ export class AccountPool {
   async selectAsync(input: PoolSelectInput, signal?: AbortSignal): Promise<ReturnType<AccountPool["select"]>> {
     const lineage = await this.forkSnapshot(input, signal);
     return this.withContentionRetry(() => this.select(input, lineage), signal);
+  }
+  async canSelectInteractiveAsync(input: PoolSelectInput, signal?: AbortSignal): Promise<boolean> {
+    const policy = this.options.policy();
+    if (!policy.enabled || !policy.accounts.includes(this.options.sourceAccount) || !input.threadId || !SHARED_QUOTA_MODELS.has(input.model)) return false;
+    const portable = portableReplay(input.body) !== null;
+    const lineage = await this.forkSnapshot(input, signal);
+    return this.withContentionRetry(() => {
+      let thread: string | null = input.threadId;
+      const seen = new Set<string>();
+      while (thread && !seen.has(thread) && seen.size < 32) {
+        seen.add(thread);
+        const binding = this.db.query<{account: string}, [string,string]>("SELECT account FROM bindings WHERE source=? AND thread=?").get(this.options.sourceAccount, thread);
+        // A known foreign target can keep its own opaque continuation. This
+        // lookup grants no admission: select() rechecks ancestry and identities.
+        if (binding?.account !== undefined) return binding.account !== this.options.sourceAccount || portable;
+        const parent = lineage?.(thread);
+        if (parent?.status !== "known") return false;
+        if (!parent.parentId) return portable;
+        thread = parent.parentId;
+      }
+      return false;
+    }, signal);
   }
   async assertSourceContinuationAsync(input: SourceContinuationInput, signal?: AbortSignal): Promise<void> {
     const lineage = await this.forkSnapshot(input, signal);
@@ -353,11 +416,19 @@ export class AccountPool {
     return policy.enabled && policy.reservePercent && Object.hasOwn(policy.reservePercent, account.id)
       ? policy.reservePercent[account.id]! : 0;
   }
-  private reserveBlock(account: PoolAccount): string | null {
+  private quota(account: PoolAccount, model?: string) {
+    return model && account.modelQuota?.[model] || account;
+  }
+  private reserveBlock(account: PoolAccount, model?: string): string | null {
+    const quota = this.quota(account, model);
     const reserve = this.reserve(account);
     if (reserve <= 0) return null;
-    if (account.remaining == null || account.validUntil <= this.now()) return "pool_reserve_quota_unavailable";
-    return account.remaining <= reserve ? "pool_reserve_reached" : null;
+    if (quota.remaining == null || quota.validUntil <= this.now()) return "pool_reserve_quota_unavailable";
+    return quota.remaining <= reserve ? "pool_reserve_reached" : null;
+  }
+  private hasCompletedBinding(source: string, thread: string, binding: Binding): boolean {
+    return !!this.db.query("SELECT 1 FROM binding_proofs WHERE source=? AND thread=? AND account=? AND identity=? AND source_identity=?")
+      .get(source, thread, binding.account, binding.identity, binding.source_identity);
   }
   private foreignReasoning(source: string, thread: string): string[] | undefined {
     const row = this.db.query<{fingerprints:string}, [string,string]>("SELECT fingerprints FROM replay_filters WHERE source=? AND thread=?").get(source, thread);
@@ -366,14 +437,14 @@ export class AccountPool {
   private eligible(accounts: PoolAccount[], model: string, exclude?: string): PoolAccount[] {
     const now = this.now(), policy = this.options.policy();
     return accounts.filter(a => a.id !== exclude && policy.accounts.includes(a.id) && a.tokenExpiresAt > now + 30_000 &&
-      a.models.includes(model) && a.remaining != null && a.remaining > this.reserve(a) && a.validUntil > now &&
+      a.models.includes(model) && this.quota(a, model).remaining != null && this.quota(a, model).remaining! > this.reserve(a) && this.quota(a, model).validUntil > now &&
       // Leave a small margin before entering a protected account, avoiding
       // repeated transfers when quota observations hover around its threshold.
-      (this.reserve(a) === 0 || a.remaining >= Math.min(100, this.reserve(a) + 5)) &&
-      !this.db.query("SELECT 1 FROM quota_observations WHERE identity=? AND exhausted=1").get(a.identity) &&
+      (this.reserve(a) === 0 || this.quota(a, model).remaining! >= Math.min(100, this.reserve(a) + 5)) &&
+      !this.db.query("SELECT 1 FROM quota_observations WHERE identity IN (?,?) AND exhausted=1").get(a.identity, a.identity + ":" + model) &&
       !this.db.query("SELECT 1 FROM cooldowns WHERE identity=? AND until_ms>?").get(a.identity, now) &&
       !this.db.query("SELECT 1 FROM auth_cooldowns WHERE identity=? AND digest=? AND until_ms>?").get(a.identity, credentialDigest(a.accessToken), now))
-      .sort((a,b) => Number(b.id === this.options.sourceAccount) - Number(a.id === this.options.sourceAccount) || b.remaining! - a.remaining! || a.id.localeCompare(b.id));
+      .sort((a,b) => Number(b.id === this.options.sourceAccount) - Number(a.id === this.options.sourceAccount) || this.quota(b, model).remaining! - this.quota(a, model).remaining! || a.id.localeCompare(b.id));
   }
   canRecover(account: string, model: string, body: unknown): boolean {
     if (!this.options.policy().enabled || !SHARED_QUOTA_MODELS.has(model) || !portableReplay(body)) return false;
@@ -396,6 +467,13 @@ export class AccountPool {
             DO UPDATE SET observed_ms=excluded.observed_ms,exhausted=excluded.exhausted
             WHERE excluded.observed_ms>observed_ms OR (excluded.observed_ms=observed_ms AND excluded.exhausted>exhausted)`)
             .run(account.identity, observedAt, Number(account.remaining === 0));
+      }
+      for (const account of accounts) for (const [model, quota] of Object.entries(account.modelQuota ?? {})) {
+        if (quota.remaining == null || quota.validUntil <= now || quota.observedAtMs == null) continue;
+        this.db.query(`INSERT INTO quota_observations VALUES (?,?,?) ON CONFLICT(identity)
+          DO UPDATE SET observed_ms=excluded.observed_ms,exhausted=excluded.exhausted
+          WHERE excluded.observed_ms>observed_ms OR (excluded.observed_ms=observed_ms AND excluded.exhausted>exhausted)`)
+          .run(account.identity + ":" + model, quota.observedAtMs, Number(quota.remaining === 0));
       }
       if (source && source.tokenExpiresAt > now + 30_000)
         this.db.query("INSERT OR REPLACE INTO source_credentials VALUES (?,?,?,?)")
@@ -428,7 +506,7 @@ export class AccountPool {
             throw new PoolError("pool_lineage_account_mismatch", 409);
           // select() still authenticates the caller and enforces quota,
           // reserves and cooldowns before committing this child's binding.
-          return { ...binding, foreignReasoning: this.foreignReasoning(source, parent) };
+          return { ...binding, confirmed: this.hasCompletedBinding(source, parent, binding), foreignReasoning: this.foreignReasoning(source, parent) };
         }
       }
       if (lineage.status !== "known") {
@@ -446,7 +524,7 @@ export class AccountPool {
       if (seen.has(thread)) throw new PoolError("pool_lineage_invalid", 409);
       seen.add(thread);
       const binding = this.db.query<Binding, [string,string]>("SELECT * FROM bindings WHERE source=? AND thread=?").get(source, thread);
-      if (binding) return { ...binding, foreignReasoning: this.foreignReasoning(source, thread) };
+      if (binding) return { ...binding, confirmed: this.hasCompletedBinding(source, thread, binding), foreignReasoning: this.foreignReasoning(source, thread) };
     }
     throw new PoolError("pool_lineage_invalid", 409);
   }
@@ -459,7 +537,10 @@ export class AccountPool {
     // credentials are never added to this trusted history.
     this.rememberSource(source, accounts);
     const execute = this.db.transaction(() => {
-      let saved = this.db.query<Binding, [string,string]>("SELECT * FROM bindings WHERE source=? AND thread=?").get(sourceID, thread);
+      const previous = this.db.query<Binding & {updated_ms:number}, [string,string]>("SELECT * FROM bindings WHERE source=? AND thread=?").get(sourceID, thread);
+      const proof = this.db.query<Binding, [string,string]>("SELECT * FROM binding_proofs WHERE source=? AND thread=?").get(sourceID, thread);
+      const replay = this.db.query<{fingerprints:string}, [string,string]>("SELECT fingerprints FROM replay_filters WHERE source=? AND thread=?").get(sourceID, thread)?.fingerprints ?? null;
+      let saved: Binding | null = previous;
       let sourceReplay: SourceOnlyReplay["sourceReplay"] | undefined;
       // Resolve forks even with new assignment disabled: inherited remote state
       // must remain on the account that created it.
@@ -481,9 +562,10 @@ export class AccountPool {
       const digest = bearer?.startsWith("Bearer ") ? credentialDigest(bearer.slice(7)) : "";
       const known = this.db.query("SELECT 1 FROM source_credentials WHERE source=? AND identity=? AND digest=? AND expires_ms>?")
         .get(sourceID, source.identity, digest, now + 30_000);
-      if (input.headers.get("chatgpt-account-id") !== source.upstreamAccount || !known)
+      const verifiedBySourceGuard = input.verifiedSource?.identity === source.identity && input.verifiedSource.credentialDigest === digest;
+      if (input.headers.get("chatgpt-account-id") !== source.upstreamAccount || !known && !verifiedBySourceGuard)
         throw new PoolError("pool_source_identity_mismatch", 401);
-      const isExhausted = (a: PoolAccount) => !!this.db.query("SELECT 1 FROM quota_observations WHERE identity=? AND exhausted=1").get(a.identity);
+      const isExhausted = (a: PoolAccount) => !!this.db.query("SELECT 1 FROM quota_observations WHERE identity IN (?,?) AND exhausted=1").get(a.identity, a.identity + ":" + input.model);
       const cooldownUntil = (a: PoolAccount) => this.db.query<{until_ms:number}, [string]>("SELECT until_ms FROM cooldowns WHERE identity=?").get(a.identity)?.until_ms ?? 0;
       const authCooldown = (a: PoolAccount) => this.db.query<{status:number;until_ms:number}, [string,string,number]>(
         "SELECT status,until_ms FROM auth_cooldowns WHERE identity=? AND digest=? AND until_ms>?")
@@ -519,36 +601,41 @@ export class AccountPool {
           }
         }
         if (reason === "pinned" && policy.enabled && SHARED_QUOTA_MODELS.has(input.model) &&
-            (cooldownUntil(selected) > now || isExhausted(selected) || this.reserveBlock(selected))) {
+            (cooldownUntil(selected) > now || isExhausted(selected) || this.reserveBlock(selected, input.model))) {
           const replacement = this.eligible(accounts, input.model, selected.id)[0];
           if (replacement) {
             const replay = portableReplay(replayBody);
             if (replay) {
               previousAccountLabel = selected.label;
-              reason = this.reserveBlock(selected) && cooldownUntil(selected) <= now ? "reserve" : "recovered";
+              reason = this.reserveBlock(selected, input.model) && cooldownUntil(selected) <= now ? "reserve" : "recovered";
               selected = replacement; replayBody = replay.body;
               foreignReasoning = [...new Set([...(foreignReasoning ?? []), ...replay.fingerprints])];
-            } else if (cooldownUntil(selected) > now || isExhausted(selected) || this.reserveBlock(selected)) {
+            } else if (cooldownUntil(selected) > now || isExhausted(selected) || this.reserveBlock(selected, input.model)) {
               throw new PoolError("pool_recovery_requires_full_history", 409);
             }
           }
         }
-      } else if (sourceReplay || !isFreshTextTurn(input.body) || !SHARED_QUOTA_MODELS.has(input.model)) { selected = source; reason = "existing"; }
+      } else if (sourceReplay || !SHARED_QUOTA_MODELS.has(input.model) || (!isFreshTextTurn(input.body) && !portableReplay(input.body))) { selected = source; reason = "existing"; }
       else {
         // Unknown source quota is not permission to silently change the login.
-        selected = !isExhausted(source) && !this.reserveBlock(source) && (source.remaining == null || source.remaining > 0) && cooldownUntil(source) <= now && !authCooldown(source)
+        selected = !isExhausted(source) && !this.reserveBlock(source, input.model) && (this.quota(source, input.model).remaining == null || this.quota(source, input.model).remaining! > 0) && cooldownUntil(source) <= now && !authCooldown(source)
           ? source : this.eligible(accounts, input.model)[0];
         // Never-observed quota retains the caller's login. Confirmed exhaustion
         // remains protected, and a different account needs fresh positive quota.
-        reason = selected ? (this.reserveBlock(source) && selected.id !== source.id ? "reserve" : "new") : "source_fallback";
+        reason = selected ? (this.reserveBlock(source, input.model) && selected.id !== source.id ? "reserve" : "new") : "source_fallback";
         selected ??= source;
+        if (selected.id !== sourceID && !isFreshTextTurn(input.body)) {
+          const replay = portableReplay(input.body)!;
+          reason = "recovered"; previousAccountLabel = source.label;
+          replayBody = replay.body; foreignReasoning = replay.fingerprints;
+        }
       }
       if (selected.tokenExpiresAt <= now + 30_000) throw new PoolError("pool_target_auth_unavailable", 401);
       // A confirmed exhausted identity must not silently spend paid credits when
       // this request cannot be moved to a registered account with quota.
       if (policy.enabled && isExhausted(selected))
         throw new PoolError(selected.id === sourceID ? "pool_source_quota_exhausted" : "pool_target_quota_exhausted", 409);
-      const reserveBlock = this.reserveBlock(selected);
+      const reserveBlock = this.reserveBlock(selected, input.model);
       if (reserveBlock) throw new PoolError(reserveBlock, 409);
       const until = cooldownUntil(selected);
       if (until > now) throw new PoolError("pool_account_cooldown", 429, Math.ceil((until - now) / 1000));
@@ -557,6 +644,11 @@ export class AccountPool {
       if (selected.id !== sourceID && !selected.models.includes(input.model)) throw new PoolError("pool_model_unavailable", 409);
       if (selected.id !== sourceID && !SHARED_QUOTA_MODELS.has(input.model)) throw new PoolError("pool_quota_scope_unsupported", 409);
       if (selected.id !== sourceID && hasUnverifiedAttachments(input.body)) throw new PoolError("pool_attachment_account_unverified", 409);
+      if (selected.id !== sourceID && !portableReplay(input.body) &&
+          !(saved?.confirmed || saved && this.hasCompletedBinding(sourceID, thread, saved)))
+        throw new PoolError("pool_recovery_requires_full_history", 409);
+      if (!previous || previous.account !== selected.id || previous.identity !== selected.identity || previous.source_identity !== source.identity)
+        this.db.query("DELETE FROM binding_proofs WHERE source=? AND thread=?").run(sourceID, thread);
       this.db.query(`INSERT INTO bindings VALUES (?,?,?,?,?,?,?) ON CONFLICT(source,thread) DO UPDATE SET
         account=excluded.account,identity=excluded.identity,source_identity=excluded.source_identity,label=excluded.label,updated_ms=excluded.updated_ms`)
         .run(sourceID, thread, selected.id, selected.identity, source.identity, selected.label, now);
@@ -564,18 +656,49 @@ export class AccountPool {
         .run(sourceID, thread, JSON.stringify(foreignReasoning));
       this.db.query("INSERT INTO requests(id,source,thread,account,label,reason,state,at_ms) VALUES (?,?,?,?,?,?,?,?)")
         .run(input.requestId, sourceID, thread, selected.id, selected.label, reason, "started", now);
+      this.db.query("INSERT INTO request_identities VALUES (?,?,?)").run(input.requestId, selected.identity, source.identity);
       // Keep durable bindings; only old request telemetry is pruned.
       this.db.query("DELETE FROM requests WHERE at_ms < ?").run(now - 30 * 86400_000);
+      this.db.query("DELETE FROM request_identities WHERE id NOT IN (SELECT id FROM requests)").run();
       const headers = new Headers(input.headers);
       headers.set("authorization", `Bearer ${selected.accessToken}`);
       headers.set("chatgpt-account-id", selected.upstreamAccount);
+      this.pendingSelections.set(input.requestId, { source: sourceID, thread, account: selected.id, identity: selected.identity, previous, proof, replay });
       return { route: { sourceAccount: sourceID, account: selected.id, accountLabel: selected.label, reason,
         ...(previousAccountLabel ? { previousAccountLabel } : {}) }, headers, body: replayBody,
         identity: selected.identity, credentialDigest: credentialDigest(selected.accessToken) };
     });
     return execute.immediate();
   }
+  /** Undo only a request proven not to have reached fetch, and only while no
+   * later selection has inherited its binding. Never use after a network attempt. */
+  rollbackUnsentAsync(requestId: string): Promise<void> {
+    return this.withContentionRetry(() => {
+      const pending = this.pendingSelections.get(requestId);
+      if (!pending) return;
+      this.db.transaction(() => {
+        const latest = this.db.query<{id:string;state:string;status:number}, [string,string]>(
+          "SELECT id,state,status FROM requests WHERE source=? AND thread=? ORDER BY at_ms DESC,rowid DESC LIMIT 1").get(pending.source, pending.thread);
+        const binding = this.db.query<Binding, [string,string]>("SELECT * FROM bindings WHERE source=? AND thread=?").get(pending.source, pending.thread);
+        if (latest?.id !== requestId || latest.state !== "started" || latest.status !== 0 ||
+            binding?.account !== pending.account || binding.identity !== pending.identity) return;
+        if (pending.previous) this.db.query("INSERT OR REPLACE INTO bindings VALUES (?,?,?,?,?,?,?)").run(
+          pending.source, pending.thread, pending.previous.account, pending.previous.identity,
+          pending.previous.source_identity, pending.previous.label, pending.previous.updated_ms);
+        else this.db.query("DELETE FROM bindings WHERE source=? AND thread=?").run(pending.source, pending.thread);
+        if (pending.replay !== null) this.db.query("INSERT OR REPLACE INTO replay_filters VALUES (?,?,?)").run(pending.source, pending.thread, pending.replay);
+        else this.db.query("DELETE FROM replay_filters WHERE source=? AND thread=?").run(pending.source, pending.thread);
+        if (pending.proof) this.db.query("INSERT OR REPLACE INTO binding_proofs VALUES (?,?,?,?,?)").run(
+          pending.source, pending.thread, pending.proof.account, pending.proof.identity, pending.proof.source_identity);
+        else this.db.query("DELETE FROM binding_proofs WHERE source=? AND thread=?").run(pending.source, pending.thread);
+        this.db.query("DELETE FROM requests WHERE id=?").run(requestId);
+        this.db.query("DELETE FROM request_identities WHERE id=?").run(requestId);
+      }).immediate();
+      this.pendingSelections.delete(requestId);
+    });
+  }
   response(requestId: string, identity: string, status: number, retryAfter: string | null, digest?: string) {
+    this.pendingSelections.delete(requestId);
     this.db.transaction(() => {
       this.db.query("UPDATE requests SET status=? WHERE id=?").run(status, requestId);
       if ([401,403].includes(status) && digest) {
@@ -595,9 +718,15 @@ export class AccountPool {
     }).immediate();
   }
   finish(requestId: string, state: string) {
+    this.pendingSelections.delete(requestId);
     this.db.transaction(() => {
       this.db.query("UPDATE requests SET state=? WHERE id=?").run(state,requestId);
       if (state === "completed") {
+        this.db.query(`INSERT OR REPLACE INTO binding_proofs(source,thread,account,identity,source_identity)
+          SELECT b.source,b.thread,b.account,b.identity,b.source_identity FROM bindings b
+          JOIN requests r ON r.source=b.source AND r.thread=b.thread AND r.account=b.account
+          JOIN request_identities i ON i.id=r.id AND i.identity=b.identity AND i.source_identity=b.source_identity
+          WHERE r.id=? AND r.status>=200 AND r.status<300`).run(requestId);
         // Legacy errors have no task identity. Clear only errors already present
         // when this successful request started, never a newer concurrent failure.
         this.db.query(`DELETE FROM errors WHERE EXISTS (SELECT 1 FROM requests r

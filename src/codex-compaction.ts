@@ -1,6 +1,6 @@
 import { ResponseOwnershipGuard, NativeResponseOwnershipGuard, ResponseOwnershipError, type OwnershipProvenance } from "./codex-response-ownership";
 import { fetchCodexUpstream, transportFailure } from "./codex-transport";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -132,6 +132,8 @@ export interface CompactionProxyOptions {
   savingsState?: Map<string, TaskState>;
   fetchUpstream?: (url: string, init: RequestInit) => Promise<Response>;
   accountPool?: AccountPool;
+  resolveAccountPool?: () => AccountPool | undefined;
+  poolSubscriptionGuard?: (account: string, identity: string) => SubscriptionGuard;
   subscriptionGuard?: SubscriptionGuard;
   executionMode?: "interactive" | "managed";
   sourceHistoryGuard?: SourceHistoryGuard;
@@ -186,7 +188,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
     const { sourceIdentity, sourceAccountHeader, ...publicState } = state;
     return publicState;
   };
-  const snapshot = () => ({ service: "quotapie-compaction", schemaVersion: 3, serverErrorDiagnosticsVersion: 1, accountPoolVersion: options.accountPool ? 1 : 0, accountPoolReserveVersion: options.accountPool ? 1 : 0, accountPoolRoutingVersion: options.accountPool ? 3 : 0, accountPoolRecoveryVersion: options.accountPool ? 2 : 0, accountPoolInlineImagesVersion: options.accountPool ? 2 : 0, transportRecoveryVersion: 1, responseOwnershipVersion: 3,
+  const snapshot = () => ({ service: "quotapie-compaction", schemaVersion: 3, serverErrorDiagnosticsVersion: 1, accountPoolVersion: (options.accountPool || options.resolveAccountPool) ? 1 : 0, accountPoolReserveVersion: (options.accountPool || options.resolveAccountPool) ? 1 : 0, accountPoolRoutingVersion: (options.accountPool || options.resolveAccountPool) ? 3 : 0, accountPoolRecoveryVersion: (options.accountPool || options.resolveAccountPool) ? 2 : 0, accountPoolInlineImagesVersion: (options.accountPool || options.resolveAccountPool) ? 2 : 0, transportRecoveryVersion: 1, responseOwnershipVersion: 3,
           responseOwnership: { formats: ["sse", "json"], policy: "reject-explicit-mismatch", missingMetadata: "unattributed",
             unsupportedFormats: "unverified", inspectionLimitBytes: 4 * 1024 * 1024,
             inspectionFailure: interactive ? "passthrough-unverified" : "reject" }, taskSavingsPhasesVersion: 1, nativeImageRoutesVersion: 1, taskSavings: interactive ? interactiveRelayPolicy(route, savingsPolicy).taskSavings : validateTaskSavings(savingsPolicy), savingsModelSupported: options.savingsModelSupported?.() === true, pid: process.pid,
@@ -195,6 +197,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
           nativeRequestPolicyVersion: 1,
           nativeRequestInspectionVersion: 1,
           nativeRequestPolicy: interactive ? "source-origin" : "managed-allowlist",
+          accountPoolOptInVersion: options.resolveAccountPool ? 1 : 0,
           recentNativeRequests,
           executionMode: interactive ? "interactive" : "managed",
           sourceContinuationRevision: interactive ? 3 : options.accountPool?.sourceContinuationRevision ?? 0,
@@ -203,7 +206,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
             sourceHistoryPolicy,
             blockedRequests: guardBlockedRequests, abortedRequests: guardAbortedRequests,
             blockedByReason, abortedByReason } : null,
-          accountPoolLineageVersion: options.accountPool ? 3 : 0,
+          accountPoolLineageVersion: (options.accountPool || options.resolveAccountPool) ? 3 : 0,
           route: interactive ? interactiveRelayPolicy(route, savingsPolicy).route : validateCompactionRoute(route), requests, rejectedRequests, compactions, attemptedCompactions,
           failedCompactions, cancelledCompactions, unverifiedCompactions, activeRequests, draining,
           active: [...active.values()], recent, lastRequest });
@@ -274,7 +277,10 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
           message: "Conflicting thread or turn identifiers were supplied. No request was sent to the provider." } }, { status: 400 });
       }
       const metadataRequest = request.method === "GET" && path === "/models";
+      let accountPool = options.accountPool;
       let headers = transportHeaders(request.headers);
+      let sourceHeaders = new Headers(headers);
+      let selectedGuard: SubscriptionGuard | undefined;
       // Bun fetch decompresses upstream responses; request identity to keep streaming simple.
       headers.set("accept-encoding", "identity");
       let body: BodyInit | undefined;
@@ -282,9 +288,25 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
       let expectsSse = false;
       let event: Omit<CompactionRequestEvent, "phase" | "status" | "at" | "durationMs"> | undefined;
       let poolSelection: ReturnType<AccountPool["select"]> = null;
-      let poolInput: { body: unknown; headers: Headers } | undefined;
+      let poolInput: { body: unknown; headers: Headers; verifiedSource?: { identity: string; credentialDigest: string } } | undefined;
+      let verifiedSource: { identity: string; credentialDigest: string } | undefined;
       let selectingAccount = false;
       let guardModel: string | undefined;
+      const bindSelectedGuard = (selection: NonNullable<typeof poolSelection>) => {
+        if (!interactive || selection.route.account === selection.route.sourceAccount) return undefined;
+        const guard = options.poolSubscriptionGuard?.(selection.route.account, selection.identity);
+        if (!guard) throw new PoolError("pool_target_quota_unavailable", 409);
+        const state = guard.check({ headers: selection.headers, model: guardModel });
+        if (!state.ready || state.sourceIdentity !== selection.identity)
+          throw new PoolError("pool_target_quota_unavailable", 409);
+        return guard;
+      };
+      const checkRequestGuard = () => {
+        const source = options.subscriptionGuard!.checkIdentity({ headers: sourceHeaders });
+        if (!source.ready || metadataRequest) return source;
+        return selectedGuard ? selectedGuard.check({ headers, model: guardModel })
+          : options.subscriptionGuard!.check({ headers: sourceHeaders, model: guardModel });
+      };
       const started = performance.now();
       // Freeze the policy for this request. A live policy update cannot change
       // its target, effort, or attribution after the request has been sent.
@@ -295,18 +317,13 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
       activeRequests++;
       try {
         if (interactive) {
-          const guard = metadataRequest ? options.subscriptionGuard!.checkIdentity({ headers }) : options.subscriptionGuard!.check({ headers });
+          const guard = options.subscriptionGuard!.checkIdentity({ headers });
           if (!guard.ready) throw new SubscriptionRequestError(guard.reason);
           if (!headers.has("chatgpt-account-id") && guard.sourceAccountHeader)
             headers.set("chatgpt-account-id", guard.sourceAccountHeader);
-          if (options.sourceHistoryGuard && guard.account && guard.sourceIdentity) {
-            try {
-              await options.sourceHistoryGuard({ account: guard.account, identity: guard.sourceIdentity, headers, signal: request.signal });
-            } catch (error) {
-              if (error instanceof PoolError) throw new SubscriptionRequestError(error.code);
-              request.signal.throwIfAborted();
-            }
-          }
+          sourceHeaders = new Headers(headers);
+          if (guard.sourceIdentity && headers.get("authorization")?.startsWith("Bearer ")) verifiedSource = {
+            identity: guard.sourceIdentity, credentialDigest: createHash("sha256").update(headers.get("authorization")!.slice(7)).digest("hex") };
           // Inspect only Responses payloads for configured optimizations. Every
           // other native method, media type and route streams through unchanged.
           if (request.method === "POST" && ["/responses", "/responses/compact"].includes(path)) {
@@ -391,14 +408,14 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
                 reasoningEffort: safeEffort(object(outgoing.reasoning) ? outgoing.reasoning.effort : null),
                 ...(interactive ? { requestEncoding: encoding, requestInspection: inspectionReason } : {}),
               };
-              if (options.subscriptionGuard) {
+              if (options.subscriptionGuard && !interactive) {
                 const guard = options.subscriptionGuard.check({ headers, model: guardModel });
                 if (!guard.ready) throw new SubscriptionRequestError(guard.reason);
                 try {
                   // Keep the source login and reject known foreign ownership.
                   // Interactive helpers need not persist a native rollout;
                   // managed work still requires strict history verification.
-                  if (!interactive) await options.accountPool?.assertSourceContinuationAsync({ threadId: event.threadId, body: outgoing, headers,
+                  if (!interactive) await accountPool?.assertSourceContinuationAsync({ threadId: event.threadId, body: outgoing, headers,
                     historyPolicy: sourceHistoryPolicy }, request.signal);
                 } catch (error) {
                   throw new SubscriptionRequestError(error instanceof PoolError ? error.code : "source-continuation-unverified");
@@ -407,13 +424,19 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
                 const currentGuard = options.subscriptionGuard.check({ headers, model: guardModel });
                 if (!currentGuard.ready) throw new SubscriptionRequestError(currentGuard.reason);
               }
-              if (options.accountPool && !options.subscriptionGuard) {
+              if (interactive && options.resolveAccountPool) {
+                try { accountPool = options.resolveAccountPool(); } catch { accountPool = undefined; }
+              }
+              const interactivePool = interactive && accountPool && await accountPool.canSelectInteractiveAsync({
+                threadId: event.threadId, requestId: event.requestId, headers, body: outgoing, model: event.to }, request.signal);
+              if (accountPool && (!options.subscriptionGuard || interactivePool)) {
                 selectingAccount = true;
-                poolSelection = await options.accountPool.selectAsync({ threadId: event.threadId, requestId: event.requestId,
-                  body: outgoing, model: event.to, headers }, request.signal);
+                poolSelection = await accountPool.selectAsync({ threadId: event.threadId, requestId: event.requestId,
+                  body: outgoing, model: event.to, headers, verifiedSource }, request.signal);
                 request.signal.throwIfAborted();
-                poolInput = { body: outgoing, headers: new Headers(headers) };
+                poolInput = { body: outgoing, headers: new Headers(headers), verifiedSource };
                 if (poolSelection) {
+                  selectedGuard = bindSelectedGuard(poolSelection);
                   headers = poolSelection.headers; event.accountRouting = poolSelection.route;
                   if (poolSelection.body !== outgoing) {
                     body = JSON.stringify(poolSelection.body);
@@ -429,22 +452,30 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
             }
           }
         }
+        if (interactive && !poolSelection && options.sourceHistoryGuard) {
+          const source = options.subscriptionGuard!.checkIdentity({ headers: sourceHeaders });
+          if (source.account && source.sourceIdentity) try {
+            await options.sourceHistoryGuard({ account: source.account, identity: source.sourceIdentity, headers: sourceHeaders, signal: request.signal });
+          } catch (error) {
+            if (error instanceof PoolError) throw new SubscriptionRequestError(error.code);
+            request.signal.throwIfAborted();
+          }
+        }
         if (options.subscriptionGuard && (interactive || request.method !== "POST")) {
-          // Model discovery is metadata needed for native login and collector
-          // recovery. It cannot consume inference allowance.
-          const guard = interactive && !metadataRequest ? options.subscriptionGuard.check({ headers, model: guardModel })
-            : options.subscriptionGuard.checkIdentity({ headers });
+          const guard = interactive ? checkRequestGuard() : options.subscriptionGuard.checkIdentity({ headers });
           if (!guard.ready) throw new SubscriptionRequestError(guard.reason);
         }
       } catch (error) {
         activeRequests--;
+        if (poolSelection && event) await accountPool!.rollbackUnsentAsync(event.requestId).catch(() => {});
         if (request.signal.aborted) {
-          if (poolSelection && event) void options.accountPool!.finishAsync(event.requestId, "cancelled").catch(() => {});
+          if (poolSelection && event) void accountPool!.finishAsync(event.requestId, "cancelled").catch(() => {});
           if (event) record({ ...event, phase: "cancelled", status: 0, errorCode: "client_disconnected", failureOrigin: "client",
             at: new Date().toISOString(), durationMs: Math.round(performance.now() - started), retryCount: 0 });
           return new Response(null, { status: 499 });
         }
         if (error instanceof SubscriptionRequestError) {
+          if (poolSelection && event) void accountPool!.finishAsync(event.requestId, "failed").catch(() => {});
           if (event) record({ ...event, phase: "failed", status: 400, errorCode: subscriptionError(error.reason).code, failureOrigin: "relay",
             at: new Date().toISOString(), durationMs: Math.round(performance.now() - started), retryCount: 0 });
           return rejectGuard(error.reason);
@@ -455,7 +486,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
           rejectedRequests++;
           if (event) record({ ...event, phase: "failed", status, errorCode: code, failureOrigin: "relay", at: new Date().toISOString(),
             durationMs: Math.round(performance.now() - started), retryCount: 0 });
-          void options.accountPool!.rejectAsync(code, event ? { requestId: event.requestId, threadId: event.threadId, status } : undefined).catch(() => {});
+          void accountPool!.rejectAsync(code, event ? { requestId: event.requestId, threadId: event.threadId, status } : undefined).catch(() => {});
           const responseHeaders = new Headers();
           if (error instanceof PoolError && error.retryAfterSeconds != null)
             responseHeaders.set("retry-after", String(error.retryAfterSeconds));
@@ -464,7 +495,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
         }
         return new Response("Invalid or unsupported request body", { status: 400 });
       }
-      let status = 0, finished = false, receivedResponse = false;
+      let status = 0, finished = false, receivedResponse = false, upstreamAttempted = false;
       let retryCount = 0;
       let transportCode: string | undefined;
       let observer: ResponseCompletionObserver | undefined;
@@ -518,7 +549,12 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
           if (phase === "unverified") unverifiedCompactions++;
         }
         emit(phase, errorCode);
-        if (poolSelection && event) void options.accountPool!.finishAsync(event.requestId, phase).catch(() => {});
+        if (poolSelection && event) {
+          const requestId = event.requestId;
+          if (!upstreamAttempted) void accountPool!.rollbackUnsentAsync(requestId)
+            .then(() => accountPool!.finishAsync(requestId, phase)).catch(() => {});
+          else void accountPool!.finishAsync(requestId, phase).catch(() => {});
+        }
       };
       const clientClosed = () => {
         // Codex closes its SSE reader immediately after response.completed;
@@ -531,7 +567,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
       const checkSubscription = () => {
         if (finished || guardFailure || !options.subscriptionGuard) return;
         if (receivedResponse && status >= 400) return;
-        const check = metadataRequest ? options.subscriptionGuard.checkIdentity()
+        const check = interactive ? checkRequestGuard() : metadataRequest ? options.subscriptionGuard.checkIdentity()
           : options.subscriptionGuard.check({ model: guardModel });
         if (check.ready) return;
         // A terminal provider result already delivered to the client is final.
@@ -558,7 +594,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
         // Success status is telemetry: enqueue it without delaying any bytes.
         const recordPoolResponse = async (response: Response): Promise<boolean> => {
           if (!poolSelection || !event) return true;
-          const write = options.accountPool!.responseAsync(event.requestId, poolSelection.identity,
+          const write = accountPool!.responseAsync(event.requestId, poolSelection.identity,
             response.status, response.headers.get("retry-after"), poolSelection.credentialDigest);
           if (![401, 403, 429].includes(response.status)) { void write.catch(() => {}); return true; }
           try { await write; return true; } catch { return false; }
@@ -569,6 +605,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
         const guardedFetch: typeof upstreamFetch = async (target, init) => {
           checkSubscription();
           cancellation.signal.throwIfAborted();
+          upstreamAttempted = true;
           return upstreamFetch(target, init);
         };
         const target = `${UPSTREAM}${path}${url.search}`;
@@ -582,41 +619,45 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
         responseRequestIds = upstreamRequestIds(response.headers);
         // A web-search service throttle is not evidence that model quota was
         // exhausted. Forward its error without poisoning later model requests.
-        if (!metadataRequest && !searchRequest) options.subscriptionGuard?.observeResponse?.(status);
+        if (!metadataRequest && !searchRequest) (selectedGuard ?? options.subscriptionGuard)?.observeResponse?.(status);
         const cooldownRecorded = await recordPoolResponse(response);
         // A rejected HTTP request has produced no model output. Retry once with
         // complete portable history; never retry a 200 stream or partial output.
-        if (!options.subscriptionGuard && status === 429 && cooldownRecorded && poolSelection && poolInput && event && !finished && !cancellation.signal.aborted) {
+        if ((!options.subscriptionGuard || interactive && poolSelection) && status === 429 && cooldownRecorded && poolSelection && poolInput && event && !finished && !cancellation.signal.aborted) {
           let replacement: ReturnType<AccountPool["select"]> = null;
           const nextId = randomUUID();
           try {
-            if (await options.accountPool!.canRecoverAsync(poolSelection.route.account, event.to, poolInput.body, cancellation.signal))
-              replacement = await options.accountPool!.selectAsync({ threadId: event.threadId, requestId: nextId,
-                body: poolInput.body, model: event.to, headers: poolInput.headers }, cancellation.signal);
+            if (await accountPool!.canRecoverAsync(poolSelection.route.account, event.to, poolInput.body, cancellation.signal))
+              replacement = await accountPool!.selectAsync({ threadId: event.threadId, requestId: nextId,
+                body: poolInput.body, model: event.to, headers: poolInput.headers, verifiedSource: poolInput.verifiedSource }, cancellation.signal);
           } catch { /* Preserve the original 429 when safe recovery is unavailable. */ }
           if (finished || cancellation.signal.aborted) {
-            if (replacement) void options.accountPool!.finishAsync(nextId, "cancelled").catch(() => {});
+            if (replacement) await accountPool!.rollbackUnsentAsync(nextId).catch(() => {});
             await response.body?.cancel();
             return new Response(null, { status: 499 });
           }
+          let replacementGuard: SubscriptionGuard | undefined;
+          if (replacement?.route.reason === "recovered") try { replacementGuard = bindSelectedGuard(replacement); }
+          catch { await accountPool!.rollbackUnsentAsync(nextId).catch(() => {}); replacement = null; }
           if (replacement?.route.reason === "recovered") {
             emit("failed", "account_rate_limited");
-            void options.accountPool!.finishAsync(event.requestId, "failed").catch(() => {});
+            void accountPool!.finishAsync(event.requestId, "failed").catch(() => {});
             await response.body?.cancel();
             if (finished || cancellation.signal.aborted) {
-              void options.accountPool!.finishAsync(nextId, "cancelled").catch(() => {});
+              await accountPool!.rollbackUnsentAsync(nextId).catch(() => {});
               return new Response(null, { status: 499 });
             }
-            poolSelection = replacement; headers = replacement.headers;
+            poolSelection = replacement; headers = replacement.headers; selectedGuard = replacementGuard; upstreamAttempted = false;
             headers.delete("content-encoding"); body = JSON.stringify(replacement.body);
             event = { ...event, requestId: nextId, accountRouting: replacement.route };
             retryCount++; status = 0; receivedResponse = false; responseRequestIds = undefined; emit("started");
-            response = await fetchCodexUpstream(upstreamFetch, `${UPSTREAM}${path}${url.search}`, {
+            response = await fetchCodexUpstream(guardedFetch, `${UPSTREAM}${path}${url.search}`, {
               method: request.method, headers, body, redirect: "manual", signal: cancellation.signal,
             }, code => { retryCount++; transportCode = code; });
             receivedResponse = true;
             status = response.status;
             responseRequestIds = upstreamRequestIds(response.headers);
+            (selectedGuard ?? options.subscriptionGuard)?.observeResponse?.(status);
             await recordPoolResponse(response);
           }
         }
