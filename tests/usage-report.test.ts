@@ -1,3 +1,5 @@
+import { zstdCompressSync } from "node:zlib";
+import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { appendFileSync, realpathSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -131,4 +133,77 @@ test("large-log continuation visits completed sources once and reuses one file s
   for(const path of small) expect(scans.get(realpathSync(path))).toEqual({visits:1,opens:1});
   appendFileSync(small[0]!,JSON.stringify(usage(FROM+3000,20,0,0))+"\n");
   expect((await f.index.report(f.config,query)).total.totalTokens).toBe(120);
+});
+
+test("consumption evidence uses exact repository metadata and per-session models, never project name", async () => {
+  const f = fixture();
+  const confirmed = meta(A, {subagent:{thread_spawn:{parent_thread_id:B}}});
+  Object.assign(confirmed.payload, {git:{repository_url:"https://github.com/heznpc/QuotaPie.git"}});
+  const misleading = meta(B); misleading.payload.cwd = "/projects/QuotaPie";
+  file(join(f.codex,"sessions","a.jsonl"), [confirmed,context("astra"),usage(FROM+1000,100,80,10),context("sol"),usage(FROM+2000,200,160,20)]);
+  file(join(f.codex,"sessions","b.jsonl"), [misleading,context("sol"),usage(FROM+3000,30,0,0)]);
+  const r = await f.index.report(f.config,query);
+  expect(r.consumption?.quotapie.development.totalTokens).toBe(220);
+  expect(r.consumption?.quotapie.developmentSessionIds).toEqual([A]);
+  expect(r.consumption?.quotaPercent).toBeNull();
+  expect(r.consumption?.quotapie.candidates.totalTokens).toBe(0);
+  expect(r.consumption?.subagents[0]?.parentSessionId).toBe(B);
+  expect(r.sessions.find(s => s.sessionId === A)?.models?.map(m => m.totalTokens)).toEqual([110,110]);
+  expect(r.sessions.find(s => s.sessionId === A)?.uncachedInputTokens).toBe(40);
+});
+
+test("compressed source omission is explicit instead of silently complete coverage", async () => {
+  const f = fixture();
+  writeFileSync(join(f.codex,"sessions","a.jsonl.zst"),"compressed");
+  const r = await f.index.report(f.config,query);
+  expect(r.coverage.compressedFilesSkipped).toBe(1);
+  expect(r.coverage.notes.some(n => n.includes("압축된 세션 파일 1개"))).toBe(true);
+});
+
+
+test("host titles require owner profile and indexed rollout path, and remain candidate evidence", async () => {
+  const f = fixture();
+  const path = file(join(f.codex,"sessions","a.jsonl"),[meta(),usage(FROM+1000,25,0,5)]);
+  file(join(f.codex,"sessions","b.jsonl"),[meta(B),usage(FROM+2000,40,0,0)]);
+  const db = new Database(join(f.codex,"state_5.sqlite"));
+  db.run("CREATE TABLE threads(id TEXT, title TEXT, rollout_path TEXT)");
+  db.run("INSERT INTO threads VALUES(?,?,?)",[A,"QuotaPie 분석 작업",path]);
+  db.run("INSERT INTO threads VALUES(?,?,?)",[B,"QuotaPie 다른 프로필", "/outside/profile.jsonl"]);
+  db.close();
+  const r = await f.index.report(f.config,query);
+  expect(r.sessions.find(s => s.sessionId === A)?.label).toBe("QuotaPie 분석 작업");
+  expect(r.sessions.find(s => s.sessionId === B)?.label).not.toBe("QuotaPie 다른 프로필");
+  expect(r.consumption?.quotapie.development.totalTokens).toBe(0);
+  expect(r.consumption?.quotapie.candidates.totalTokens).toBe(30);
+  expect(r.consumption?.quotapie.candidateSessionIds).toEqual([A]);
+});
+
+test("history shards retain canonical title and explicit child inherits candidate evidence", async () => {
+  const f = fixture();
+  const root = file(join(f.codex,"sessions","canonical.jsonl"),[meta(),usage(FROM+1000,25,0,5)]);
+  file(join(f.codex,"sessions","z-history.jsonl"),[meta(),usage(FROM+1000,25,0,5)]);
+  const child = meta(B,{subagent:{thread_spawn:{parent_thread_id:A,agent_path:"/root/review",agent_nickname:"Newton"}}});
+  file(join(f.codex,"sessions","child.jsonl"),[child,usage(FROM+2000,70,0,0)]);
+  const db = new Database(join(f.codex,"state_5.sqlite"));
+  db.run("CREATE TABLE threads(id TEXT, title TEXT, rollout_path TEXT)");
+  db.run("INSERT INTO threads VALUES(?,?,?)",[A,"QuotaPie current task",root]);db.close();
+  const r = await f.index.report(f.config,query);
+  expect(r.sessions.find(s => s.sessionId === A)?.label).toBe("QuotaPie current task");
+  expect(r.sessions.find(s => s.sessionId === B)?.label).toBe("/root/review · Newton");
+  expect(r.sessions.find(s => s.sessionId === B)?.quotapieCandidateEvidence).toBe("inherited_title");
+  expect(r.consumption?.quotapie.candidates.totalTokens).toBe(100);
+});
+
+
+test("compressed canonical header validates title for indexed shards", async () => {
+  const f = fixture();
+  const canonical = join(f.codex,"sessions","canonical.jsonl");
+  writeFileSync(canonical+".zst",zstdCompressSync(Buffer.from(JSON.stringify(meta())+"\n")));
+  file(join(f.codex,"sessions","history.jsonl"),[meta(),usage(FROM+1000,20,0,0)]);
+  const db = new Database(join(f.codex,"state_5.sqlite"));
+  db.run("CREATE TABLE threads(id TEXT, title TEXT, rollout_path TEXT)");
+  db.run("INSERT INTO threads VALUES(?,?,?)",[A,"QuotaPie compressed history",canonical]);db.close();
+  const r = await f.index.report(f.config,query);
+  expect(r.sessions[0]?.label).toBe("QuotaPie compressed history");
+  expect(r.consumption?.quotapie.candidates.totalTokens).toBe(20);
 });

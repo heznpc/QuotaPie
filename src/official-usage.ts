@@ -1,3 +1,4 @@
+import { normalizeOfficialThreads, type OfficialThreadCandidate, type OfficialThreadUsage } from "./official-thread-usage";
 import { buildOfficialUsageAnalysis, unavailableOfficialUsageAnalysis, officialAnalysisRange, type OfficialUsageAnalysis } from "./official-usage-analysis";
 import { poolAccounts, type PoolAccount } from "./account-pool";
 import type { AppConfig } from "./config";
@@ -14,6 +15,7 @@ export interface OfficialUsagePeriod extends OfficialUsageDimensions {
 }
 export interface OfficialUsageAccount extends OfficialUsageDimensions {
   analysis: OfficialUsageAnalysis | null;
+  threads:OfficialThreadUsage[];threadsAsOfMs:number|null;threadsError:string|null;
   account: string; label: string; status: "ready" | "unavailable"; error: string | null;
   units: string; dataFreshnessMs: number | null; days: OfficialUsageDay[]; total: number;
   periods: OfficialUsagePeriod[]; periodsAsOfMs: number | null;
@@ -86,7 +88,7 @@ export interface OfficialUsageQuery {startDate:string;endDate:string;account:str
 export type OfficialBoundaryResolver=(account:string,query:OfficialUsageQuery,now:number)=>{atMs:number;kind:string}|null;
 export class OfficialUsageAPI {
   private cache=new Map<string,{at:number,value:Promise<OfficialUsageReport>}>();
-  constructor(private config:AppConfig,private fetcher:typeof fetch=fetch,private accounts=()=>poolAccounts(config),private boundaryResolver?:OfficialBoundaryResolver){}
+  constructor(private config:AppConfig,private fetcher:typeof fetch=fetch,private accounts=()=>poolAccounts(config),private boundaryResolver?:OfficialBoundaryResolver,private threadCandidates:(profile:AppConfig["accounts"]["codex"][number],expectedUpstreamAccount:string)=>OfficialThreadCandidate[]=()=>[]){}
   async read(query:OfficialUsageQuery,now=Date.now(),refresh=false):Promise<OfficialUsageReport>{
     const credentials=this.accounts().filter(a=>query.account===null||a.id===query.account);
     // Account identity is part of the cache key; relogin never receives another account's report.
@@ -99,16 +101,19 @@ export class OfficialUsageAPI {
     const profiles=this.config.accounts.codex.filter(a=>a.enabled&&(query.account===null||a.id===query.account));
     const collectAccount=async(profile:AppConfig["accounts"]["codex"][number]):Promise<OfficialUsageAccount>=>{
       const account=credentials.find(a=>a.id===profile.id);
-      const result:OfficialUsageAccount={analysis:null,account:profile.id,label:profile.nickname||profile.label,status:"unavailable",error:"authentication_unavailable",units:"percent",dataFreshnessMs:null,days:[],total:0,...emptyDimensions(),periods:[],periodsAsOfMs:null,periodsComplete:false,periodsApproximate:true,periodsError:null,periodsRequestedDays:7};
+      const result:OfficialUsageAccount={analysis:null,threads:[],threadsAsOfMs:null,threadsError:"not_requested",account:profile.id,label:profile.nickname||profile.label,status:"unavailable",error:"authentication_unavailable",units:"percent",dataFreshnessMs:null,days:[],total:0,...emptyDimensions(),periods:[],periodsAsOfMs:null,periodsComplete:false,periodsApproximate:true,periodsError:null,periodsRequestedDays:7};
       const observed=query.analysisDate?this.boundaryResolver?.(profile.id,query,now):null;
       const boundaryMs=observed?.atMs??(query.analysisDate?undefined:query.analysisBoundaryMs);
       if(query.analysisDate||query.analysisBoundaryMs!==undefined)result.analysis=unavailableOfficialUsageAnalysis(boundaryMs===undefined?"recovery_not_observed":"official_data_unavailable");
       if(account && account.tokenExpiresAt>now){
-        const request=async(path:string)=>{
-          const response=await this.fetcher(`https://chatgpt.com/backend-api/wham/usage/${path}`,{method:"GET",redirect:"error",headers:{Authorization:`Bearer ${account.accessToken}`,"chatgpt-account-id":account.upstreamAccount,"x-openai-codex-usage-categories":"1"},signal:AbortSignal.timeout(15000)});
+        const request=async(path:string,body?:unknown)=>{
+          const response=await this.fetcher(`https://chatgpt.com/backend-api/wham/usage/${path}`,{method:body?"POST":"GET",...(body?{body:JSON.stringify(body)}:{}),redirect:"error",headers:{"content-type":"application/json",Authorization:`Bearer ${account.accessToken}`,"chatgpt-account-id":account.upstreamAccount,"x-openai-codex-usage-categories":"1"},signal:AbortSignal.timeout(15000)});
           if(!response.ok)throw new Error(`http_${response.status}`);
           const text=await response.text();if(text.length>8*1024*1024)throw new Error("response_too_large");return JSON.parse(text);
         };
+        let candidates:OfficialThreadCandidate[]=[];
+        try{candidates=this.threadCandidates(profile,account.upstreamAccount);result.threadsError=candidates.length?null:"no_local_threads";}catch{result.threadsError="thread_metadata_unavailable";}
+        const threadRead=candidates.length?request("thread_usage/query_v2",{threads:candidates.map(c=>({thread_id:c.threadId,created_at:new Date(c.createdAtMs).toISOString(),descendant_thread_ids:c.descendantIds}))}).then(payload=>{Object.assign(result,normalizeOfficialThreads(payload,candidates));}).catch(error=>{result.threadsError=safeError(error);}):Promise.resolve();
         const analysisRange=boundaryMs!==undefined?officialAnalysisRange(boundaryMs,query.endDate,now):null;
         const fetchStart=analysisRange&&analysisRange.previousStartDate<query.startDate?analysisRange.previousStartDate:query.startDate;
         const [daily,periods]=await Promise.allSettled([request(`daily-token-usage-breakdown?${new URLSearchParams({start_date:fetchStart,end_date:query.endDate,group_by:"day"})}`),request("plan_limit_history?days=7")]);
@@ -122,14 +127,15 @@ export class OfficialUsageAPI {
             result.analysis.boundarySource=observed?"observed":"supplied";result.analysis.boundaryKind=observed?.kind??null;
           }
         }catch(error){result.error=safeError(error);}
+        await threadRead;
         try {if(periods.status==="rejected")throw periods.reason;Object.assign(result,normalizeOfficialPeriods(periods.value));}catch(error){result.periodsError=safeError(error);}
       }
       return result;
     };
     const accounts:OfficialUsageAccount[]=[];
-    // At most two accounts (four read-only HTTP requests) in flight.
+    // At most two accounts (six read-only HTTP requests) in flight.
     for(let index=0;index<profiles.length;index+=2) accounts.push(...await Promise.all(profiles.slice(index,index+2).map(collectAccount)));
     return {generatedAtMs:now,startDate:query.startDate,endDate:query.endDate,accounts};
   }
 }
-function safeError(error:unknown):string {const value=error instanceof Error?error.message:"";return /^(http_\d{3}|invalid_daily_response|invalid_period_response|response_too_large)$/.test(value)?value:"request_failed";}
+function safeError(error:unknown):string {const value=error instanceof Error?error.message:"";return /^(http_\d{3}|invalid_daily_response|invalid_period_response|invalid_thread_response|response_too_large)$/.test(value)?value:"request_failed";}

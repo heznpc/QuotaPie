@@ -33,6 +33,9 @@ struct OfficialUsageAccount: Decodable, Identifiable {
     let periodsAsOfMs: Double?
     let periodsComplete: Bool
     let periodsApproximate: Bool
+    let threads: [OfficialUsageThread]?
+    let threadsAsOfMs: Double?
+    let threadsError: String?
     let analysis: OfficialUsageAnalysis?
     var id: String { account }
 }
@@ -97,4 +100,24 @@ final class OfficialUsageStore: ObservableObject {
         request = nil
         loading = false
     }
+}
+
+struct OfficialUsageThread: Decodable, Identifiable {
+    let threadId: String
+    let title: String
+    let createdAtMs: Double
+    let scope: String
+    let descendantCount: Int
+    let ownershipBasis: String?
+    let weeklyLimitPercent: Double?
+    let fiveHourLimitPercent: Double?
+    let dataStatus: String
+    let groups: [OfficialUsageThreadGroup]
+    var id: String { threadId }
+}
+struct OfficialUsageThreadGroup: Decodable {
+    let model: String
+    let reasoningEffort: String
+    let weeklyLimitPercent: Double?
+    let fiveHourLimitPercent: Double?
 }

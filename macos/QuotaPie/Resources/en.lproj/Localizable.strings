@@ -1213,3 +1213,72 @@
 "usage.analysis.scheduledBoundary" = "Scheduled reset observation";
 "usage.analysis.recoveryBoundary" = "Early quota recovery observation; not the exact scheduled reset time";
 "usage.analysis.evidenceDetails" = "Evidence, exclusions and freshness";
+
+"usage.consumption.overview" = "Where it went";
+"usage.consumption.title" = "Where did usage go since Thursday?";
+"usage.consumption.subtitle" = "Official conversation quota usage alongside work recorded on this Mac.";
+"usage.consumption.officialQuota" = "Official · current weekly quota";
+"usage.consumption.used" = "used";
+"usage.consumption.observed" = "Observed";
+"usage.consumption.quotaUnknown" = "Official quota unavailable";
+"usage.consumption.quotaScope" = "Current quota-window observation, not the increase since Thursday or the local token shares below.";
+"usage.consumption.localEvidence" = "Local evidence · Thursday midnight through now";
+"usage.consumption.partial" = "Still scanning — rankings and shares may change.";
+"usage.consumption.totalLocal" = "Recorded tokens";
+"usage.consumption.tokensNotQuota" = "Includes cache · not quota consumption";
+"usage.consumption.tokens" = "tokens";
+"usage.consumption.subagents" = "Subagents";
+"usage.consumption.qpDevelopment" = "QuotaPie development & verification";
+"usage.consumption.qpEvidence" = "Confirmed only when this session repository matches QuotaPie. Parent evidence is a separate candidate.";
+"usage.consumption.qpRelay" = "QuotaPie relay observations · compactions / retries";
+"usage.consumption.relayTokens" = "Recorded response usage · compactions / retries";
+"usage.consumption.showQP" = "Show QuotaPie work";
+"usage.consumption.qpCaveat" = "Development and relay records can overlap and are not added. Related work without repository evidence and incremental consumption caused by QuotaPie are unknown.";
+"usage.consumption.localCaveat" = "Input, cache and output tokens read from this Mac. Not convertible to official quota %. Missing records, other devices and cloud use are excluded.";
+"usage.consumption.largestWork" = "Largest consumers";
+"usage.consumption.conversations" = "Conversations";
+"usage.consumption.models" = "Models";
+"usage.consumption.search" = "Search conversation title or ID";
+"usage.consumption.onlyQP" = "QuotaPie only";
+"usage.consumption.subagentScope" = "Subagents are part of conversation usage, not an additional total.";
+"usage.consumption.rowScope" = "Each conversation excludes descendants. Shares use all local tokens in this period. Expand for models and evidence.";
+"usage.consumption.noRows" = "No local records match these filters.";
+"usage.consumption.more" = "Show more";
+"usage.consumption.tokenParts" = "Input / cached input / output";
+"usage.consumption.parent" = "Parent conversation";
+"usage.consumption.subagent" = "Subagent";
+"usage.consumption.rowQuotaUnknown" = "Official quota consumed by this local record: unavailable";
+"usage.consumption.officialBreakdown" = "Official model and feature distribution";
+"usage.consumption.officialScope" = "Relative shares within each official category, not weekly quota %. Models and features are not additive. UTC boundaries and freshness differ from the exact Thursday reset.";
+"usage.consumption.officialUnavailable" = "Official usage unavailable for this account.";
+"usage.consumption.features" = "Features";
+
+"usage.consumption.officialConversations" = "Official · weekly quota equivalent of queried recent conversations";
+"usage.consumption.threadScope" = "Official lifetime totals for up to 20 recent conversations found on this Mac, including known descendants; not the full account history. Only conversations created since Thursday fall wholly inside this period. Earlier conversations cannot be split at Thursday. Do not add these to the current quota gauge.";
+"usage.consumption.asOf" = "Official data as of";
+"usage.consumption.threadError" = "Some or all official conversation usage is unavailable.";
+"usage.consumption.created" = "Created";
+"usage.consumption.officialSubagentUnknown" = "Model totals include descendants. Official subagent-only quota usage is not separately available.";
+"usage.consumption.bornInRange" = "Created since Thursday · lifetime";
+"usage.consumption.predatesRange" = "Older conversation · since-Thursday share unknown";
+"usage.consumption.descendants" = "descendants";
+"usage.consumption.unavailable" = "Unavailable";
+"usage.consumption.candidates" = "QuotaPie title / parent-work candidates · excluded from confirmed attribution";
+
+"usage.consumption.candidateBadge" = "QuotaPie title candidate · unconfirmed";
+
+"usage.consumption.profileOwnership" = "Matched account profile and official response; legacy creator-account metadata is missing, so creator ownership is not verified.";
+
+"usage.consumption.incomplete" = "Partial records: %@ compressed files excluded · %@ files skipped · %@ malformed lines. Rankings and shares apply only to records read.";
+"usage.consumption.coverage" = "Read coverage and missing evidence";
+
+"usage.consumption.inheritedRepoBadge" = "QuotaPie · parent repository evidence";
+"usage.consumption.inheritedCandidateBadge" = "QuotaPie parent title candidate · unconfirmed";
+
+"usage.consumption.evidence.session_git_repository_url" = "Evidence: this session repository matches QuotaPie";
+"usage.consumption.evidence.thread_title" = "Evidence: QuotaPie in this conversation title · candidate, not confirmed";
+"usage.consumption.evidence.inherited_title" = "Evidence: QuotaPie in parent conversation title · candidate, not confirmed";
+"usage.consumption.evidence.inherited_repository" = "Evidence: parent repository is QuotaPie · child repository not verified";
+
+"usage.consumption.parentRepoCandidateBadge" = "QuotaPie parent repository candidate · unconfirmed";
+"usage.consumption.evidence.parent_repository" = "Evidence: parent repository is QuotaPie · candidate because the child repository is unverified";

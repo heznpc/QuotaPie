@@ -4,6 +4,19 @@ import XCTest
 @testable import QuotaPie
 
 final class OfficialUsageTests: XCTestCase {
+    func testOfficialConversationKeepsLifetimeScopeAndUnknownSeparateFromZero() throws {
+        let thread = try JSONDecoder().decode(OfficialUsageThread.self, from: Data("""
+        {"threadId":"current","title":"QuotaPie","createdAtMs":1792200000000,"scope":"lifetime",
+         "descendantCount":8,"weeklyLimitPercent":27.3727,"fiveHourLimitPercent":null,"dataStatus":"available",
+         "groups":[{"model":"gpt-6-astra","reasoningEffort":"xhigh","weeklyLimitPercent":25.7654,"fiveHourLimitPercent":null}]}
+        """.utf8))
+        XCTAssertEqual(thread.scope, "lifetime")
+        XCTAssertEqual(thread.descendantCount, 8)
+        XCTAssertEqual(thread.weeklyLimitPercent, 27.3727)
+        XCTAssertNil(thread.fiveHourLimitPercent)
+        XCTAssertEqual(thread.groups.first?.weeklyLimitPercent, 25.7654)
+    }
+
     private final class Server {
         let directory: URL
         let capture: URL

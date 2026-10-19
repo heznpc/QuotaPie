@@ -46,9 +46,15 @@ struct UsageBucket: Decodable, Identifiable {
     let resetAtMs: Double?
     let startClipped: Bool?
     let activity: UsageActivity?
+    let models: [UsageBucket]?
+    let parentSessionId: String?
+    let repositoryUrl: String?
+    let quotapieEvidence: String?
+    let quotapieCandidateEvidence: String?
     let totals: UsageTotals
 
     private enum CodingKeys: String, CodingKey {
+        case models, parentSessionId, repositoryUrl, quotapieEvidence, quotapieCandidateEvidence
         case id, label, fromMs, toMs, provider, account, sessionId, model, isSubagent, previousTotalTokens, resetKind, accountLabel, resetAtMs, startClipped, activity
     }
     init(from decoder: Decoder) throws {
@@ -68,11 +74,17 @@ struct UsageBucket: Decodable, Identifiable {
         resetAtMs = try values.decodeIfPresent(Double.self, forKey: .resetAtMs)
         startClipped = try values.decodeIfPresent(Bool.self, forKey: .startClipped)
         activity = try values.decodeIfPresent(UsageActivity.self, forKey: .activity)
+        models = try values.decodeIfPresent([UsageBucket].self, forKey: .models)
+        parentSessionId = try values.decodeIfPresent(String.self, forKey: .parentSessionId)
+        repositoryUrl = try values.decodeIfPresent(String.self, forKey: .repositoryUrl)
+        quotapieEvidence = try values.decodeIfPresent(String.self, forKey: .quotapieEvidence)
+        quotapieCandidateEvidence = try values.decodeIfPresent(String.self, forKey: .quotapieCandidateEvidence)
         totals = try UsageTotals(from: decoder)
     }
 }
 
 struct UsageReport: Decodable {
+    let consumption: UsageConsumption?
     let generatedAtMs: Double
     let fromMs: Double
     let toMs: Double
@@ -90,6 +102,7 @@ struct UsageReport: Decodable {
     struct Coverage: Decodable {
         let filesScanned: Int
         let filesPending: Int
+        let compressedFilesSkipped: Int?
         let filesSkipped: Int
         let malformedLines: Int
         let unknownModelTokens: Double
@@ -228,4 +241,23 @@ final class UsageReportStore: ObservableObject {
         guard let observed = reset.resetAtMs, observed < to, to - observed <= 90 * 24 * 60 * 60 * 1_000 else { return fallback }
         return observed
     }
+}
+
+struct UsageConsumption: Decodable {
+    let basis: String
+    let quotaPercent: Double?
+    let quotapie: QuotaPieConsumption
+    let conversations: [UsageBucket]
+    let subagents: [UsageBucket]
+}
+
+struct QuotaPieConsumption: Decodable {
+    let candidates: UsageTotals?
+    let candidateSessionIds: [String]?
+    let development: UsageTotals
+    let developmentSessionIds: [String]
+    let evidence: String
+    let relay: UsageActivity
+    let quotaPercent: Double?
+    let note: String
 }

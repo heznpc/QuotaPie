@@ -19,6 +19,7 @@ import { DotsConnection } from "./dots/connection";
 import { UsageReportAPI, parseUsageQuery } from "./usage-report-api";
 import { OfficialUsageAPI, parseOfficialUsageQuery } from "./official-usage";
 import { officialUsageBoundary } from "./official-usage-boundary";
+import { readOfficialThreadCandidates } from "./official-thread-usage";
 
 // Deprecated compatibility aliases for the one consumer that can be a version
 // behind this daemon: the menu bar app, during the seconds between the backend
@@ -54,7 +55,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
   const dots = new DotsConnection({ config: () => config });
   const usageReports = new UsageReportAPI(config, service.db.db, options.compactionRoot);
   const officialUsage = new OfficialUsageAPI(config, fetch, undefined, (account, query, now) =>
-    officialUsageBoundary(service.db.db, config, account, query, now));
+    officialUsageBoundary(service.db.db, config, account, query, now), readOfficialThreadCandidates);
   const dashboardFile = Bun.file(new URL("./dashboard.html", import.meta.url));
   const actionToken = randomBytes(32).toString("base64url");
   const tokenMatches = (candidate: string | null): boolean => {

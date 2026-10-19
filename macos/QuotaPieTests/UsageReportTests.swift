@@ -4,6 +4,20 @@ import XCTest
 @testable import QuotaPie
 
 final class UsageReportTests: XCTestCase {
+    func testConversationModelEvidenceRetainsUnconfirmedQuotaPieCandidate() throws {
+        let bucket = try JSONDecoder().decode(UsageBucket.self, from: Data("""
+        {"id":"task","label":"QuotaPie investigation","inputTokens":100,"cachedInputTokens":80,
+         "cacheCreationTokens":0,"outputTokens":20,"reasoningTokens":10,"totalTokens":120,"requests":1,
+         "subagentTokens":0,"quotapieCandidateEvidence":"thread_title","parentSessionId":"parent",
+         "models":[{"id":"astra","label":"astra","inputTokens":100,"cachedInputTokens":80,
+         "cacheCreationTokens":0,"outputTokens":20,"reasoningTokens":10,"totalTokens":120,"requests":1,"subagentTokens":0}]}
+        """.utf8))
+        XCTAssertNil(bucket.quotapieEvidence)
+        XCTAssertEqual(bucket.quotapieCandidateEvidence, "thread_title")
+        XCTAssertEqual(bucket.models?.first?.totals.totalTokens, 120)
+        XCTAssertEqual(bucket.parentSessionId, "parent")
+    }
+
     func testLastThursdayAndPreviousWindowUseLocalCalendar() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Seoul"))
