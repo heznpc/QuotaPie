@@ -160,6 +160,30 @@ test("a healthy account or old success cannot mask failed-account retries; early
   } finally { clock.mockRestore(); factory.mockRestore(); await f.close(); }
 });
 
+test("background recovery cadence polls only the blocked account and stops after measured recovery", async () => {
+  const f = fixture(); let now = 2000000000000, recovered = false, calls = { a: 0, b: 0 };
+  f.config.collection.pollSeconds = 60;
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  const factory = spyOn(f.service as any, "createCodexClient").mockImplementation((profile: any) => ({
+    readRateLimits: async () => {
+      calls[profile.id as "a" | "b"]++;
+      return [{ ...sample(profile.id, now), usedPercent: profile.id === "a" ? recovered ? 0 : 100 : 42 }];
+    }, close: async () => {},
+  }));
+  try {
+    await f.service.pollCodex(true);
+    expect(f.service.nextCollectionDelayMs(60000, now)).toBe(5000);
+    now += 5000; await f.service.pollCodex(true);
+    expect(calls).toEqual({ a: 2, b: 1 });
+    recovered = true;
+    now += 5000; await f.service.pollCodex(true);
+    expect(calls).toEqual({ a: 3, b: 1 });
+    expect(f.service.nextCollectionDelayMs(60000, now)).toBe(50000);
+    now += 5000; await f.service.pollCodex(true);
+    expect(calls).toEqual({ a: 3, b: 1 });
+  } finally { clock.mockRestore(); factory.mockRestore(); await f.close(); }
+});
+
 test("wake merges into a coalesced request and in-flight collection reports its lifecycle", async () => {
   const f = fixture(); let release!: () => void;
   const wait = new Promise<void>(resolve => { release = resolve; });
