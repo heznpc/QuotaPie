@@ -95,6 +95,29 @@ final class StatusClient {
     }
 
     @discardableResult
+    func fetchUsageReport(fromMs: Double, toMs: Double, timeZone: String, actionToken: String,
+                          provider: String? = nil, account: String? = nil, refresh: Bool = false,
+                          completion: @escaping (Result<UsageReportResponse, Error>) -> Void) -> URLSessionDataTask? {
+        var components = URLComponents(url: baseURL.appendingPathComponent("api/usage-report"), resolvingAgainstBaseURL: false)
+        var query = [URLQueryItem(name: "fromMs", value: String(Int64(fromMs))),
+                     URLQueryItem(name: "toMs", value: String(Int64(toMs))),
+                     URLQueryItem(name: "timeZone", value: timeZone)]
+        if let provider, let account {
+            query += [URLQueryItem(name: "provider", value: provider), URLQueryItem(name: "account", value: account)]
+        }
+        if refresh { query.append(URLQueryItem(name: "refresh", value: "1")) }
+        components?.queryItems = query
+        guard let url = components?.url else { completion(.failure(StatusClientError.invalidLocalURL)); return nil }
+        var request = URLRequest(url: url)
+        request.setValue(Strings.language.rawValue, forHTTPHeaderField: "x-quotapie-locale")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue(actionToken, forHTTPHeaderField: "x-quotapie-action-token")
+        return perform(request) { result in
+            completion(Result { try JSONDecoder().decode(UsageReportResponse.self, from: result.get()) })
+        }
+    }
+
+    @discardableResult
     func fetchQuota(completion: @escaping (Result<StatusPayload, Error>) -> Void) -> URLSessionDataTask {
         var request = URLRequest(url: baseURL.appendingPathComponent("api/quota"))
         request.setValue(Strings.language.rawValue, forHTTPHeaderField: "x-quotapie-locale")

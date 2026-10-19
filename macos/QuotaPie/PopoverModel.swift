@@ -365,7 +365,7 @@ final class PopoverModel: ObservableObject {
 }
 
 enum DetailSection: String, CaseIterable, Identifiable {
-    case quota, work, activity, resets, settings
+    case quota, work, usage, activity, resets, settings
     var id: String { rawValue }
     var title: String { Strings.t("detail." + rawValue) }
 }

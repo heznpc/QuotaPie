@@ -4,6 +4,7 @@ struct DetailsView: View {
     @ObservedObject var model: PopoverModel
     @Binding var section: DetailSection
     @ObservedObject private var awake = AwakeController.shared
+    @StateObject private var usageReport = UsageReportStore()
     let actions: PopoverActions
     let back: () -> Void
 
@@ -34,7 +35,7 @@ struct DetailsView: View {
                     if let error = model.detailsError {
                         Text(error).font(.caption).foregroundStyle(.orange)
                     }
-                    if section != .quota && !model.detailsLoaded {
+                    if section != .quota && section != .usage && !model.detailsLoaded {
                         if model.detailsLoading { ProgressView() }
                         Text(model.detailsError ?? Strings.t("details.loading")).foregroundStyle(.secondary)
                     } else { detailContent }
@@ -47,11 +48,17 @@ struct DetailsView: View {
             .id(model.detailLocationID)
             Divider()
             HStack {
-                Button(action: actions.refresh) {
+                Button(action: {
+                    if section == .usage { usageReport.load(client: model.statusClient, actionToken: model.payload?.actionToken, refresh: true) }
+                    else { actions.refresh() }
+                }) {
                     Label(Strings.t("action.refresh"), systemImage: "arrow.clockwise")
                 }
                 Spacer()
-                if let last = model.displayedMeasurementDate {
+                if section == .usage, let report = usageReport.report {
+                    Text(DisplayFormat.age(since: Date(timeIntervalSince1970: report.generatedAtMs / 1_000)))
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if let last = model.displayedMeasurementDate {
                     Text(DisplayFormat.age(since: last)).font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -122,6 +129,9 @@ struct DetailsView: View {
             }
             Button(Strings.t("action.openDashboard"), action: actions.openDashboard)
                 .buttonStyle(.link)
+        case .usage:
+            UsageReportView(store: usageReport, client: model.statusClient, actionToken: model.payload?.actionToken,
+                            accounts: model.payload?.accounts ?? [])
         case .resets:
             ResetSignalHistory(feed: model.payload?.resetSignals)
         case .settings:
