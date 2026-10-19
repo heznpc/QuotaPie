@@ -131,7 +131,8 @@ struct AccountListRow: View {
             }
         }
         if let warning = warningText { values.append(warning) }
-        if let measured = account.collection.lastSuccessAtMs, measured.isFinite, measured > 0 {
+        if !account.collection.hasUnavailableQuotaAccess,
+           let measured = account.collection.lastSuccessAtMs, measured.isFinite, measured > 0 {
             values.append(Strings.t("collection.measuredAt", Date(timeIntervalSince1970: measured / 1_000)
                 .formatted(date: .abbreviated, time: .shortened)))
         }

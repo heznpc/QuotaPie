@@ -299,6 +299,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func openAccount(_ account: AccountState) {
         guard !popoverModel.openingAccount else { return }
         popoverModel.accountOpenError = nil
+        if account.provider == "claude" {
+            guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.anthropic.claudefordesktop") else {
+                popoverModel.accountOpenError = Strings.t("profiles.error.launch")
+                return
+            }
+            popoverModel.openingAccount = true
+            popover.performClose(nil)
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.createsNewApplicationInstance = false
+            configuration.activates = true
+            NSWorkspace.shared.openApplication(at: url, configuration: configuration) { [weak self] application, error in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.popoverModel.openingAccount = false
+                    if error != nil || application == nil {
+                        self.popoverModel.accountOpenError = Strings.t("profiles.error.launch")
+                        self.showPopover()
+                    }
+                }
+            }
+            return
+        }
         guard account.provider == "codex" else { return }
         guard let profile = CodexDesktopProfile.forAccount(account.id, in: CodexProfilesModel.shared.profiles) else {
             popoverModel.accountOpenError = Strings.t("profiles.accountNotLinked")

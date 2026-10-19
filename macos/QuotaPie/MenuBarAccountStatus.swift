@@ -8,6 +8,8 @@ enum MenuBarAccountStatus {
         let message: String
         if !account.collection.isHealthy {
             switch account.collection.errorCategory ?? account.collection.health {
+            case "claude-code-unavailable": return Strings.t("collection.claude-code-unavailable")
+            case "access-denied": message = Strings.t("collection.access-denied")
             case "auth-required": message = Strings.t("menu.account.loginRequired")
             case "auth-expired": message = Strings.t("menu.account.loginExpired")
             default: message = Strings.t("menu.account.refreshNeeded")

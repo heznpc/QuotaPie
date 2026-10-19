@@ -193,6 +193,8 @@ export interface CollectionStateRow {
 export type CollectionErrorCategory =
   | "auth-required"
   | "auth-expired"
+  | "claude-code-unavailable"
+  | "access-denied"
   | "rate-limited"
   | "network"
   | "not-configured"

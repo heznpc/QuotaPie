@@ -7,8 +7,9 @@ export { mapClaudeUsage } from "../../packages/quota-core/src/claude-usage.js";
 
 // Reads the official usage endpoint using Claude Code's local OAuth
 // credentials. The token is read per call and never stored anywhere.
-// If only the desktop app is used, the status line never runs, which makes
-// this the primary source rather than a supplement.
+// Claude app sign-in is separate from this Code subscription connection.
+// Desktop activity has no status-line feed, so collection through this source
+// still requires the Code connection even when the Claude app is signed in.
 
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const BETA_HEADER = "oauth-2025-04-20";
@@ -17,6 +18,7 @@ const BETA_HEADER = "oauth-2025-04-20";
 // quota.json publication.
 const KEYCHAIN_TIMEOUT_MS = 3_000;
 const USAGE_TIMEOUT_MS = 10_000;
+const CODE_CONNECTION_UNAVAILABLE = "This collector uses Claude Code's subscription connection separately from Claude app sign-in. The Free plan does not support this collection method.";
 
 export interface ClaudeCredentialLookup {
   accessToken: string | null;
@@ -93,21 +95,23 @@ function parseCredentialPayload(raw: string): ClaudeCredentialLookup {
   }
   const oauth = (parsed as Record<string, unknown>)?.claudeAiOauth as Record<string, unknown> | undefined;
   if (!oauth) {
-    return { accessToken: null, error: "no claudeAiOauth block in credentials", errorCategory: "auth-required" };
+    return { accessToken: null, error: CODE_CONNECTION_UNAVAILABLE, errorCategory: "claude-code-unavailable" };
   }
   const token = oauth.accessToken;
-  if (typeof token !== "string" || token.length === 0) {
+  if (typeof token !== "string" || token.trim().length === 0) {
     return {
       accessToken: null,
-      error: "Claude credentials contain no access token — run `claude auth login` in a terminal",
-      errorCategory: "auth-required",
+      error: CODE_CONNECTION_UNAVAILABLE,
+      errorCategory: "claude-code-unavailable",
     };
   }
+  // subscriptionType can survive logout or a plan change. Only credentials
+  // and the endpoint response establish whether this connection can be used.
   const expiresAt = oauth.expiresAt;
   if (typeof expiresAt === "number" && expiresAt > 0 && expiresAt < Date.now() + 60_000) {
     return {
       accessToken: null,
-      error: "Claude login expired — run `claude` in a terminal to refresh",
+      error: "Claude Code credentials expired — refresh the Claude Code connection",
       errorCategory: "auth-expired",
     };
   }
@@ -155,18 +159,18 @@ function readFileCredentials(dir: string): ClaudeCredentialLookup {
   if (existsSync(file)) {
     try {
       return parseCredentialPayload(readFileSync(file, "utf8"));
-    } catch (error) {
+    } catch {
       return {
         accessToken: null,
-        error: `credentials file unreadable: ${String(error)}`,
+        error: "Claude Code credentials file could not be read",
         errorCategory: "provider-error",
       };
     }
   }
   return {
     accessToken: null,
-    error: "no Claude login found — run `claude auth login` in a terminal",
-    errorCategory: "auth-required",
+    error: CODE_CONNECTION_UNAVAILABLE,
+    errorCategory: "claude-code-unavailable",
   };
 }
 
@@ -233,15 +237,19 @@ export async function fetchClaudeUsage(
       },
       signal: AbortSignal.timeout(timeoutMs),
     });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new ClaudeUsageError(`usage endpoint unreachable: ${message}`, "network");
+  } catch {
+    // Fetch/JSON exceptions can include request headers or response fragments.
+    // Diagnostics must not retain tokens, provider bodies, or raw exceptions.
+    throw new ClaudeUsageError("usage endpoint unreachable", "network");
   }
-  if (response.status === 401 || response.status === 403) {
+  if (response.status === 401) {
     throw new ClaudeUsageError(
-      `usage endpoint rejected the login (HTTP ${response.status})`,
+      "usage endpoint rejected Claude Code credentials (HTTP 401)",
       "auth-expired",
     );
+  }
+  if (response.status === 403) {
+    throw new ClaudeUsageError("usage endpoint denied quota access (HTTP 403)", "access-denied");
   }
   if (response.status === 429) {
     throw new ClaudeUsageError("usage endpoint rate limited (HTTP 429)", "rate-limited");
@@ -251,7 +259,7 @@ export async function fetchClaudeUsage(
   }
   try {
     return await response.json();
-  } catch (error) {
-    throw new ClaudeUsageError(`usage response was not JSON: ${String(error)}`, "provider-error");
+  } catch {
+    throw new ClaudeUsageError("usage response was not JSON", "provider-error");
   }
 }

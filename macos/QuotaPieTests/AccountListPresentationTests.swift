@@ -60,6 +60,41 @@ final class AccountListPresentationTests: XCTestCase {
         }
     }
 
+    func testUnavailableClaudeCodeAndDeniedQuotaAreNotPresentedAsAppLoginFailures() throws {
+        for category in ["claude-code-unavailable", "access-denied"] {
+            let value = try account(provider: "claude", health: category, windows: [])
+            let title = try XCTUnwrap(MenuBarAccountStatus.title(for: value))
+            XCTAssertTrue(title.contains(Strings.t("collection." + category)))
+            XCTAssertFalse(title.contains(Strings.t("menu.account.loginRequired")))
+            XCTAssertFalse(title.contains(Strings.t("menu.account.refreshNeeded")))
+            XCTAssertNotNil(value.collection.accessExplanation)
+            XCTAssertNil(value.collection.recoveryCommand, "Unavailable quota access is not an instruction to authenticate again")
+            XCTAssertTrue(AccountListPresentation(account: value).visibleWindows.isEmpty)
+            XCTAssertNil(value.overviewWindow)
+        }
+        let expired = try account(provider: "claude", health: "attempted-then-failed", windows: [])
+        var collection = expired.collection
+        collection.errorCategory = "auth-expired"
+        XCTAssertEqual(collection.recoveryCommand, "claude auth login", "An explicitly expired Code connection retains its recovery command")
+        collection.errorCategory = "claude-code-unavailable"
+        XCTAssertNotNil(collection.accessExplanation, "Error category takes precedence over generic health")
+        XCTAssertNil(collection.recoveryCommand)
+    }
+
+    func testUnavailableClaudeAccessDoesNotResurrectCachedAllowanceRows() throws {
+        let previous = try window("five_hour", provider: "claude", seconds: 18_000, remaining: 98, freshness: "stale")
+        for category in ["claude-code-unavailable", "access-denied"] {
+            var value = try account(provider: "claude", health: "attempted-then-failed", windows: [previous])
+            value.collection.errorCategory = category
+            let presentation = AccountListPresentation(account: value)
+            XCTAssertNil(presentation.fiveHour)
+            XCTAssertNil(presentation.weekly)
+            XCTAssertTrue(presentation.visibleWindows.isEmpty)
+            XCTAssertEqual(presentation.additionalLimitCount, 0)
+            XCTAssertEqual(value.windows.count, 1, "The display projection does not delete historical observations")
+        }
+    }
+
     func testMenuWarningDistinguishesHealthyFreshQuotaFromUnusableReadings() throws {
         let fresh = try window("codex:primary", seconds: 18_000, remaining: 82)
         XCTAssertNil(MenuBarAccountStatus.title(for: try account(windows: [fresh])))

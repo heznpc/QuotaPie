@@ -34,6 +34,12 @@
 /* 수집 상태 */
 "collection.auth-required" = "로그인이 필요합니다";
 "collection.auth-expired" = "로그인이 만료됐습니다";
+"collection.claude-code-unavailable" = "Claude Code 연결 없음";
+"collection.access-denied" = "한도 조회 권한 없음";
+"collection.claude-code-unavailable.detail" = "Claude 앱 로그인만으로는 한도 수집이 연결되지 않습니다. QuotaPie의 현재 Claude 수집 경로는 Claude Code 연결이 필요하며 Free 플랜은 지원하지 않습니다.";
+"collection.access-denied.detail" = "현재 Claude Code 연결에는 한도 조회 권한이 없습니다. Claude 앱의 로그인 상태와는 별개입니다.";
+"collection.availability" = "수집 상태";
+"collection.openClaude" = "Claude 열기";
 "collection.rate-limited" = "한도 조회 요청이 제한됐습니다";
 "collection.network" = "네트워크에 연결할 수 없습니다";
 "collection.not-configured" = "수집이 설정되지 않았습니다";

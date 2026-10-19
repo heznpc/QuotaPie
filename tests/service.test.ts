@@ -470,20 +470,63 @@ describe("account state contract", () => {
     const nowMs = 10_000_000;
     new CollectionStore(db.storage).recordAttempt("claude", "default", "claude-statusline", nowMs - 1_000, null, null);
     new CollectionStore(db.storage).recordAttempt(
-      "claude", "default", "claude-oauth", nowMs, "no Claude login found", "auth-required",
+      "claude", "default", "claude-oauth", nowMs, "Claude Code connection unavailable", "claude-code-unavailable",
     );
+    db.ingestObservation({
+      provider: "claude", account: "default", bucket: "five_hour", label: "Claude 5h",
+      windowSeconds: 18_000, usedPercent: 12, resetsAtMs: nowMs + 3_600_000,
+      observedAtMs: nowMs - 1_000, source: "claude-statusline", quality: "authoritative",
+    }, config);
     const claude = service.accountStates(nowMs).find((state) => state.provider === "claude")!;
     // Account health follows the live source, while the failing source keeps
     // reporting its own cause.
     expect(claude.collection.health).toBe("recent-success");
     expect(claude.collection.activeSource).toBe("claude-statusline");
+    expect(claude.collection.errorCategory).toBeNull();
+    expect(claude.windows).toHaveLength(1);
+    expect(claude.windows[0]!.usedPercent).toBe(12);
     expect(claude.collection.sources.map((item) => item.source).sort()).toEqual([
       "claude-oauth",
       "claude-statusline",
     ]);
     expect(claude.collection.sources.find((item) => item.source === "claude-oauth")!.errorCategory)
-      .toBe("auth-required");
+      .toBe("claude-code-unavailable");
   });
+
+  for (const category of ["claude-code-unavailable", "access-denied"] as const) {
+    test(`${category} hides former Claude limits without deleting history and recovers after collection`, () => {
+      const db = new QuotaDatabase(":memory:");
+      const config = structuredClone(DEFAULT_CONFIG);
+      const service = new QuotaPieService(config, db);
+      const store = new CollectionStore(db.storage);
+      const nowMs = 10_000_000;
+      const observation = {
+        provider: "claude" as const, account: "default", bucket: "five_hour", label: "Claude 5h",
+        windowSeconds: 18_000, usedPercent: 81, resetsAtMs: nowMs + 3_600_000,
+        observedAtMs: nowMs - 1_000, source: "claude-oauth", quality: "authoritative" as const,
+      };
+      db.ingestObservation(observation, config);
+      store.recordAttempt("claude", "default", "claude-oauth", nowMs - 1_000, null, null);
+      store.recordAttempt("claude", "default", "claude-oauth", nowMs, "usage unavailable", category);
+      const unavailable = service.accountStates(nowMs).find(state => state.provider === "claude")!;
+      expect(unavailable.windows).toEqual([]);
+      expect(unavailable.bottleneckBucket).toBeNull();
+      expect(unavailable.updatedAtMs).toBeNull();
+      expect(service.quotaAccounts(nowMs).find(state => state.provider === "claude")!.windows).toEqual([]);
+      expect(service.statuses(nowMs).some(state => state.provider === "claude")).toBe(false);
+      expect(db.latest("claude", "default", "five_hour")?.usedPercent).toBe(81);
+      expect(service.analyses(nowMs).some(window => window.provider === "claude")).toBe(true);
+
+      db.ingestObservation({ ...observation, usedPercent: 10, observedAtMs: nowMs + 1_000 }, config);
+      store.recordAttempt("claude", "default", "claude-oauth", nowMs + 1_000, null, null);
+      const restored = service.accountStates(nowMs + 1_000).find(state => state.provider === "claude")!;
+      expect(restored.collection.errorCategory).toBeNull();
+      expect(restored.windows).toHaveLength(1);
+      expect(restored.windows[0]!.usedPercent).toBe(10);
+      expect(restored.updatedAtMs).toBe(nowMs + 1_000);
+      expect(service.statuses(nowMs + 1_000).find(state => state.provider === "claude")!.windows).toHaveLength(1);
+    });
+  }
 
   test("status-line samples are ignored while OAuth is authoritative", () => {
     const db = new QuotaDatabase(":memory:");
@@ -589,7 +632,8 @@ describe("collection isolation between providers", () => {
     expect(codex.windows).toHaveLength(1);
     const claude = states.find((state) => state.provider === "claude")!;
     expect(claude.collection.health).toBe("attempted-then-failed");
-    expect(claude.collection.errorCategory).toBe("auth-required");
+    expect(claude.collection.errorCategory).toBe("claude-code-unavailable");
+    expect(claude.windows).toEqual([]);
     // The failure reason carries no credential value.
     expect(claude.collection.errorDetail ?? "").not.toContain("Bearer");
   });

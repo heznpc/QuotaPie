@@ -104,6 +104,10 @@
         en: {
           "collection.auth-required": "Sign-in required",
           "collection.auth-expired": "Sign-in expired",
+          "collection.claude-code-unavailable": "Claude Code connection unavailable",
+          "collection.access-denied": "Usage access unavailable",
+          "collection.claude-code-unavailable.detail": "This collector uses Claude Code's subscription connection separately from Claude app sign-in. The Free plan does not support this collection method.",
+          "collection.access-denied.detail": "The current connection does not have permission to read quota usage.",
           "collection.rate-limited": "Provider rate limit reached",
           "collection.network": "Cannot reach the network",
           "collection.not-configured": "Collection is not configured",
@@ -205,6 +209,10 @@
         ko: {
           "collection.auth-required": "로그인이 필요합니다",
           "collection.auth-expired": "로그인이 만료됐습니다",
+          "collection.claude-code-unavailable": "Claude Code 연결 없음",
+          "collection.access-denied": "한도 조회 권한 없음",
+          "collection.claude-code-unavailable.detail": "Claude 앱 로그인과 별개로 Claude Code의 구독 연결을 사용합니다. Free 플랜은 이 수집 방식을 지원하지 않습니다.",
+          "collection.access-denied.detail": "현재 연결에는 한도 조회 권한이 없습니다.",
           "collection.rate-limited": "공급자 요청 한도에 걸렸습니다",
           "collection.network": "네트워크에 연결할 수 없습니다",
           "collection.not-configured": "수집이 설정되지 않았습니다",
@@ -519,10 +527,14 @@
           document.getElementById("providers").innerHTML = accounts.length
             ? accounts.map((account) => {
                 const label = escapeHtml(account.accountLabel ?? account.account);
+                const accessUnavailable = account.collection?.health !== "recent-success" &&
+                  ["claude-code-unavailable", "access-denied"].includes(account.collection?.errorCategory);
                 const notice = account.collection && account.collection.health !== "recent-success"
                   ? `<p class="notice">${escapeHtml(collectionText(account.collection))}</p>`
                   : "";
-                const windows = (account.windows ?? []).length
+                const windows = accessUnavailable
+                  ? `<p class="muted">${escapeHtml(t("collection." + account.collection.errorCategory + ".detail"))}</p>`
+                  : (account.windows ?? []).length
                   ? account.windows.map((window) => windowHtml(window, window.bucket === account.bottleneckBucket)).join("")
                   : `<p class="notice">${t("window.noWindows")}</p>`;
                 return `<article class="provider"><h2>${escapeHtml(account.provider)} · ${label}</h2>${notice}${windows}</article>`;

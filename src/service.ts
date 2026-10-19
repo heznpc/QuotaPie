@@ -1196,7 +1196,7 @@ export class QuotaPieService {
 
   statuses(nowMs = Date.now(), analysed?: WindowAnalysis[]): ProviderStatus[] {
     return groupStatuses(
-      analysed ?? this.analyses(nowMs),
+      this.accountStates(nowMs, analysed).flatMap(account => account.windows),
       (provider, account) => this.accountLabel(provider, account),
     ).sort((left, right) => {
       const providerDifference = (left.provider === "codex" ? 0 : 1) - (right.provider === "codex" ? 0 : 1);
@@ -1258,7 +1258,15 @@ export class QuotaPieService {
       const optedOut = profile.provider === "claude" &&
         !this.config.collection.claudeOAuthEnabled &&
         best == null;
-      const bottleneck = [...accountWindows].sort((left, right) =>
+      const errorCategory = best?.health === "recent-success"
+        ? null
+        : optedOut ? "not-configured" : failing?.errorCategory ?? null;
+      // A lost Code connection cannot describe the desktop app's current plan.
+      // Keep history in storage, but don't present its former limits as current.
+      const visibleWindows = profile.provider === "claude" &&
+        (errorCategory === "claude-code-unavailable" || errorCategory === "access-denied")
+        ? [] : accountWindows;
+      const bottleneck = [...visibleWindows].sort((left, right) =>
         right.bottleneckScore - left.bottleneckScore
       )[0];
       return {
@@ -1273,11 +1281,7 @@ export class QuotaPieService {
           lastSuccessAtMs: best?.lastSuccessAtMs ?? null,
           // For a healthy account, a past error on the fallback source is not
           // worth surfacing.
-          errorCategory: best?.health === "recent-success"
-            ? null
-            : optedOut
-              ? "not-configured"
-              : failing?.errorCategory ?? null,
+          errorCategory,
           errorDetail: best?.health === "recent-success"
             ? null
             : optedOut
@@ -1285,10 +1289,10 @@ export class QuotaPieService {
               : failing?.errorDetail ?? null,
           sources,
         },
-        windows: accountWindows,
+        windows: visibleWindows,
         bottleneckBucket: bottleneck?.bucket ?? null,
-        updatedAtMs: accountWindows.length
-          ? Math.max(...accountWindows.map((window) => window.observedAtMs))
+        updatedAtMs: visibleWindows.length
+          ? Math.max(...visibleWindows.map((window) => window.observedAtMs))
           : null,
       };
     });

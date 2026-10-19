@@ -205,12 +205,14 @@ final class PopoverModel: ObservableObject {
     }
 
     var measurementDate: Date? {
+        guard selectedAccount?.collection.hasUnavailableQuotaAccess != true else { return nil }
         guard let ms = selectedAccount?.overviewWindow?.observedAtMs ?? selectedAccount?.collection.lastSuccessAtMs,
               ms > 0, ms.isFinite else { return nil }
         return Date(timeIntervalSince1970: ms / 1_000)
     }
 
     var displayedMeasurementDate: Date? {
+        guard displayedAccount?.collection.hasUnavailableQuotaAccess != true else { return nil }
         guard let ms = displayedAccount?.overviewWindow?.observedAtMs ?? displayedAccount?.collection.lastSuccessAtMs,
               ms > 0, ms.isFinite else { return nil }
         return Date(timeIntervalSince1970: ms / 1_000)

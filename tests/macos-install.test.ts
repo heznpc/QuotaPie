@@ -435,6 +435,18 @@ test("prebuilt installation preserves config, credentials and data, pins paths a
   } finally { f.close(); }
 });
 
+for (const errorCategory of ["claude-code-unavailable", "access-denied"]) {
+  test(`Claude ${errorCategory} is a connection setup state after installation`, async () => {
+    const f = fixture();
+    const read = f.deps.json!;
+    f.deps.json = async (url, options) => url.endsWith("/health")
+      ? { ok: false, accounts: [{ health: "attempted-then-failed", errorCategory }] }
+      : read(url, options);
+    try { expect((await f.run()).collection).toBe("setup-needed"); }
+    finally { f.close(); }
+  });
+}
+
 test("build failure leaves the running installation and exact plists intact", async () => {
   const f = fixture();
   const before = f.agents.map(path => readFileSync(path, "utf8"));

@@ -231,6 +231,16 @@ const CATALOG = {
   // Collection state, phrased as something to act on.
   "collection.auth-required": { en: () => "Sign-in required", ko: () => "로그인이 필요합니다" },
   "collection.auth-expired": { en: () => "Sign-in expired", ko: () => "로그인이 만료됐습니다" },
+  "collection.claude-code-unavailable": { en: () => "Claude Code not connected", ko: () => "Claude Code 연결 없음" },
+  "collection.claude-code-unavailable.detail": {
+    en: () => "This collector uses Claude Code's subscription connection separately from Claude app sign-in. The Free plan does not support this collection method.",
+    ko: () => "Claude 앱 로그인과 별개로 Claude Code의 구독 연결을 사용합니다. Free 플랜은 이 수집 방식을 지원하지 않습니다.",
+  },
+  "collection.access-denied": { en: () => "Quota access denied", ko: () => "한도 조회 권한 없음" },
+  "collection.access-denied.detail": {
+    en: () => "The current connection does not have permission to read quota usage.",
+    ko: () => "현재 연결에는 한도 조회 권한이 없습니다.",
+  },
   "collection.rate-limited": { en: () => "Quota lookup requests are rate limited", ko: () => "한도 조회 요청이 제한됐습니다" },
   "collection.network": { en: () => "Cannot reach the network", ko: () => "네트워크에 연결할 수 없습니다" },
   "collection.not-configured": { en: () => "Collection is not configured", ko: () => "수집이 설정되지 않았습니다" },
@@ -527,6 +537,7 @@ Environment:
     ko: () => `Codex 로그인을 격리하려면 각 CODEX_HOME/config.toml에 cli_auth_credentials_store = "file"을 설정하세요.`,
   },
   "cli.doctor.check.config": { en: () => "config", ko: () => "설정" },
+  "cli.doctor.check.claude-code-connection": { en: () => "Claude Code connection", ko: () => "Claude Code 연결" },
   "cli.doctor.check.codex-binary": { en: () => "codex binary", ko: () => "Codex 실행 파일" },
   "cli.doctor.check.codex-rate-limits": {
     en: (p) => `codex rate limits [${p.account}]`,

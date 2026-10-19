@@ -47,7 +47,7 @@ describe("message catalog", () => {
 
   test("every collection state has a sentence in every locale", () => {
     const keys = [
-      "auth-required", "auth-expired", "rate-limited", "network", "not-configured",
+      "auth-required", "auth-expired", "claude-code-unavailable", "access-denied", "rate-limited", "network", "not-configured",
       "isolation-unsafe", "provider-error", "no-windows",
       "never-attempted", "stale-success", "attempted-then-failed", "recent-success",
     ] as const;
@@ -55,6 +55,20 @@ describe("message catalog", () => {
       for (const locale of LOCALES) {
         expect(t(`collection.${key}`, {}, locale)).not.toBe(`collection.${key}`);
       }
+    }
+  });
+
+  test("Claude Code connection copy distinguishes collection support from app sign-in", () => {
+    expect(t("collection.claude-code-unavailable", {}, "ko")).toBe("Claude Code 연결 없음");
+    expect(t("collection.access-denied", {}, "ko")).toBe("한도 조회 권한 없음");
+    expect(t("collection.claude-code-unavailable.detail", {}, "ko")).toBe(
+      "Claude 앱 로그인과 별개로 Claude Code의 구독 연결을 사용합니다. Free 플랜은 이 수집 방식을 지원하지 않습니다.",
+    );
+    expect(t("collection.claude-code-unavailable.detail", {}, "en")).toContain("separately from Claude app sign-in");
+    expect(t("collection.access-denied.detail", {}, "ko")).toBe("현재 연결에는 한도 조회 권한이 없습니다.");
+    for (const locale of LOCALES) {
+      expect(t("collection.access-denied.detail", {}, locale)).not.toContain("Free");
+      expect(t("cli.doctor.check.claude-code-connection", {}, locale)).not.toBe("cli.doctor.check.claude-code-connection");
     }
   });
 

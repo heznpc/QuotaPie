@@ -81,7 +81,8 @@ struct DetailsView: View {
                         recovery: payload.resetTracking?.accounts.first { $0.provider == account.provider && $0.account == account.account },
                         transportUnavailable: model.lastError != nil,
                         onOpenConfig: actions.openConfig,
-                        onCopyCommand: actions.copyCommand
+                        onCopyCommand: actions.copyCommand,
+                        onOpenAccount: account.provider == "claude" ? { actions.openAccount(account) } : nil
                     )
                     Divider()
                 }

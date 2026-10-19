@@ -148,3 +148,23 @@ test("health checks use current collection evidence without scanning quota histo
     expect(health.degraded).toEqual([expect.objectContaining({provider:"claude",health:"never-attempted"})]);
   } finally { server.stop(true); await service.close(); }
 });
+
+test("current and compatibility endpoints omit unavailable Claude limits while preserving their history", async () => {
+  const config = structuredClone(DEFAULT_CONFIG); config.dashboard.port = 0;
+  const db = new QuotaDatabase(":memory:"), service = new QuotaPieService(config, db);
+  const now = Date.now();
+  db.ingestObservation({ provider: "claude", account: "default", bucket: "five_hour", label: "5h", windowSeconds: 18_000,
+    usedPercent: 81, resetsAtMs: now + 3_600_000, observedAtMs: now - 1_000, source: "claude-oauth", quality: "authoritative" }, config);
+  service.collection.recordAttempt("claude", "default", "claude-oauth", now, "Code connection unavailable", "claude-code-unavailable");
+  const server = startDashboard(service, config);
+  try {
+    for (const endpoint of ["/api/quota", "/api/status"]) {
+      const reply: any = await (await fetch(`http://127.0.0.1:${server.port}${endpoint}`)).json();
+      expect(reply.accounts.find((a: any) => a.provider === "claude")).toMatchObject({
+        windows: [], bottleneckBucket: null, updatedAtMs: null, collection: { errorCategory: "claude-code-unavailable" },
+      });
+      if (endpoint === "/api/status") expect(reply.statuses.some((a: any) => a.provider === "claude")).toBe(false);
+    }
+    expect(db.latest("claude", "default", "five_hour")?.usedPercent).toBe(81);
+  } finally { server.stop(true); await service.close(); }
+});

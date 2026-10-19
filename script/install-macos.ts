@@ -456,7 +456,7 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
     const accounts = Array.isArray(health?.accounts) ? health.accounts : [];
     const collection = health?.ok === true && accounts.length > 0 && accounts.every((a: any) => a?.health === "recent-success") ? "ready"
       : !health ? "unverified" : !accounts.length || accounts.some((a: any) => a?.health === "never-attempted"
-        || ["auth-required", "auth-expired", "not-configured"].includes(a?.errorCategory)) ? "setup-needed" : "degraded";
+        || ["auth-required", "auth-expired", "not-configured", "claude-code-unavailable", "access-denied"].includes(a?.errorCategory)) ? "setup-needed" : "degraded";
     if(managerSnapshot && (managerFile(relayManager)!==managerSnapshot.replacement || managerFile(relayWrapper)!==managerSnapshot.wrapper))
       throw new Error("The installed relay manager changed during startup verification.");
     maintenance?.assertHeldAndIdle();

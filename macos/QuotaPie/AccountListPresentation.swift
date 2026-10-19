@@ -9,6 +9,13 @@ struct AccountListPresentation {
     let additionalLimitCount: Int
 
     init(account: AccountState) {
+        guard !account.collection.hasUnavailableQuotaAccess else {
+            fiveHour = nil
+            weekly = nil
+            visibleWindows = []
+            additionalLimitCount = 0
+            return
+        }
         let general = account.windows.filter { window in
             switch account.provider {
             case "codex": return window.bucket.hasPrefix("codex:")

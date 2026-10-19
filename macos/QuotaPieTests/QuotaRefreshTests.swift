@@ -292,6 +292,63 @@ final class QuotaRefreshTests: XCTestCase {
         XCTAssertEqual(saved.accounts[0].collection.health, "stale-success")
     }
 
+    func testStartupCachePreservesUnavailableQuotaAccessAndRemovesHistoricalAllowanceOnSaveAndLoad() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("quota.json")
+        let cache = QuotaSnapshotCache(endpoint: "http://127.0.0.1:1", url: file)
+        for category in ["claude-code-unavailable", "access-denied"] {
+            let oldWindow: [String: Any] = ["provider": "claude", "account": "fixture", "bucket": "five_hour",
+                "label": "5h", "windowSeconds": 18000, "freshness": "fresh", "observedAtMs": 900, "remainingPercent": 98]
+            let account: [String: Any] = ["provider": "claude", "account": "fixture", "accountLabel": "Fixture", "enabled": true,
+                "collection": ["health": "attempted-then-failed", "errorCategory": category, "errorDetail": "private-error"],
+                "windows": [oldWindow], "bottleneckBucket": "five_hour", "updatedAtMs": 900]
+            let live = try JSONDecoder().decode(StatusPayload.self, from: JSONSerialization.data(withJSONObject:
+                ["nowMs": 1000, "accounts": [account]]))
+            try cache.save(live)
+            let onDisk = try JSONDecoder().decode(StatusPayload.self, from: Data(contentsOf: file))
+            XCTAssertEqual(onDisk.accounts[0].collection.errorCategory, category)
+            XCTAssertTrue(onDisk.accounts[0].windows.isEmpty)
+            XCTAssertNil(onDisk.accounts[0].bottleneckBucket)
+            XCTAssertNil(onDisk.accounts[0].updatedAtMs)
+            XCTAssertNil(onDisk.accounts[0].collection.errorDetail)
+            XCTAssertEqual(live.accounts[0].windows.count, 1, "Saving a display cache leaves the live observation unchanged")
+
+            // A cache from an older client may still contain historical windows;
+            // reading must enforce the same projection independently of saving.
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+            var historical = account
+            historical["collection"] = ["health": "recent-success", "errorCategory": category]
+            object["accounts"] = [historical]
+            try JSONSerialization.data(withJSONObject: object).write(to: file)
+            let loaded = try XCTUnwrap(cache.load())
+            let restored = try XCTUnwrap(loaded.accounts.first)
+            XCTAssertEqual(restored.collection.errorCategory, category)
+            XCTAssertFalse(restored.collection.isHealthy)
+            XCTAssertNotNil(restored.collection.accessExplanation)
+            XCTAssertNil(restored.collection.recoveryCommand)
+            XCTAssertTrue(restored.windows.isEmpty)
+            XCTAssertNil(restored.bottleneckBucket)
+            XCTAssertNil(restored.updatedAtMs)
+            XCTAssertNil(restored.overviewWindow)
+        }
+    }
+
+    func testUnavailableCodeConnectionDoesNotLabelHistoricalSuccessAsCurrentMeasurement() throws {
+        let model = PopoverModel()
+        for category in ["claude-code-unavailable", "access-denied"] {
+            let payload = try JSONDecoder().decode(StatusPayload.self, from: JSONSerialization.data(withJSONObject: [
+                "accounts": [["provider": "claude", "account": "fixture", "accountLabel": "Fixture", "enabled": true,
+                    "collection": ["health": "attempted-then-failed", "errorCategory": category, "lastSuccessAtMs": 1000],
+                    "windows": []]],
+            ]))
+            model.applyQuota(payload)
+            model.showAccount(try XCTUnwrap(model.payload?.accounts.first))
+            XCTAssertNil(model.measurementDate)
+            XCTAssertNil(model.displayedMeasurementDate)
+        }
+    }
+
     func testSupersededQuotaCallbackCannotFinishTheReplacementRequest() throws {
         let gate = QuotaRequestGate()
         let first = try XCTUnwrap(gate.begin())

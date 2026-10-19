@@ -34,6 +34,12 @@
 /* Collection health */
 "collection.auth-required" = "Sign-in required";
 "collection.auth-expired" = "Sign-in expired";
+"collection.claude-code-unavailable" = "Claude Code not connected";
+"collection.access-denied" = "Quota access unavailable";
+"collection.claude-code-unavailable.detail" = "Signing in to the Claude app does not connect quota collection. QuotaPie's current Claude collection path requires a Claude Code connection and does not support the Free plan.";
+"collection.access-denied.detail" = "The current Claude Code connection lacks permission to read quota. This is separate from signing in to the Claude app.";
+"collection.availability" = "Collection status";
+"collection.openClaude" = "Open Claude";
 "collection.rate-limited" = "Quota lookup requests are rate limited";
 "collection.network" = "Cannot reach the network";
 "collection.not-configured" = "Collection is not configured";

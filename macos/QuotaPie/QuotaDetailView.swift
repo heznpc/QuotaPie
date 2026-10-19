@@ -6,6 +6,7 @@ struct AccountSection: View {
     let transportUnavailable: Bool
     let onOpenConfig: () -> Void
     let onCopyCommand: (String) -> Void
+    var onOpenAccount: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -24,7 +25,14 @@ struct AccountSection: View {
                         .help(account.collection.actionText)
                 }
             }
-            if account.windows.isEmpty || !account.collection.isHealthy {
+            if account.collection.accessExplanation != nil {
+                CollectionAccessNotice(collection: account.collection)
+                if let onOpenAccount {
+                    Button(action: onOpenAccount) {
+                        Label(Strings.t("collection.openClaude"), systemImage: "arrow.up.forward.app")
+                    }.buttonStyle(.bordered).controlSize(.small)
+                }
+            } else if account.windows.isEmpty || !account.collection.isHealthy {
                 Label(account.windows.isEmpty && account.collection.isHealthy ? Strings.t("popover.noWindows") : account.collection.actionText,
                       systemImage: "exclamationmark.circle")
                     .font(.caption).foregroundStyle(account.collection.isHealthy ? Color.secondary : Color.orange)
@@ -50,7 +58,7 @@ struct AccountSection: View {
                     .padding(.top, 6)
                 }.font(.caption)
             }
-            if !account.collection.isHealthy && !account.windows.isEmpty {
+            if account.collection.accessExplanation == nil && !account.collection.isHealthy && !account.windows.isEmpty {
                 Text(Strings.t("account.previousReadings")).font(.caption2).foregroundStyle(.secondary)
             }
             ForEach(primaryAndAttentionWindows) { window in quotaRow(window) }
@@ -61,7 +69,7 @@ struct AccountSection: View {
                     }.padding(.top, 8)
                 }.font(.caption)
             }
-            if let recovery {
+            if account.collection.accessExplanation == nil, let recovery {
                 AccountRecoveryView(account: recovery, transportUnavailable: transportUnavailable)
             }
         }
@@ -74,7 +82,8 @@ struct AccountSection: View {
     }
 
     private var orderedWindows: [QuotaWindow] {
-        account.windows.sorted { left, right in
+        guard account.collection.accessExplanation == nil else { return [] }
+        return account.windows.sorted { left, right in
             let leftPrimary = left.bucket.hasPrefix("codex:")
             let rightPrimary = right.bucket.hasPrefix("codex:")
             if leftPrimary != rightPrimary { return leftPrimary }
@@ -98,6 +107,26 @@ struct AccountSection: View {
 
     private func quotaRow(_ window: QuotaWindow) -> some View {
         WindowRow(window: window, current: !transportUnavailable && account.collection.isHealthy && window.freshness == "fresh")
+    }
+}
+
+/// Keep the unsupported collection path visible instead of showing an empty
+/// quota card or making a desktop app login look like a Code login failure.
+struct CollectionAccessNotice: View {
+    let collection: CollectionState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(collection.actionText, systemImage: "info.circle")
+                .font(.system(size: 12, weight: .medium))
+            if let explanation = collection.accessExplanation {
+                Text(explanation).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("collection.accessNotice." + (collection.errorCategory ?? collection.health))
     }
 }
 

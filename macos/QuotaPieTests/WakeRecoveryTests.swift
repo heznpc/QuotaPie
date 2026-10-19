@@ -40,6 +40,21 @@ final class WakeRecoveryTests: XCTestCase {
         XCTAssertFalse(polling.isActive(uptime:10.6))
     }
 
+    func testClaudeCodeUnavailableAndAccessDeniedDoNotHoldCodexRecoveryPolling() throws {
+        for category in ["claude-code-unavailable", "access-denied"] {
+            let before = try status([1000,1000,100])
+            var polling = QuotaRecoveryPolling()
+            polling.begin(payload: before, atMs: 2000, uptime: 10)
+            var after = try status([2500,2500,100])
+            after.accounts[2].collection.health = "attempted-then-failed"
+            after.accounts[2].collection.errorCategory = category
+            after.accounts[2].windows = []
+            XCTAssertTrue(polling.observe(after, uptime: 10.5), "Unavailable Claude collection cannot delay fresh Codex accounts")
+            XCTAssertFalse(polling.isActive(uptime: 10.6))
+            XCTAssertEqual(after.accounts[2].collection.errorCategory, category)
+        }
+    }
+
     func testFailedCollectionHasBoundedFastPollingAndNoCacheOnlyCompletion() throws {
         var polling = QuotaRecoveryPolling()
         polling.begin(payload:nil,atMs:2000,uptime:10)

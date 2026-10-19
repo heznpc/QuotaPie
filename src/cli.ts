@@ -601,6 +601,13 @@ async function main(): Promise<number> {
               detail: t("cli.doctor.login-instruction", {}, outputLocale),
             });
           }
+          if (!healthy && (oauth?.errorCategory === "claude-code-unavailable" || oauth?.errorCategory === "access-denied")) {
+            checks.push({
+              check: t("cli.doctor.check.claude-code-connection", { account: account.account }, outputLocale),
+              ok: false,
+              detail: t(`collection.${oauth.errorCategory}.detail`, {}, outputLocale),
+            });
+          }
           // With OAuth off, the status line is the only path left, so report
           // whether the hook is configured — otherwise the user cannot tell
           // which of the two routes to take.

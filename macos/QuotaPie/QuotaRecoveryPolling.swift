@@ -44,7 +44,7 @@ struct QuotaRecoveryPolling {
     }
 
     private static func canCollect(_ account: AccountState) -> Bool {
-        let requiresSetup = ["auth-required", "auth-expired", "not-configured", "isolation-unsafe"]
+        let requiresSetup = ["auth-required", "auth-expired", "not-configured", "isolation-unsafe", "claude-code-unavailable", "access-denied"]
         return account.enabled && !requiresSetup.contains(account.collection.errorCategory ?? account.collection.health)
     }
 

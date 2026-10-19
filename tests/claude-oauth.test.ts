@@ -92,20 +92,51 @@ describe("claude oauth credential lookup", () => {
     expect(keychainServiceCandidates("/tmp/whatever", "Custom-credentials")).toEqual(["Custom-credentials"]);
   });
 
-  test("a profile directory without credentials reports auth-required, not a crash", () => {
+  test("missing Code credentials do not imply the Claude app is signed out", async () => {
     const dir = mkdtempSync(join(tmpdir(), "tq-claude-"));
     const lookup = readClaudeCredentials(dir, null, missingKeychain);
     expect(lookup.accessToken).toBeNull();
-    expect(lookup.errorCategory).toBe("auth-required");
+    expect(lookup.errorCategory).toBe("claude-code-unavailable");
+    expect(lookup.error).toContain("separately from Claude app sign-in");
+    expect(await readClaudeCredentialsAsync(dir, null, {
+      platform: "darwin", keychainLookup: async () => ({exitCode: 44, stdout: Buffer.alloc(0)}),
+    })).toEqual(lookup);
   });
 
-  test("an empty token in the credentials file is auth-required rather than a bearer of nothing", () => {
+  test("absent or empty Code OAuth credentials are unavailable regardless of leftover plan metadata", async () => {
     const dir = mkdtempSync(join(tmpdir(), "tq-claude-"));
-    writeFileSync(join(dir, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "" } }));
-    const lookup = readClaudeCredentials(dir, null, missingKeychain);
-    expect(lookup.accessToken).toBeNull();
-    expect(lookup.errorCategory).toBe("auth-required");
-    expect(lookup.error).toContain("no access token");
+    for (const subscriptionType of ["max", "free", "unknown", undefined]) {
+      for (const payload of [{subscriptionType}, {claudeAiOauth: {subscriptionType}},
+        {claudeAiOauth: {subscriptionType, accessToken: "", refreshToken: "", expiresAt: 0}},
+        {claudeAiOauth: {subscriptionType, accessToken: " \t", expiresAt: 0}}]) {
+        const raw = JSON.stringify(payload);
+        writeFileSync(join(dir, ".credentials.json"), raw);
+        for (const useKeychain of [false, true]) {
+          const options = {platform: "darwin" as const, keychainLookup: () =>
+            useKeychain ? {exitCode: 0, stdout: Buffer.from(raw)} : missingKeychain.keychainLookup()};
+          const result = readClaudeCredentials(dir, null, options);
+          expect(result.accessToken).toBeNull();
+          expect(result.errorCategory).toBe("claude-code-unavailable");
+          expect(result.error).toContain("separately from Claude app sign-in");
+          expect(await readClaudeCredentialsAsync(dir, null, {
+            ...options, keychainLookup: async () => options.keychainLookup(),
+          })).toEqual(result);
+        }
+      }
+    }
+  });
+
+  test("a valid token is not blocked by stale or unknown subscription metadata", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tq-claude-"));
+    for (const subscriptionType of ["max", "free", "unknown", undefined]) {
+      const raw = JSON.stringify({claudeAiOauth: {accessToken: "valid-fixture-token", subscriptionType, expiresAt: Date.now() + 3_600_000}});
+      writeFileSync(join(dir, ".credentials.json"), raw);
+      const result = readClaudeCredentials(dir, null, missingKeychain);
+      expect(result).toEqual({accessToken: "valid-fixture-token", error: null, errorCategory: null});
+      expect(await readClaudeCredentialsAsync(dir, null, {
+        platform: "darwin", keychainLookup: async () => ({exitCode: 0, stdout: Buffer.from(raw)}),
+      })).toEqual(result);
+    }
   });
 
   test("an expired token is reported as expired so the fix differs from first login", () => {
@@ -252,9 +283,26 @@ describe("claude usage fetch failure categories", () => {
   const ok = (body: unknown, status = 200) =>
     (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch;
 
-  test("a rejected login is auth-expired, not a generic provider error", async () => {
+  test("401 expires Code credentials while 403 reports missing quota permission", async () => {
     await expect(fetchClaudeUsage("t", ok({}, 401))).rejects.toMatchObject({ category: "auth-expired" });
-    await expect(fetchClaudeUsage("t", ok({}, 403))).rejects.toMatchObject({ category: "auth-expired" });
+    await expect(fetchClaudeUsage("t", ok({}, 403))).rejects.toMatchObject({ category: "access-denied" });
+  });
+
+  test("failure diagnostics never expose tokens, response bodies or raw exception text", async () => {
+    const secret = "private-token-or-response-body";
+    const attempts = [
+      {fetch: ok({private: secret}, 401), category: "auth-expired"},
+      {fetch: ok({private: secret}, 403), category: "access-denied"},
+      {fetch: (async () => {throw new Error(secret);}) as unknown as typeof fetch, category: "network"},
+      {fetch: (async () => new Response(secret)) as unknown as typeof fetch, category: "provider-error"},
+    ];
+    for (const attempt of attempts) {
+      let failure: Error | undefined;
+      try { await fetchClaudeUsage(secret, attempt.fetch); }
+      catch (error) { failure = error as Error; }
+      expect(failure).toMatchObject({category: attempt.category});
+      expect(failure!.message).not.toContain(secret);
+    }
   });
 
   test("provider throttling is its own category so the UI can say so", async () => {

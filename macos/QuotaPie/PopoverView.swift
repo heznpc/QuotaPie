@@ -283,32 +283,39 @@ struct PopoverView: View {
                 }
                 accountIdentity
                 Spacer(minLength: 4)
-                if let account = model.displayedAccount, account.provider == "codex" {
+                if let account = model.displayedAccount, account.provider == "codex" || account.provider == "claude" {
                     Button { actions.openAccount(account) } label: {
                         Image(systemName: "arrow.up.forward.app").frame(width: 24, height: 24)
                     }
                     .buttonStyle(.borderless).disabled(model.openingAccount)
-                    .help(Strings.t("profiles.openAccount", account.accountLabel))
-                    .accessibilityLabel(Strings.t("profiles.openAccount", account.accountLabel))
+                    .help(account.provider == "claude" ? Strings.t("collection.openClaude") : Strings.t("profiles.openAccount", account.accountLabel))
+                    .accessibilityLabel(account.provider == "claude" ? Strings.t("collection.openClaude") : Strings.t("profiles.openAccount", account.accountLabel))
                 }
             }
             HStack {
-                Text(Strings.t("accounts.list.remaining")).font(.caption).foregroundStyle(.secondary)
+                Text(Strings.t(model.displayedAccount?.collection.accessExplanation == nil ? "accounts.list.remaining" : "collection.availability"))
+                    .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 detailButton("overview.quotaDetail", section: .quota)
             }
             if let account = model.displayedAccount {
-                AccountOverviewQuota(account: account,
-                    current: !model.showingStartupCache && model.lastError == nil && account.collection.isHealthy)
-                if model.showingStartupCache {
-                    Text(Strings.t("collection.previousReading")).font(.caption).foregroundStyle(.secondary)
-                } else if model.payload?.collection?.refreshing == true {
-                    Label(Strings.t("collection.refreshing"), systemImage: "arrow.triangle.2.circlepath")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else if let measured = model.displayedMeasurementDate {
-                    Text(Strings.t("accounts.list.measured", DisplayFormat.age(since: measured)))
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .help(Strings.t("collection.measuredAt", measured.formatted(date: .abbreviated, time: .shortened)))
+                if account.collection.accessExplanation != nil {
+                    CollectionAccessNotice(collection: account.collection)
+                } else {
+                    AccountOverviewQuota(account: account,
+                        current: !model.showingStartupCache && model.lastError == nil && account.collection.isHealthy)
+                }
+                if account.collection.accessExplanation == nil {
+                    if model.showingStartupCache {
+                        Text(Strings.t("collection.previousReading")).font(.caption).foregroundStyle(.secondary)
+                    } else if model.payload?.collection?.refreshing == true {
+                        Label(Strings.t("collection.refreshing"), systemImage: "arrow.triangle.2.circlepath")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if let measured = model.displayedMeasurementDate {
+                        Text(Strings.t("accounts.list.measured", DisplayFormat.age(since: measured)))
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .help(Strings.t("collection.measuredAt", measured.formatted(date: .abbreviated, time: .shortened)))
+                    }
                 }
                 if let message = model.collectionRequestError, model.lastError == nil {
                     Text(message).font(.caption).foregroundStyle(.orange)
@@ -323,7 +330,7 @@ struct PopoverView: View {
                           systemImage: "exclamationmark.circle")
                         .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                 }
-                if !account.collection.isHealthy && !(model.lastError != nil &&
+                if account.collection.accessExplanation == nil && !account.collection.isHealthy && !(model.lastError != nil &&
                     ["network", "stale-success", "attempted-then-failed"].contains(account.collection.errorCategory ?? account.collection.health)) {
                     Button { showDetails(.quota) } label: {
                         Label(account.collection.actionText + (model.lastError == nil && !account.windows.isEmpty ?
@@ -332,7 +339,7 @@ struct PopoverView: View {
                             .font(.caption).foregroundStyle(.orange).multilineTextAlignment(.leading)
                     }.buttonStyle(.plain)
                 }
-                if account.windows.isEmpty {
+                if account.windows.isEmpty && account.collection.accessExplanation == nil {
                     Text(Strings.t("popover.noWindows")).font(.caption).foregroundStyle(.secondary)
                 }
             } else {

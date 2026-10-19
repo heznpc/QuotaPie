@@ -689,10 +689,24 @@ struct CollectionState: Codable {
 
     var isHealthy: Bool { health == "recent-success" }
 
+    var hasUnavailableQuotaAccess: Bool {
+        ["claude-code-unavailable", "access-denied"].contains(errorCategory ?? health)
+    }
+
     /// Phrased as something the user can act on. The raw provider error is kept
     /// as supporting detail only.
     var actionText: String {
         Strings.t("collection.\(errorCategory ?? health)")
+    }
+
+    /// An app session and the Claude Code quota connection are independent.
+    /// This explains collection support without guessing the account's plan.
+    var accessExplanation: String? {
+        switch errorCategory ?? health {
+        case "claude-code-unavailable": return Strings.t("collection.claude-code-unavailable.detail")
+        case "access-denied": return Strings.t("collection.access-denied.detail")
+        default: return nil
+        }
     }
 
     /// A concrete recovery command is offered only when a login is what is missing.

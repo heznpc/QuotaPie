@@ -192,6 +192,28 @@ describe("dashboard automatic quota resumption", () => {
 });
 
 describe("dashboard localization", () => {
+  test("unavailable Claude collection explains the Code connection without old quota cards or login prompts", async () => {
+    for (const category of ["claude-code-unavailable", "access-denied"]) {
+      const payload = statusPayload();
+      Object.assign(payload.accounts[0]!.collection, { health: "attempted-then-failed", errorCategory: category });
+      // A late/cached consumer may still carry old windows: the notice must win.
+      for (const language of ["en-US", "ko-KR"]) {
+        const page = await render(language, payload);
+        const html = page.element("providers").innerHTML;
+        expect(html).not.toContain("28.0");
+        expect(html).not.toContain("claude auth login");
+        expect(html).not.toContain(language === "ko-KR" ? "로그인이 필요" : "Sign-in required");
+        if (category === "claude-code-unavailable") {
+          expect(html).toContain("Free");
+          expect(html).toContain("Claude Code");
+        } else {
+          expect(html).toContain(language === "ko-KR" ? "한도 조회 권한" : "permission to read quota usage");
+          expect(html).not.toContain("Free");
+        }
+      }
+    }
+  });
+
   test("speed controls hide analysis when absent or off, then show reserve timing when on", async () => {
     const payload = statusPayload();
     const window = payload.accounts[0]!.windows[0]!;
