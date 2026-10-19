@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { DEFAULT_CONFIG } from "../src/config";
 import { QuotaResumeEvidenceUnavailableError, readQuotaResumeEvidence } from "../src/quota-resume/evidence";
 import type { CodexThreadTurnSummary } from "../src/providers/codex-appserver";
@@ -212,6 +213,64 @@ test("truncated records and bounded tails missing the turn start fail closed", a
 test("rollout metadata must match the requested thread", async () => {
   const f = fixture(); f.records[0] = record("session_meta", { id: turnId }); f.save();
   expect(await f.read()).toBeNull(); expect(f.reads).toBe(0);
+});
+
+test("ordinary conversation scans let timers run before the whole page completes", async () => {
+  const f = fixture();
+  // No host validation awaits can rescue the loop: every scan is an ordinary
+  // completed conversation, as in an enabled account's newest/history pages.
+  f.records.splice(4, 0, ...Array.from({length: 32}, () => record("response_item",
+    {type: "message", role: "assistant", content: "x".repeat(32 * 1024)})));
+  f.records.at(-1)!.payload = {type: "task_complete", turn_id: turnId}; f.save();
+  let completed = 0, ticksDuringScan = 0;
+  const timer = setInterval(() => { if (completed < 100) ticksDuringScan++; }, 1);
+  try {
+    for (; completed < 100; completed++) expect(await f.read()).toBeNull();
+  } finally { clearInterval(timer); }
+  expect(ticksDuringScan).toBeGreaterThan(5);
+  expect(f.reads).toBe(0);
+});
+
+test("one large bounded record preserves evidence and permits queued local work", async () => {
+  const f = fixture();
+  f.records.splice(4, 0, record("response_item", {type: "message", role: "assistant", content: "x".repeat(8 * 1024 * 1024)}));
+  f.save();
+  let yielded = false;
+  const pending = yieldToEventLoop().then(() => { yielded = true; });
+  expect(await f.read()).toMatchObject({threadId, turnId, failedAtMs: failedAt});
+  expect(yielded).toBe(true); await pending;
+  expect(f.reads).toBe(1);
+});
+
+test("changes during asynchronous local reads cannot authorize the old failure", async () => {
+  for (const change of [
+    (f: ReturnType<typeof fixture>) => appendFileSync(f.path, JSON.stringify(record("event_msg", {type: "user_message", message: "New request"})) + "\n"),
+    (f: ReturnType<typeof fixture>) => writeFileSync(join(f.root, "auth.json"), '{"changed":true}'),
+    (f: ReturnType<typeof fixture>) => writeFileSync(join(f.root, "thread-writer-locks", threadId + ".lock"), ""),
+  ]) {
+    const f = fixture();
+    const pending = yieldToEventLoop().then(() => change(f));
+    expect(await f.read()).toBeNull(); await pending;
+  }
+});
+
+test("profile revocation and credential-store changes during the final local read fail closed", async () => {
+  for (const change of [
+    (f: ReturnType<typeof fixture>) => { f.config.accounts.codex[0]!.enabled = false; },
+    (f: ReturnType<typeof fixture>) => { f.config.accounts.codex = []; },
+    (f: ReturnType<typeof fixture>) => { f.config.accounts.codex = [{...f.config.accounts.codex[0]!, codexHome: fixture().root}]; },
+    (f: ReturnType<typeof fixture>) => writeFileSync(join(f.root, "config.toml"), 'cli_auth_credentials_store = "keyring"\n'),
+  ]) {
+    const f = fixture();
+    let pending: Promise<void> | undefined;
+    f.options.readLatestTurn = async () => {
+      // The final read starts on the next microtask; mutate only once its file
+      // I/O yields, after it has already accepted the old profile and mode.
+      pending = yieldToEventLoop().then(() => { change(f); });
+      return f.turn;
+    };
+    expect(await f.read()).toBeNull(); await pending;
+  }
 });
 
 

@@ -71,9 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let quotaRequests = QuotaRequestGate()
     private var isFetchingDetails = false
     private var lastDetailsFetchAt: Date?
-    private var pendingCollectionReason: String?
-    private var isRequestingCollection = false
-    private var collectionRequestGeneration = 0
+    private var collectionRequests = CollectionRequestGate()
     private var collectionActionToken: String?
     private var recoveryPolling = QuotaRecoveryPolling()
     private var systemWakeMonitor: SystemWakeMonitor?
@@ -81,9 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var networkMonitor: NWPathMonitor?
     private var networkWasAvailable: Bool?
     private var quotaCache: QuotaSnapshotCache?
-    private var failureIndex = 0
-    private var lastStatusDiagnostic: String?
-    private let retrySeconds: [TimeInterval] = [2, 5, 15, 30]
+    private var transportRecovery = QuotaTransportRecovery()
     private let statusLogger = Logger(subsystem: "local.quotapie.menubar", category: "StatusSync")
 #if DEBUG
     private var debugWindow: NSWindow?
@@ -104,14 +100,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                         quotaCache = QuotaSnapshotCache(endpoint: client.baseURL.absoluteString, url: URL(fileURLWithPath: path))
                         if let snapshot = quotaCache?.load() { popoverModel.applyCachedQuota(snapshot) }
                     }
-                    pendingCollectionReason = "startup"
+                    collectionRequests.request("startup")
                 }
                 return
             }
             let cache = QuotaSnapshotCache(endpoint: client.baseURL.absoluteString)
             quotaCache = cache
             if let snapshot = cache.load() { popoverModel.applyCachedQuota(snapshot) }
-            pendingCollectionReason = "startup"
+            collectionRequests.request("startup")
             let presenter = NotificationPresenter(
                 client: client,
                 scheduler: UserNotificationScheduler(center: userNotificationCenter),
@@ -550,7 +546,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func requestFreshCollection(reason: String) {
         guard !isFixturePreview else { refresh(); return }
-        pendingCollectionReason = reason
+        collectionRequests.request(reason)
         // Opening the popover must not postpone details behind a new burst:
         // the service may intentionally coalesce a recent visible refresh.
         if reason != "visible" {
@@ -558,34 +554,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                                   uptime: ProcessInfo.processInfo.systemUptime)
         }
         statusLogger.notice("Quota recovery requested reason=\(reason, privacy: .public) atMs=\(Int64(Date().timeIntervalSince1970 * 1_000))")
+        // Only local quota requests are replaced. Rich details and host work
+        // keep running, and the cancelled generation cannot alter current UI.
         if reason == "wake" || reason == "network" {
-            collectionRequestGeneration += 1
-            isRequestingCollection = false
-            client?.resetQuotaTransport()
-        }
-        // Only our local quota HTTP request is replaced; host work and rich
-        // detail requests keep running. Ignore its eventual cancellation callback.
-        quotaRequests.cancel()
+            resetQuotaTransport()
+        } else { quotaRequests.cancel() }
         if reason != "visible" { lastDetailsFetchAt = nil }
         submitPendingCollectionRequest()
         refresh()
     }
 
+    private func resetQuotaTransport() {
+        // The shared session also owns the collection POST. Preserve its reason
+        // before cancellation; its late callback must not clear a replacement.
+        quotaRequests.cancel()
+        collectionRequests.transportWasReplaced()
+        transportRecovery.transportWasReplaced()
+        client?.resetQuotaTransport()
+    }
+
     private func submitPendingCollectionRequest() {
-        guard !isRequestingCollection, let reason = pendingCollectionReason,
-              let client, let token = collectionActionToken else { return }
-        pendingCollectionReason = nil
-        isRequestingCollection = true
-        collectionRequestGeneration += 1
-        let generation = collectionRequestGeneration
+        guard let client, let token = collectionActionToken,
+              let request = collectionRequests.begin() else { return }
+        let reason = request.reason
         popoverModel.collectionRequestError = nil
         if recoveryPolling.isActive(uptime: ProcessInfo.processInfo.systemUptime) {
             statusLogger.notice("Quota collection submitted reason=\(reason, privacy: .public) atMs=\(Int64(Date().timeIntervalSince1970 * 1_000))")
         }
         client.refreshCollection(reason: reason, actionToken: token) { [weak self] result in
             DispatchQueue.main.async {
-                guard let self, generation == self.collectionRequestGeneration else { return }
-                self.isRequestingCollection = false
+                guard let self else { return }
+                let retry: Bool
+                if case .failure = result { retry = true } else { retry = false }
+                // Preserve a failed collection event, without retrying or
+                // resuming any host work. Replaced callbacks are ignored.
+                guard self.collectionRequests.finish(request, retry: retry) else { return }
                 switch result {
                 case .success(let collection):
                     self.popoverModel.applyCollectionRefresh(collection)
@@ -599,9 +602,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                         self.collectionActionToken = nil
                     }
                     self.popoverModel.collectionRequestError = Strings.t("collection.requestFailed")
-                    // Retain the event through startup/network failure. Retrying
-                    // this coalesced collection request never resumes a task.
-                    if self.pendingCollectionReason == nil { self.pendingCollectionReason = reason }
                 }
                 self.scheduleRefresh(after: 2)
             }
@@ -610,16 +610,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     @objc private func refresh() {
         guard let client, let generation = quotaRequests.begin() else { return }
+        let requestStarted = ProcessInfo.processInfo.systemUptime
         let notificationRevision = popoverModel.notificationPreferencesRevision
         let savingsRevision = popoverModel.savingsPreferencesRevision
         let compactionRevision = popoverModel.compactionPreferencesRevision
         let receive: (Result<StatusPayload, Error>) -> Void = { [weak self] result in
+            let responseReceived = ProcessInfo.processInfo.systemUptime
             DispatchQueue.main.async {
                 guard let self, self.quotaRequests.finish(generation) else { return }
+                let requestMs = Int((responseReceived - requestStarted) * 1_000)
+                let mainQueueMs = Int((ProcessInfo.processInfo.systemUptime - responseReceived) * 1_000)
                 var freshRecovery = false
                 switch result {
                 case .success(let payload):
-                    if self.popoverModel.statusFailure != nil { self.statusLogger.notice("Status connection recovered") }
+                    if self.popoverModel.statusFailure != nil {
+                        self.statusLogger.notice("Status connection recovered requestMs=\(requestMs) mainQueueMs=\(mainQueueMs)")
+                    } else if requestMs >= 1_000 || mainQueueMs >= 1_000 {
+                        self.statusLogger.notice("Quota fetch slow requestMs=\(requestMs) mainQueueMs=\(mainQueueMs)")
+                    }
                     if !self.usesFastQuota {
                         self.popoverModel.applyStatus(payload, notificationRevision: notificationRevision)
                     } else {
@@ -635,8 +643,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     self.popoverModel.lastSuccessAt = Date()
                     self.popoverModel.lastError = nil
                     self.popoverModel.statusFailure = nil
-                    self.lastStatusDiagnostic = nil
-                    self.failureIndex = 0
+                    self.transportRecovery.succeeded()
                     if !self.isFixturePreview, let actionToken = payload.actionToken, !actionToken.isEmpty {
                         self.userNotificationCenter.getNotificationSettings { [weak self] settings in
                             DispatchQueue.main.async {
@@ -652,15 +659,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     self.scheduleRefresh(after: payload.collection?.refreshing == true || (self.popover.isShown || self.settingsWindow?.window?.isVisible == true) || self.verification?.fastQuota == true ? 2 : 10)
                 case .failure(let error):
                     let diagnostic = StatusFailure.diagnostic(error)
-                    if self.lastStatusDiagnostic != diagnostic {
-                        self.statusLogger.error("Quota fetch failed: \(diagnostic, privacy: .public)")
-                        self.lastStatusDiagnostic = diagnostic
-                    }
+                    let retry = self.transportRecovery.failed(error)
+                    self.statusLogger.error("Quota fetch failed: \(diagnostic, privacy: .public) requestMs=\(requestMs) mainQueueMs=\(mainQueueMs) failures=\(self.transportRecovery.failures) replaceTransport=\(retry.replaceTransport)")
                     self.popoverModel.statusFailure = StatusFailure(error)
                     self.popoverModel.lastError = error.localizedDescription
-                    let delay = self.retrySeconds[min(self.failureIndex, self.retrySeconds.count - 1)]
-                    self.failureIndex = min(self.failureIndex + 1, self.retrySeconds.count - 1)
-                    self.scheduleRefresh(after: delay)
+                    if retry.replaceTransport, self.usesFastQuota { self.resetQuotaTransport() }
+                    self.scheduleRefresh(after: retry.delay)
                 }
                 self.render()
                 if freshRecovery {

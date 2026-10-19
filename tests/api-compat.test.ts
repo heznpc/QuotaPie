@@ -130,3 +130,21 @@ test("one status response reads each quota history once and shares it with compa
     expect(reads).toBe(1);
   } finally {server.stop(true);service.close();}
 });
+
+test("health checks use current collection evidence without scanning quota history", async () => {
+  const config = structuredClone(DEFAULT_CONFIG); config.dashboard.port = 0;
+  const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
+  const now = Date.now();
+  service.ingest([{provider:"codex",account:"default",bucket:"codex:primary:300",label:"5h",windowSeconds:18000,
+    usedPercent:25,resetsAtMs:now+3600_000,observedAtMs:now,source:"codex-app-server",quality:"authoritative"}]);
+  service.collection.recordAttempt("codex", "default", "codex-appserver", now, null, null);
+  service.analyses = () => { throw new Error("health must not analyse history"); };
+  const server = startDashboard(service, config);
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.port}/health`);
+    const health: any = await response.json();
+    expect(response.status).toBe(503); // Claude has never been collected.
+    expect(health.accounts.find((a: any) => a.provider === "codex")).toMatchObject({health:"recent-success",windows:1});
+    expect(health.degraded).toEqual([expect.objectContaining({provider:"claude",health:"never-attempted"})]);
+  } finally { server.stop(true); await service.close(); }
+});

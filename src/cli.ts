@@ -121,6 +121,10 @@ function launchdPlist(): string {
   const logDir = dataDirectory();
   const home = homedir();
   const envPath = `${home}/.bun/bin:${home}/.local/share/mise/shims:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`;
+  // This process serves the menu's synchronous HTTP requests. Background I/O
+  // throttling can hold SQLite reads past the client's timeout, even for a
+  // local request. Adaptive promotion requires XPC transactions; HTTP does not
+  // provide them, so use the app's class while retaining our polling limits.
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -130,7 +134,7 @@ function launchdPlist(): string {
   <array><string>${xmlEscape(preferredBin())}</string><string>serve</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>ProcessType</key><string>Background</string>
+  <key>ProcessType</key><string>Interactive</string>
   <key>Umask</key><integer>63</integer>
   <key>EnvironmentVariables</key>
   <dict>

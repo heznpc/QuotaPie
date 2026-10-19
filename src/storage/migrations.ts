@@ -39,6 +39,7 @@ export function migrate(db: Database): void {
       UNIQUE(case_key,version))`);
     db.run(`CREATE TABLE IF NOT EXISTS reset_observation_coverage (
       id TEXT PRIMARY KEY, provider TEXT NOT NULL, account TEXT NOT NULL, observed_ms INTEGER NOT NULL, payload TEXT NOT NULL)`);
+    db.run(`CREATE INDEX IF NOT EXISTS reset_coverage_recent ON reset_observation_coverage(observed_ms DESC)`);
     db.run(`CREATE TABLE IF NOT EXISTS reset_forecast_actions (
       forecast_id TEXT NOT NULL, policy_version INTEGER NOT NULL, decided_ms INTEGER NOT NULL,
       PRIMARY KEY(forecast_id,policy_version))`);
@@ -305,6 +306,18 @@ export function migrate(db: Database): void {
     db.run(`
       CREATE INDEX IF NOT EXISTS app_notification_alert
       ON app_notification_outbox(alert_key, completed_at_ms)
+    `);
+    // Permission polls read only suppressed/cancelled threshold candidates.
+    // Keep that scan covering, and let the correlated newest-occurrence check
+    // seek directly on the rowid stored after alert_key in a single-key index.
+    // app_notification_alert cannot do that seek: completed_at_ms comes first.
+    db.run(`
+      CREATE INDEX IF NOT EXISTS app_notification_threshold_candidates
+      ON app_notification_outbox(disposition, delivery_key, alert_key)
+    `);
+    db.run(`
+      CREATE INDEX IF NOT EXISTS app_notification_latest
+      ON app_notification_outbox(alert_key)
     `);
     db.run(`
       CREATE TABLE IF NOT EXISTS claude_session_state (

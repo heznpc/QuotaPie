@@ -260,31 +260,28 @@ export class QuotaDatabase {
     const rows = this.db
       .query<
         SnapshotRow,
-        [Provider, string, string, number, number, Provider, string, string, number, number, number]
+        [Provider, string, string, number, Provider, string, string, number, number, number]
       >(`
         SELECT provider, account, bucket, label, window_seconds, used_percent,
                resets_at_ms, observed_at_ms, source, quality, credit_balance,
                reset_credits_available, metadata_json
-        FROM snapshots current
-        WHERE provider = ? AND account = ? AND bucket = ? AND observed_at_ms >= ?
-          AND (
-            observed_at_ms >= ?
-            OR id IN (
-              SELECT MAX(id)
-              FROM snapshots
-              WHERE provider = ? AND account = ? AND bucket = ?
-                AND observed_at_ms >= ? AND observed_at_ms < ?
-              GROUP BY CAST(observed_at_ms / ? AS INTEGER)
-            )
-          )
+        FROM snapshots
+        WHERE id IN (
+          SELECT id FROM snapshots
+          WHERE provider = ? AND account = ? AND bucket = ? AND observed_at_ms >= ?
+          UNION ALL
+          SELECT MAX(id) FROM snapshots
+          WHERE provider = ? AND account = ? AND bucket = ?
+            AND observed_at_ms >= ? AND observed_at_ms < ?
+          GROUP BY CAST(observed_at_ms / ? AS INTEGER)
+        )
         ORDER BY observed_at_ms ASC, id ASC
       `)
       .all(
         provider,
         account,
         bucket,
-        sinceMs,
-        recentRawSinceMs,
+        Math.max(sinceMs, recentRawSinceMs),
         provider,
         account,
         bucket,

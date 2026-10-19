@@ -1,6 +1,8 @@
 import { Database } from "bun:sqlite";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync, statSync, type Stats } from "node:fs";
+import { constants, lstatSync, readdirSync, realpathSync, statSync, type Stats } from "node:fs";
+import { open, type FileHandle } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { codexProfileRoot, codexUsesFileCredentials, type AppConfig } from "../config";
 import { metadataPath } from "../dots/thread-reader";
 import { CodexAppServerClient, type CodexThreadTurnSummary } from "../providers/codex-appserver";
@@ -35,6 +37,8 @@ export class QuotaResumeEvidenceUnavailableError extends Error {
 
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const TAIL_BYTES = 16 * 1024 * 1024;
+const PARSE_SLICE_BYTES = 256 * 1024;
+const PARSE_SLICE_MS = 4;
 const RECOVERY_PREFIX = /^\[QuotaPie quota recovery:([a-zA-Z0-9_-]{1,128})\]\r?\n/;
 function stamp(stat: Stats): string {
   return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
@@ -61,28 +65,43 @@ function userText(entry: any): string | undefined {
 
 /** This file is a quiescent snapshot, not ownership of the native writer lock.
  * task_complete can carry an error; its name alone never proves successful work. */
-function readLocal(config: AppConfig, account: string, threadId: string, nowMs: number, allowNativeWriter = false): QuotaResumeEvidence | null {
+async function readLocal(config: AppConfig, account: string, threadId: string, nowMs: number, allowNativeWriter = false): Promise<QuotaResumeEvidence | null> {
   const profile = config.accounts.codex.find(p => p.enabled && p.id === account);
   if (!profile || !UUID.test(threadId) || !Number.isFinite(nowMs) || !codexUsesFileCredentials(profile)) return null;
   const root = realpathSync(codexProfileRoot(profile));
   if (!allowNativeWriter && !writerAbsent(root, threadId)) return null;
   const path = metadataPath(root, threadId);
-  let fd: number | undefined;
+  let file: FileHandle | undefined;
   try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    const before = fstatSync(fd);
+    file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const before = await file.stat();
     if (!before.isFile() || before.size <= 0) return null;
     const size = Math.min(before.size, TAIL_BYTES), start = before.size - size;
     const bytes = Buffer.alloc(size);
-    if (readSync(fd, bytes, 0, size, start) !== size || bytes.at(-1) !== 10) return null;
-    const lines = bytes.toString("utf8").split("\n");
-    if (start) lines.shift(); // Never treat a partial JSON record as evidence.
+    if ((await file.read(bytes, 0, size, start)).bytesRead !== size || bytes.at(-1) !== 10) return null;
+    // Do not decode/split the entire 16 MiB tail. Keep only one bounded record
+    // alive at a time and give quota HTTP requests/provider responses time to
+    // run while scanning ordinary conversations that have no failed terminal.
+    let lineStart = start ? bytes.indexOf(10) + 1 : 0;
+    let sliceBytes = 0, sliceLines = 0;
+    let sliceStarted = performance.now();
     let model: string | null = null, started: { id: string; atMs: number } | null = null;
     let terminal: { turnId: string; failedAtMs: number } | null = null;
     let sawUser = false, turnOpen = false;
     let currentRecovery: string | null | undefined, pendingRecovery: string | null | undefined;
     const pendingInput = new Set<string>();
-    for (const line of lines) {
+    for (let lineEnd; (lineEnd = bytes.indexOf(10, lineStart)) >= 0;) {
+      const line = bytes.subarray(lineStart, lineEnd).toString("utf8");
+      sliceBytes += lineEnd - lineStart + 1; sliceLines++;
+      lineStart = lineEnd + 1;
+      // One JSON record is bounded by TAIL_BYTES. Yield on a small time budget
+      // without imposing a timer hop for every fast/short record.
+      if (sliceBytes >= PARSE_SLICE_BYTES || sliceLines >= 128) {
+        if (performance.now() - sliceStarted >= PARSE_SLICE_MS) {
+          await yieldToEventLoop(); sliceStarted = performance.now();
+        }
+        sliceBytes = 0; sliceLines = 0;
+      }
       if (!line) continue;
       let entry: any;
       try { entry = JSON.parse(line); } catch { return null; }
@@ -139,7 +158,10 @@ function readLocal(config: AppConfig, account: string, threadId: string, nowMs: 
         terminal = { turnId: p.turn_id, failedAtMs: atMs };
     }
     if (!terminal || !model || !sawUser || currentRecovery === null) return null;
-    const after = fstatSync(fd);
+    const after = await file.stat();
+    // Finish asynchronous descriptor cleanup before the final path/ownership
+    // fences, so closing a file cannot introduce a new unchecked await.
+    await file.close(); file = undefined;
     if (stamp(before) !== stamp(after) || stamp(statSync(path)) !== stamp(after) || (!allowNativeWriter && !writerAbsent(root, threadId)) ||
         metadataPath(root, threadId) !== path) return null;
     const database = readdirSync(root).filter(name => /^state_\d+\.sqlite$/.test(name))
@@ -153,7 +175,7 @@ function readLocal(config: AppConfig, account: string, threadId: string, nowMs: 
       return { threadId, ...terminal, stamp: `${path}:${stamp(after)}`, cwd, model,
         ...(currentRecovery !== undefined ? { recoveryIncidentId: currentRecovery } : {}) };
     } finally { db.close(); }
-  } finally { if (fd !== undefined) closeSync(fd); }
+  } finally { if (file) await file.close(); }
 }
 
 /** Detection works while quota is exhausted. Permission to run is a separate
@@ -165,7 +187,7 @@ export async function readQuotaResumeEvidence(config: AppConfig, account: string
     const profile = config.accounts.codex.find(p => p.enabled && p.id === account);
     if (!profile) return null;
     const root = realpathSync(codexProfileRoot(profile)), credentials = credentialStamp(root);
-    const before = readLocal(config, account, threadId, (options.now ?? Date.now)(), options.allowNativeWriter);
+    const before = await readLocal(config, account, threadId, (options.now ?? Date.now)(), options.allowNativeWriter);
     if (!before) return null;
     if (before.recoveryIncidentId !== undefined && !options.authorizeRecoveryTurn) return null;
     const read = options.readLatestTurn ?? ((id: string) => {
@@ -179,9 +201,14 @@ export async function readQuotaResumeEvidence(config: AppConfig, account: string
     if (turn.threadId !== threadId || turn.turnId !== before.turnId || turn.status !== "failed" ||
         turn.errorCode !== "usageLimitExceeded" || turn.completedAtMs !== Math.floor(before.failedAtMs / 1000) * 1000) return null;
     if (before.recoveryIncidentId !== undefined && await options.authorizeRecoveryTurn?.(before) !== true) return null;
-    const after = readLocal(config, account, threadId, (options.now ?? Date.now)(), options.allowNativeWriter);
-    if (!after || JSON.stringify(before) !== JSON.stringify(after) || credentials !== credentialStamp(root) ||
-        realpathSync(codexProfileRoot(profile)) !== root) return null;
+    const after = await readLocal(config, account, threadId, (options.now ?? Date.now)(), options.allowNativeWriter);
+    // The profile list and native credential-store mode may change while the
+    // local read yields. Re-resolve the enabled profile instead of trusting the
+    // object captured before the first await.
+    const currentProfile = config.accounts.codex.find(p => p.enabled && p.id === account);
+    if (!after || !currentProfile || !codexUsesFileCredentials(currentProfile) ||
+        realpathSync(codexProfileRoot(currentProfile)) !== root ||
+        JSON.stringify(before) !== JSON.stringify(after) || credentials !== credentialStamp(root)) return null;
     return after;
   } catch (error) {
     if (error instanceof QuotaResumeEvidenceUnavailableError) throw error;

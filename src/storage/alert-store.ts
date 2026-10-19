@@ -125,6 +125,8 @@ export class AlertStore {
   constructor(private readonly storage: QuotaStorage) {}
 
   suppressedThresholdKeys(includeCancelled = false): string[] {
+    // A later occurrence of any kind/disposition supersedes the old threshold.
+    // Both sides are index-only: candidate disposition/prefix, then key/rowid.
     return this.storage.db.query<{ alert_key: string }, []>(`
       SELECT n.alert_key FROM app_notification_outbox n
       WHERE (n.disposition = 'suppressed' ${includeCancelled ? "OR n.disposition = 'cancelled'" : ""}) AND n.delivery_key LIKE 'threshold:%'
@@ -380,6 +382,7 @@ export class AlertStore {
         ON CONFLICT(singleton) DO UPDATE SET
           native_consumer = excluded.native_consumer,
           updated_at_ms = excluded.updated_at_ms
+        WHERE app_notification_capability.native_consumer <> excluded.native_consumer
       `)
       .run(available ? 1 : 0, nowMs);
   }

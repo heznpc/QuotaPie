@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { dataDirectory } from "../config";
 import { migrate } from "./migrations";
+import { instrumentQueryTiming } from "./query-timing";
 
 /// Owns the connection, the PRAGMAs, the schema, and the transaction boundary.
 ///
@@ -24,6 +25,7 @@ export class QuotaStorage {
       chmodSync(dirname(path), 0o700);
     }
     this.db = new Database(path, { create: true, strict: true });
+    instrumentQueryTiming(this.db);
     this.db.run("PRAGMA journal_mode = WAL");
     this.db.run("PRAGMA busy_timeout = 3000");
     migrate(this.db);

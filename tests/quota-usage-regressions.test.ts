@@ -118,6 +118,14 @@ describe("suppressed native alerts", () => {
       service.ingest([{ ...low, observedAtMs: now + 1000, usedPercent: 0 }]);
       await service.retrySuppressedNotifications(now + 1001);
       expect(service.claimNextAppNotification(now + 1002)).toBeNull();
+      // Normal collection rearms the recovered threshold. Its old suppressed
+      // notification remains in history, but permission polls need no scan.
+      await service.evaluateTriggers(now + 1003);
+      expect(service.alerts.suppressedThresholdKeys().length).toBeGreaterThan(0);
+      const pending = service.alerts.pendingAppNotifications().map(item => item.id);
+      service.analyses = () => { throw new Error("rearmed alert must not scan history"); };
+      await service.retrySuppressedNotifications(now + 1004);
+      expect(service.alerts.pendingAppNotifications().map(item => item.id)).toEqual(pending);
     } finally { await service.close(); }
   });
 });

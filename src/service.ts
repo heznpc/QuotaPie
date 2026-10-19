@@ -1917,7 +1917,13 @@ export class QuotaPieService {
     if (!this.config.alerts.enabled || !this.config.alerts.macOSNotifications) return;
     // This path is invoked only after the native app reports OS permission.
     await this.deliverAutoResumeNotifications(true);
-    const suppressed = new Set(this.alerts.suppressedThresholdKeys());
+    // Native permission is reported on every notification poll. Historical
+    // suppressed keys already rearmed need no retry and must not trigger a
+    // quota-history scan every two seconds.
+    const suppressed = new Set(this.alerts.suppressedThresholdKeys().filter(key => {
+      const state = this.alerts.state(key);
+      return state != null && !state.armed;
+    }));
     if (!suppressed.size) return;
     const windows = this.analyses(nowMs);
     const active = planTriggers(windows, [], this.notificationConfig(), nowMs, nowMs);
@@ -2084,8 +2090,10 @@ export class QuotaPieService {
         const state = this.alerts.state(key);
         if (state && !state.armed) this.rearmAlertNotification(key, 0);
       }
-      const suppressed = new Set(this.alerts.suppressedThresholdKeys());
-      const undelivered = new Set(this.alerts.suppressedThresholdKeys(true));
+      // A healthy observer still clears obsolete notices and rearms recovered
+      // scans, but has no delivery that needs suppression-history lookup.
+      const suppressed = new Set(decisions.length ? this.alerts.suppressedThresholdKeys() : []);
+      const undelivered = new Set(decisions.length ? this.alerts.suppressedThresholdKeys(true) : []);
       for (const decision of decisions) {
         if (this.closing || this.stopped) break;
         if (!notificationAllowed(decision, this.config.alerts) ||

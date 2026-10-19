@@ -333,6 +333,21 @@ describe("native app notification outbox", () => {
     expect(alerts.releaseAppNotification(current.id, current.claimToken)).toBeTrue();
   });
 
+  test("repeated native capability reports do not write a durable heartbeat", () => {
+    const store = storage(), alerts = new AlertStore(store);
+    try {
+      alerts.setNativeNotificationConsumer(true, 1_000);
+      const changes = () => store.db.query<{ n: number }, []>("SELECT total_changes() AS n").get()!.n;
+      const before = changes();
+      for (let i = 0; i < 30; i++) alerts.setNativeNotificationConsumer(true, 2_000 + i);
+      expect(changes()).toBe(before);
+      expect(alerts.hasNativeNotificationConsumer()).toBeTrue();
+      alerts.setNativeNotificationConsumer(false, 3_000);
+      expect(changes()).toBe(before + 1);
+      expect(alerts.hasNativeNotificationConsumer()).toBeFalse();
+    } finally { store.close(); }
+  });
+
   test("claim records native capability, expires stale rows, and preserves FIFO order", () => {
     const store = storage();
     const alerts = new AlertStore(store);

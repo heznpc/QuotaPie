@@ -72,6 +72,25 @@ test("healthy monitoring with no incidents stays quiet and each lifecycle notice
   expect(f.service.alerts.pendingAppNotifications()[0]?.message).toContain("전체 목표의 완료 여부는 별도로");
 });
 
+test("no delivery decisions skip suppression history while cancelling obsolete notices and rearming recovered scans", async () => {
+  const f = fixture(); f.incident(); f.state.accounts[0]!.lastError = "scan-unavailable";
+  await f.service.deliverAutoResumeNotifications();
+  const notices = f.service.alerts.pendingAppNotifications();
+  expect(notices).toHaveLength(2);
+  const scan = notices.find(item => item.alertKey.startsWith("auto-resume:scan:"))!;
+  expect(f.service.alerts.state(scan.alertKey)?.armed).toBe(false);
+  f.state.incidents = []; f.state.accounts[0]!.lastError = null;
+  const history = spyOn(f.service.alerts, "suppressedThresholdKeys").mockImplementation(() => {
+    throw new Error("idle observer must not scan suppression history");
+  });
+  try {
+    for (const retrySuppressed of [false, true]) await f.service.deliverAutoResumeNotifications(retrySuppressed);
+    expect(history).not.toHaveBeenCalled();
+    expect(f.service.alerts.pendingAppNotifications()).toHaveLength(0);
+    expect(f.service.alerts.state(scan.alertKey)?.armed).toBe(true);
+  } finally { history.mockRestore(); }
+});
+
 test("the durable claim prevents restart duplicates and obsolete claimed notifications cannot renew", async () => {
   const f = fixture(true); f.incident();
   await f.service.deliverAutoResumeNotifications();
