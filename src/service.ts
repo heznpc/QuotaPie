@@ -1,3 +1,4 @@
+import { correlateResetTicket, resetTicketFollowupDelay } from "./reset-ticket-correlation";
 import { inspectManagedSession } from "./dots/managed-continuation";
 import { AutoResumeController, type QuotaResumeIncident } from "./quota-resume/controller";
 import { readQuotaResumeEvidence, type QuotaResumeEvidence, type QuotaResumeEvidenceOptions } from "./quota-resume/evidence";
@@ -792,9 +793,12 @@ export class QuotaPieService {
         const previous = previousSnapshot.find(item => item.bucket === next.bucket);
         return previous?.usedPercent != null && next.usedPercent != null && next.usedPercent < previous.usedPercent;
       });
-      const contextualObservations = accountObservations.map(item => ({ ...item,
-        metadata: { ...item.metadata, accountResetCreditDecreased, accountQuotaRecovered },
-      }));
+      const contextualObservations = accountObservations.map(item => correlateResetTicket(
+        previousSnapshot.find(previous => previous.bucket === item.bucket),
+        { ...item, metadata: { ...item.metadata, accountResetCreditDecreased, accountQuotaRecovered } },
+        accountResetCreditDecreased, nextTickets?.resetCreditsAvailable,
+        !newCollection && !contextChange, this.config.detection.resetToleranceMinutes * 60_000,
+      ));
       const result = this.db.ingestFullSnapshot(
         "codex",
         account,
@@ -945,6 +949,11 @@ export class QuotaPieService {
     this.codexNextPollMs.set(account, nextPollNowMs + nextWakeDelayMs(observations, this.config, nextPollNowMs));
     this.collection.recordAttempt("codex", account, CODEX_SOURCE, Date.now(), null, null);
     const events = this.closing ? [] : this.ingestCodexSnapshot(observations);
+    const followup = resetTicketFollowupDelay(this.currentObservations("codex").filter(o => o.account === account), Date.now());
+    if (!this.closing && followup !== null) {
+      this.codexNextPollMs.set(account, Math.min(this.codexNextPollMs.get(account) ?? Infinity, Date.now() + followup));
+      this.wakeCollection?.();
+    }
     if (!this.closing) {
       // Routing protection needs each accepted account update immediately. Do
       // not wait for another account, Claude, historical analysis or alerts.

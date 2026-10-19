@@ -213,3 +213,26 @@ test("rollout metadata must match the requested thread", async () => {
   const f = fixture(); f.records[0] = record("session_meta", { id: turnId }); f.save();
   expect(await f.read()).toBeNull(); expect(f.reads).toBe(0);
 });
+
+
+test("late native command completion preserves the exact failed turn only with source ownership", async () => {
+  const f = fixture();
+  const completion = record("event_msg", {type: "item_completed", thread_id: threadId, turn_id: turnId,
+    started_at_ms: failedAt - 1000, completed_at_ms: failedAt + 1000,
+    item: {type: "CommandExecution", status: "failed", exit_code: 1}}, failedAt + 1000);
+  f.records.push(completion); f.save();
+  expect(await f.read()).toMatchObject({threadId, turnId, failedAtMs: failedAt});
+  // Missing or foreign ownership is never treated as harmless bookkeeping.
+  for (const patch of [{thread_id: undefined}, {thread_id: turnId}, {turn_id: undefined}, {turn_id: threadId},
+    {started_at_ms: failedAt + 1}, {completed_at_ms: now + 1},
+    {item: {type: "CommandExecution", status: "inProgress"}}, {item: {type: "UserMessage"}}]) {
+    f.records[f.records.length - 1] = {...completion, payload: {...completion.payload, ...patch}};
+    f.save(); expect(await f.read()).toBeNull();
+  }
+  f.records[f.records.length - 1] = completion; f.save();
+  f.turn.status = "inProgress";
+  expect(await f.read()).toBeNull();
+  f.turn.status = "failed";
+  f.records.push(record("event_msg", {type: "task_started", turn_id: threadId}, failedAt + 1100));
+  f.save(); expect(await f.read()).toBeNull();
+});

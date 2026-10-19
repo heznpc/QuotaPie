@@ -69,6 +69,21 @@ final class AccountListPresentationTests: XCTestCase {
         XCTAssertEqual(MenuBarAccountStatus.title(for: try account(windows: [unknown])), "Codex · " + Strings.t("accounts.list.permissionUnknown"))
     }
 
+    func testResetTicketPendingDoesNotClaimRecoveryAndExpires() throws {
+        let metadata: [String: Any] = ["ordinaryUsageAllowed": false, "resetTicketPending": true, "resetTicketObservedAtMs": 1000]
+        let pending = try window("codex:primary:10080", seconds: 604800, remaining: 0, observed: 44000, metadata: metadata)
+        XCTAssertTrue(pending.isUsageBlocked)
+        XCTAssertTrue(pending.isResetTicketPending)
+        XCTAssertEqual(MenuBarAccountStatus.title(for: try account(windows: [pending])), "Codex · " + Strings.t("accounts.list.resetTicketPending"))
+        let expired = try window("codex:primary:10080", seconds: 604800, remaining: 0, observed: 602000, metadata: metadata)
+        XCTAssertFalse(expired.isResetTicketPending)
+        let recovered = try window("codex:primary:10080", seconds: 604800, remaining: 100, observed: 44000,
+            metadata: ["ordinaryUsageAllowed": true, "resetTicketPending": false, "resetTicketObservedAtMs": 1000])
+        XCTAssertNil(MenuBarAccountStatus.title(for: try account(windows: [recovered])))
+        let payload = try JSONDecoder().decode(LocalizedMessagePayload.self, from: Data(#"{"key":"event.external_relief","params":{"label":"weekly","resetTicketRecovery":true}}"#.utf8))
+        XCTAssertEqual(payload.rendered(fallback: "bad"), Strings.t("event.resetTicketRecovery", "weekly"))
+    }
+
     private func window(_ bucket: String, provider: String = "codex", seconds: Double?, remaining: Double,
                         freshness: String = "fresh", observed: Double = 1000, metadata: [String: Any]? = nil) throws -> QuotaWindow {
         var value: [String: Any] = ["provider": provider, "account": "default", "bucket": bucket, "label": bucket,

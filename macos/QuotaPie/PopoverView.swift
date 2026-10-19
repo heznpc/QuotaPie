@@ -232,8 +232,8 @@ struct PopoverView: View {
                 if let message = model.collectionRequestError {
                     Text(message).font(.caption).foregroundStyle(.orange)
                 }
-                if account.windows.contains(where: \.isUsageBlocked) || account.windows.contains(where: \.isUsagePermissionUnknown) {
-                    Label(Strings.t(account.windows.contains(where: \.isUsageBlocked) ? "accounts.list.usageBlocked" :
+                if account.windows.contains(where: \.isResetTicketPending) || account.windows.contains(where: \.isUsageBlocked) || account.windows.contains(where: \.isUsagePermissionUnknown) {
+                    Label(Strings.t(account.windows.contains(where: \.isResetTicketPending) ? "accounts.list.resetTicketPending" : account.windows.contains(where: \.isUsageBlocked) ? "accounts.list.usageBlocked" :
                         "accounts.list.permissionUnknown"), systemImage: "exclamationmark.circle")
                         .font(.caption).foregroundStyle(.orange)
                 }

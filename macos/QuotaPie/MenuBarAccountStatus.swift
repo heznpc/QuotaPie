@@ -12,6 +12,8 @@ enum MenuBarAccountStatus {
             case "auth-expired": message = Strings.t("menu.account.loginExpired")
             default: message = Strings.t("menu.account.refreshNeeded")
             }
+        } else if account.windows.contains(where: \.isResetTicketPending) {
+            message = Strings.t("accounts.list.resetTicketPending")
         } else if account.windows.contains(where: \.isUsageBlocked) {
             message = Strings.t("accounts.list.limitBlocked")
         } else if account.windows.contains(where: \.isUsagePermissionUnknown) {

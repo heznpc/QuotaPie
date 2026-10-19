@@ -143,6 +143,7 @@ export class AlertStore {
         FROM events e
         LEFT JOIN event_delivery d ON d.event_id = e.id
         WHERE d.delivered_at_ms IS NULL
+          AND COALESCE(json_extract(e.details_json, '$.resetTicketRecovery'), 0) != 1
           AND e.kind IN (${ALERTABLE_EVENT_KINDS.map((kind) => `'${kind}'`).join(", ")})
         ORDER BY e.id ASC LIMIT ?
       `)

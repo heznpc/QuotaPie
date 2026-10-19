@@ -382,8 +382,9 @@ struct LocalizedMessagePayload: Decodable {
 
     func rendered(fallback: String) -> String {
         guard let arguments else { return fallback }
-        let result = Strings.format(key, arguments: arguments)
-        return result == key ? fallback : result
+        let effectiveKey = key == "event.external_relief" && params["resetTicketRecovery"]?.text == "true" ? "event.resetTicketRecovery" : key
+        let result = Strings.format(effectiveKey, arguments: arguments)
+        return result == effectiveKey ? fallback : result
     }
 
     private var arguments: [CVarArg]? {
@@ -457,14 +458,14 @@ struct LocalizedMessagePayload: Decodable {
             let added = key == "event.banked_reset_added"
             let delta = params[added ? "countAdded" : "countUsed"]?.number ?? params["countAfter"]?.number.flatMap { after in params["countBefore"]?.number.map { abs(after - $0) } }
             var values: [CVarArg] = [text("countBefore") ?? "?", text("countAfter") ?? "?", delta?.formatted(.number.precision(.fractionLength(0...2))) ?? "?"]
-            if !added { values.append(text("quotaRecovered") == "true" ? Strings.t("resetTickets.recovered") : "") }
+            if !added { values.append(text("quotaRecovered") == "true" ? Strings.t("resetTickets.recovered") : Strings.t("resetTickets.pending")) }
             return values
         case "event.window_changed":
             return required("fromLabel", "toLabel")
         case "event.plan_changed":
             return required("fromPlan", "toPlan")
         case "event.first_observation", "event.out_of_order", "event.source_changed",
-             "event.source_unknown", "event.scheduled_reset", "event.external_relief",
+             "event.source_unknown", "event.scheduled_reset", "event.external_relief", "event.resetTicketRecovery",
              "event.allowance_relief", "event.meter_correction", "event.schedule_rebased",
              "event.bucket_retired":
             return required("label")
@@ -738,6 +739,12 @@ struct QuotaWindow: Codable, Identifiable {
     var isLowRemaining: Bool { QuotaPresentation.isLow(remainingPercent) }
     var isUsageBlocked: Bool { metadata?.ordinaryUsageAllowed == false || metadata?.spendControlReached == true }
     var isUsagePermissionUnknown: Bool { metadata?.hasUnknownPermission == true }
+    var isResetTicketPending: Bool {
+        guard freshness == "fresh", metadata?.resetTicketPending == true,
+              let at = metadata?.resetTicketObservedAtMs, observedAtMs >= at,
+              observedAtMs - at <= 600_000 else { return false }
+        return isUsageBlocked || isExhausted
+    }
 
     var shortLabel: String {
         guard let windowSeconds else { return label }
@@ -778,6 +785,8 @@ struct QuotaWindow: Codable, Identifiable {
 struct QuotaWindowMetadata: Codable {
     let ordinaryUsageAllowed: Bool?
     let spendControlReached: Bool?
+    let resetTicketPending: Bool?
+    let resetTicketObservedAtMs: Double?
     private let ordinaryUsageReported: Bool
     private let spendControlReported: Bool
 
@@ -785,10 +794,12 @@ struct QuotaWindowMetadata: Codable {
         (ordinaryUsageReported && ordinaryUsageAllowed == nil) || (spendControlReported && spendControlReached == nil)
     }
 
-    private enum CodingKeys: String, CodingKey { case ordinaryUsageAllowed, spendControlReached }
+    private enum CodingKeys: String, CodingKey { case ordinaryUsageAllowed, spendControlReached, resetTicketPending, resetTicketObservedAtMs }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        resetTicketPending = try values.decodeIfPresent(Bool.self, forKey: .resetTicketPending)
+        resetTicketObservedAtMs = try values.decodeIfPresent(Double.self, forKey: .resetTicketObservedAtMs)
         ordinaryUsageReported = values.contains(.ordinaryUsageAllowed)
         spendControlReported = values.contains(.spendControlReached)
         ordinaryUsageAllowed = try values.decodeIfPresent(Bool.self, forKey: .ordinaryUsageAllowed)
@@ -799,6 +810,8 @@ struct QuotaWindowMetadata: Codable {
         var values = encoder.container(keyedBy: CodingKeys.self)
         // An explicit unknown permission must remain unknown after a cache round
         // trip; legacy payloads without these fields remain distinguishable.
+        try values.encodeIfPresent(resetTicketPending, forKey: .resetTicketPending)
+        try values.encodeIfPresent(resetTicketObservedAtMs, forKey: .resetTicketObservedAtMs)
         if ordinaryUsageReported { try values.encode(ordinaryUsageAllowed, forKey: .ordinaryUsageAllowed) }
         if spendControlReported { try values.encode(spendControlReached, forKey: .spendControlReached) }
     }

@@ -88,8 +88,19 @@ function readLocal(config: AppConfig, account: string, threadId: string, nowMs: 
       try { entry = JSON.parse(line); } catch { return null; }
       if (!entry || typeof entry !== "object" || !entry.payload || typeof entry.payload !== "object") return null;
       const p = entry.payload;
-      // Even a new user input with no started turn invalidates the old terminal.
-      terminal = null;
+      // Native hosts may flush a command completion after task_complete. It
+      // is evidence about the already failed turn, not new work. Preserve only
+      // this observed, explicitly owned terminal record; unknown records and
+      // new input still invalidate the failure. The provider must independently
+      // confirm the same failed turn below before discovery can proceed.
+      const trailingCommand = terminal && entry.type === "event_msg" && p.type === "item_completed" &&
+        p.thread_id === threadId && p.turn_id === terminal.turnId && p.item?.type === "CommandExecution" &&
+        ["completed", "failed"].includes(p.item.status) &&
+        Number.isFinite(p.started_at_ms) && p.started_at_ms >= (started?.atMs ?? Infinity) &&
+        p.started_at_ms <= terminal.failedAtMs && Number.isFinite(p.completed_at_ms) &&
+        p.completed_at_ms >= terminal.failedAtMs && p.completed_at_ms <= nowMs &&
+        Date.parse(entry.timestamp) === p.completed_at_ms;
+      if (!trailingCommand) terminal = null;
       const text = userText(entry);
       if (text !== undefined) {
         sawUser = true;

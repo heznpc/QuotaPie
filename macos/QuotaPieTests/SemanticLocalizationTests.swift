@@ -85,12 +85,12 @@ final class SemanticLocalizationTests: XCTestCase {
         let consumed = LocalizedMessagePayload(key: "event.banked_reset_consumed", params: [
             "countBefore": .number(3), "countAfter": .number(2), "countUsed": .number(1)
         ]).rendered(fallback: "UNSUPPORTED")
-        XCTAssertEqual(consumed, Strings.t("event.banked_reset_consumed", "3", "2", "1", ""))
+        XCTAssertEqual(consumed, Strings.t("event.banked_reset_consumed", "3", "2", "1", Strings.t("resetTickets.pending")))
         XCTAssertNotEqual(added, consumed)
         let recovered = LocalizedMessagePayload(key: "event.banked_reset_consumed", params: [
             "countBefore": .number(3), "countAfter": .number(2), "countUsed": .number(1), "quotaRecovered": .bool(true)
         ]).rendered(fallback: "UNSUPPORTED")
-        XCTAssertEqual(recovered, consumed + Strings.t("resetTickets.recovered"))
+        XCTAssertEqual(recovered, Strings.t("event.banked_reset_consumed", "3", "2", "1", Strings.t("resetTickets.recovered")))
     }
 
     func testEventRendersFromKindAndDetailsInsteadOfDaemonProse() throws {

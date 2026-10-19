@@ -59,6 +59,7 @@ export interface MessageParams {
   countAdded?: number;
   countUsed?: number;
   quotaRecovered?: boolean;
+  resetTicketRecovery?: boolean;
   detail?: string;
   path?: string;
   root?: string;
@@ -134,12 +135,12 @@ const CATALOG = {
     ko: (p) => `${p.label} 한도가 예정대로 갱신됐습니다.`,
   },
   "event.external_relief": {
-    en: (p) => `${p.label} was refilled ahead of schedule.`,
-    ko: (p) => `${p.label}에 예정 밖 충전이 감지됐습니다.`,
+    en: (p) => p.resetTicketRecovery ? `${p.label} recovered after the observed reset-ticket use.` : `${p.label} was refilled ahead of schedule.`,
+    ko: (p) => p.resetTicketRecovery ? `${p.label} 리셋권 사용 이후 한도 회복이 확인됐습니다.` : `${p.label}에 예정 밖 충전이 감지됐습니다.`,
   },
   "event.allowance_relief": {
-    en: (p) => `${p.label} usage fell sharply — a reset, a larger allowance, or a server correction.`,
-    ko: (p) => `${p.label} 사용률이 크게 낮아졌습니다. 리셋·한도 증액·서버 보정 중 하나일 수 있습니다.`,
+    en: (p) => p.resetTicketRecovery ? `${p.label} recovered after the observed reset-ticket use.` : `${p.label} usage fell sharply — a reset, a larger allowance, or a server correction.`,
+    ko: (p) => p.resetTicketRecovery ? `${p.label} 리셋권 사용 이후 한도 회복이 확인됐습니다.` : `${p.label} 사용률이 크게 낮아졌습니다. 리셋·한도 증액·서버 보정 중 하나일 수 있습니다.`,
   },
   "event.meter_correction": {
     en: (p) => `${p.label} usage moved slightly backwards.`,
@@ -162,8 +163,8 @@ const CATALOG = {
     ko: (p) => `리셋권 추가: ${p.countBefore ?? "?"}개 → ${p.countAfter ?? "?"}개 (+${p.countAdded ?? "?"}개).`,
   },
   "event.banked_reset_consumed": {
-    en: (p) => `Reset tickets: ${p.countBefore ?? "?"} → ${p.countAfter ?? "?"} (${p.countUsed ?? "?"} fewer).${p.quotaRecovered ? " Quota recovery was also observed." : ""}`,
-    ko: (p) => `리셋권 ${p.countBefore ?? "?"}개 → ${p.countAfter ?? "?"}개 (${p.countUsed ?? "?"}개 감소).${p.quotaRecovered ? " 한도 회복도 확인됐습니다." : ""}`,
+    en: (p) => `Reset tickets: ${p.countBefore ?? "?"} → ${p.countAfter ?? "?"} (${p.countUsed ?? "?"} fewer).${p.quotaRecovered ? " Quota recovery was also observed." : " Rechecking quota."}`,
+    ko: (p) => `리셋권 ${p.countBefore ?? "?"}개 → ${p.countAfter ?? "?"}개 (${p.countUsed ?? "?"}개 감소).${p.quotaRecovered ? " 한도 회복도 확인됐습니다." : " 한도를 재확인하고 있습니다."}`,
   },
   "event.bucket_retired": {
     en: (p) => `${p.label} disappeared from the provider's full response; tracking stopped.`,

@@ -382,6 +382,9 @@
         plan_changed: ["fromPlan", "toPlan"],
       });
       const eventMessage = (event) => {
+        if (event.details?.resetTicketRecovery === true) return LOCALE === "ko"
+          ? `${event.details.label ?? "Codex"} 리셋권 사용 이후 한도 회복이 확인됐습니다.`
+          : `${event.details.label ?? "Codex"} recovered after the observed reset-ticket use.`;
         const required = EVENT_MESSAGE_PARAMS[event.kind];
         if (required == null) return event.displayText ?? event.kind;
         const params = { balanceBefore: "?", balanceAfter: "?", balanceAdded: "?", countBefore: "?", countAfter: "?", countAdded: "?", countUsed: "?", provider: event.provider, account: event.account, ...(event.details ?? {}) };
@@ -508,7 +511,7 @@
             : `<div class="empty">${escapeHtml(t("empty"))}</div>`;
           const events = data.events ?? [];
           document.getElementById("events").innerHTML = events.length
-            ? events.slice(0, 15).map((event) => `<div class="event"><span>${new Date(event.occurredAtMs).toLocaleString(DATE_LOCALE)}</span><span class="kind">${escapeHtml(enumText("event.label", event.kind))}</span><span>${escapeHtml(`${event.account} · ${eventMessage(event)}${eventDetails(event)}`)} · ${t("detail.confidence")} ${escapeHtml(enumText("confidence", event.confidence))}</span></div>`).join("")
+            ? events.slice(0, 15).map((event) => `<div class="event"><span>${new Date(event.occurredAtMs).toLocaleString(DATE_LOCALE)}</span><span class="kind">${escapeHtml(event.details?.resetTicketRecovery === true ? (LOCALE === "ko" ? "리셋권 반영 확인" : "Reset ticket reflected") : enumText("event.label", event.kind))}</span><span>${escapeHtml(`${event.account} · ${eventMessage(event)}${eventDetails(event)}`)} · ${t("detail.confidence")} ${escapeHtml(enumText("confidence", event.confidence))}</span></div>`).join("")
             : t("noEvents");
         } catch (error) {
           statusAvailable = false; renderAutoResume();

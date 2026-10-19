@@ -57,6 +57,7 @@ struct AccountListRow: View {
         if let transportFailure { return historicalWarning(transportFailure) }
         if showingStartupCache { return Strings.t("collection.previousReading") }
         if !account.collection.isHealthy { return historicalWarning(account.collection.actionText) }
+        if account.windows.contains(where: \.isResetTicketPending) { return Strings.t("accounts.list.resetTicketPending") }
         if account.windows.contains(where: \.isUsageBlocked) { return Strings.t("accounts.list.usageBlocked") }
         if account.windows.contains(where: \.isUsagePermissionUnknown) { return Strings.t("accounts.list.permissionUnknown") }
         if account.windows.contains(where: { $0.freshness == "reset_due" }) { return Strings.t("window.resetDue") }

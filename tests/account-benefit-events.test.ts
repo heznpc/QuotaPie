@@ -50,6 +50,34 @@ describe("observed account benefits", () => {
     } finally { await service.close(); }
   });
 
+  test("a delayed provider recovery retains ticket evidence and does not alert twice", async () => {
+    const service = new QuotaPieService(structuredClone(DEFAULT_CONFIG), new QuotaDatabase(":memory:"));
+    try {
+      service.ingestCodexSnapshot(snapshot(3, 0));
+      const spent = service.ingestCodexSnapshot(snapshot(2, 600));
+      expect(spent.find(e => e.kind === "banked_reset_consumed")?.details.quotaRecovered).toBe(false);
+      const weekly = service.db.latestAll().find(o => o.windowSeconds === 604800)!;
+      expect(weekly.metadata?.resetTicketPending).toBe(true);
+      // Exact observed production delay: ticket count changed first, quota 43.664s later.
+      const recoverySnapshot = snapshot(2, 643.664, 20, 0).map(o => o.windowSeconds === 604800
+        ? { ...o, resetsAtMs: o.resetsAtMs! + 86400000 } : o);
+      const recovered = service.ingestCodexSnapshot(recoverySnapshot);
+      const event = recovered.find(e => e.kind === "external_relief")!;
+      expect(event.details).toMatchObject({ resetTicketRecovery: true, resetCreditDecreased: true,
+        resetTicketObservedAtMs: NOW + 600000 });
+      expect(event.displayText).not.toContain("예정 밖");
+      expect(event.displayText).not.toContain("ahead of schedule");
+      expect(planTriggers([], recovered, DEFAULT_CONFIG, 0, NOW + 644000)).toHaveLength(0);
+      expect(service.alerts.pendingEvents().filter(e => e.kind === "external_relief")).toHaveLength(0);
+      expect(service.db.latestAll().find(o => o.windowSeconds === 604800)?.metadata?.resetTicketPending).toBe(false);
+      // A later independent refill remains alertable, even within ten minutes.
+      service.ingestCodexSnapshot(snapshot(2, 650, 20, 80));
+      const unrelated = service.ingestCodexSnapshot(snapshot(2, 700, 20, 0));
+      expect(unrelated.find(e => e.kind === "external_relief" || e.kind === "allowance_relief")?.details.resetTicketRecovery).toBe(false);
+      expect(planTriggers([], unrelated, DEFAULT_CONFIG, 0, NOW + 701000)).toHaveLength(1);
+    } finally { await service.close(); }
+  });
+
   test("a ticket decrease without recovered quota keeps that distinction", () => {
     const events = classifyDelta(snapshot(3, 0)[0]!, snapshot(2, 60)[0]!, DEFAULT_CONFIG);
     expect(events.find(e => e.kind === "banked_reset_consumed")?.details.quotaRecovered).toBe(false);
@@ -71,6 +99,9 @@ describe("observed account benefits", () => {
       usedPercent: 0, resetsAtMs: before.resetsAtMs! + 18_000_000 };
     const reset = classifyDelta(before, after, DEFAULT_CONFIG);
     expect(reset.map(e => e.kind)).toEqual(["scheduled_reset"]);
+    const coincidentTicket = classifyDelta(before, { ...after, resetCreditsAvailable: 0,
+      metadata: { ...after.metadata, accountResetCreditDecreased: true } }, DEFAULT_CONFIG);
+    expect(coincidentTicket.map(e => e.kind)).toEqual(["banked_reset_consumed", "scheduled_reset"]);
     expect(planTriggers([], reset, DEFAULT_CONFIG, 0, after.observedAtMs)[0]?.presentation?.message.key).toBe("event.scheduled_reset");
     const ratioDrop = classifyDelta({ ...before, usedPercent: 90 }, { ...before, observedAtMs: NOW + 1000, usedPercent: 60 }, DEFAULT_CONFIG);
     expect(ratioDrop.map(e => e.kind)).toEqual(["allowance_relief"]);

@@ -93,8 +93,8 @@ private struct WindowRow: View {
                 Text(DisplayFormat.resetStamp(window.resetsAtMs))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                if window.isUsageBlocked || window.isUsagePermissionUnknown {
-                    Text(Strings.t(window.isUsageBlocked ? "accounts.list.limitBlocked" : "accounts.list.permissionUnknown"))
+                if window.isResetTicketPending || window.isUsageBlocked || window.isUsagePermissionUnknown {
+                    Text(Strings.t(window.isResetTicketPending ? "accounts.list.resetTicketPending" : window.isUsageBlocked ? "accounts.list.limitBlocked" : "accounts.list.permissionUnknown"))
                         .font(.caption2).foregroundStyle(.orange)
                 }
                 if let pace = window.paceText {
@@ -134,7 +134,7 @@ private struct WindowRow: View {
     }
 
     private var accessibilityValue: String {
-        let permission = window.isUsageBlocked ? Strings.t("accounts.list.limitBlocked") :
+        let permission = window.isResetTicketPending ? Strings.t("accounts.list.resetTicketPending") : window.isUsageBlocked ? Strings.t("accounts.list.limitBlocked") :
             window.isUsagePermissionUnknown ? Strings.t("accounts.list.permissionUnknown") : nil
         let pieces = [remainingText, usedText, DisplayFormat.resetStamp(window.resetsAtMs), window.paceText, permission]
         return pieces.compactMap { $0 }.joined(separator: ", ")

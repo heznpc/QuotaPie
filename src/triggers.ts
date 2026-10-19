@@ -146,6 +146,9 @@ export function planTriggers(
   const plannedEventKeys = new Set<string>();
   for (const event of recentEvents.filter((item) => item.occurredAtMs >= sinceMs)) {
     if (!isAlertableEventKind(event.kind)) continue;
+    // The ticket change already notified the user; preserve the delayed
+    // recovery in the ledger without a second "unexpected refill" alert.
+    if (event.details.resetTicketRecovery === true) continue;
     const key = `event:${alertScope(event.provider, event.account, event.bucket)}:${event.kind}`;
     if (plannedEventKeys.has(key)) continue;
     plannedEventKeys.add(key);

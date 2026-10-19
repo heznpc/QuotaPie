@@ -1282,3 +1282,7 @@
 
 "usage.consumption.parentRepoCandidateBadge" = "QuotaPie parent repository candidate · unconfirmed";
 "usage.consumption.evidence.parent_repository" = "Evidence: parent repository is QuotaPie · candidate because the child repository is unverified";
+
+"accounts.list.resetTicketPending" = "Reset pass used · checking quota";
+"resetTickets.pending" = " Rechecking quota.";
+"event.resetTicketRecovery" = "%@ recovered after a reset pass was used.";

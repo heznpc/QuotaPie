@@ -64,8 +64,10 @@ export function classifyDelta(
     nextWindowSeconds: next.windowSeconds,
     previousQuality: previous.quality,
     nextQuality: next.quality,
+    resetTicketRecovery: next.metadata?.resetTicketRecovery === true,
+    resetTicketObservedAtMs: typeof next.metadata?.resetTicketObservedAtMs === "number" ? next.metadata.resetTicketObservedAtMs : null,
     resetCreditDecreased: (previous.resetCreditsAvailable != null && next.resetCreditsAvailable != null
-      && next.resetCreditsAvailable < previous.resetCreditsAvailable) || next.metadata?.accountResetCreditDecreased === true,
+      && next.resetCreditsAvailable < previous.resetCreditsAvailable) || next.metadata?.accountResetCreditDecreased === true || next.metadata?.resetTicketRecovery === true,
   };
   if (next.source !== previous.source) {
     events.push(
@@ -164,7 +166,8 @@ export function classifyDelta(
 
     // A provider clock advancing to a new window is a stronger reset signal than
     // the absolute drop. Low-use windows commonly reset from only 2–10% to 0%.
-    if (evidence.resetCreditDecreased && meaningfulDrop) {
+    if (evidence.resetCreditDecreased && !evidence.resetTicketRecovery && meaningfulDrop &&
+        !(resetChanged && nearScheduledReset)) {
       // The provider also reports fewer banked tickets. Preserve that context
       // without presenting this recovery as a separate provider-granted reset.
     } else if (resetChanged && meaningfulDrop && nearScheduledReset) {

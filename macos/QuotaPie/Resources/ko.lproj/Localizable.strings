@@ -1282,3 +1282,7 @@
 
 "usage.consumption.parentRepoCandidateBadge" = "QuotaPie 부모 저장소 후보 · 미확정";
 "usage.consumption.evidence.parent_repository" = "분류 근거: 부모 대화의 저장소가 QuotaPie · 자식 작업의 실제 저장소 미확인으로 후보 처리";
+
+"accounts.list.resetTicketPending" = "리셋권 사용 감지 · 한도 재확인 중";
+"resetTickets.pending" = " 한도를 재확인하고 있습니다.";
+"event.resetTicketRecovery" = "%@ 한도가 리셋권 사용 후 회복됐습니다.";
