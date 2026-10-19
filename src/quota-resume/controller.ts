@@ -176,7 +176,7 @@ export class AutoResumeController {
     // Keep the chain in the durable ledger, but show its latest continuation
     // once a new incident supersedes the quota-blocked parent.
     const continuedParents=new Set(allIncidents.map(i=>i.evidence.recoveryIncidentId).filter((id):id is string=>id!==undefined));
-    const incidents=allIncidents.filter(i=>!continuedParents.has(i.id)).slice(0,100).map(i=>{
+    const projected=allIncidents.filter(i=>!continuedParents.has(i.id)).map(i=>{
       const policy=this.deps.policy(i.policyId);
       let state:string=i.state,reason=i.reason;
       if(policy?.state.status==="uncertain") {state="needs-review";reason=policy.state.lastResult?.reason;}
@@ -184,7 +184,11 @@ export class AutoResumeController {
         state=this.deps.ownsExecution?.(policy.state.activeExecutionId)===false?"needs-review":"running";
         reason=state==="needs-review"?"execution-unverified":undefined;
         const receipt=this.deps.execution?.(policy.state.activeExecutionId)?.hostQueue;
-        if(state==="running" && receipt && !receipt.turnId) {state="queued";reason="host-queue-awaiting-turn";}
+        if(state==="running" && receipt && !receipt.turnId) {
+          state="queued";
+          reason=receipt.hostWakeStatus==="unavailable"?"host-queue-wake-unavailable":
+            receipt.hostWakeStatus==="sent"?"host-queue-wake-sent":"host-queue-awaiting-turn";
+        }
       }
       else if((policy?.state.turns??0)>0) {
         state=policy?.state.status==="turn-finished"?"resumed":policy?.state.lastResult?.status==="quota-blocked"&&this.authorized(i)?"waiting":"needs-review";
@@ -192,6 +196,10 @@ export class AutoResumeController {
       } else if(i.state==="waiting" && policy) reason=this.deps.admissionReason(policy);
       return {id:i.id,account:i.account,threadId:i.threadId,projectLabel:i.projectLabel,state,reason,detectedAtMs:i.detectedAtMs,policyId:i.policyId};
     });
+    // Unresolved work must remain visible to both the UI and notification
+    // reconciliation even after newer history accumulates. Bound only history.
+    const terminal=(incident:typeof projected[number])=>incident.state==="resumed" || incident.state==="skipped";
+    const incidents=[...projected.filter(i=>!terminal(i)),...projected.filter(terminal).slice(0,100)];
     return {accounts,incidents};
   }
   private async register(incident: QuotaResumeIncident): Promise<void> {
@@ -230,12 +238,22 @@ export class AutoResumeController {
         // delay a newly blocked conversation behind weeks of historical pages.
         const latestPage=await this.deps.listThreads(account.account,null);
         const cursor=this.cursors.get(account.account);
-        const historyPage=cursor ? await this.deps.listThreads(account.account,cursor) : null;
+        let historyPage: Awaited<ReturnType<AutoResumeDependencies["listThreads"]>> | null = null;
+        let validationUnavailable=false;
+        if(cursor) {
+          try { historyPage=await this.deps.listThreads(account.account,cursor); }
+          catch {
+            // The newest page is still usable. Discard a failed continuation
+            // cursor so an expired history token cannot block every later scan.
+            this.cursors.delete(account.account);
+            validationUnavailable=true;
+          }
+        }
         const lastPage=historyPage??latestPage;
         const oldest=lastPage.data.at(-1);
-        this.cursors.set(account.account,oldest?.updatedAtMs!==undefined && oldest.updatedAtMs+1000<preference.enabledAtMs ? null : lastPage.nextCursor);
+        if(!validationUnavailable) this.cursors.set(account.account,
+          oldest?.updatedAtMs!==undefined && oldest.updatedAtMs+1000<preference.enabledAtMs ? null : lastPage.nextCursor);
         const threads=[...new Map([...latestPage.data,...(historyPage?.data??[])].map(t=>[t.id,t])).values()];
-        let validationUnavailable=false;
         for(const thread of threads) {
           const current=this.checkedPreference(account.account);
           if(this.closed || !current?.enabled || current.revision!==preference.revision || !this.matches(current)) break;

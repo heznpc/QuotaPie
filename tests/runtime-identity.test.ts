@@ -1,14 +1,37 @@
 import { expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, unlinkSync, symlinkSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { runtimeSourceHash } from "../src/runtime-identity";
+import { captureRuntimeIdentity, runtimeSourceHash } from "../src/runtime-identity";
+
+test("legacy hash version retains exactly the original input set while current identities require the new helpers",()=>{
+  const root=mkdtempSync(join(tmpdir(),"quotapie-legacy-identity-"));
+  const legacyFiles=["src/cli.ts","packages/quota-core/src/index.ts","packages/quota-core/package.json","bin/quotapie","script/awake_hook.py"];
+  const expected=createHash("sha256");
+  try {
+    for(const file of legacyFiles) {
+      const text="fixture:"+file;mkdirSync(dirname(join(root,file)),{recursive:true});writeFileSync(join(root,file),text);
+      expected.update(`${file}\0${Buffer.byteLength(text)}\0`);expected.update(text);
+    }
+    const legacyHash=expected.digest("hex");
+    expect(runtimeSourceHash(root,1)).toBe(legacyHash);
+    expect(()=>runtimeSourceHash(root)).toThrow();
+    for(const file of ["script/codex-host-wake.py","scripts/codex-compaction-local.py"]) {
+      mkdirSync(dirname(join(root,file)),{recursive:true});writeFileSync(join(root,file),"new helper");
+    }
+    expect(runtimeSourceHash(root,1)).toBe(legacyHash);
+    expect(runtimeSourceHash(root,2)).not.toBe(legacyHash);
+    expect(()=>runtimeSourceHash(root,3 as 1)).toThrow("Unsupported runtime hash version");
+    expect(captureRuntimeIdentity().hashVersion).toBe(2);
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
 
 test("runtime identity detects changed and missing code but ignores notes and build products", () => {
   const root = mkdtempSync(join(tmpdir(), "quotapie-identity-"));
   try {
-    for (const path of ["src", "bin", "script", "dist"]) mkdirSync(join(root, path));
-    for (const file of ["src/cli.ts", "bin/quotapie", "script/awake_hook.py"]) writeFileSync(join(root, file), "initial");
+    for (const path of ["src", "bin", "script", "scripts", "dist"]) mkdirSync(join(root, path));
+    for (const file of ["src/cli.ts", "bin/quotapie", "script/awake_hook.py", "script/codex-host-wake.py", "scripts/codex-compaction-local.py"]) writeFileSync(join(root, file), "initial");
     mkdirSync(join(root, "packages/quota-core/src"), { recursive: true });
     writeFileSync(join(root, "packages/quota-core/package.json"), "{}");
     writeFileSync(join(root, "packages/quota-core/src/index.ts"), "initial");
@@ -16,6 +39,16 @@ test("runtime identity detects changed and missing code but ignores notes and bu
     writeFileSync(join(root, "TODO.md"), "notes");
     writeFileSync(join(root, "dist/app"), "build");
     expect(runtimeSourceHash(root)).toBe(initial);
+    writeFileSync(join(root, "script/codex-host-wake.py"), "changed wake helper");
+    expect(runtimeSourceHash(root)).not.toBe(initial);
+    unlinkSync(join(root, "script/codex-host-wake.py"));
+    expect(() => runtimeSourceHash(root)).toThrow();
+    writeFileSync(join(root, "script/codex-host-wake.py"), "initial");
+    writeFileSync(join(root, "scripts/codex-compaction-local.py"), "changed provider helper");
+    expect(runtimeSourceHash(root)).not.toBe(initial);
+    unlinkSync(join(root, "scripts/codex-compaction-local.py"));
+    expect(() => runtimeSourceHash(root)).toThrow();
+    writeFileSync(join(root, "scripts/codex-compaction-local.py"), "initial");
     writeFileSync(join(root, "packages/quota-core/src/index.ts"), "changed core");
     expect(runtimeSourceHash(root)).not.toBe(initial);
     writeFileSync(join(root, "packages/quota-core/src/index.ts"), "initial");

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config";
 import { QuotaDatabase } from "../src/db";
 import { QuotaPieService } from "../src/service";
+import * as hostWake from "../src/quota-resume/host-wake";
 import { startDashboard } from "../src/server";
 import type { CodexThreadGoal, CodexThreadListParams, CodexThreadTurnSummary } from "../src/providers/codex-appserver";
 import type { QuotaObservation } from "../src/types";
@@ -208,6 +209,39 @@ test("a newly observed quota lane wakes the runner only after its required budge
   } finally { request.mockRestore(); }
 });
 
+test("goal refresh ignores old enabled terminal or exhausted recoveries and orphaned executions", async () => {
+  const f = fixture(), incident = await f.enableAndDiscover();
+  const original = f.service.work.store.get(incident.policyId)!;
+  const read = spyOn(f.client, "readThreadGoal");
+  try {
+    await (f.service as any).refreshAutoResumeGoals();
+    expect(read).toHaveBeenCalledTimes(1);
+    read.mockClear();
+    // Older collectors could persist enabled=true after a terminal result.
+    // None of these records can claim another one-shot continuation.
+    for (const state of [
+      { status: "turn-finished", turns: 1 }, { status: "waiting", turns: 1 },
+      ...["objective-completed", "needs-user-input", "failed", "uncertain", "quota-blocked", "time-budget-ended", "stopped"]
+        .map(status => ({ status, turns: 0 })),
+      { status: "waiting", turns: 0, totalDurationSeconds: original.maxTotalDurationSeconds },
+    ]) {
+      const policy = { ...original, state: { ...original.state, ...state } };
+      f.service.storage.db.query("UPDATE work_policies SET value=? WHERE id=?").run(JSON.stringify(policy), policy.id);
+      await (f.service as any).refreshAutoResumeGoals();
+      expect(read).not.toHaveBeenCalled();
+      expect((f.service as any).autoResumeGoals.has(policy.id)).toBe(false);
+    }
+    f.service.storage.db.query("UPDATE work_policies SET value=? WHERE id=?").run(JSON.stringify(original), original.id);
+    const execution = f.service.work.store.claim(original.id, "local", original.revision)!;
+    f.service.work.store.markDispatched(execution.id);
+    expect(f.service.work.ownsExecution(execution.id)).toBe(false);
+    await (f.service as any).refreshAutoResumeGoals();
+    expect(read).not.toHaveBeenCalled();
+    expect(f.service.work.store.get(original.id)?.state.activeExecutionId).toBe(execution.id);
+    expect(f.service.work.store.getExecution(execution.id)?.status).toBe("dispatched");
+  } finally { read.mockRestore(); }
+});
+
 async function httpFixture() {
   const f = fixture();
   const server = startDashboard(f.service, f.config, { compactionRoot: join(f.root, "empty-compaction") });
@@ -315,6 +349,38 @@ test("restart removes only its revoked queued input without replaying or clearin
   expect(f.service.work.store.getExecution(execution.id)?.status).not.toBe("finished");
   expect(f.service.work.store.get(incident.policyId)?.state.activeExecutionId).toBe(execution.id);
   expect(f.service.autoResume.status().incidents[0]?.state).toBe("needs-review");
+});
+
+test("an orphaned host receipt keeps its fence on lookup failure and completes only on its exact terminal turn", async () => {
+  const f = fixture(true), incident = await f.enableAndDiscover();
+  const policy = f.service.work.store.get(incident.policyId)!;
+  const execution = f.service.work.store.claim(policy.id, "local", policy.revision)!;
+  f.service.work.store.markDispatched(execution.id);
+  const receipt = { threadId: THREAD, clientUserMessageId: "cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa", sentAtMs: Date.now(),
+    queuedSubmissionId: "dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb", turnId: "eeeeeeee-ffff-4aaa-8bbb-cccccccccccc" };
+  f.service.work.store.recordHostQueue(execution.id, receipt);
+  await f.restart();
+  let failed = true, reads = 0;
+  Object.assign(f.client, {
+    readTurn: async (threadId: string, turnId: string) => {
+      expect(threadId).toBe(receipt.threadId); expect(turnId).toBe(receipt.turnId); reads++;
+      if (failed) throw new Error("Synthetic observer unavailable");
+      return { threadId, turnId, status: "completed", errorCode: null, completedAtMs: Date.now() };
+    },
+    addThreadQueue: async () => { throw new Error("Observer must never replay"); },
+  });
+  await (f.service as any).refreshHostQueueReceipts();
+  expect(reads).toBe(1);
+  expect(f.service.work.store.getExecution(execution.id)?.status).toBe("dispatched");
+  expect(f.service.autoResume.status().incidents[0]?.state).toBe("needs-review");
+  failed = false;
+  await (f.service as any).refreshHostQueueReceipts();
+  expect(reads).toBe(2);
+  expect(f.service.work.store.getExecution(execution.id)?.result?.status).toBe("turn-finished");
+  expect(f.service.work.store.get(incident.policyId)?.state.activeExecutionId).toBeNull();
+  expect(f.service.autoResume.status().incidents[0]?.state).toBe("resumed");
+  await (f.service as any).refreshHostQueueReceipts();
+  expect(reads).toBe(2); expect(f.runs()).toBe(0);
 });
 
 test("repeated host quota failures wait for distinct recovery and retain the session across restart and long waits", async () => {
@@ -547,4 +613,40 @@ test("restart retains the incident but holds until a new host-goal observation s
   await f.service.work.dispatch(policy.id, "local", policy.revision, "recovered-after-restart");
   await f.service.work.settle();
   expect(f.runs()).toBe(1); expect(f.service.work.store.executions()).toHaveLength(1);
+});
+
+test("orphaned queued wake retains the full admission gate including model lanes and explicit provider permission", async () => {
+  for (const restriction of ["none","permission-false","permission-null","spend-control","new-model-lane","paused-goal"] as const) {
+    const f=fixture(),incident=await f.enableAndDiscover();
+    await Bun.sleep(2);f.observe(Date.now(),20);
+    await (f.service as any).refreshAutoResumeGoals();
+    const policy=f.service.work.store.get(incident.policyId)!;
+    const e=f.service.work.store.claim(policy.id,"local",policy.revision)!;
+    f.service.work.store.markDispatched(e.id);
+    const receipt={threadId:THREAD,clientUserMessageId:"cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa",sentAtMs:Date.now(),queuedSubmissionId:"dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb"};
+    f.service.work.store.recordHostQueue(e.id,receipt);
+    Object.assign(f.client,{
+      readTurnForClientMessage:async()=>null,
+      listThreadQueue:async()=>({data:[{id:receipt.queuedSubmissionId,clientUserMessageId:receipt.clientUserMessageId}],nextCursor:null}),
+      deleteThreadQueue:async()=>true,
+    });
+    await Bun.sleep(2);
+    if(restriction==="permission-false")f.observe(Date.now(),20,{metadata:{ordinaryUsageAllowed:false}});
+    if(restriction==="permission-null")f.observe(Date.now(),20,{metadata:{ordinaryUsageAllowed:null}});
+    if(restriction==="spend-control")f.observe(Date.now(),20,{metadata:{spendControlReached:true}});
+    if(restriction==="new-model-lane")f.observe(Date.now(),100,{bucket:"model-limit:primary:300",metadata:{limitId:"model-limit",normalModelSlug:policy.model!}});
+    if(restriction==="paused-goal")f.setGoal("paused");
+    let sends=0;
+    const wake=spyOn(hostWake,"wakeHostQueuedThread").mockImplementation(async request=>{
+      await request.beforeSend?.();
+      if(!request.stillAuthorized?.())return {status:"unavailable",reason:"host-wake-authorization-changed"};
+      sends++;return {status:"sent"};
+    });
+    try{
+      await (f.service as any).refreshHostQueueReceipts();
+      expect(sends).toBe(restriction==="none"?1:0);
+      expect(f.service.work.store.getExecution(e.id)?.status).toBe("dispatched");
+      expect(f.runs()).toBe(0);
+    }finally{wake.mockRestore();}
+  }
 });

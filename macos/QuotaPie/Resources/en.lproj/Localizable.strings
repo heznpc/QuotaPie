@@ -990,6 +990,7 @@
 "autoResume.lastScan" = "Last checked: %@";
 "autoResume.scanWaiting" = "Waiting for the first check.";
 "autoResume.scanError" = "Could not check for conversations stopped by quota limits.";
+"autoResume.statusUnavailable" = "The latest status is unavailable. The records below show the last known state and do not confirm that automatic resumption succeeded.";
 "autoResume.saveFailed" = "Could not confirm the change. Refresh the status before trying again.";
 "autoResume.skip" = "Skip this conversation";
 "autoResume.state.waiting" = "Waiting for recovery";
@@ -1037,3 +1038,6 @@
 "alert.resume.auto.resumed.message" = "One automatic continuation turn in %@ finished. This does not confirm completion of its overall goal.";
 "alert.resume.auto.review.message" = "The resume state of %@ needs review. Open this notification to inspect the reason.";
 "alert.resume.auto.scanUnavailable.message" = "Could not verify conversations interrupted by quota. Review automatic resume status.";
+
+"autoResume.reason.wakeSent" = "Asked the existing ChatGPT host to wake this conversation. Checking the same conversation for its start and completion.";
+"autoResume.reason.wakeUnavailable" = "The continuation is queued, but the ChatGPT host could not be woken. Still checking whether the same conversation starts.";

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config";
 import type { CodexThreadTurnSummary } from "../src/providers/codex-appserver";
 import { executeHostQueuedQuotaResume, hostQueueClientMessageId, observeHostQueueReceipt,
-  type HostQueueClient, type HostQueueOptions, type HostQueueReceipt } from "../src/quota-resume/host-queue";
+  wakeAcceptedHostQueue, type HostQueueClient, type HostQueueOptions, type HostQueueReceipt } from "../src/quota-resume/host-queue";
 import type { QuotaResumeEvidence } from "../src/quota-resume/evidence";
 import type { WorkPolicy } from "../src/work/types";
 
@@ -54,6 +54,7 @@ function fixture() {
   const options: HostQueueOptions = {
     client, stillAuthorized: () => state.authorized, hasNativeWriter: () => state.writer, evidenceStillCurrent: () => true,
     beforeEnqueue: async () => { state.order.push("validate"); },
+    wakeHost: async ({beforeSend}) => { await beforeSend?.(); state.order.push("wake"); return { status: "sent" }; },
     onReceipt: receipt => { state.receipts.push({ ...receipt }); state.order.push(receipt.turnId ? "turn" : receipt.queuedSubmissionId ? "ack" : "intent"); },
     readEvidence: async (_config, account, id, opts) => {
       expect(account).toBe("plus"); expect(id).toBe(threadId); expect(opts?.allowNativeWriter).toBe(true); return state.evidence;
@@ -73,10 +74,10 @@ test("durable intent precedes one unchanged prompt and only its correlated termi
   const result = await f.run();
   expect(result).toMatchObject({ status: "turn-finished", summary: "1회 재개 종료" });
   expect(result.remainingWork).toContain("아직 확인하지 않았습니다");
-  expect(f.state.order).toEqual(["validate", "validate", "intent", "add", "ack", "turn"]);
+  expect(f.state.order).toEqual(["validate", "validate", "intent", "add", "ack", "ack", "wake", "ack", "turn"]);
   expect(f.state.adds).toBe(1); expect(f.state.deletes).toEqual([]);
-  expect(f.state.receipts).toHaveLength(3);
-  expect(f.state.receipts[2]).toEqual({ threadId, clientUserMessageId: hostQueueClientMessageId("claim-once"), sentAtMs: 10_000, queuedSubmissionId: queuedId, turnId: ownTurnId });
+  expect(f.state.receipts).toHaveLength(5);
+  expect(f.state.receipts[4]).toEqual({ threadId, clientUserMessageId: hostQueueClientMessageId("claim-once"), sentAtMs: 10_000, queuedSubmissionId: queuedId, turnId: ownTurnId, hostWakeRequestedAtMs: 10_000, hostWakeAttemptCount: 1, hostWakeStatus: "sent" });
   expect(f.state.lookups.every(args => args[2] === failedTurnId)).toBe(true);
   expect(hostQueueClientMessageId("claim-once")).toBe(hostQueueClientMessageId("claim-once"));
   expect(hostQueueClientMessageId("claim-once")).not.toBe(hostQueueClientMessageId("another-claim"));
@@ -227,4 +228,93 @@ test("after correlation, restart reconciliation reads exact turn metadata withou
   f.client.readTurnForClientMessage = async () => { throw new Error("history-bound-exceeded"); };
   expect((await observeHostQueueReceipt(receipt, { client: f.client, onReceipt: f.options.onReceipt, afterTurnId: failedTurnId }))?.status).toBe("turn-finished");
   expect(exactReads).toBe(1); expect(f.state.adds).toBe(0);
+});
+
+test("wake failure remains observable while an already loaded host can still complete the exact turn", async () => {
+  const f = fixture();
+  f.options.wakeHost = async () => ({ status: "unavailable", reason: "host-wake-owner-unverified" });
+  f.options.sleep = async ms => { f.state.now += ms; f.state.turn = f.terminal(); f.state.queue = []; };
+  expect(await f.run()).toMatchObject({ status: "turn-finished" });
+  expect(f.state.receipts.at(-1)).toMatchObject({ hostWakeStatus: "unavailable", hostWakeReason: "host-wake-owner-unverified", turnId: ownTurnId });
+  expect(f.state.adds).toBe(1); expect(f.state.deletes).toEqual([]);
+});
+
+test("a persisted wake attempt is not repeated after restart and cannot enqueue another message", async () => {
+  const f = fixture();
+  const receipt: HostQueueReceipt = { threadId, clientUserMessageId: hostQueueClientMessageId("claim-once"), sentAtMs: 10_000, queuedSubmissionId: queuedId };
+  f.state.queue = [{ id: queuedId, clientUserMessageId: receipt.clientUserMessageId }];
+  let wakes = 0;
+  const options = { config: f.config, account: "plus", client: f.client, stillAuthorized: () => true,
+    onReceipt: async (value: HostQueueReceipt) => { f.state.receipts.push(structuredClone(value)); },
+    now: () => f.state.now, wakeHost: async () => {
+      expect(f.state.receipts.at(-1)?.hostWakeRequestedAtMs).toBe(10_000);
+      wakes++; return { status: "sent" as const };
+    } };
+  await wakeAcceptedHostQueue(receipt, options);
+  await wakeAcceptedHostQueue(structuredClone(receipt), options);
+  await wakeAcceptedHostQueue({ ...receipt, hostWakeStatus: undefined }, options); // interrupted after durable intent
+  expect(wakes).toBe(1); expect(f.state.adds).toBe(0);
+});
+
+test("missing acknowledgement, foreign queue, consumed input and revoked permission never wake a host", async () => {
+  for (const condition of ["no-ack", "foreign", "consumed", "revoked", "revoked-during-save"] as const) {
+    const f = fixture(); let wakes = 0;
+    const receipt: HostQueueReceipt = { threadId, clientUserMessageId: hostQueueClientMessageId("claim-once"), sentAtMs: 10_000,
+      ...(condition === "no-ack" ? {} : { queuedSubmissionId: queuedId }) };
+    f.state.queue = condition === "consumed" ? [] : [{ id: queuedId, clientUserMessageId: receipt.clientUserMessageId }];
+    if (condition === "foreign") f.state.queue.push({id: otherQueuedId, clientUserMessageId: "foreign"});
+    if (condition === "revoked") f.state.authorized = false;
+    await wakeAcceptedHostQueue(receipt, { config: f.config, account: "plus", client: f.client,
+      stillAuthorized: () => f.state.authorized,
+      onReceipt: () => { if (condition === "revoked-during-save") f.state.authorized = false; },
+      wakeHost: async ({stillAuthorized}) => { if (stillAuthorized?.()) wakes++; return { status: "unavailable", reason: "host-wake-authorization-changed" }; },
+    });
+    expect(wakes).toBe(0); expect(f.state.adds).toBe(0);
+  }
+});
+
+test("wake retries back off across restarts while retaining exactly one queued message", async () => {
+  const f=fixture(), receipt: HostQueueReceipt={threadId,clientUserMessageId:hostQueueClientMessageId("retry"),sentAtMs:10000,queuedSubmissionId:queuedId};
+  f.state.queue=[{id:queuedId,clientUserMessageId:receipt.clientUserMessageId}];
+  let wakes=0;
+  const options={config:f.config,account:"plus",client:f.client,stillAuthorized:()=>true,now:()=>f.state.now,
+    onReceipt:(r:HostQueueReceipt)=>{f.state.receipts.push(structuredClone(r));},
+    wakeHost:async()=>{wakes++;return {status:"unavailable" as const,reason:"host-wake-owner-unavailable"};}};
+  await wakeAcceptedHostQueue(receipt,options);
+  f.state.now+=29999;await wakeAcceptedHostQueue(receipt,options);expect(wakes).toBe(1);
+  f.state.now++;await wakeAcceptedHostQueue(receipt,options);expect(wakes).toBe(2);
+  f.state.now+=30000;await wakeAcceptedHostQueue(receipt,options);expect(wakes).toBe(2);
+  f.state.now+=30000;await wakeAcceptedHostQueue(receipt,options);expect(wakes).toBe(3);
+  expect(receipt.hostWakeAttemptCount).toBe(3);expect(f.state.adds).toBe(0);expect(f.state.deletes).toEqual([]);
+  receipt.turnId=ownTurnId;f.state.now+=300000;await wakeAcceptedHostQueue(receipt,options);expect(wakes).toBe(3);
+});
+
+test("a transient wake queue lookup failure does not delete accepted input or stop its observation", async () => {
+  const f=fixture(), original=f.client.listThreadQueue;
+  f.client.listThreadQueue=async (...args)=>{if(f.state.lists===2){f.state.lists++;throw new Error("offline");}return original(...args);};
+  f.options.sleep=async ms=>{f.state.now+=ms;f.state.turn=f.terminal();f.state.queue=[];};
+  expect(await f.run()).toMatchObject({status:"turn-finished"});
+  expect(f.state.receipts.at(-1)).toMatchObject({hostWakeStatus:"unavailable",hostWakeReason:"host-wake-queue-unavailable"});
+  expect(f.state.adds).toBe(1);expect(f.state.deletes).toEqual([]);expect(f.state.order).not.toContain("wake");
+});
+
+test("the final wake handshake rechecks foreign input and the current authorization", async () => {
+  const f=fixture(), receipt:HostQueueReceipt={threadId,clientUserMessageId:hostQueueClientMessageId("race"),sentAtMs:10000,queuedSubmissionId:queuedId};
+  f.state.queue=[{id:queuedId,clientUserMessageId:receipt.clientUserMessageId}];
+  let sends=0;
+  await wakeAcceptedHostQueue(receipt,{config:f.config,account:"plus",client:f.client,stillAuthorized:()=>true,onReceipt:()=>{},
+    wakeHost:async({beforeSend})=>{
+      f.state.queue.push({id:otherQueuedId,clientUserMessageId:"foreign"});
+      try{await beforeSend?.();sends++;return {status:"sent"};}catch{return {status:"unavailable",reason:"host-wake-queue-changed"};}
+    }});
+  expect(sends).toBe(0);expect(receipt.hostWakeStatus).toBe("unavailable");expect(f.state.adds).toBe(0);
+});
+
+test("an active adapter rechecks the host goal after helper preparation before waking", async () => {
+  const f=fixture(); let sends=0,goalReads=0;
+  f.options.beforeWake=async()=>{goalReads++;throw new Error("host-goal-not-active");};
+  f.options.wakeHost=async({beforeSend})=>{try{await beforeSend?.();sends++;return {status:"sent"};}catch{return {status:"unavailable",reason:"host-wake-queue-changed"};}};
+  f.options.sleep=async ms=>{f.state.now+=ms;f.state.turn=f.terminal();f.state.queue=[];};
+  expect(await f.run()).toMatchObject({status:"turn-finished"});
+  expect(goalReads).toBe(1);expect(sends).toBe(0);expect(f.state.adds).toBe(1);expect(f.state.deletes).toEqual([]);
 });

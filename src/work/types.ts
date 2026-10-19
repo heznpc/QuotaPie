@@ -61,7 +61,8 @@ export interface WorkExecution {
   accountedDurationSeconds?: number; planning?: WorkPlanning;
   /** Durable intent/receipt for the existing host's queue. The client message
    * ID correlates a turn; the provider does not deduplicate submissions. */
-  hostQueue?: {threadId:string;clientUserMessageId:string;sentAtMs:number;queuedSubmissionId?:string;turnId?:string};
+  hostQueue?: {threadId:string;clientUserMessageId:string;sentAtMs:number;queuedSubmissionId?:string;turnId?:string;
+    hostWakeRequestedAtMs?:number;hostWakeAttemptCount?:number;hostWakeStatus?:"sent"|"unavailable";hostWakeReason?:string};
   /** Exact native turn proven by the owned managed process after it stopped. */
   managedTurn?: {threadId:string;turnId:string};
   minimumRemainingByBucket?: Record<string,number>; effectiveReserveByBucket?: Record<string,number>;

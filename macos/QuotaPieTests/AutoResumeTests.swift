@@ -45,6 +45,27 @@ final class AutoResumeTests: XCTestCase {
         XCTAssertFalse(model.autoResumeSaving)
     }
 
+    func testWorkSectionWarnsWhenAnEndedTurnIsOnlyACachedStatus() throws {
+        let model = PopoverModel()
+        var current = try payload(enabled: true)
+        current.actionToken = "fixture-token"
+        model.applyStatus(current, notificationRevision: 0)
+        let section = AutoResumeSection(model: model)
+        XCTAssertNil(section.statusUnavailableMessage)
+        XCTAssertEqual(model.payload?.autoResume?.incidents[2].state, "resumed")
+
+        model.lastError = "fixture unavailable"
+        XCTAssertFalse(model.canActOnTasks)
+        XCTAssertEqual(section.statusUnavailableMessage, Strings.t("autoResume.statusUnavailable"))
+        XCTAssertEqual(model.payload?.autoResume?.incidents[2].state, "resumed", "Keep the history while qualifying its freshness")
+
+        model.lastError = nil
+        model.payload?.actionToken = nil
+        XCTAssertNotNil(section.statusUnavailableMessage)
+        model.applyStatus(current, notificationRevision: 0)
+        XCTAssertNil(section.statusUnavailableMessage)
+    }
+
     func testAdmissionWaitReasonsDoNotAskForManualReview() {
         for reason in ["reserve-reached", "quota-stale", "quota-unknown", "reset-unconfirmed", "host-goal-stale", "host-goal-unavailable", "ready"] {
             let incident = AutoResumeIncident(id: "fixture", account: "personal", threadId: "thread",

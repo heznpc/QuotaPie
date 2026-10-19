@@ -990,6 +990,7 @@
 "autoResume.lastScan" = "마지막 확인: %@";
 "autoResume.scanWaiting" = "첫 확인을 기다리고 있습니다.";
 "autoResume.scanError" = "한도로 멈춘 대화를 확인하지 못했습니다.";
+"autoResume.statusUnavailable" = "최신 상태를 확인하지 못했습니다. 아래는 마지막 확인 기록이며, 현재 자동재개 성공을 뜻하지 않습니다.";
 "autoResume.saveFailed" = "변경 결과를 확인하지 못했습니다. 다시 시도하기 전에 상태를 새로고침하세요.";
 "autoResume.skip" = "이 대화 건너뛰기";
 "autoResume.state.waiting" = "회복 대기";
@@ -1037,3 +1038,6 @@
 "alert.resume.auto.resumed.message" = "%@ 대화의 자동재개 한 턴이 종료됐습니다. 작업 목표 완료 여부와는 별개입니다.";
 "alert.resume.auto.review.message" = "%@ 대화의 재개 상태를 확인해야 합니다. 알림을 눌러 대기 이유를 확인하세요.";
 "alert.resume.auto.scanUnavailable.message" = "한도로 멈춘 대화를 검증하지 못했습니다. 자동재개 상태를 확인하세요.";
+
+"autoResume.reason.wakeSent" = "기존 ChatGPT 호스트에 대화를 깨우도록 요청했습니다. 같은 대화의 시작과 종료를 확인 중입니다.";
+"autoResume.reason.wakeUnavailable" = "재개 메시지는 대기열에 있지만 ChatGPT 호스트를 깨우지 못했습니다. 같은 대화가 시작되는지 계속 확인 중입니다.";

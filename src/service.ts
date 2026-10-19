@@ -4,7 +4,7 @@ import { readQuotaResumeEvidence, type QuotaResumeEvidence, type QuotaResumeEvid
 import { QuotaRecoveryStore } from "./quota-resume/recovery";
 import { workPolicyExpiresAtMs } from "./work/lifetime";
 import { planQuotaResumeBudgets } from "./work/quota-budgets";
-import { executeHostQueuedQuotaResume, observeHostQueueReceipt, removeOwnHostQueuedInput, type HostQueueReceipt } from "./quota-resume/host-queue";
+import { executeHostQueuedQuotaResume, observeHostQueueReceipt, removeOwnHostQueuedInput, wakeAcceptedHostQueue, type HostQueueReceipt } from "./quota-resume/host-queue";
 import { planWork, workWindows as scopedWorkWindows } from "./work/admission";
 import { evaluateWorkPerformance } from "./work/performance";
 import { realpathSync, existsSync } from "node:fs";
@@ -342,6 +342,7 @@ export class QuotaPieService {
       return executeHostQueuedQuotaResume({config:this.config,policy:p,claimId:id},{
         client:this.goalClient(profile),stillAuthorized:authorized,signal,
         beforeEnqueue:()=>this.validateAutoResume(p),
+        beforeWake:()=>this.readAutoResumeGoal(p),
         onReceipt:receipt=>{ this.work.store.recordHostQueue(id,receipt); this.scheduleAutoResumeNotifications(); },
         readEvidence:(_config,account,threadId,options)=>this.readAutoResumeEvidence(account,threadId,options),
       });
@@ -387,22 +388,44 @@ export class QuotaPieService {
           const options={client:this.goalClient(profile),afterTurnId:p.quotaResume?.turnId,
             onReceipt:(receipt:HostQueueReceipt)=>this.work.store.recordHostQueue(execution.id,receipt),
           };
+          let wakeDeadline: number | null = null;
+          let wakeGoalObservedAtMs = 0;
           if(!receipt.turnId) {
             const deadline=Math.min(workPolicyExpiresAtMs(p),p.workDeadline??Infinity,
               (execution.dispatchedAtMs??execution.claimedAtMs)+Math.min(p.maxDurationSeconds,p.maxTotalDurationSeconds-p.state.totalDurationSeconds)*1000);
             let revoked=Date.now()>=deadline || !!this.autoResume.blockPolicy(p);
             if(!revoked) {
               try {
-                const goal=await options.client.readThreadGoal(p.nativeSessionId);
-                revoked=!!goal && !["active","usageLimited"].includes(goal.status);
+                await this.readAutoResumeGoal(p);
+                wakeGoalObservedAtMs=Date.now();
               } catch { revoked=true; }
             }
             if(revoked && this.workGoalAccountMatches(p)) await removeOwnHostQueuedInput(receipt,options);
+            else if(!revoked) wakeDeadline=deadline;
           }
           const result=await observeHostQueueReceipt(receipt,options);
           if(result && !this.closing && this.workGoalAccountMatches(p)) {
             if(execution.status==="uncertain") this.work.store.reconcile(execution.id,result);
             else this.work.store.finish(execution.id,result);
+          } else if(!result && wakeDeadline !== null) {
+            const deadline=wakeDeadline;
+            const stillAuthorized=()=> {
+              const gate=this.workGate(p), now=Date.now();
+              const current=this.work.store.get(p.id);
+              return !this.closing && now<deadline && !this.autoResume.blockPolicy(p) && this.workGoalAccountMatches(p) &&
+                gate.ready && gate.profileKey===p.profileKey && gate.accountKey===p.accountKey &&
+                current?.state.activeExecutionId===execution.id && this.work.admission(current,true).ready &&
+                wakeGoalObservedAtMs>0 && now-wakeGoalObservedAtMs<Math.min(60000,this.config.collection.staleAfterSeconds*1000);
+            };
+            await wakeAcceptedHostQueue(receipt,{...options,config:this.config,account:p.account,
+              stillAuthorized,
+              beforeWake:async()=>{
+                wakeGoalObservedAtMs=0;
+                await this.readAutoResumeGoal(p);
+                wakeGoalObservedAtMs=Date.now();
+                if(!stillAuthorized()) throw new Error("host-wake-authorization-changed");
+              },
+            });
           }
         } catch { /* Ambiguous delivery retains the durable execution fence. */ }
       }
@@ -430,10 +453,20 @@ export class QuotaPieService {
       if(reason) throw new Error(reason);
     });
   }
+  private needsAutoResumeGoalRefresh(policy: WorkPolicy): boolean {
+    if(policy.purpose!=="quota-resume" || !policy.enabled || this.autoResume.blockPolicy(policy)) return false;
+    // The current runner needs fresh authorization until its turn exits. An
+    // orphaned receipt is read separately without granting another execution.
+    if(policy.state.activeExecutionId) return this.work.ownsExecution(policy.state.activeExecutionId);
+    // Old persisted policies can still be enabled after consuming their one
+    // attempt. They must not fill the profile's serial metadata client forever.
+    return policy.state.status==="waiting" && policy.state.turns<policy.maxTurns &&
+      policy.state.totalDurationSeconds<policy.maxTotalDurationSeconds;
+  }
   private refreshAutoResumeGoals(): Promise<void> {
     if(this.autoResumeGoalRefresh) return this.autoResumeGoalRefresh;
     if(this.closing) return Promise.resolve();
-    const pending=this.work.store.list().filter(p=>p.purpose==="quota-resume" && p.enabled && !this.autoResume.blockPolicy(p));
+    const pending=this.work.store.list().filter(p=>p.state.activeExecutionId===null && this.needsAutoResumeGoalRefresh(p));
     const blocked = pending.filter(p => !this.work.admission(p).ready).map(p => p.id);
     this.work.store.migratePendingQuotaResumeLifetime(pending.map(p=>p.id));
     for(const previous of pending) {
@@ -443,7 +476,7 @@ export class QuotaPieService {
       const plan=planQuotaResumeBudgets(p,this.workWindows(),{afterMs:incident.detectedAtMs,nowMs:Date.now()});
       this.work.store.refreshQuotaResumeBudgets(p.id,plan.budgets,{expectedRevision:p.revision,replacements:plan.replacements});
     }
-    const policies=this.work.store.list().filter(p=>p.purpose==="quota-resume" && p.enabled);
+    const policies=this.work.store.list().filter(p=>this.needsAutoResumeGoalRefresh(p));
     const ids=new Set(policies.map(p=>p.id));
     for(const id of this.autoResumeGoals.keys()) if(!ids.has(id)) this.autoResumeGoals.delete(id);
     this.autoResumeGoalRefresh=Promise.allSettled(policies.map(p=>this.readAutoResumeGoal(p))).then(()=>{

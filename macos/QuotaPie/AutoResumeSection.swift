@@ -8,6 +8,12 @@ struct AutoResumeSection: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(Strings.t("autoResume.title")).font(.headline)
             Text(Strings.t("autoResume.description")).font(.callout).foregroundStyle(.secondary)
+            if let message = statusUnavailableMessage {
+                Label(message, systemImage: "exclamationmark.circle")
+                    .font(.callout).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("auto-resume-status-unavailable")
+            }
             if let value = model.payload?.autoResume {
                 ForEach(value.accounts) { account in
                     VStack(alignment: .leading, spacing: 4) {
@@ -45,6 +51,10 @@ struct AutoResumeSection: View {
             if model.autoResumeSaving { ProgressView().controlSize(.small) }
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
         }
+    }
+
+    var statusUnavailableMessage: String? {
+        model.canActOnTasks ? nil : Strings.t("autoResume.statusUnavailable")
     }
 
     private var canChange: Bool { model.canActOnTasks && model.statusClient != nil && !model.autoResumeSaving }

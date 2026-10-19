@@ -91,8 +91,8 @@ test("runtime identity is captured once, without paths or configuration", async 
     const url = `http://127.0.0.1:${server.port}/api/runtime`;
     const first = await (await fetch(url)).json();
     expect(first).toEqual(await (await fetch(url)).json());
-    expect(first).toMatchObject({ schemaVersion: 1, pid: process.pid, sourceHash: runtimeSourceHash() });
-    expect(Object.keys(first).sort()).toEqual(["pid", "schemaVersion", "sourceHash", "startedAt"]);
+    expect(first).toMatchObject({ schemaVersion: 1, hashVersion: 2, pid: process.pid, sourceHash: runtimeSourceHash() });
+    expect(Object.keys(first).sort()).toEqual(["hashVersion", "pid", "schemaVersion", "sourceHash", "startedAt"]);
     expect((await fetch(url, { method: "POST" })).status).toBe(405);
   } finally { server.stop(true); service.close(); }
 });

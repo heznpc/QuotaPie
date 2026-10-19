@@ -26,6 +26,8 @@ function fixture(existing = true) {
     file(join(path, "packages/quota-core/package.json"), '{"name":"@heznpc/quota-core","type":"module"}');
     file(join(path, "bin/quotapie"), "#!/bin/sh\n");
     file(join(path, "script/awake_hook.py"), "# hook");
+    file(join(path, "script/codex-host-wake.py"), "# host wake helper");
+    file(join(path, "scripts/codex-compaction-local.py"), 'LABEL = "local.quotapie.compaction"\nclass LocalRelay: pass\n# provider compatibility helper');
     file(join(path, "script/install-macos.ts"), "// installer");
     file(join(path, "script/install.sh"), "#!/bin/sh");
     file(join(path, "package.json"), '{"name":"quotapie","type":"module"}');
@@ -95,7 +97,7 @@ function fixture(existing = true) {
         if (fail === "config-race") file(config, '{"custom":"created by another process"}');
         return jobs.has(labels[1]!) ? ok(String(jobs.get(labels[1]!))) : bad();
       }
-      if (command[0] === "/bin/ps") return ok(command.at(-1) === "comm=" ? join(app, "Contents/MacOS/QuotaPie") : `${process.execPath} ${runtime}/src/cli.ts serve`);
+      if (command[0] === "/bin/ps") return ok(command[1]==="-axo" ? "1 0 /sbin/launchd\n" : command.at(-1) === "comm=" ? join(app, "Contents/MacOS/QuotaPie") : `${process.execPath} ${runtime}/src/cli.ts serve`);
       if (command[0] === "/usr/sbin/lsof") return ok(`p${jobs.get(labels[0]!)}\nn${join(data,"quotapie.sqlite3")}\n`);
       throw new Error(`Unexpected command ${command.join(" ")}`);
     },
@@ -104,7 +106,7 @@ function fixture(existing = true) {
       if (url.endsWith("/api/work")) return { policies: [], executions: [] };
       if (url.endsWith("/health")) return { ok: false, accounts: [{ health: "never-attempted", errorCategory: "auth-required" }] };
       const pid = jobs.get(labels[0]!); if (!pid) throw new Error("offline");
-      return { schemaVersion: 1, sourceHash: fail === "identity" && pid >= 200 ? "wrong" : runtimeSourceHash(runtime), pid, startedAt: new Date().toISOString() };
+      return { schemaVersion: 1, hashVersion: 2, sourceHash: fail === "identity" && pid >= 200 ? "wrong" : runtimeSourceHash(runtime), pid, startedAt: new Date().toISOString() };
     },
   };
   return { root, home, source, supplied, runtime, app, cli, config, data, agents, calls, jobs, configText, deps,
@@ -134,6 +136,195 @@ function maintainedFixture() {
     :read(url,options);
   return {...f,storage,store,preference,incident,close(){storage.close();f.close();}};
 }
+
+function legacyMaintainedFixture(version?: 1) {
+  const f=maintainedFixture(), read=f.deps.json!;
+  rmSync(join(f.runtime,"script/codex-host-wake.py"));
+  rmSync(join(f.runtime,"scripts/codex-compaction-local.py"));
+  const sourceHash=runtimeSourceHash(f.runtime,1);
+  f.deps.json=async(url,options)=>{
+    if(url.endsWith("/api/runtime") && readFileSync(join(f.runtime,"src/cli.ts"),"utf8")==="old-runtime")
+      return {schemaVersion:1,...(version===undefined?{}:{hashVersion:version}),sourceHash,
+        pid:f.jobs.get(labels[0]!),startedAt:new Date().toISOString()};
+    return read(url,options);
+  };
+  return {...f,legacyHash:sourceHash};
+}
+
+function relayManagerFixture() {
+  const f=maintainedFixture(),manager=join(f.home,".local/lib/quotapie-compaction/manage.py"),wrapper=join(f.home,".local/bin/quotapie-compaction");
+  const original='LABEL = "local.quotapie.compaction"\nclass LocalRelay: pass\n# older manager\n';
+  const command=`#!/bin/sh\nexec '/usr/bin/python3' '${manager}' "$@"\n`;
+  writeFileSync(manager,original);writeFileSync(wrapper,command);
+  const lockCode=()=>Bun.spawnSync(["/usr/bin/python3","-c",[
+    "import fcntl, os, sys", "fd=os.open(sys.argv[1],os.O_RDWR)",
+    "try: fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)","except BlockingIOError: sys.exit(42)",
+  ].join("\n"),join(dirname(manager),"management.lock")],{stdout:"ignore",stderr:"ignore"}).exitCode;
+  return {...f,manager,wrapper,original,command,lockCode};
+}
+
+test("an owned relay manager joins the install transaction under its shared lock without changing its wrapper or listeners",async()=>{
+  const f=relayManagerFixture(),run=f.deps.run!;let checked=0;
+  f.deps.run=async(command,env)=>{
+    if(command[1]==="bootout" || command[1]==="bootstrap") {
+      expect(f.lockCode()).toBe(42);checked++;
+      if(command[1]==="bootstrap")expect(readFileSync(f.manager,"utf8")).toBe(readFileSync(join(f.source,"scripts/codex-compaction-local.py"),"utf8"));
+    }
+    return run(command,env);
+  };
+  try {
+    await f.run();expect(checked).toBe(4);expect(f.lockCode()).toBe(0);
+    expect(readFileSync(f.wrapper,"utf8")).toBe(f.command);
+    expect(f.calls.filter(command=>command[0]==="/bin/launchctl"&&["bootout","bootstrap"].includes(command[1]!)))
+      .toHaveLength(4);
+    await f.run();expect(readFileSync(f.wrapper,"utf8")).toBe(f.command);
+  } finally {f.close();}
+});
+
+test("manager replacement rolls back with a failed app activation and releases its shared lock",async()=>{
+  const f=relayManagerFixture();f.setFailure("menu-start");
+  try {
+    await expect(f.run()).rejects.toThrow("menu start failed");
+    expect(readFileSync(f.manager,"utf8")).toBe(f.original);
+    expect(readFileSync(f.wrapper,"utf8")).toBe(f.command);expect(f.lockCode()).toBe(0);
+    expect(f.store.fences()).toEqual([]);
+  } finally {f.close();}
+});
+
+test("startup verification rejects external manager or wrapper changes and preserves those edits",async()=>{
+  for(const target of ["manager","wrapper"] as const) {
+    const f=relayManagerFixture(),read=f.deps.json!,path=f[target];
+    const changed=target==="manager"?f.original+"# concurrent replacement\n":f.command+"# concurrent wrapper edit\n";
+    f.deps.json=async(url,options)=>{
+      if(url.endsWith("/health"))writeFileSync(path,changed);
+      return read(url,options);
+    };
+    try {
+      await expect(f.run()).rejects.toThrow("relay manager changed during startup verification");
+      expect(readFileSync(path,"utf8")).toBe(changed);
+      expect(f.lockCode()).toBe(0);
+      if(target==="wrapper")expect(readFileSync(f.manager,"utf8")).toBe(f.original);
+      else expect(f.store.fences()).toHaveLength(1);
+    } finally {f.close();}
+  }
+});
+
+test("installing without a relay manager never creates one or a manager lock",async()=>{
+  const f=fixture();
+  try {
+    await f.run();
+    expect(existsSync(join(f.home,".local/lib/quotapie-compaction/manage.py"))).toBe(false);
+    expect(existsSync(join(f.home,".local/lib/quotapie-compaction/management.lock"))).toBe(false);
+    expect(existsSync(join(f.home,".local/bin/quotapie-compaction"))).toBe(false);
+  } finally {f.close();}
+});
+
+test("unowned or concurrently changed managers are preserved before stopping any process",async()=>{
+  for(const mode of ["manager-link","wrapper-link","wrapper-target","unknown-manager","concurrent"] as const) {
+    const f=relayManagerFixture();let expected=f.original;
+    if(mode.endsWith("link")) {
+      const path=mode==="manager-link"?f.manager:f.wrapper,target=join(f.root,"external");
+      writeFileSync(target,readFileSync(path));rmSync(path);symlinkSync(target,path);
+    } else if(mode==="wrapper-target")writeFileSync(f.wrapper,f.command.replace(f.manager,join(f.root,"unrelated.py")));
+    else if(mode==="unknown-manager")writeFileSync(f.manager,expected="unrelated user script");
+    else {
+      const run=f.deps.run!;
+      f.deps.run=async(command,env)=>{
+        if(command[0]==="/usr/bin/ditto")writeFileSync(f.manager,expected=f.original+"# user change\n");
+        return run(command,env);
+      };
+    }
+    try {
+      await expect(f.run()).rejects.toThrow(mode==="concurrent"?"changed during installation":"ownership cannot be verified");
+      expect(f.calls.some(command=>command[1]==="bootout")).toBe(false);
+      expect(readFileSync(f.manager,"utf8")).toBe(expected);
+    } finally {f.close();}
+  }
+});
+
+test("existing or late old manager processes prevent replacement and no manager process is terminated",async()=>{
+  for(const phase of [1,3]) {
+    const f=relayManagerFixture(),run=f.deps.run!;let scans=0;
+    f.deps.run=async(command,env)=>{
+      if(command[0]==="/bin/ps"&&command[1]==="-axo"&&++scans===phase)
+        return {code:0,stdout:`1 0 /sbin/launchd\n900 501 /usr/bin/python3 ${f.manager} stop\n`,stderr:""};
+      return run(command,env);
+    };
+    try {
+      await expect(f.run()).rejects.toThrow("relay manager command is already running");
+      expect(readFileSync(f.manager,"utf8")).toBe(f.original);expect(f.lockCode()).toBe(0);
+      expect(f.calls.some(command=>command[0]==="/bin/kill"&&command.includes("900"))).toBe(false);
+      if(phase===1)expect(f.calls.some(command=>command[1]==="bootout")).toBe(false);
+    } finally {f.close();}
+  }
+});
+
+test("a verified legacy collector without new helpers upgrades using its explicit original hash algorithm",async()=>{
+  for(const version of [undefined,1] as const) {
+    const f=legacyMaintainedFixture(version);
+    try {
+      expect(()=>runtimeSourceHash(f.runtime)).toThrow();
+      expect(runtimeSourceHash(f.runtime,1)).toBe(f.legacyHash);
+      const result=await f.run();
+      expect(result.hashVersion).toBe(2);expect(result.sourceHash).toBe(runtimeSourceHash(f.runtime));
+      expect(existsSync(join(f.runtime,"script/codex-host-wake.py"))).toBe(true);
+      expect(existsSync(join(f.runtime,"scripts/codex-compaction-local.py"))).toBe(true);
+      expect(f.store.fences()).toEqual([]);
+      expect(f.storage.db.query<{value:string},[]>("SELECT value FROM quota_resume_preferences").get()!.value).toBe(f.preference);
+    } finally {f.close();}
+  }
+});
+
+test("legacy migration rejects changed code and unknown hash versions before any process mutation",async()=>{
+  for(const failure of ["changed-code",null,3,"1"] as const) {
+    const f=legacyMaintainedFixture(), read=f.deps.json!;
+    if(failure==="changed-code")writeFileSync(join(f.runtime,"src/server.ts"),"changed after collector startup");
+    else f.deps.json=async(url,options)=>{
+      const result=await read(url,options);
+      return url.endsWith("/api/runtime")?{...result,hashVersion:failure}:result;
+    };
+    try {
+      await expect(f.run()).rejects.toThrow("runtime identity cannot be verified");
+      expect(f.calls.some(command=>command[1]==="bootout")).toBe(false);
+      expect(f.store.fences()).toEqual([]);
+    } finally {f.close();}
+  }
+});
+
+test("new collector verification never accepts the legacy hash version during activation or stability",async()=>{
+  for(const phase of ["activation","stability"] as const) {
+    const f=legacyMaintainedFixture(), read=f.deps.json!;let reads=0;
+    f.deps.json=async(url,options)=>{
+      const result=await read(url,options);
+      if(url.endsWith("/api/runtime") && readFileSync(join(f.runtime,"src/cli.ts"),"utf8")==="new-runtime") {
+        reads++;
+        if(phase==="activation" || reads>1)return {...result,hashVersion:1};
+      }
+      return result;
+    };
+    try {
+      await expect(f.run()).rejects.toThrow(phase==="activation"?"expected runtime identity":"startup verification");
+      expect(readFileSync(join(f.runtime,"src/cli.ts"),"utf8")).toBe("old-runtime");
+      expect(runtimeSourceHash(f.runtime,1)).toBe(f.legacyHash);
+      expect(f.store.fences()).toEqual([]);
+    } finally {f.close();}
+  }
+});
+
+test("rollback retains maintenance when the restored collector reports a different hash algorithm",async()=>{
+  const f=legacyMaintainedFixture(),read=f.deps.json!;
+  f.setFailure("menu-start");
+  f.deps.json=async(url,options)=>{
+    const result=await read(url,options);
+    return url.endsWith("/api/runtime") && readFileSync(join(f.runtime,"src/cli.ts"),"utf8")==="old-runtime"
+      && (f.jobs.get(labels[0]!)??0)>=200 ? {...result,hashVersion:2}:result;
+  };
+  try {
+    await expect(f.run()).rejects.toThrow("Recovery needs attention");
+    expect(f.store.fences()).toHaveLength(1);
+    expect(existsSync(join(dirname(f.runtime),".quotapie-install.lock"))).toBe(true);
+  } finally {f.close();}
+});
 
 test("maintenance permits enabled scheduling without changing opt-in or pending incidents and blocks claims until verified",async()=>{
   const f=maintainedFixture(), run=f.deps.run!;

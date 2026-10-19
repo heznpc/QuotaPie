@@ -5,7 +5,8 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { loadConfig } from "../src/config";
-import { runtimeSourceHash } from "../src/runtime-identity";
+import { RUNTIME_HASH_VERSION, runtimeSourceHash, type RuntimeHashVersion } from "../src/runtime-identity";
+import { withRelaySettingsLock } from "../src/relay-settings";
 import { InstallMaintenance } from "./install-maintenance";
 
 type Result = { code: number; stdout: string; stderr: string };
@@ -49,6 +50,14 @@ function present(path: string): boolean {
   try { lstatSync(path); return true; } catch (error: any) { if (error.code === "ENOENT") return false; throw error; }
 }
 
+function reportedHashVersion(identity: any): RuntimeHashVersion | null {
+  if (!identity || typeof identity !== "object") return null;
+  // Older collectors did not report a version. Do not try multiple algorithms
+  // against a failed hash: the advertised version selects exactly one input set.
+  if (!Object.hasOwn(identity, "hashVersion")) return 1;
+  return identity.hashVersion === 1 || identity.hashVersion === RUNTIME_HASH_VERSION ? identity.hashVersion : null;
+}
+
 /** Copy executable inputs only. Never follow links into a checkout's private data. */
 export function stageRuntime(source: string, destination: string) {
   mkdirSync(destination, { recursive: true, mode: 0o700 });
@@ -82,7 +91,7 @@ export function stageRuntime(source: string, destination: string) {
     copyFileSync(join(source, "LICENSE"), join(destination, "LICENSE"), constants.COPYFILE_EXCL);
     chmodSync(join(destination, "LICENSE"), 0o600);
   }
-  for (const file of ["bin/quotapie", "src/cli.ts", "script/awake_hook.py", "script/install.sh", "script/install-macos.ts", "packages/quota-core/src/index.ts", "packages/quota-core/package.json"]) {
+  for (const file of ["bin/quotapie", "src/cli.ts", "script/awake_hook.py", "script/codex-host-wake.py", "scripts/codex-compaction-local.py", "script/install.sh", "script/install-macos.ts", "packages/quota-core/src/index.ts", "packages/quota-core/package.json"]) {
     if (!existsSync(join(destination, file))) throw new Error(`Missing runtime input: ${file}`);
   }
 }
@@ -95,6 +104,8 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
   const source = realpathSync(options.sourceRoot ?? resolve(import.meta.dir, ".."));
   const home = options.home ?? homedir();
   const runtime = join(home, ".local/lib/quotapie"), cli = join(home, ".local/bin/quotapie");
+  const relayRoot = join(home,".local/lib/quotapie-compaction"), relayManager = join(relayRoot,"manage.py");
+  const relayWrapper = join(home,".local/bin/quotapie-compaction");
   const app = join(home, "Applications/QuotaPie.app");
   const config = resolve(deps.env.QUOTAPIE_CONFIG ?? join(home, ".config/quotapie/config.json"));
   const data = resolve(deps.env.QUOTAPIE_HOME ?? join(home, ".local/share/quotapie"));
@@ -128,7 +139,10 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
   const stoppedPids = new Map<string, Set<number>>();
   let rollbackFailed = false;
   let maintenance: InstallMaintenance | null = null;
-  let previousIdentity: {origin:string;sourceHash:string} | null = null;
+  let previousIdentity: {origin:string;sourceHash:string;hashVersion:RuntimeHashVersion} | null = null;
+  let managerSnapshot: {manager:string;wrapper:string;replacement:string} | null = null;
+  const managerLockRelease: {release?:()=>void} = {};
+  let managerLock: Promise<void> | null = null;
   const checkCancelled = () => { if (deps.signal?.aborted) throw new Error("Installation interrupted; previous installation restored."); };
   async function readInstallationState(url: string, options: JsonOptions = {}) {
     // An otherwise healthy collector can be briefly occupied at startup. Retry
@@ -218,6 +232,29 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
   function addSwap(path: string, staged: string) {
     swaps.push({ path, staged, backup: join(dirname(path), `.${basename(path)}.backup-${id}`), published: false, saved: false });
   }
+  function managerFile(path:string):string {
+    const info=lstatSync(path);
+    if(!info.isFile() || info.isSymbolicLink() || info.uid!==deps.uid)
+      throw new Error("The installed relay manager ownership cannot be verified.");
+    return readFileSync(path,"utf8");
+  }
+  function assertManagerUnchanged() {
+    if(managerSnapshot && (managerFile(relayManager)!==managerSnapshot.manager || managerFile(relayWrapper)!==managerSnapshot.wrapper))
+      throw new Error("The installed relay manager changed during installation; retry without overwriting it.");
+  }
+  async function assertManagerIdle() {
+    const inventory=await run(["/bin/ps","-axo","pid=,uid=,command="]);
+    if(!inventory.trim())throw new Error("Relay manager process inventory could not be verified.");
+    const paths=[relayManager,relayWrapper,join(runtime,"scripts/codex-compaction-local.py"),join(source,"scripts/codex-compaction-local.py")];
+    const matches=paths.map(path=>new RegExp("(?:^|\\s)[\"']?"+path.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"[\"']?(?:\\s|$)"));
+    for(const line of inventory.split("\n")) {
+      if(!line.trim())continue;
+      const process=/^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line);
+      if(!process)throw new Error("Relay manager process inventory could not be verified.");
+      if(Number(process[2])===deps.uid && matches.some(pattern=>pattern.test(process[3]!)))
+        throw new Error("A relay manager command is already running; retry after it finishes.");
+    }
+  }
   try {
     mkdirSync(work, { mode: 0o700 });
     const version = (await run([bun, "--version"])).trim();
@@ -251,6 +288,18 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
           || !allowed.includes(existing.ProgramArguments?.[0])) throw new Error(`Refusing to replace an unrecognized launch agent: ${agents[index]}`);
     }
     stageRuntime(source, stagedRuntime);
+    if(present(relayManager)) {
+      if(!lstatSync(relayRoot).isDirectory() || lstatSync(relayRoot).isSymbolicLink())
+        throw new Error("The installed relay manager ownership cannot be verified.");
+      const manager=managerFile(relayManager),wrapper=managerFile(relayWrapper);
+      const command=/^#!\/bin\/sh\nexec '([^'\n]+)' '([^'\n]+)' "\$@"\n$/.exec(wrapper);
+      if(!command || !command[1]!.startsWith("/") || !/\/python3(?:\.\d+)?$/.test(command[1]!)
+          || command[2]!==relayManager || !manager.includes('LABEL = "local.quotapie.compaction"') || !manager.includes("class LocalRelay:"))
+        throw new Error("The installed relay manager ownership cannot be verified.");
+      const stagedManager=join(work,"manage.py"),replacement=readFileSync(join(stagedRuntime,"scripts/codex-compaction-local.py"),"utf8");
+      writeFileSync(stagedManager,replacement,{mode:0o600,flag:"wx"});
+      managerSnapshot={manager,wrapper,replacement};addSwap(relayManager,stagedManager);
+    }
     const expectedHash = runtimeSourceHash(stagedRuntime);
     if (expectedHash !== runtimeSourceHash(source)) throw new Error("Runtime inputs changed while staging; retry installation.");
     if (options.app) {
@@ -334,29 +383,41 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
         try{return realpathSync(line.slice(1))===realpathSync(database);}catch{return false;}
       })) throw new Error("The running collector's open database cannot be verified for maintenance.");
       const identity = await readInstallationState(origin + "/api/runtime");
+      const hashVersion = reportedHashVersion(identity);
       if (identity?.schemaVersion!==1 || identity.pid!==priorJobs[0]!.pid || typeof identity.sourceHash!=="string"
-          || identity.sourceHash!==runtimeSourceHash(runtime))
+          || hashVersion===null || identity.sourceHash!==runtimeSourceHash(runtime,hashVersion))
         throw new Error("The running collector's runtime identity cannot be verified for maintenance.");
-      previousIdentity={origin,sourceHash:identity.sourceHash};
+      previousIdentity={origin,sourceHash:identity.sourceHash,hashVersion};
       maintenance=InstallMaintenance.acquire(database,id,
         (["codex","claude"] as const).flatMap(provider=>loaded.accounts[provider].map(account=>({provider,account:account.id}))));
     }
     if (priorJobs[0]!.loaded) await assertNoManagedWork(origin, priorJobs[0]!.pid);
+    if(managerSnapshot) {
+      let acquired!:()=>void;
+      const locked=new Promise<void>(resolve=>{acquired=resolve;});
+      const release=new Promise<void>(resolve=>{managerLockRelease.release=resolve;});
+      managerLock=withRelaySettingsLock(relayRoot,async()=>{acquired();await release;});
+      await Promise.race([locked,managerLock.then(()=>{throw new Error("Relay manager lock was not acquired.");})]);
+      await assertManagerIdle();assertManagerUnchanged();
+      if(priorJobs[0]!.loaded)await assertNoManagedWork(origin,priorJobs[0]!.pid);
+    }
     checkCancelled();
     activationStarted = true;
     await stop(LABELS[1]); await stop(LABELS[0]);
+    if(managerSnapshot) {await assertManagerIdle();assertManagerUnchanged();}
     for (const swap of swaps) {
       checkCancelled();
       if (present(swap.path)) { renameSync(swap.path, swap.backup); swap.saved = true; }
       renameSync(swap.staged, swap.path); swap.published = true;
     }
+    if(managerSnapshot) await assertManagerIdle();
     await run(["/bin/launchctl", "bootstrap", domain, agents[0]!]);
     let verified: { collectorPid: number; menuPid: number } | null = null;
     for (let attempt = 0; attempt < (options.attempts ?? 40); attempt++) {
       checkCancelled();
       const identity = await deps.json(origin + "/api/runtime", { timeoutMs: 5000 }).catch(() => null);
       const collector = await job(LABELS[0]);
-      if (identity?.schemaVersion === 1 && identity.sourceHash === expectedHash && collector.pid
+      if (identity?.schemaVersion === 1 && identity.hashVersion === RUNTIME_HASH_VERSION && identity.sourceHash === expectedHash && collector.pid
           && identity.pid === collector.pid && identity.pid !== priorJobs[0]!.pid
           && Number.isFinite(Date.parse(identity.startedAt ?? ""))) {
         const command = await run(["/bin/ps", "-p", String(collector.pid), "-o", "command="]);
@@ -385,7 +446,8 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
     // process identities captured before the wait.
     const stableMenu = await job(LABELS[1]), stableCollector = await job(LABELS[0]);
     if (stableMenu.pid !== verified.menuPid || stableCollector.pid !== verified.collectorPid
-        || stableIdentity?.schemaVersion !== 1 || stableIdentity.pid !== verified.collectorPid || stableIdentity.sourceHash !== expectedHash
+        || stableIdentity?.schemaVersion !== 1 || stableIdentity.hashVersion !== RUNTIME_HASH_VERSION
+        || stableIdentity.pid !== verified.collectorPid || stableIdentity.sourceHash !== expectedHash
         || !Number.isFinite(Date.parse(stableIdentity.startedAt ?? ""))
         || (await deps.run(["/bin/kill", "-0", String(verified.menuPid)], env)).code !== 0) {
       throw new Error("The installed app or collector exited during startup verification.");
@@ -395,13 +457,15 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
     const collection = health?.ok === true && accounts.length > 0 && accounts.every((a: any) => a?.health === "recent-success") ? "ready"
       : !health ? "unverified" : !accounts.length || accounts.some((a: any) => a?.health === "never-attempted"
         || ["auth-required", "auth-expired", "not-configured"].includes(a?.errorCategory)) ? "setup-needed" : "degraded";
+    if(managerSnapshot && (managerFile(relayManager)!==managerSnapshot.replacement || managerFile(relayWrapper)!==managerSnapshot.wrapper))
+      throw new Error("The installed relay manager changed during startup verification.");
     maintenance?.assertHeldAndIdle();
     maintenance?.release(); maintenance=null;
     for (const swap of swaps) if (swap.saved) {
       try { rmSync(swap.backup, { recursive: true, force: true }); }
       catch { console.warn(`Installation verified; an old backup could not be removed: ${swap.backup}`); }
     }
-    return { installed: true, runtime, app, cli, config, data, sourceHash: expectedHash, ...verified,
+    return { installed: true, runtime, app, cli, config, data, sourceHash: expectedHash, hashVersion: RUNTIME_HASH_VERSION, ...verified,
       collection };
   } catch (error) {
     const failures: string[] = [];
@@ -415,6 +479,8 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
       if (!failures.length) {
         for (const swap of [...swaps].reverse()) {
           try {
+            if(swap.path===relayManager && swap.published && managerFile(relayManager)!==managerSnapshot!.replacement)
+              throw new Error("Relay manager changed after publication; preserved for manual recovery.");
             if (swap.published) rmSync(swap.path, { recursive: true, force: true });
             if (swap.saved) renameSync(swap.backup, swap.path);
           } catch { failures.push(`restore ${swap.path}`); }
@@ -433,6 +499,7 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
               const identity=await deps.json(previousIdentity.origin+"/api/runtime",{timeoutMs:5000}).catch(()=>null);
               const collector=await job(LABELS[0]), menu=await job(LABELS[1]);
               if(identity?.schemaVersion===1 && identity.sourceHash===previousIdentity.sourceHash
+                && reportedHashVersion(identity)===previousIdentity.hashVersion
                 && !!collector.pid && identity.pid===collector.pid && Number.isFinite(Date.parse(identity.startedAt??""))
                 && (!priorJobs[1]?.loaded || !!menu.pid)) {restored=true;break;}
               await deps.sleep(250);
@@ -452,6 +519,8 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
     throw error;
   } finally {
     maintenance?.close();
+    managerLockRelease.release?.();
+    await managerLock?.catch(()=>{});
     if (!rollbackFailed) {
       for (const swap of swaps) if (present(swap.staged)) rmSync(swap.staged, { recursive: true, force: true });
       rmSync(stagedApp, { recursive: true, force: true });

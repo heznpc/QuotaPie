@@ -237,3 +237,38 @@ test("observations freeze per-execution minima and distinguish epoch changes fro
  expect(s.get("work")!.state.observationCoverageByBucket!.weekly!.lastReset!.evidence).toBe("quota-recovery");
  expect(s.getExecution(e.id)!.minimumRemainingByBucket?.weekly).toBe(45);
 });
+
+test("host wake intent and outcome are append-only durable receipt fields", () => {
+  const s=store(), thread="11111111-2222-4333-8444-555555555555", turn="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  s.save(input({provider:"codex",purpose:"quota-resume",nativeSessionId:thread,quotaResume:{turnId:turn,stamp:"stable"},maxTurns:1}),null,"create-wake");
+  const e=s.claim("work","local",1,1000)!;s.markDispatched(e.id,1001);
+  const ack={threadId:thread,clientUserMessageId:e.id,sentAtMs:1002,queuedSubmissionId:turn};
+  s.recordHostQueue(e.id,ack);
+  expect(()=>s.recordHostQueue(e.id,{...ack,hostWakeStatus:"sent"})).toThrow("work-host-queue-receipt-invalid");
+  expect(()=>s.recordHostQueue(e.id,{...ack,hostWakeRequestedAtMs:1001})).toThrow("work-host-queue-receipt-invalid");
+  const intent={...ack,hostWakeRequestedAtMs:1003,hostWakeAttemptCount:1};s.recordHostQueue(e.id,intent);
+  const outcome={...intent,hostWakeStatus:"unavailable" as const,hostWakeReason:"host-wake-owner-unverified"};
+  s.recordHostQueue(e.id,outcome);
+  expect(s.getExecution(e.id)?.hostQueue).toEqual(outcome);
+  expect(()=>s.recordHostQueue(e.id,intent)).toThrow("work-host-queue-receipt-conflict");
+  expect(()=>s.recordHostQueue(e.id,{...outcome,hostWakeStatus:"sent",hostWakeReason:undefined})).toThrow("work-host-queue-receipt-conflict");
+});
+
+test("host wake retries retain their backoff and identity across database reopen", () => {
+  const dir=mkdtempSync(join(tmpdir(),"quotapie-host-wake-retry-"));directories.push(dir);
+  const a=store(join(dir,"quota.sqlite3")),b=store(join(dir,"quota.sqlite3"));
+  const thread="11111111-2222-4333-8444-555555555555",turn="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  a.save(input({provider:"codex",purpose:"quota-resume",nativeSessionId:thread,quotaResume:{turnId:turn,stamp:"stable"},maxTurns:1}),null,"wake-retry");
+  const e=a.claim("work","local",1,1000)!;a.markDispatched(e.id,1001);
+  const first={threadId:thread,clientUserMessageId:e.id,sentAtMs:1002,queuedSubmissionId:turn,hostWakeRequestedAtMs:1003,hostWakeAttemptCount:1,hostWakeStatus:"unavailable" as const};
+  a.recordHostQueue(e.id,first);
+  expect(()=>b.recordHostQueue(e.id,{...first,hostWakeAttemptCount:2,hostWakeRequestedAtMs:30003,hostWakeStatus:undefined})).toThrow();
+  const second={...first,hostWakeAttemptCount:2,hostWakeRequestedAtMs:31003,hostWakeStatus:undefined};
+  b.recordHostQueue(e.id,second);b.recordHostQueue(e.id,{...second,hostWakeStatus:"sent"});
+  expect(a.getExecution(e.id)?.hostQueue).toMatchObject({hostWakeAttemptCount:2,hostWakeStatus:"sent"});
+  expect(()=>a.recordHostQueue(e.id,{...second,hostWakeAttemptCount:3,hostWakeRequestedAtMs:61003})).toThrow();
+  const third={...second,hostWakeAttemptCount:3,hostWakeRequestedAtMs:91003};a.recordHostQueue(e.id,third);
+  a.recordHostQueue(e.id,{...third,hostWakeStatus:"sent",turnId:thread});
+  expect(()=>b.recordHostQueue(e.id,{...third,hostWakeAttemptCount:4,hostWakeRequestedAtMs:211003,turnId:thread})).toThrow();
+  expect(b.getExecution(e.id)?.hostQueue).toMatchObject({hostWakeAttemptCount:3,turnId:thread});
+});

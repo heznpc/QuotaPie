@@ -2,6 +2,7 @@
 """Install, inspect, or disable the opt-in local Codex compaction relay on macOS."""
 
 import argparse
+from contextlib import closing
 import fcntl
 import hashlib
 import json
@@ -12,6 +13,8 @@ import re
 import secrets
 import shutil
 import socket
+import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -22,6 +25,9 @@ import urllib.request
 LABEL = "local.quotapie.compaction"
 BEGIN = "# BEGIN QuotaPie compaction relay\n"
 END = "# END QuotaPie compaction relay\n"
+LEGACY_PROVIDER = "quotapie_compaction"
+ALIAS_BEGIN = "# BEGIN QuotaPie legacy provider compatibility\n"
+ALIAS_END = "# END QuotaPie legacy provider compatibility\n"
 GUARD_REVISION = 3
 RUNTIME_REVISION = 1
 LISTENER_POLICY_VERSION = 2
@@ -58,15 +64,110 @@ def enabled_config(text, base_url):
     return result
 
 
+def legacy_provider(base_url):
+    return {"name": "OpenAI", "base_url": base_url, "wire_api": "responses",
+            "requires_openai_auth": True, "supports_websockets": False}
+
+
+def legacy_provider_config(text, base_url):
+    """Add only the historical CLI provider; never select it for new sessions.
+
+    A separate table at EOF cannot change the scope of any existing TOML keys.
+    It also survives removal of the independent compaction routing block.
+    """
+    config = tomllib.loads(text)
+    expected = legacy_provider(base_url)
+    providers = config.get("model_providers", {})
+    if not isinstance(providers, dict):
+        raise ValueError("Model provider configuration is not a table")
+    if ALIAS_BEGIN in text or ALIAS_END in text:
+        if text.count(ALIAS_BEGIN) != 1 or text.count(ALIAS_END) != 1:
+            raise ValueError("Ambiguous legacy provider compatibility markers")
+        begin, end = text.index(ALIAS_BEGIN), text.index(ALIAS_END)
+        if end < begin:
+            raise ValueError("Legacy provider compatibility block was edited")
+        managed = tomllib.loads(text[begin + len(ALIAS_BEGIN):end])
+        if (managed != {"model_providers": {LEGACY_PROVIDER: expected}}
+                or providers.get(LEGACY_PROVIDER) != expected):
+            raise ValueError("Legacy provider compatibility conflicts with the verified relay")
+        return text
+    if LEGACY_PROVIDER in providers:
+        raise ValueError("An unmanaged legacy provider exists; refusing to replace it")
+    block = ALIAS_BEGIN + "[model_providers." + LEGACY_PROVIDER + "]\n"
+    for key, value in expected.items():
+        block += key + " = " + json.dumps(value) + "\n"
+    result = text + ("\n" if text and not text.endswith("\n") else "") + block + ALIAS_END
+    expected_config = dict(config)
+    expected_config["model_providers"] = {**providers, LEGACY_PROVIDER: expected}
+    if tomllib.loads(result) != expected_config:
+        raise ValueError("Legacy provider compatibility would change unrelated settings")
+    return result
+
+
+def credential_stamp(home):
+    """Opaque local identity fence; no credential bytes enter diagnostics."""
+    path = home / "auth.json"
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError("Profile credentials are unavailable")
+    before = path.stat()
+    value = digest(path)
+    after = path.stat()
+    stamp = lambda stat: (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    if stamp(before) != stamp(after):
+        raise RuntimeError("Profile credentials changed during verification")
+    return (*stamp(after), value)
+
+
+def thread_provider(home, thread_id):
+    """Read just the provider and verified rollout identity, never conversation text."""
+    if not isinstance(thread_id, str) or not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", thread_id):
+        raise ValueError("Thread identity is invalid")
+    databases = sorted((path for path in home.iterdir() if re.fullmatch(r"state_\d+\.sqlite", path.name)),
+                       key=lambda path: int(path.stem[6:]), reverse=True)
+    if not databases:
+        raise ValueError("Thread profile could not be verified")
+    database = databases[0].resolve(strict=True)
+    if not database.is_relative_to(home) or database == home:
+        raise ValueError("Thread database is outside the profile")
+    with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=1)) as connection:
+        row = connection.execute("SELECT model_provider,rollout_path FROM threads WHERE id=?", (thread_id,)).fetchone()
+    if not row or not isinstance(row[0], str) or not isinstance(row[1], str) or not Path(row[1]).is_absolute():
+        raise ValueError("Thread metadata is unavailable")
+    rollout = Path(row[1]).resolve(strict=True)
+    if not rollout.is_relative_to(home / "sessions") or rollout == home / "sessions":
+        raise ValueError("Thread rollout is outside the profile")
+    descriptor = os.open(rollout, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError("Thread rollout is not a regular file")
+        line = stream.readline(1024 * 1024)
+        if not line.endswith(b"\n"):
+            raise ValueError("Thread rollout header is unavailable")
+        header = json.loads(line)
+    if (not isinstance(header, dict) or header.get("type") != "session_meta"
+            or not isinstance(header.get("payload"), dict) or header["payload"].get("id") != thread_id):
+        raise ValueError("Thread rollout identity changed")
+    return row[0], str(database), str(rollout)
+
+
 def atomic_write(path, text, expected=None, mode=0o600):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if expected is not None and path.read_text() != expected:
-        raise RuntimeError("File changed during installation; retry without overwriting it")
+    original = None
+    if expected is not None:
+        original = path.lstat()
+        if not stat.S_ISREG(original.st_mode) or path.read_text() != expected:
+            raise RuntimeError("File changed during installation; retry without overwriting it")
     descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".")
     try:
         with os.fdopen(descriptor, "w") as output:
             output.write(text)
             os.fchmod(output.fileno(), mode)
+        if expected is not None:
+            current = path.lstat()
+            if ((current.st_dev, current.st_ino, current.st_mtime_ns, current.st_ctime_ns)
+                    != (original.st_dev, original.st_ino, original.st_mtime_ns, original.st_ctime_ns)
+                    or not stat.S_ISREG(current.st_mode) or path.read_text() != expected):
+                raise RuntimeError("File changed during installation; retry without overwriting it")
         os.replace(name, path)
     finally:
         if os.path.exists(name):
@@ -319,6 +420,8 @@ class LocalRelay:
                 config = tomllib.loads((Path(home) / "config.toml").read_text())
                 if config.get("openai_base_url") != self.endpoint(replacements[home]):
                     raise ValueError("Configuration changed during retirement")
+                if config.get("model_providers", {}).get(LEGACY_PROVIDER, {}).get("base_url") == self.endpoint(settings):
+                    raise ValueError("Historical sessions still reference this guarded provider")
                 # A rename preserves the exact job for recovery, without bootout,
                 # drain, config changes, or replacing the running relay binary.
                 agent.rename(archive)
@@ -375,6 +478,64 @@ class LocalRelay:
         # profile endpoint is healthy; keep those two observations separate.
         return {"relayConnected": connected, "restart_required": result.get("restart_required", False),
                 "upgrade": result.get("upgrade"), "pending": result.get("pending", False)}
+
+    def repair_legacy_provider(self, args):
+        """Restore a historical thread's process-only alias to its verified relay.
+
+        This never selects a provider, edits a session, or starts/reloads a host.
+        It is intentionally thread-scoped so ordinary profiles remain untouched.
+        """
+        if not args.codex_home:
+            raise ValueError("Profile home required")
+        home = Path(args.codex_home).expanduser().resolve(strict=True)
+        identity = thread_provider(home, getattr(args, "thread_id", None))
+        if identity[0] != LEGACY_PROVIDER:
+            return {"status": "not-needed", "changed": False}
+        config_path = home / "config.toml"
+        if config_path.is_symlink():
+            raise RuntimeError("Profile configuration ownership changed")
+        current = config_path.read_text()
+        config = tomllib.loads(current)
+        existing = config.get("model_providers", {}).get(LEGACY_PROVIDER, {})
+        # Disabling rerouting keeps the alias pointing at its guarded forwarding
+        # listener. Never substitute an unrelated or merely available endpoint.
+        endpoint = config.get("openai_base_url") or existing.get("base_url")
+        entries = [(path, settings) for path, _, settings in self.registered_entries()
+                   if Path(settings["codex_home"]).resolve() == home and self.endpoint(settings) == endpoint]
+        if len(entries) != 1:
+            raise RuntimeError("The profile relay endpoint could not be verified")
+        path, settings = entries[0]
+        updated = legacy_provider_config(current, endpoint)
+        credentials = credential_stamp(home)
+        binding = self.listener_upgrade_binding(path, settings)
+
+        def verified_identity():
+            health = self.health(settings)
+            if (health.get("relayRuntimeRevision") != RUNTIME_REVISION or health.get("reloadSupported") is not True
+                    or health.get("subscriptionGuardVersion") != 1 or health.get("subscriptionGuardRevision") != GUARD_REVISION
+                    or health.get("nativeRequestPolicyVersion") != 1 or health.get("nativeRequestPolicy") != "source-origin"
+                    or health.get("sourceContinuationRevision") != 3 or health.get("executionMode") != "interactive"):
+                raise RuntimeError("The relay source authorization guard is unavailable")
+            return self.listener_identity(health, binding["profileKey"])
+
+        account = verified_identity()
+
+        def recheck():
+            if (config_path.is_symlink() or config_path.read_text() != current
+                    or self.listener_upgrade_binding(path, settings) != binding
+                    or credential_stamp(home) != credentials
+                    or thread_provider(home, args.thread_id) != identity):
+                raise RuntimeError("Legacy provider binding changed during verification")
+
+        if verified_identity() != account:
+            raise RuntimeError("The relay account changed during verification")
+        recheck()
+        if updated != current:
+            backup = config_path.with_name("config.toml.quotapie-legacy-provider-" + str(time.time_ns()) + ".bak")
+            atomic_write(backup, current)
+            recheck()
+            atomic_write(config_path, updated, expected=current)
+        return {"status": "ready", "changed": updated != current}
 
     def status(self):
         if not self.settings_path.exists():
@@ -836,7 +997,8 @@ class LocalRelay:
         for config_path, current, restored in changes:
             atomic_write(config_path, restored, expected=current)
         # Leave the relay alive for already-loaded tasks, forwarding without rerouting.
-        # New/resumed Codex sessions now connect directly to the original provider.
+        # Ordinary sessions connect directly. Historical CLI sessions retain
+        # their explicit alias and the relay's source authorization guard.
         for file, raw, legacy in entries:
             legacy["route"]["to"] = legacy["route"]["from"]
             if isinstance(legacy.get("taskSavings"), dict):
@@ -867,6 +1029,12 @@ class LocalRelay:
                 retained.append({"settings_path": str(path), "reason": reason})
 
             try:
+                config_path = Path(settings["codex_home"]) / "config.toml"
+                config = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
+                alias = config.get("model_providers", {}).get(LEGACY_PROVIDER, {})
+                if alias.get("base_url") == self.endpoint(settings):
+                    retain("Historical sessions still reference this guarded provider; listener retained")
+                    continue
                 health = self.health(settings)
                 if health.get("schemaVersion", 1) < 2:
                     retain("Legacy relay cannot report active requests; retained for loaded tasks")
@@ -896,13 +1064,27 @@ class LocalRelay:
         return {"configured": False, "retained": retained, "running": bool(retained)}
 
 
+def reload_changed_manager(source, startup_hash, argv):
+    """A waiter must not run an old lifecycle policy after an installer swap."""
+    if source.is_symlink() or not source.is_file():
+        raise RuntimeError("Manager source ownership changed while waiting")
+    if digest(source) != startup_hash:
+        # Python file descriptors are close-on-exec: the new process image
+        # reacquires management.lock and rechecks its own source before acting.
+        os.execv(sys.executable, [sys.executable, str(source), *argv])
+        raise RuntimeError("Manager reload did not replace the current process")
+
+
 def main():
+    source = Path(__file__).absolute()
+    startup_hash = digest(source)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["install", "ensure-profile", "status", "configure", "disable", "stop", "retire", "repair-idle", "upgrade", "apply-upgrades"])
+    parser.add_argument("action", choices=["install", "ensure-profile", "repair-legacy-provider", "status", "configure", "disable", "stop", "retire", "repair-idle", "upgrade", "apply-upgrades"])
     parser.add_argument("--watch", action="store_true", help="Enroll pending upgrade verification without restarting listeners")
     parser.add_argument("--source")
     parser.add_argument("--bun")
     parser.add_argument("--codex-home")
+    parser.add_argument("--thread-id")
     parser.add_argument("--compact-model")
     parser.add_argument("--compact-effort", choices=["low"])
     args = parser.parse_args()
@@ -910,9 +1092,10 @@ def main():
     relay.runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (relay.runtime / "management.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        reload_changed_manager(source, startup_hash, sys.argv[1:])
         # Another manager may have activated a generation while we waited.
         relay = LocalRelay()
-        if args.action in ["install", "configure", "ensure-profile", "disable", "repair-idle", "upgrade", "apply-upgrades"]:
+        if args.action in ["install", "configure", "ensure-profile", "repair-legacy-provider", "disable", "repair-idle", "upgrade", "apply-upgrades"]:
             result = getattr(relay, args.action.replace("-", "_"))(args)
         else:
             result = getattr(relay, args.action)()

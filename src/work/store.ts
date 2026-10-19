@@ -279,12 +279,30 @@ export class WorkStore {
           receipt.threadId !== execution.policySnapshot.nativeSessionId ||
           !/^[a-zA-Z0-9_-]{1,128}$/.test(receipt.clientUserMessageId) ||
           !Number.isSafeInteger(receipt.sentAtMs) || receipt.sentAtMs < execution.claimedAtMs ||
+          (receipt.hostWakeRequestedAtMs !== undefined && (!receipt.queuedSubmissionId ||
+            !Number.isSafeInteger(receipt.hostWakeRequestedAtMs) || receipt.hostWakeRequestedAtMs < receipt.sentAtMs ||
+            !Number.isInteger(receipt.hostWakeAttemptCount) || receipt.hostWakeAttemptCount! < 1 || receipt.hostWakeAttemptCount! > 32)) ||
+          (receipt.hostWakeAttemptCount !== undefined && receipt.hostWakeRequestedAtMs === undefined) ||
+          (receipt.hostWakeStatus !== undefined && (receipt.hostWakeRequestedAtMs === undefined ||
+            !["sent", "unavailable"].includes(receipt.hostWakeStatus))) ||
+          (receipt.hostWakeReason !== undefined && (receipt.hostWakeStatus !== "unavailable" ||
+            !/^[a-z][a-z0-9-]{2,99}$/.test(receipt.hostWakeReason))) ||
           [receipt.queuedSubmissionId, receipt.turnId].some(value => value !== undefined &&
             !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value)))
         throw new Error("work-host-queue-receipt-invalid");
       const prior = execution.hostQueue;
-      if (prior && Object.entries(prior).some(([key, value]) => receipt[key as keyof typeof receipt] !== value))
+      const wakeKeys = new Set(["hostWakeRequestedAtMs", "hostWakeAttemptCount", "hostWakeStatus", "hostWakeReason"]);
+      if (prior && Object.entries(prior).some(([key, value]) => !wakeKeys.has(key) && receipt[key as keyof typeof receipt] !== value))
         throw new Error("work-host-queue-receipt-conflict");
+      if (prior?.hostWakeRequestedAtMs !== undefined) {
+        const attempts = prior.hostWakeAttemptCount ?? 1;
+        const sameAttempt = receipt.hostWakeRequestedAtMs === prior.hostWakeRequestedAtMs && receipt.hostWakeAttemptCount === attempts;
+        const nextAttempt = !prior.turnId && receipt.hostWakeAttemptCount === attempts + 1 &&
+          receipt.hostWakeRequestedAtMs !== undefined && receipt.hostWakeRequestedAtMs - prior.hostWakeRequestedAtMs >= Math.min(300_000, 30_000 * 2 ** Math.min(attempts - 1, 4)) &&
+          receipt.hostWakeStatus === undefined && receipt.hostWakeReason === undefined;
+        if (!nextAttempt && (!sameAttempt || (prior.hostWakeStatus !== undefined && receipt.hostWakeStatus !== prior.hostWakeStatus) ||
+            (prior.hostWakeReason !== undefined && receipt.hostWakeReason !== prior.hostWakeReason))) throw new Error("work-host-queue-receipt-conflict");
+      } else if (receipt.hostWakeAttemptCount !== undefined && receipt.hostWakeAttemptCount !== 1) throw new Error("work-host-queue-receipt-conflict");
       execution.hostQueue = structuredClone(receipt);
       this.writeExecution(execution, "host-queue", Date.now());
     });

@@ -48,6 +48,8 @@ struct AutoResumeIncident: Decodable, Identifiable {
         case "host-goal-not-active", "host-goal-stale", "host-goal-unavailable": key = "goal"
         case "native-writer-present", "native-turn-active": key = "busy"
         case "host-queue-awaiting-turn": key = "queued"
+        case "host-queue-wake-sent": key = "wakeSent"
+        case "host-queue-wake-unavailable": key = "wakeUnavailable"
         case "host-queue-busy": key = "queueBusy"
         case "host-queue-unsupported": key = "queueUnsupported"
         case "work-turn-limit": key = "limit"

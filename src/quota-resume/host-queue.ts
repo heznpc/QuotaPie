@@ -7,6 +7,7 @@ import type { WorkPolicy, WorkResult } from "../work/types";
 import { workPolicyExpiresAtMs } from "../work/lifetime";
 import { readQuotaResumeEvidence } from "./evidence";
 import { metadataPath } from "../dots/thread-reader";
+import { wakeHostQueuedThread } from "./host-wake";
 
 export interface HostQueueReceipt {
   threadId: string;
@@ -14,6 +15,10 @@ export interface HostQueueReceipt {
   sentAtMs: number;
   queuedSubmissionId?: string;
   turnId?: string;
+  hostWakeRequestedAtMs?: number;
+  hostWakeAttemptCount?: number;
+  hostWakeStatus?: "sent" | "unavailable";
+  hostWakeReason?: string;
 }
 
 export interface HostQueueClient {
@@ -37,6 +42,9 @@ export interface HostQueueOptions {
   stillAuthorized(): boolean;
   /** Account, quota, and host-goal checks immediately before the durable intent. */
   beforeEnqueue(): Promise<void>;
+  /** Re-read the host goal after owner lookup, without revalidating an already
+   * accepted input as if it were still an unsent quota-failure snapshot. */
+  beforeWake?: () => Promise<void>;
   onReceipt(receipt: HostQueueReceipt): void | Promise<void>;
   signal?: AbortSignal;
   client?: HostQueueClient;
@@ -46,6 +54,7 @@ export interface HostQueueOptions {
   now?: () => number;
   sleep?: (milliseconds: number) => Promise<void>;
   pollMs?: number;
+  wakeHost?: typeof wakeHostQueuedThread;
 }
 
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
@@ -62,6 +71,44 @@ export function hostQueueClientMessageId(claimId: string): string {
 
 function safeReason(error: unknown, fallback: string): string {
   return error instanceof Error && /^[a-z][a-z0-9-]{2,99}$/.test(error.message) ? error.message : fallback;
+}
+
+/** Wake only our acknowledged, still-visible input. Wake retries never add a
+ * message and back off durably across collector restarts. */
+export async function wakeAcceptedHostQueue(receipt: HostQueueReceipt, options: {
+  config: AppConfig; account: string; client: HostQueueClient;
+  stillAuthorized(): boolean; onReceipt(receipt: HostQueueReceipt): void | Promise<void>;
+  wakeHost?: typeof wakeHostQueuedThread; now?: () => number;
+  beforeWake?: () => Promise<void>;
+}): Promise<void> {
+  const now = (options.now ?? Date.now)(), attempts = receipt.hostWakeAttemptCount ?? (receipt.hostWakeRequestedAtMs === undefined ? 0 : 1);
+  const retryDelay = Math.min(300_000, 30_000 * 2 ** Math.min(attempts - 1, 4));
+  if (!receipt.queuedSubmissionId || receipt.turnId || attempts >= 32 || !options.stillAuthorized() ||
+      receipt.hostWakeRequestedAtMs !== undefined && now - receipt.hostWakeRequestedAtMs < retryDelay) return;
+  let queueUnavailable = false;
+  try {
+    const queue = await options.client.listThreadQueue(receipt.threadId, { limit: 2 });
+    if (queue.nextCursor !== null || queue.data.length !== 1 || queue.data[0]!.id !== receipt.queuedSubmissionId ||
+        queue.data[0]!.clientUserMessageId !== receipt.clientUserMessageId) return;
+  } catch { queueUnavailable = true; }
+  if (!options.stillAuthorized()) return;
+  const intent = { ...receipt, hostWakeRequestedAtMs: now, hostWakeAttemptCount: attempts + 1,
+    hostWakeStatus: undefined, hostWakeReason: undefined };
+  await options.onReceipt(intent);
+  Object.assign(receipt, intent);
+  const outcome = queueUnavailable ? { status: "unavailable" as const, reason: "host-wake-queue-unavailable" } : await (options.wakeHost ?? wakeHostQueuedThread)({ config: options.config, account: options.account,
+    threadId: receipt.threadId, stillAuthorized: options.stillAuthorized,
+    beforeSend: async () => {
+      await options.beforeWake?.();
+      const fresh = await options.client.listThreadQueue(receipt.threadId, { limit: 2 });
+      if (fresh.nextCursor !== null || fresh.data.length !== 1 || fresh.data[0]!.id !== receipt.queuedSubmissionId ||
+          fresh.data[0]!.clientUserMessageId !== receipt.clientUserMessageId) throw new Error("host-wake-queue-changed");
+    },
+  }).catch(() => ({ status: "unavailable" as const, reason: "host-wake-unavailable" }));
+  const updated: HostQueueReceipt = { ...receipt, hostWakeStatus: outcome.status,
+    ...(outcome.reason ? { hostWakeReason: /^[a-z][a-z0-9-]{2,99}$/.test(outcome.reason) ? outcome.reason : "host-wake-unavailable" } : {}) };
+  await options.onReceipt(updated);
+  Object.assign(receipt, updated);
 }
 
 /** One read-only reconciliation step. A queue miss never proves non-execution. */
@@ -206,6 +253,8 @@ export async function executeHostQueuedQuotaResume(
     while (authorized()) {
       const result = await observeHostQueueReceipt(receipt, receiptOptions);
       if (result) return done(result);
+      await wakeAcceptedHostQueue(receipt, { config, account: policy.account, client, stillAuthorized: authorized,
+        onReceipt: options.onReceipt, wakeHost: options.wakeHost, now, beforeWake: options.beforeWake });
       await pause(Math.max(1, Math.min(options.pollMs ?? 2_000, deadline - now())), options.signal, options.sleep);
     }
     await removeOwnHostQueuedInput(receipt, receiptOptions);

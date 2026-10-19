@@ -4,10 +4,12 @@ import io
 import json
 import hashlib
 import plistlib
+import sqlite3
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import tomllib
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -80,6 +82,200 @@ class LifecycleTests(unittest.TestCase):
     def drain(self, response):
         return patch.object(manager.urllib.request, "build_opener", return_value=SimpleNamespace(
             open=lambda *args, **kwargs: io.StringIO(json.dumps(response))))
+
+    def legacy_thread(self, provider="quotapie_compaction"):
+        self.write_owned_agents()
+        home = Path(self.settings[1]["codex_home"]).resolve()
+        thread_id = "11111111-1111-4111-8111-111111111111"
+        sessions = home / "sessions"
+        sessions.mkdir()
+        rollout = sessions / "fixture.jsonl"
+        rollout.write_text(json.dumps({"type": "session_meta", "payload": {"id": thread_id}}) + "\n")
+        (home / "auth.json").write_text('{"fixture":"not-a-credential"}')
+        with sqlite3.connect(home / "state_5.sqlite") as db:
+            db.execute("CREATE TABLE threads (id TEXT,model_provider TEXT,rollout_path TEXT)")
+            db.execute("INSERT INTO threads VALUES (?,?,?)", (thread_id, provider, str(rollout)))
+        return SimpleNamespace(codex_home=str(home), thread_id=thread_id), home, rollout
+
+    def test_legacy_provider_repairs_only_verified_thread_and_is_idempotent(self):
+        args, home, _ = self.legacy_thread()
+        config = home / "config.toml"
+        before = config.read_text() + '[features]\njs_repl = false\n[model_providers.other]\nname = "user"\n'
+        config.write_text(before)
+        database_before = (home / "state_5.sqlite").read_bytes()
+        with patch.object(manager.subprocess, "run") as run:
+            self.assertEqual(self.relay.repair_legacy_provider(args), {"status": "ready", "changed": True})
+            after = config.read_text()
+            self.assertEqual(self.relay.repair_legacy_provider(args), {"status": "ready", "changed": False})
+            run.assert_not_called()
+        self.assertEqual(config.read_text(), after)
+        self.assertTrue(after.startswith(before))
+        parsed = tomllib.loads(after)
+        self.assertNotIn("model_provider", parsed)
+        self.assertFalse(parsed["features"]["js_repl"])
+        self.assertEqual(parsed["model_providers"]["other"], {"name": "user"})
+        self.assertEqual(parsed["model_providers"][manager.LEGACY_PROVIDER], manager.legacy_provider(self.relay.endpoint(self.settings[1])))
+        backups = list(home.glob("config.toml.quotapie-legacy-provider-*.bak"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_text(), before)
+        self.assertEqual(backups[0].stat().st_mode & 0o777, 0o600)
+        self.assertEqual((home / "state_5.sqlite").read_bytes(), database_before)
+
+    def test_nonlegacy_thread_never_reads_health_or_changes_config(self):
+        args, home, _ = self.legacy_thread("openai")
+        before = (home / "config.toml").read_bytes()
+        self.relay.health = lambda settings: self.fail("Unneeded relay access")
+        self.assertEqual(self.relay.repair_legacy_provider(args), {"status": "not-needed", "changed": False})
+        self.assertEqual((home / "config.toml").read_bytes(), before)
+        self.assertFalse(list(home.glob("*.bak")))
+
+    def test_legacy_provider_rejects_unmanaged_or_edited_alias_even_when_endpoint_matches(self):
+        args, home, _ = self.legacy_thread()
+        config = home / "config.toml"
+        before = config.read_text()
+        safe = manager.legacy_provider_config(before, self.relay.endpoint(self.settings[1]))
+        for conflict in (safe.replace(manager.ALIAS_BEGIN, "").replace(manager.ALIAS_END, ""),
+                         safe.replace('wire_api = "responses"', 'wire_api = "chat"'),
+                         safe.replace(self.relay.endpoint(self.settings[1]), self.relay.endpoint(self.settings[0])),
+                         safe + manager.ALIAS_BEGIN):
+            with self.subTest(conflict=conflict[-40:]):
+                config.write_text(conflict)
+                with self.assertRaises((ValueError, RuntimeError)):
+                    self.relay.repair_legacy_provider(args)
+                self.assertEqual(config.read_text(), conflict)
+        self.assertFalse(list(home.glob("*.bak")))
+
+    def test_legacy_provider_rejects_wrong_rollout_identity_or_outside_profile(self):
+        args, home, rollout = self.legacy_thread()
+        before = (home / "config.toml").read_text()
+        rollout.write_text(json.dumps({"type": "session_meta", "payload": {"id": "wrong"}}) + "\n")
+        with self.assertRaisesRegex(ValueError, "identity"):
+            self.relay.repair_legacy_provider(args)
+        rollout.unlink()
+        outside = self.root / "outside.jsonl"
+        outside.write_text(json.dumps({"type": "session_meta", "payload": {"id": args.thread_id}}) + "\n")
+        rollout.symlink_to(outside)
+        with self.assertRaisesRegex(ValueError, "outside"):
+            self.relay.repair_legacy_provider(args)
+        self.assertEqual((home / "config.toml").read_text(), before)
+
+    def test_legacy_provider_rejects_stale_guard_account_and_identity_races(self):
+        args, home, _ = self.legacy_thread()
+        before = (home / "config.toml").read_text()
+        for mode in ("policy", "account", "credentials", "settings", "agent", "config", "thread"):
+            with self.subTest(mode=mode):
+                self.paths[1].write_text(json.dumps(self.settings[1]))
+                self.write_owned_agents()
+                (home / "config.toml").write_text(before)
+                calls = 0
+                def health(settings):
+                    nonlocal calls
+                    calls += 1
+                    result = self.healthy(settings)
+                    if mode == "policy": result["sourceContinuationRevision"] = 2
+                    if calls == 2:
+                        if mode == "account": result["subscriptionGuard"]["account"] = "different"
+                        if mode == "credentials": (home / "auth.json").write_text('{"fixture":"changed"}')
+                        if mode == "settings": self.paths[1].write_text(json.dumps({**settings, "changed": True}))
+                        if mode == "agent": self.relay.agent_path(settings).write_text("changed")
+                        if mode == "config": (home / "config.toml").write_text(before + "# concurrent edit\n")
+                        if mode == "thread":
+                            with sqlite3.connect(home / "state_5.sqlite") as db:
+                                db.execute("UPDATE threads SET model_provider='openai'")
+                    return result
+                self.relay.health = health
+                with self.assertRaises((RuntimeError, ValueError, plistlib.InvalidFileException)):
+                    self.relay.repair_legacy_provider(args)
+                self.assertNotIn(manager.ALIAS_BEGIN, (home / "config.toml").read_text())
+        self.assertFalse(list(home.glob("*.bak")))
+
+    def test_legacy_provider_preserves_concurrent_edit_during_backup(self):
+        args, home, _ = self.legacy_thread()
+        config = home / "config.toml"
+        before = config.read_text()
+        original = manager.atomic_write
+        def write(path, text, **kwargs):
+            original(path, text, **kwargs)
+            if path.name.endswith(".bak"):
+                config.write_text(before + "# user edit during backup\n")
+        with patch.object(manager, "atomic_write", side_effect=write):
+            with self.assertRaisesRegex(RuntimeError, "changed"):
+                self.relay.repair_legacy_provider(args)
+        self.assertEqual(config.read_text(), before + "# user edit during backup\n")
+
+    def test_atomic_config_write_rechecks_after_temporary_file_is_complete(self):
+        config = Path(self.settings[1]["codex_home"]) / "config.toml"
+        before = config.read_text()
+        chmod = manager.os.fchmod
+        for mode in ("content", "inode", "symlink"):
+            with self.subTest(mode=mode):
+                config.unlink()
+                config.write_text(before)
+                other = config.with_name("user-config.toml")
+                other.write_text(before)
+                def during_write(fd, permissions):
+                    chmod(fd, permissions)
+                    if mode == "content": config.write_text(before + "# user changed\n")
+                    elif mode == "inode": manager.os.replace(other, config)
+                    else:
+                        config.unlink()
+                        config.symlink_to(other)
+                with patch.object(manager.os, "fchmod", side_effect=during_write):
+                    with self.assertRaisesRegex(RuntimeError, "changed"):
+                        manager.atomic_write(config, "replacement", expected=before)
+                self.assertEqual(config.read_text(), before + "# user changed\n" if mode == "content" else before)
+                self.assertEqual(config.is_symlink(), mode == "symlink")
+
+    def test_waiting_manager_reexecutes_changed_source_before_any_lifecycle_action(self):
+        source = self.root / "manage.py"
+        source.write_text("old policy\n")
+        startup_hash = manager.digest(source)
+        arguments = ["repair-legacy-provider", "--codex-home", "/fixture/profile", "--thread-id", "fixture"]
+        with patch.object(manager.os, "execv") as execute:
+            manager.reload_changed_manager(source, startup_hash, arguments)
+            execute.assert_not_called()
+            source.write_text("new policy\n")
+            with self.assertRaisesRegex(RuntimeError, "did not replace"):
+                manager.reload_changed_manager(source, startup_hash, arguments)
+            execute.assert_called_once_with(sys.executable, [sys.executable, str(source), *arguments])
+        source.unlink()
+        other = self.root / "unrelated.py"
+        other.write_text("new policy\n")
+        source.symlink_to(other)
+        with patch.object(manager.os, "execv") as execute:
+            with self.assertRaisesRegex(RuntimeError, "ownership"):
+                manager.reload_changed_manager(source, startup_hash, arguments)
+            execute.assert_not_called()
+
+    def test_disable_keeps_legacy_alias_and_guarded_listener_without_rerouting(self):
+        args, home, _ = self.legacy_thread()
+        self.relay.repair_legacy_provider(args)
+        alias = tomllib.loads((home / "config.toml").read_text())["model_providers"][manager.LEGACY_PROVIDER]
+        self.relay.disable()
+        parsed = tomllib.loads((home / "config.toml").read_text())
+        self.assertNotIn("openai_base_url", parsed)
+        self.assertNotIn("model_provider", parsed)
+        self.assertEqual(parsed["model_providers"][manager.LEGACY_PROVIDER], alias)
+        saved = json.loads(self.paths[1].read_text())
+        self.assertEqual(saved["route"]["to"], saved["route"]["from"])
+        self.assertFalse(saved["taskSavings"]["enabled"])
+        self.assertEqual(self.relay.repair_legacy_provider(args), {"status": "ready", "changed": False})
+        with self.drain({"draining": True, "activeRequests": 0}), \
+                patch.object(manager.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run:
+            stopped = self.relay.stop()
+        self.assertEqual(len(stopped["retained"]), 1)
+        self.assertEqual(stopped["retained"][0]["settings_path"], str(self.paths[1]))
+        self.assertEqual(run.call_count, 2)
+
+    def test_retirement_keeps_login_persistence_for_a_historical_provider_alias(self):
+        self.write_owned_agents()
+        config = Path(self.settings[0]["codex_home"]) / "config.toml"
+        config.write_text(manager.legacy_provider_config(config.read_text(), self.relay.endpoint(self.settings[2])))
+        result = self.relay.retire()
+        self.assertEqual(result["retired_after_logout"], [])
+        self.assertEqual(result["retained"][0]["settings_path"], str(self.paths[2]))
+        self.assertIn("Historical sessions", result["retained"][0]["reason"])
+        self.assertTrue(self.relay.agent_path(self.settings[2]).exists())
 
     def test_configure_updates_profiles_and_retained_generations(self):
         self.add_unreadable_retired()

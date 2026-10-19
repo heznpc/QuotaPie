@@ -458,3 +458,105 @@ test("every scan checks latest threads while bounded backfill cannot hide a new 
   expect(f.controller.incidents().map(value => value.threadId).sort()).toEqual([threadId, nextThreadId].sort());
   expect(f.state.registrationCalls).toBe(2);
 });
+
+test("a rejected history cursor cannot hide the latest incident and the next scans recover pagination", async () => {
+  const f = fixture(); let scans = 0;
+  f.deps.listThreads = async (_account, cursor) => {
+    f.state.listCalls.push(cursor);
+    if (cursor === "expired") throw new Error("Synthetic expired cursor");
+    if (cursor === "fresh") return { data: f.state.threads, nextCursor: null };
+    scans++;
+    return { data: scans === 1 ? [] : [{id: nextThreadId, name: "Newest", cwd: "/tmp/new", updatedAtMs: 1_700}],
+      nextCursor: scans === 1 ? "expired" : "fresh" };
+  };
+  f.deps.evidence = async (_account, id) => ({ ...f.state.evidence!, threadId: id,
+    turnId: id === nextThreadId ? nextTurnId : turnId });
+  await f.controller.setEnabled("plus", true); f.state.now = 2_000;
+  await f.controller.poll();
+  expect(f.controller.incidents()).toHaveLength(0);
+  f.state.now = 3_000; await f.controller.poll();
+  expect(f.controller.incidents().map(i => i.threadId)).toEqual([nextThreadId]);
+  expect(f.controller.status().accounts[0]).toMatchObject({lastScanAtMs:3_000,lastError:"scan-unavailable"});
+  expect(f.work.executions()).toHaveLength(0);
+  // Drop the rejected cursor; a successful newest-page scan establishes a
+  // current continuation cursor without retrying the permanently bad value.
+  f.state.now = 4_000; await f.controller.poll();
+  expect(f.state.listCalls).toEqual([null,null,"expired",null]);
+  expect(f.controller.status().accounts[0]).toMatchObject({lastScanAtMs:4_000,lastError:null});
+  expect(f.state.registrationCalls).toBe(1);
+  f.state.now = 5_000; await f.controller.poll();
+  expect(f.state.listCalls).toEqual([null,null,"expired",null,null,"fresh"]);
+  expect(f.controller.incidents().map(i => i.threadId).sort()).toEqual([threadId,nextThreadId].sort());
+  expect(f.state.registrationCalls).toBe(2);
+  expect(f.work.executions()).toHaveLength(0);
+});
+
+async function discoverStatusIncident(f: ReturnType<typeof fixture>, index: number) {
+  f.state.now = 2_000 + index * 10;
+  f.state.evidence = { ...f.state.evidence!, turnId: `55555555-5555-4555-8555-${index.toString(16).padStart(12,"0")}`,
+    failedAtMs: f.state.now - 1 };
+  f.state.threads[0]!.updatedAtMs = f.state.now - 1;
+  await f.controller.poll();
+  return f.controller.incidents()[0]!;
+}
+
+test("status keeps every unresolved incident ahead of more than 100 newer history records", async () => {
+  const f = fixture(); await f.controller.setEnabled("plus",true);
+  const unresolved: QuotaResumeIncident[] = [];
+  for(let index=0;index<105;index++) unresolved.push(await discoverStatusIncident(f,index));
+  const oldest = unresolved[0]!;
+  const execution = f.work.claim(oldest.policyId,"local",1,f.state.now)!;
+  f.work.markDispatched(execution.id,f.state.now);
+  f.work.finish(execution.id,{status:"uncertain",reason:"response-unverified"},f.state.now);
+  const terminalIds:string[]=[];
+  for(let index=105;index<210;index++) {
+    const incident=await discoverStatusIncident(f,index);
+    terminalIds.push(incident.id);
+    await f.controller.skip(incident.id);
+  }
+  const status=f.controller.status().incidents;
+  expect(status.slice(0,105).map(i=>i.id)).toEqual(unresolved.map(i=>i.id).reverse());
+  expect(status.find(i=>i.id===oldest.id)).toMatchObject({state:"needs-review",reason:"response-unverified"});
+  expect(status.slice(105).map(i=>i.id)).toEqual(terminalIds.slice(-100).reverse());
+  expect(status).toHaveLength(205);
+  expect(f.controller.incidents()).toHaveLength(210);
+});
+
+test("status bounds resolved history after projecting completed policies and leaves the durable ledger intact", async () => {
+  const f=fixture(); await f.controller.setEnabled("plus",true);
+  const ids:string[]=[];
+  for(let index=0;index<105;index++) {
+    const incident=await discoverStatusIncident(f,index); ids.push(incident.id);
+    if(index%2===0) {
+      const execution=f.work.claim(incident.policyId,"local",1,f.state.now)!;
+      f.work.markDispatched(execution.id,f.state.now);
+      f.work.finish(execution.id,{status:"turn-finished",remainingWork:"Objective completion remains unverified"},f.state.now);
+    } else await f.controller.skip(incident.id);
+  }
+  const status=f.controller.status().incidents;
+  expect(status.map(i=>i.id)).toEqual(ids.slice(-100).reverse());
+  expect(new Set(status.map(i=>i.state))).toEqual(new Set(["resumed","skipped"]));
+  expect(f.controller.incidents()).toHaveLength(105);
+  await f.controller.close(); const restarted=f.create();
+  expect(restarted.status().incidents).toEqual(status);
+});
+
+test("queued status distinguishes wake outcomes without treating a wake request as an observed host turn", async () => {
+  for(const [wake,reason] of [
+    [{},"host-queue-awaiting-turn"],
+    [{hostWakeRequestedAtMs:2_003,hostWakeAttemptCount:1},"host-queue-awaiting-turn"],
+    [{hostWakeRequestedAtMs:2_003,hostWakeAttemptCount:1,hostWakeStatus:"sent"},"host-queue-wake-sent"],
+    [{hostWakeRequestedAtMs:2_003,hostWakeAttemptCount:1,hostWakeStatus:"unavailable",hostWakeReason:"host-not-running"},"host-queue-wake-unavailable"],
+  ] as const) {
+    const f=fixture(),incident=await f.enroll();
+    f.deps.execution=id=>f.work.getExecution(id);
+    const execution=f.work.claim(incident.policyId,"local",1,2_001)!;
+    f.work.markDispatched(execution.id,2_002);
+    const receipt={threadId,clientUserMessageId:"status-wake",sentAtMs:2_002,queuedSubmissionId:nextThreadId,...wake};
+    f.work.recordHostQueue(execution.id,receipt);
+    expect(f.controller.status().incidents[0]).toMatchObject({state:"queued",reason});
+    f.work.recordHostQueue(execution.id,{...receipt,turnId:nextTurnId});
+    expect(f.controller.status().incidents[0]).toMatchObject({state:"running",reason:undefined});
+    expect(f.work.executions()).toHaveLength(1);
+  }
+});
