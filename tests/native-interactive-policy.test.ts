@@ -226,6 +226,7 @@ test("bounded native inspection preserves oversized and streaming payloads witho
       headers: knownLength ? { "content-length": String(bytes.length) } : {},
       body: new ReadableStream({ start(c) { for (let i = 0; i < bytes.length; i += 10) c.enqueue(bytes.slice(i, i + 10)); c.close(); } }) });
     const inspected = await inspectNativeBody(request, 32);
+    expect(inspected.reason).toBe("body-too-large");
     expect(inspected.bytes).toBeUndefined(); expect(new Uint8Array(await new Response(inspected.body).arrayBuffer())).toEqual(bytes);
   }
 });

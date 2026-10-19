@@ -2,7 +2,7 @@ import type { AppConfig } from "./config";
 import type { WindowAnalysis } from "./types";
 
 export function nextWakeDelayMs(
-  windows: WindowAnalysis[],
+  windows: Pick<WindowAnalysis, "resetsAtMs" | "observedAtMs">[],
   config: AppConfig,
   nowMs = Date.now(),
 ): number {

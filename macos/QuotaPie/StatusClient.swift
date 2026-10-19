@@ -92,13 +92,16 @@ final class StatusClient {
         }
     }
 
-    func refreshCollection(reason: String, actionToken: String, completion: @escaping (Result<Void, Error>) -> Void) {
+    func refreshCollection(reason: String, actionToken: String, completion: @escaping (Result<CollectionRefreshState, Error>) -> Void) {
         do {
             var request = try authenticatedPOST(pathComponents: ["api", "collection", "refresh"], actionToken: actionToken)
             request.setValue(nil, forHTTPHeaderField: "content-length")
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.httpBody = try JSONSerialization.data(withJSONObject: ["reason": reason])
-            perform(request) { result in completion(result.map { _ in () }) }
+            perform(request) { result in
+                struct Reply: Decodable { let collection: CollectionRefreshState }
+                completion(Result { try JSONDecoder().decode(Reply.self, from: result.get()).collection })
+            }
         } catch { completion(.failure(error)) }
     }
 

@@ -1049,4 +1049,23 @@ struct CollectionRefreshState: Decodable {
     let lastStartedAtMs: Double?
     let lastFinishedAtMs: Double?
     let nextAttemptAtMs: Double?
+
+    /// A delayed refresh acknowledgement must not resurrect an already-finished
+    /// collection. Scheduled future attempts are not observations of progress.
+    var latestEventAtMs: Double {
+        [requestedAtMs, lastStartedAtMs, lastFinishedAtMs].compactMap { $0 }
+            .filter { $0.isFinite && $0 >= 0 }.max() ?? 0
+    }
+
+    func supersedes(_ previous: CollectionRefreshState?) -> Bool {
+        guard let previous else { return true }
+        if latestEventAtMs != previous.latestEventAtMs { return latestEventAtMs > previous.latestEventAtMs }
+        // A very short collection may start and finish in the same millisecond.
+        // Its late running acknowledgement must not resurrect the spinner.
+        if !previous.refreshing, let finished = previous.lastFinishedAtMs,
+           finished >= max(previous.requestedAtMs ?? 0, previous.lastStartedAtMs ?? 0) {
+            return !refreshing
+        }
+        return true
+    }
 }

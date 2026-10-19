@@ -1,7 +1,6 @@
 import { ResponseOwnershipGuard, NativeResponseOwnershipGuard, ResponseOwnershipError, type OwnershipProvenance } from "./codex-response-ownership";
 import { fetchCodexUpstream, transportFailure } from "./codex-transport";
 import { randomBytes, randomUUID } from "node:crypto";
-import { gunzipSync, inflateSync } from "node:zlib";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +17,7 @@ import { codexProfileRoot, loadConfig } from "./config";
 import { readCodexForkParent } from "./account-pool-lineage";
 import { createSourceHistoryGuard, type SourceHistoryGuard } from "./source-history-guard";
 import { inspectNativeBody, nativeRequestPathAllowed } from "./native-request";
+import { BodyDecodeError, decodeRequestBody, requestEncoding, type BodyDecodeFailure, type RequestEncoding } from "./request-body-decoder";
 import { interactiveRelayPolicy } from "./interactive-relay-policy";
 import { createRelayDiagnostics } from "./relay-diagnostics";
 export { DEFAULT_COMPACTION_ROUTE, routeCompaction, validateCompactionRoute, type CompactionRoute } from "./codex-compaction-policy";
@@ -26,10 +26,15 @@ import type { CompactionRequestEvent as CoreRequestEvent } from "../packages/quo
 export interface CompactionRequestEvent extends CoreRequestEvent {
   accountRouting?: PoolRoute;
   inlineImageCount?: number;
+  requestEncoding?: RequestEncoding;
+  requestInspection?: NativeInspectionReason;
 }
+type NativeInspectionReason = "not-applicable" | "empty-body" | "body-too-large" | "parsed" | "invalid-json" | "missing-model" | BodyDecodeFailure;
 export interface NativeRequestEvent {
   kind: "native_request"; requestId: string; method: string; routeFamily: string;
   status: number; origin: "relay" | "provider" | "client"; reason: string; at: string;
+  requestEncoding?: RequestEncoding;
+  requestInspection?: NativeInspectionReason;
 }
 
 function requestIdentity(headers: Headers) {
@@ -88,17 +93,6 @@ function transportHeaders(source: Headers): Headers {
   }
   for (const name of HOP_HEADERS) headers.delete(name);
   return headers;
-}
-
-function decodeBody(bytes: Uint8Array, encoding: string | null): Uint8Array {
-  switch (encoding?.toLowerCase()) {
-    case undefined:
-    case "identity": return bytes;
-    case "gzip": return gunzipSync(bytes, { maxOutputLength: MAX_BODY_BYTES });
-    case "deflate": return inflateSync(bytes, { maxOutputLength: MAX_BODY_BYTES });
-    case "zstd": return Bun.zstdDecompressSync(bytes);
-    default: throw new Error("Unsupported request encoding");
-  }
 }
 
 function poolErrorMessage(error: PoolError): string {
@@ -199,6 +193,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
           subscriptionGuardVersion: options.subscriptionGuard ? 1 : 0,
           subscriptionGuardRevision: options.subscriptionGuard ? 3 : 0,
           nativeRequestPolicyVersion: 1,
+          nativeRequestInspectionVersion: 1,
           nativeRequestPolicy: interactive ? "source-origin" : "managed-allowlist",
           recentNativeRequests,
           executionMode: interactive ? "interactive" : "managed",
@@ -223,6 +218,8 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
       const path = url.pathname.slice(prefix.length);
       const nativeRequestId = randomUUID();
       let nativeRecorded = false;
+      const encoding = requestEncoding(request.headers.get("content-encoding"));
+      let inspectionReason: NativeInspectionReason = "not-applicable";
       const recordNative = (status: number, origin: NativeRequestEvent["origin"], reason: string) => {
         if (!interactive || nativeRecorded) return;
         nativeRecorded = true;
@@ -230,7 +227,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
         const family = path.split("/")[1] ?? "";
         const item: NativeRequestEvent = { kind: "native_request", requestId: nativeRequestId, method: request.method,
           routeFamily: ["responses", "models", "alpha", "images", "files", "audio"].includes(family) ? family : "other",
-          status, origin, reason, at: new Date().toISOString() };
+          status, origin, reason, at: new Date().toISOString(), requestEncoding: encoding, requestInspection: inspectionReason };
         recentNativeRequests.push(item);
         if (recentNativeRequests.length > 32) recentNativeRequests.shift();
         try { options.onNativeRequest?.(item); } catch { /* Diagnostic only. */ }
@@ -315,11 +312,17 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
           if (request.method === "POST" && ["/responses", "/responses/compact"].includes(path)) {
             const inspected = await inspectNativeBody(request, MAX_BODY_BYTES);
             body = inspected.body;
-            if (inspected.bytes && headers.get("content-encoding")?.toLowerCase() !== "zstd") try {
-              const decoded = decodeBody(inspected.bytes, headers.get("content-encoding"));
-              const parsed: unknown = decoded.byteLength <= MAX_BODY_BYTES ? JSON.parse(new TextDecoder().decode(decoded)) : null;
-              if (object(parsed) && typeof parsed.model === "string") nativeParsed = parsed;
-            } catch { /* Native payloads the optimizer cannot read remain intact. */ }
+            inspectionReason = inspected.reason === "buffered" ? "invalid-json" : inspected.reason;
+            if (inspected.bytes?.byteLength) try {
+              const decoded = await decodeRequestBody(inspected.bytes, encoding, MAX_BODY_BYTES, request.signal);
+              const parsed: unknown = JSON.parse(new TextDecoder().decode(decoded));
+              if (object(parsed) && typeof parsed.model === "string") { nativeParsed = parsed; inspectionReason = "parsed"; }
+              else inspectionReason = "missing-model";
+            } catch (error) {
+              request.signal.throwIfAborted();
+              inspectionReason = error instanceof BodyDecodeError ? error.reason : "invalid-json";
+              // Optional inspection failure preserves original bytes and encoding.
+            }
           } else if (!["GET", "HEAD"].includes(request.method)) body = request.body ?? undefined;
         }
         if (!interactive && nativeToolRequest && options.subscriptionGuard) {
@@ -331,7 +334,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
         if (request.method === "POST" && (!interactive || nativeParsed)) {
           if (!interactive) body = new Uint8Array(await request.arrayBuffer());
           if (!interactive && nativeToolRequest) {
-            const decoded = decodeBody(body as Uint8Array, headers.get("content-encoding"));
+            const decoded = await decodeRequestBody(body as Uint8Array, encoding, MAX_BODY_BYTES, request.signal);
             if (decoded.byteLength > MAX_BODY_BYTES) throw new SubscriptionRequestError("request-unsupported");
             const mediaType = headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
             // Keep the exact native JSON bytes. No model substitution, billing
@@ -347,7 +350,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
             }
           }
           if (path === "/responses" || path === "/responses/compact") {
-            const decoded = nativeParsed ? null : decodeBody(body as Uint8Array, headers.get("content-encoding"));
+            const decoded = nativeParsed ? null : await decodeRequestBody(body as Uint8Array, encoding, MAX_BODY_BYTES, request.signal);
             if (decoded && decoded.byteLength > MAX_BODY_BYTES) {
               activeRequests--;
               return new Response("Request too large", { status: 413 });
@@ -386,6 +389,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
                 routed: routed.routed,
                 requestedEffort: safeEffort(object(input.reasoning) ? input.reasoning.effort : null),
                 reasoningEffort: safeEffort(object(outgoing.reasoning) ? outgoing.reasoning.effort : null),
+                ...(interactive ? { requestEncoding: encoding, requestInspection: inspectionReason } : {}),
               };
               if (options.subscriptionGuard) {
                 const guard = options.subscriptionGuard.check({ headers, model: guardModel });

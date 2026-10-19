@@ -57,6 +57,111 @@ final class QuotaRefreshTests: XCTestCase {
         XCTAssertTrue(model.payload?.resumeTasks.isEmpty == true)
     }
 
+    func testFastQuotaUpdatesAutoResumeAndCannotUndoAnAcknowledgedToggle() throws {
+        let model = PopoverModel()
+        model.applyQuota(try status(details: true))
+        let oldDetailsRevision = model.quotaRevision
+        var disabled = try status(time: 2000, details: true)
+        disabled.autoResume = try JSONDecoder().decode(AutoResumePayload.self, from: Data(#"{"accounts":[{"account":"fixture","label":"Fixture","enabled":false}],"incidents":[]}"#.utf8))
+        model.applyQuota(disabled)
+        XCTAssertEqual(model.payload?.autoResume?.accounts[0].enabled, false)
+        model.applyStatus(try status(time: 3000, details: true), notificationRevision: 0, quotaRevision: oldDetailsRevision)
+        XCTAssertEqual(model.payload?.autoResume?.accounts[0].enabled, false, "Delayed details must not replace the latest fast observation")
+        model.beginAutoResumeSave()
+        model.applyQuota(try status(time: 4000, details: true))
+        XCTAssertEqual(model.payload?.autoResume?.accounts[0].enabled, false)
+        model.finishAutoResumeSave(disabled.autoResume, nowMs: 5000)
+        model.applyQuota(try status(time: 4500, details: true))
+        XCTAssertEqual(model.payload?.autoResume?.accounts[0].enabled, false)
+        model.applyQuota(try status(time: 6000, details: true))
+        XCTAssertEqual(model.payload?.autoResume?.accounts[0].enabled, true)
+        model.applyQuota(try status(time: 7000))
+        XCTAssertEqual(model.payload?.autoResume?.accounts[0].enabled, true, "Older backends can omit the optional field")
+    }
+
+    func testFastCompactionActivityPreservesSettingsSavedDuringTheRequest() throws {
+        func snapshot(_ time: Int, model: String, enabled: Bool) throws -> StatusPayload {
+            let json: [String: Any] = ["nowMs": time, "compaction": ["checkedAtMs": time, "generations": 1, "reachable": 1,
+                "active": [], "recent": [], "policy": ["model": model, "effort": "low", "models": ["old", "new"], "configurable": true, "generations": 1, "applied": 1],
+                "savings": ["policy": ["enabled": enabled, "testOnly": false, "configurable": true, "supported": true, "generations": 1, "compatible": 1, "applied": 1], "active": [], "recent": []]]]
+            return try JSONDecoder().decode(StatusPayload.self, from: JSONSerialization.data(withJSONObject: json))
+        }
+        let model = PopoverModel()
+        model.applyQuota(try snapshot(1000, model: "old", enabled: false))
+        let savingsRevision = model.savingsPreferencesRevision, compactionRevision = model.compactionPreferencesRevision
+        let saved = try snapshot(2000, model: "new", enabled: true)
+        model.beginCompactionSave(); model.beginSavingsSave()
+        model.finishCompactionSave(saved.compaction?.policy); model.finishSavingsSave(saved.compaction?.savings?.policy)
+        model.applyQuota(try snapshot(3000, model: "old", enabled: false), savingsRevision: savingsRevision, compactionRevision: compactionRevision)
+        XCTAssertEqual(model.payload?.compaction?.checkedAtMs, 3000)
+        XCTAssertEqual(model.payload?.compaction?.policy?.model, "new")
+        XCTAssertEqual(model.payload?.compaction?.savings?.policy?.enabled, true)
+        model.applyStatus(try snapshot(2500, model: "old", enabled: false), notificationRevision: 0)
+        XCTAssertEqual(model.payload?.compaction?.checkedAtMs, 3000)
+        XCTAssertEqual(model.payload?.compaction?.policy?.model, "new")
+        model.applyQuota(try snapshot(4000, model: "old", enabled: false), savingsRevision: model.savingsPreferencesRevision,
+                         compactionRevision: model.compactionPreferencesRevision)
+        XCTAssertEqual(model.payload?.compaction?.policy?.model, "old")
+        XCTAssertEqual(model.payload?.compaction?.savings?.policy?.enabled, false)
+    }
+
+    func testRefreshAcknowledgementCannotResurrectCompletedCollectionOrChangeMeasurement() throws {
+        func collection(_ json: String) throws -> CollectionRefreshState {
+            try JSONDecoder().decode(CollectionRefreshState.self, from: Data(json.utf8))
+        }
+        let model = PopoverModel()
+        model.applyQuota(try status())
+        let measurement = model.measurementDate
+        model.applyCollectionRefresh(try collection(#"{"refreshing":true,"requestedAtMs":2000,"lastStartedAtMs":2000}"#))
+        XCTAssertTrue(model.payload?.collection?.refreshing == true)
+        model.applyStatus(try status(time: 1500), notificationRevision: 0, quotaRevision: model.quotaRevision)
+        XCTAssertEqual(model.payload?.collection?.lastStartedAtMs, 2000, "A late detail reply cannot undo the newer POST acknowledgement")
+        model.applyQuota(try status(time: 1500))
+        XCTAssertEqual(model.payload?.collection?.lastStartedAtMs, 2000)
+        model.applyCollectionRefresh(try collection(#"{"refreshing":false,"lastStartedAtMs":2000,"lastFinishedAtMs":3000}"#))
+        model.applyCollectionRefresh(try collection(#"{"refreshing":true,"requestedAtMs":2000,"lastStartedAtMs":2000,"nextAttemptAtMs":9000}"#))
+        XCTAssertFalse(model.payload?.collection?.refreshing == true)
+        XCTAssertEqual(model.payload?.accounts[0].windows[0].observedAtMs, 1400)
+        XCTAssertEqual(try XCTUnwrap(measurement).timeIntervalSince1970, 0.9, accuracy: 0.00001)
+        XCTAssertNil(model.lastError, "A running collector is not a transport failure")
+        model.applyCollectionRefresh(try collection(#"{"refreshing":false,"requestedAtMs":4000,"lastStartedAtMs":4000,"lastFinishedAtMs":4000}"#))
+        model.applyCollectionRefresh(try collection(#"{"refreshing":true,"requestedAtMs":4000,"lastStartedAtMs":4000}"#))
+        XCTAssertFalse(model.payload?.collection?.refreshing == true, "Completion wins an equal-millisecond acknowledgement")
+    }
+
+    func testLateDetailsCannotReviveCompactionWhenStaleProjectionKeepsTheObservationTime() throws {
+        func snapshot(time: Int, reachable: Int) throws -> StatusPayload {
+            let json: [String: Any] = ["nowMs": time, "compaction": ["checkedAtMs": 1000,
+                "generations": 1, "reachable": reachable, "active": [], "recent": []]]
+            return try JSONDecoder().decode(StatusPayload.self, from: JSONSerialization.data(withJSONObject: json))
+        }
+        let model = PopoverModel()
+        model.applyQuota(try snapshot(time: 1000, reachable: 1))
+        let oldRequest = model.quotaRevision
+        model.applyQuota(try snapshot(time: 12000, reachable: 0))
+        XCTAssertEqual(model.payload?.compaction?.checkedAtMs, 1000)
+        model.applyStatus(try snapshot(time: 2000, reachable: 1), notificationRevision: 0, quotaRevision: oldRequest)
+        XCTAssertEqual(model.payload?.compaction?.reachable, 0)
+    }
+
+    func testNewerDetailCanMarkTheSameCompactionObservationStaleAfterQuotaOnlyPolling() throws {
+        func snapshot(time: Int, reachable: Int) throws -> StatusPayload {
+            let json: [String: Any] = ["nowMs": time, "compaction": ["checkedAtMs": 1000,
+                "generations": 1, "reachable": reachable, "active": [], "recent": []]]
+            return try JSONDecoder().decode(StatusPayload.self, from: JSONSerialization.data(withJSONObject: json))
+        }
+        let model = PopoverModel()
+        model.applyQuota(try snapshot(time: 1000, reachable: 1))
+        let detailRevision = model.quotaRevision
+        // A quota-only response advances nowMs but makes no new compaction claim.
+        model.applyQuota(try status(time: 13000))
+        model.applyStatus(try snapshot(time: 12000, reachable: 0), notificationRevision: 0, quotaRevision: detailRevision)
+        XCTAssertEqual(model.payload?.compaction?.reachable, 0)
+        XCTAssertEqual(model.payload?.nowMs, 13000)
+        model.applyStatus(try snapshot(time: 2000, reachable: 1), notificationRevision: 0, quotaRevision: detailRevision)
+        XCTAssertEqual(model.payload?.compaction?.reachable, 0)
+    }
+
     func testForecastsSurviveOnlyWhileFastQuotaReferencesTheSameObservation() throws {
         var rich = try status(details: true)
         var window = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(rich.accounts[0].windows[0])) as? [String: Any])
@@ -313,20 +418,23 @@ final class QuotaRefreshTests: XCTestCase {
             read.fulfill()
         }
         wait(for: [read], timeout: 5)
-        for reason in ["startup", "wake", "network", "manual"] {
+        for reason in ["startup", "wake", "network", "manual", "visible"] {
             let refreshed = expectation(description: reason)
             client.refreshCollection(reason: reason, actionToken: "fixture-token") { result in
-                if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+                switch result {
+                case .success(let collection): XCTAssertTrue(collection.refreshing)
+                case .failure(let error): XCTFail(error.localizedDescription)
+                }
                 refreshed.fulfill()
             }
             wait(for: [refreshed], timeout: 5)
         }
         let requests = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: capture)) as? [[String: Any]])
-        XCTAssertEqual(requests.count, 5)
+        XCTAssertEqual(requests.count, 6)
         XCTAssertEqual(requests[0]["path"] as? String, "/api/quota")
         XCTAssertEqual(requests[0]["method"] as? String, "GET")
         XCTAssertTrue(requests[0]["token"] is NSNull)
-        for (index, reason) in ["startup", "wake", "network", "manual"].enumerated() {
+        for (index, reason) in ["startup", "wake", "network", "manual", "visible"].enumerated() {
             XCTAssertEqual(requests[index + 1]["path"] as? String, "/api/collection/refresh")
             XCTAssertEqual(requests[index + 1]["method"] as? String, "POST")
             XCTAssertEqual(requests[index + 1]["token"] as? String, "fixture-token")
