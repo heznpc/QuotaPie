@@ -43,7 +43,7 @@ struct AutoResumeSection: View {
                     Text(Strings.t("autoResume.empty")).font(.callout).foregroundStyle(.secondary)
                 }
                 ForEach(value.incidents) { incident in
-                    incidentRow(incident, accounts: value.accounts)
+                    incidentRow(incident, accounts: value.accounts, incidents: value.incidents)
                 }
             } else {
                 Text(Strings.t("autoResume.unsupported")).font(.callout).foregroundStyle(.secondary)
@@ -59,7 +59,7 @@ struct AutoResumeSection: View {
 
     private var canChange: Bool { model.canActOnTasks && model.statusClient != nil && !model.autoResumeSaving }
 
-    private func incidentRow(_ incident: AutoResumeIncident, accounts: [AutoResumeAccount]) -> some View {
+    private func incidentRow(_ incident: AutoResumeIncident, accounts: [AutoResumeAccount], incidents: [AutoResumeIncident]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .top) {
                 Text(incident.projectLabel).font(.callout).lineLimit(2)
@@ -67,14 +67,15 @@ struct AutoResumeSection: View {
                 Text(incident.stateTitle).font(.caption).foregroundStyle(incident.state == "needs-review" ? Color.orange : Color.secondary)
                     .accessibilityIdentifier("auto-resume-state-" + incident.id)
             }
-            Text(Strings.t("autoResume.conversationAccount", accounts.first { $0.account == incident.account }?.label ?? incident.account))
-                .font(.caption).foregroundStyle(.secondary)
             if let target = incident.quotaAccountText {
-                Text(target).font(.caption).foregroundStyle(.secondary)
+                Text(target).font(.callout.weight(.medium))
                     .accessibilityIdentifier("auto-resume-quota-target-" + incident.id)
             }
+            Text(Strings.t("autoResume.conversationAccount", accounts.first { $0.account == incident.account }?.label ?? incident.account))
+                .font(.caption).foregroundStyle(.secondary)
             Text(incident.threadId).font(.caption2.monospaced()).textSelection(.enabled).lineLimit(1)
-            if let reason = incident.reasonText { Text(reason).font(.caption).foregroundStyle(.secondary) }
+            if let reason = incident.displayedReason(in: incidents) { Text(reason).font(.caption).foregroundStyle(.secondary) }
+            if let repair = incident.repairText(in: incidents) { Text(repair).font(.caption).foregroundStyle(.secondary) }
             Text(Date(timeIntervalSince1970: incident.detectedAtMs / 1000), style: .date).font(.caption).foregroundStyle(.secondary)
             if incident.canSkip {
                 Button(Strings.t("autoResume.skip")) {

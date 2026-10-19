@@ -51,6 +51,20 @@ test("validated push recovery restores collection health alongside fresh quota",
   } finally { await close(); }
 });
 
+test("B recovery push rechecks an A session and wakes the resident runner without opening the menu",async()=>{
+  const f=fixture();
+  const p={id:"source-a-recovery",provider:"codex",account:"other-source",purpose:"quota-resume"} as any;
+  const policies=spyOn(f.service.work.store,"list").mockReturnValue([p]);
+  const get=spyOn(f.service.work.store,"get").mockReturnValue(p);
+  const admission=spyOn(f.service.work,"admission").mockImplementation(()=>({ready:f.service.db.latestAll().some(w=>w.account==="default"&&w.usedPercent===10),reason:"test",timeoutSeconds:1}));
+  const wake=spyOn(f.service,"requestCollection").mockImplementation(()=>{});
+  (f.service as any).jobsEnabled=true;
+  try{
+    f.update(quota(Date.now()));
+    expect(wake).toHaveBeenCalledTimes(1);expect(admission).toHaveBeenCalledTimes(2);
+  }finally{policies.mockRestore();get.mockRestore();admission.mockRestore();wake.mockRestore();await f.close();}
+});
+
 test("empty push reads retain the previous snapshot without reporting collection success", async () => {
   const { service, update, close } = fixture();
   try {

@@ -560,3 +560,97 @@ test("queued status distinguishes wake outcomes without treating a wake request 
     expect(f.work.executions()).toHaveLength(1);
   }
 });
+
+test('resident discovery links one local repair without hiding or rewriting the failed original, including registration crash restart',async()=>{
+ const f=fixture(),parent=await f.enroll();
+ const exec=f.work.claim(parent.id,'local',1,2001)!;f.work.markDispatched(exec.id,2002);f.work.finish(exec.id,{status:'failed',reason:'host-turn-failed'},2003);
+ const snapshot=JSON.stringify(f.work.get(parent.id)),execution=JSON.stringify(f.work.executions(parent.id));
+ const repair={parentIncidentId:parent.id,parentExecutionId:exec.id,parentPolicyRevision:f.work.get(parent.id)!.revision,permitId:'a'.repeat(64),sourceQuotaTurnId:turnId,failedTurnId:nextTurnId,failedAtMs:2003,stamp:'local-terminal',goalFingerprint:'goal'};
+ let preparations=0,validations=0,registrationFails=true;
+ f.deps.prepareLocalRepair=async()=>{preparations++;return repair};
+ f.deps.validateLocalRepair=async()=>{validations++};
+ f.deps.register=async incident=>{
+  f.state.registrationCalls++;if(registrationFails)throw Error('crash-after-permit');
+  f.work.save({...policyInput(incident),quotaResume:{turnId:repair.failedTurnId,stamp:repair.stamp,localBeforeSendRecovery:{permitId:repair.permitId,parentExecutionId:exec.id,sourceQuotaTurnId:turnId}}},null,incident.id);
+ };
+ await f.controller.poll();const child=f.controller.incidents().find(i=>i.localRepair)!;
+ expect(child).toBeDefined();expect(f.controller.incidents()).toHaveLength(2);expect(preparations).toBe(1);
+ expect(f.controller.status().incidents.find(i=>i.id===parent.id)).toMatchObject({state:'needs-review',localRepairChildIncidentId:child.id});
+ expect(f.controller.status().incidents.find(i=>i.id===child.id)).toMatchObject({localRepairParentIncidentId:parent.id});
+ await f.controller.close();registrationFails=false;const restarted=f.create();await restarted.poll();await restarted.poll();
+ expect(restarted.incidents()).toHaveLength(2);expect(preparations).toBe(1);expect(f.work.list()).toHaveLength(2);
+ expect(JSON.stringify(f.work.get(parent.id))).toBe(snapshot);expect(JSON.stringify(f.work.executions(parent.id))).toBe(execution);
+ await restarted.validatePolicy(f.work.get(child.id)!);expect(validations).toBe(1);
+ const childExec=f.work.claim(child.id,'local',1,3001)!;f.work.markDispatched(childExec.id,3002);f.work.finish(childExec.id,{status:'failed',reason:'host-turn-failed'},3003);
+ // Reusing the first parent's permit cannot authorize a different failed parent.
+ await restarted.poll();expect(restarted.incidents()).toHaveLength(2);expect(preparations).toBe(2);
+});
+
+test.each(['consent','account','parent-revision'] as const)('a local repair loses authorization after %s changes',async mode=>{
+ const f=fixture(),parent=await f.enroll();const e=f.work.claim(parent.id,'local',1,2001)!;f.work.markDispatched(e.id,2002);f.work.finish(e.id,{status:'failed',reason:'host-turn-failed'},2003);
+ const repair={parentIncidentId:parent.id,parentExecutionId:e.id,parentPolicyRevision:f.work.get(parent.id)!.revision,permitId:'a'.repeat(64),sourceQuotaTurnId:turnId,failedTurnId:nextTurnId,failedAtMs:2003,stamp:'local-terminal',goalFingerprint:'goal'};
+ f.deps.prepareLocalRepair=async()=>repair;
+ f.deps.register=async i=>{f.work.save({...policyInput(i),quotaResume:{turnId:nextTurnId,stamp:'local-terminal',localBeforeSendRecovery:{permitId:'a'.repeat(64),parentExecutionId:e.id,sourceQuotaTurnId:turnId}}},null,i.id)};
+ await f.controller.poll();const child=f.controller.incidents().find(i=>i.localRepair)!;expect(f.controller.blockPolicy(f.work.get(child.id)!)).toBeNull();
+ if(mode==='consent')await f.controller.setEnabled('plus',false);
+ if(mode==='account')f.state.accounts[0]!.accountKey='other';
+ if(mode==='parent-revision'){const p=f.work.get(parent.id)!;f.work.setEnabled(p.id,false,p.revision,'user-off-again');}
+ expect(f.controller.blockPolicy(f.work.get(child.id)!)).toBe('auto-resume-disabled');
+});
+
+
+test('a user disable during the active turn cannot impersonate the automatic terminal revision',async()=>{
+ for(const disabled of [false,true]){
+  const f=fixture(),i=await f.enroll(),e=f.work.claim(i.id,'local',1,2001)!;f.work.markDispatched(e.id,2002);
+  if(disabled)f.work.setEnabled(i.id,false,1,'user-during-turn');
+  f.work.finish(e.id,{status:'failed',reason:'host-turn-failed'},2003);
+  expect(f.work.get(i.id)!.revision).toBe(2);
+  expect(f.work.hasReviewedChangeAfter(e)).toBe(disabled);
+ }
+});
+
+
+test("a repaired turn's genuine quota failure can await its next recovery, while altered typed bindings cannot",async()=>{
+ for(const altered of [false,true]){
+  const f=fixture(),root=await f.enroll(),first=f.work.claim(root.id,'local',1,2001)!;
+  f.work.markDispatched(first.id,2002);f.work.finish(first.id,{status:'failed',reason:'host-turn-failed'},2003);
+  const repair={parentIncidentId:root.id,parentExecutionId:first.id,parentPolicyRevision:2,permitId:'a'.repeat(64),sourceQuotaTurnId:turnId,
+    failedTurnId:nextTurnId,failedAtMs:2003,stamp:'local-terminal',goalFingerprint:'goal'};
+  f.deps.prepareLocalRepair=async()=>repair;
+  f.deps.register=async i=>{f.work.save({...policyInput(i),...(i.localRepair?{quotaResume:{turnId:repair.failedTurnId,stamp:repair.stamp,
+    localBeforeSendRecovery:{permitId:repair.permitId,parentExecutionId:first.id,sourceQuotaTurnId:turnId}}}:{})},null,i.id)};
+  await f.controller.poll();const child=f.controller.incidents().find(i=>i.localRepair)!;
+  const e=f.work.claim(child.id,'local',1,3001)!;f.work.markDispatched(e.id,3002);f.work.finish(e.id,{status:'quota-blocked',reason:'host-turn-quota-blocked'},3003);
+  if(altered){const p=f.work.get(child.id)!;p.quotaResume!.localBeforeSendRecovery!.permitId='b'.repeat(64);
+    f.db.db.query('UPDATE work_policies SET value=? WHERE id=?').run(JSON.stringify(p),p.id);}
+  f.state.evidence={...f.state.evidence!,turnId:'55555555-5555-4555-8555-555555555555',stamp:'real-later-quota',failedAtMs:4000,recoveryIncidentId:child.id};
+  f.state.now=5000;await f.controller.poll();
+  expect(f.controller.incidents()).toHaveLength(altered?2:3);
+  if(!altered){const next=f.controller.incidents().find(i=>i.evidence.turnId===f.state.evidence!.turnId)!;
+    expect(next.localRepair).toBeUndefined();expect(next.evidence.recoveryIncidentId).toBe(child.id);
+    expect(f.work.get(next.id)!.quotaResume!.turnId).toBe(f.state.evidence!.turnId);}
+ }
+});
+
+
+test("local repair chain is bounded to two children, preserves every result, and is revoked through its root",async()=>{
+ const f=fixture(),root=await f.enroll();let prepared=0;
+ f.deps.prepareLocalRepair=async(i,p)=>{prepared++;return {parentIncidentId:i.id,parentExecutionId:f.work.executions(p.id).at(-1)!.id,
+   parentPolicyRevision:p.revision,permitId:String(prepared).repeat(64),sourceQuotaTurnId:turnId,
+   failedTurnId:prepared===1?nextTurnId:'55555555-5555-4555-8555-555555555555',failedAtMs:2003+prepared,stamp:'local-'+prepared,goalFingerprint:'goal'}};
+ f.deps.register=async i=>{const r=i.localRepair!;f.work.save({...policyInput(i),quotaResume:{turnId:r.failedTurnId,stamp:r.stamp,
+   localBeforeSendRecovery:{permitId:r.permitId,parentExecutionId:r.parentExecutionId,sourceQuotaTurnId:r.sourceQuotaTurnId}}},null,i.id)};
+ let current=root;
+ for(let attempt=0;attempt<3;attempt++){
+   const p=f.work.get(current.id)!,e=f.work.claim(p.id,'local',p.revision,3000+attempt*10)!;
+   f.work.markDispatched(e.id,3001+attempt*10);f.work.finish(e.id,{status:'failed',reason:'host-turn-failed'},3002+attempt*10);
+   await f.controller.poll();await f.controller.poll();
+   if(attempt<2){current=f.controller.incidents().find(i=>i.localRepair?.parentIncidentId===current.id)!;expect(current).toBeDefined();expect(current.evidence).toEqual(root.evidence);}
+ }
+ expect(prepared).toBe(2);expect(f.controller.incidents()).toHaveLength(3);expect(f.work.executions()).toHaveLength(3);
+ expect(f.controller.status().incidents).toHaveLength(3);
+ for(const p of f.work.list())expect(p.state).toMatchObject({turns:1,status:'failed'});
+ expect(f.controller.blockPolicy(f.work.get(current.id)!)).toBeNull();
+ const rootPolicy=f.work.get(root.id)!;f.work.setEnabled(root.id,false,rootPolicy.revision,'user-disable-root');
+ expect(f.controller.blockPolicy(f.work.get(current.id)!)).toBe('auto-resume-disabled');
+});

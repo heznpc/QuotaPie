@@ -137,6 +137,12 @@ export class AlertStore {
     `).all().map((row) => row.alert_key);
   }
 
+  hasScheduledAppNotification(alertKey: string): boolean {
+    return !!this.storage.db.query<{ found: number }, [string]>(
+      "SELECT 1 AS found FROM app_notification_outbox WHERE alert_key=? AND disposition='scheduled' LIMIT 1",
+    ).get(alertKey);
+  }
+
   pendingEvents(limit = 500): QuotaEvent[] {
     const rows = this.storage.db
       .query<EventRow, [number]>(`

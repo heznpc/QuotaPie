@@ -1320,10 +1320,34 @@
 "settings.organized.finishedJobs" = "Finished automatic jobs (%@)";
 "settings.organized.activityHistory" = "Activity history";
 
-"autoResume.conversationAccount" = "Conversation account: %@";
+"autoResume.conversationAccount" = "Conversation open in: %@ · same local conversation";
 "autoResume.quotaTarget.candidate" = "Resume candidate: %@ · checking connection";
 "autoResume.quotaTarget.confirmed" = "Allowance account assigned for resume: %@";
 "autoResume.quotaTarget.used" = "Account that handled the resume request: %@";
 "autoResume.reason.targetRoute" = "Verifying the app connection for this conversation. No resume input is sent before verification.";
 "autoResume.reason.targetChanged" = "Resume is paused because the assigned account or account pool settings changed.";
 "autoResume.reason.targetQuota" = "Rechecking the assigned account’s current allowance and reset period.";
+"autoResume.reason.targetBusy" = "Waiting for another automatic continuation using the assigned account.";
+"autoResume.reason.targetProof" = "Resume is paused because the conversation and execution could not be verified.";
+"autoResume.reason.targetAuthorization" = "Sending is paused because resume authorization verification expired.";
+
+"autoResume.reason.turnFailed" = "ChatGPT reported that the resumed turn failed. Check the conversation error. QuotaPie will not resend the same input.";
+"autoResume.reason.turnInterrupted" = "The resumed turn was interrupted in ChatGPT. The same input will not be resent.";
+"autoResume.reason.turnQuotaBlocked" = "The resumed conversation reached a usage limit again.";
+
+"autoResume.reason.targetProviderRejected" = "The assigned account request ended with a provider error. The same input will not be resent.";
+"autoResume.reason.targetProviderQuota" = "The provider reported a usage limit for the assigned account too.";
+"autoResume.reason.targetCompletionUnknown" = "Completion of the request sent to the assigned account could not be confirmed. It will not be resent to prevent duplicate execution.";
+"autoResume.repair.parent" = "The linked automatic repair shows subsequent progress. This failed attempt remains in the history.";
+"autoResume.repair.child" = "One automatic repair of the same conversation after a confirmed failure before provider delivery.";
+"autoResume.repair.localFailure" = "Request delivery failed inside QuotaPie. It was confirmed that no request reached the provider.";
+
+"alert.resume.auto.incident.title" = "%@ · automatic resume";
+"alert.resume.auto.incident.waiting.message" = "Quota interruption detected. Checking available accounts and the route back to this conversation.\n%@";
+"alert.resume.auto.incident.queued.message" = "The same conversation accepted the continuation request.\n%@";
+"alert.resume.auto.incident.resumed.message" = "One continuation turn finished in the same conversation. The overall goal may still be in progress.\n%@";
+"alert.resume.auto.incident.review.message" = "The continuation result needs review. Open QuotaPie Work to inspect the reason.\n%@";
+"alert.resume.auto.source" = "Conversation open in: %@";
+"alert.resume.auto.quota.candidate" = "Candidate quota account: %@ · checking connection";
+"alert.resume.auto.quota.confirmed" = "Quota account assigned: %@";
+"alert.resume.auto.quota.used" = "Account that handled the request: %@";

@@ -35,6 +35,9 @@ export type WindowKind = "five-hour" | "weekly" | "monthly" | "other";
 export interface MessageParams {
   /** Opaque presentation identity, never a session path or executable action. */
   notificationGroup?: string;
+  sourceAccount?: string;
+  quotaAccountLabel?: string;
+  quotaTargetState?: string;
   label?: string;
   provider?: string;
   account?: string;
@@ -81,6 +84,13 @@ export interface MessageParams {
   source?: string;
   observed?: string;
   check?: string;
+}
+
+function autoResumeAccountContext(p: MessageParams, locale: Locale): string {
+  const source = t("alert.resume.auto.source", p, locale);
+  const state = p.quotaTargetState;
+  return p.quotaAccountLabel && (state === "candidate" || state === "confirmed" || state === "used")
+    ? t(`alert.resume.auto.quota.${state}`, p, locale) + "\n" + source : source;
 }
 
 type Renderer = (params: MessageParams) => string;
@@ -326,6 +336,27 @@ const CATALOG = {
     en: (p) => `${p.label} has fresh quota again. Open QuotaPie to approve resuming it.`,
     ko: (p) => `${p.label} 한도가 다시 확인됐습니다. QuotaPie에서 재개를 승인해 주세요.`,
   },
+  "alert.resume.auto.incident.title": { en: p => `${p.label} · automatic resume`, ko: p => `${p.label} · 자동재개` },
+  "alert.resume.auto.incident.waiting.message": {
+    en: p => `Quota interruption detected. Checking available accounts and the route back to this conversation.\n${autoResumeAccountContext(p, "en")}`,
+    ko: p => `한도 중단을 감지했습니다. 사용 가능한 계정과 같은 대화의 재개 경로를 확인합니다.\n${autoResumeAccountContext(p, "ko")}`,
+  },
+  "alert.resume.auto.incident.queued.message": {
+    en: p => `The same conversation accepted the continuation request.\n${autoResumeAccountContext(p, "en")}`,
+    ko: p => `같은 대화에 재개 요청이 접수됐습니다.\n${autoResumeAccountContext(p, "ko")}`,
+  },
+  "alert.resume.auto.incident.resumed.message": {
+    en: p => `One continuation turn finished in the same conversation. The overall goal may still be in progress.\n${autoResumeAccountContext(p, "en")}`,
+    ko: p => `같은 대화에서 이어간 한 턴이 끝났습니다. 전체 목표의 완료 여부는 별도로 확인하세요.\n${autoResumeAccountContext(p, "ko")}`,
+  },
+  "alert.resume.auto.incident.review.message": {
+    en: p => `The continuation result needs review. Open QuotaPie Work to inspect the reason.\n${autoResumeAccountContext(p, "en")}`,
+    ko: p => `재개 결과를 확인해야 합니다. QuotaPie 작업 화면에서 이유를 확인하세요.\n${autoResumeAccountContext(p, "ko")}`,
+  },
+  "alert.resume.auto.source": { en: p => `Conversation open in: ${p.sourceAccount}`, ko: p => `대화가 열린 계정: ${p.sourceAccount}` },
+  "alert.resume.auto.quota.candidate": { en: p => `Candidate quota account: ${p.quotaAccountLabel} · checking connection`, ko: p => `한도 계정 후보: ${p.quotaAccountLabel} · 연결 확인 중` },
+  "alert.resume.auto.quota.confirmed": { en: p => `Quota account assigned: ${p.quotaAccountLabel}`, ko: p => `재개에 지정한 한도 계정: ${p.quotaAccountLabel}` },
+  "alert.resume.auto.quota.used": { en: p => `Account that handled the request: ${p.quotaAccountLabel}`, ko: p => `재개 요청을 처리한 계정: ${p.quotaAccountLabel}` },
   "alert.resume.auto.title": { en: p => `${p.provider} · ${p.account} automatic continuation`, ko: p => `${p.provider} · ${p.account} 자동 재개` },
   "alert.resume.auto.waiting.message": {
     en: p => `${p.label}: a quota-stopped turn was detected. Waiting for fresh quota and session checks.`,

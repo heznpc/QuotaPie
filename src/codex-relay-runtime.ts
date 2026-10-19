@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { readCodexForkParent } from "./account-pool-lineage";
 import { AccountPool, poolAccounts, readPoolPolicy } from "./account-pool";
+import { createExecutionTargetRelay, executionTargetRelayMemory, type ExecutionTargetRelayMemory } from "./execution-target-relay";
 import { createSourceHistoryGuard } from "./source-history-guard";
 import { interactiveRelayPolicy } from "./interactive-relay-policy";
 import { codexProfileRoot, dataDirectory, loadConfig } from "./config";
@@ -24,6 +25,8 @@ export interface RuntimeMemory {
   accountPool?: AccountPool;
   interactivePool?: AccountPool;
   poolGuards?: Map<string, ReturnType<typeof createSubscriptionGuard>>;
+  executionTarget?: ExecutionTargetRelayMemory;
+  executionTargetDisposeAttached?: boolean;
   dispose?: () => void;
   diagnostics?: RelayDiagnostics;
 }
@@ -48,6 +51,7 @@ export const createRelayRuntime: RuntimeFactory = (settings, memory) => {
   if (memory.sourceAccount !== undefined && memory.sourceAccount !== (sourceAccount ?? null))
     throw new Error("runtime_account_changed");
   memory.sourceAccount = sourceAccount ?? null;
+  const inheritedSource = memory.guard ? { identity: memory.guard.boundIdentity, atMs: memory.guard.boundAuthAtMs } : undefined;
   memory.guard ??= subscriptionGuardMemory();
   memory.savings ??= new Map();
   // Old listener bootstraps can reload this handler without knowing the new
@@ -58,7 +62,10 @@ export const createRelayRuntime: RuntimeFactory = (settings, memory) => {
   const resolveAccountPool = () => {
     const policy = readPoolPolicy();
     if (!sourceAccount || !policy.enabled || !policy.accounts.includes(sourceAccount)) return undefined;
-    if (!memory.interactivePool) {
+    if (!memory.interactivePool || memory.interactivePool.runtimeApiVersion !== AccountPool.RUNTIME_API_VERSION) {
+      // New requests use the current routing implementation after a hot reload.
+      // Older handles stay in the disposal chain while their streams/telemetry
+      // finish; closing them here would interrupt already admitted requests.
       memory.interactivePool = new AccountPool({ sourceAccount, accounts: () => poolAccounts(config()), policy: readPoolPolicy,
         forkParentAsync: thread => readCodexForkParent(home, thread) });
       const pool = memory.interactivePool, previousDispose = memory.dispose;
@@ -79,15 +86,32 @@ export const createRelayRuntime: RuntimeFactory = (settings, memory) => {
     }
     return guard;
   };
+  const sourceGuard = createSubscriptionGuard({ codexHome: home, sourceAccount, config, memory: memory.guard,
+    quotaObservationMode: "advisory", executionMode: "interactive" });
+  memory.executionTarget ??= executionTargetRelayMemory();
+  const executionTargetRelay = createExecutionTargetRelay({ sourceAccount, codexHome: home, config, sourceGuard, memory: memory.executionTarget, inheritedSource,
+    readLiveSnapshot: async () => {
+      const response = await fetch(`http://127.0.0.1:${settings.port}/${settings.token}/backend-api/codex/quotapie-health`,
+        { redirect: "error", signal: AbortSignal.timeout(1000) });
+      if (!response.ok || Number(response.headers.get("content-length")) > 512 * 1024) throw new Error("live-history-unavailable");
+      const bytes = await response.text();
+      if (bytes.length > 512 * 1024) throw new Error("live-history-unavailable");
+      return JSON.parse(bytes);
+    } });
+  if (!memory.executionTargetDisposeAttached) {
+    const previousDispose = memory.dispose;
+    memory.dispose = () => { memory.executionTarget?.store?.close(); previousDispose?.(); };
+    memory.executionTargetDisposeAttached = true;
+  }
   const handler = createCompactionHandler({ ...settings, savingsState: memory.savings,
-      executionMode: "interactive", resolveAccountPool, poolSubscriptionGuard,
+      executionMode: "interactive", resolveAccountPool, poolSubscriptionGuard, executionTargetRelay,
       sourceHistoryGuard: createSourceHistoryGuard({ denyUnavailableDatabase: true, forkParent: thread => readCodexForkParent(home, thread) }),
       sourceHistoryPolicy: "authenticated-source",
-      subscriptionGuard: createSubscriptionGuard({ codexHome: home, sourceAccount, config, memory: memory.guard, quotaObservationMode: "advisory", executionMode: "interactive" }),
+      subscriptionGuard: sourceGuard,
       savingsModelSupported: createSavingsModelSupport(join(home, "models_cache.json")),
       onNativeRequest: memory.diagnostics.onNativeRequest,
       onProvenance: memory.diagnostics.onProvenance,
-      onRequest: memory.diagnostics.onRequest,
+      onRequest: event => { executionTargetRelay.recordRoute(event); memory.diagnostics!.onRequest(event); },
   });
   return { fetch: handler.fetch, snapshot: () => ({ ...handler.snapshot(), relayLogging: memory.diagnostics!.status() }),
     get activeRequests() { return handler.activeRequests; }, close: () => {} };

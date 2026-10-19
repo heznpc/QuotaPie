@@ -1320,10 +1320,34 @@
 "settings.organized.finishedJobs" = "종료된 자동 작업 %@개";
 "settings.organized.activityHistory" = "활동 기록";
 
-"autoResume.conversationAccount" = "대화 계정: %@";
+"autoResume.conversationAccount" = "대화가 열린 계정: %@ · 같은 로컬 대화 유지";
 "autoResume.quotaTarget.candidate" = "재개 후보 계정: %@ · 연결 확인 중";
 "autoResume.quotaTarget.confirmed" = "재개에 지정한 한도 계정: %@";
 "autoResume.quotaTarget.used" = "재개 요청을 처리한 계정: %@";
 "autoResume.reason.targetRoute" = "이 대화를 처리하는 앱 연결을 확인 중입니다. 확인 전에는 재개 입력을 보내지 않습니다.";
 "autoResume.reason.targetChanged" = "지정한 계정 또는 계정 풀 설정이 바뀌어 재개를 보류했습니다.";
 "autoResume.reason.targetQuota" = "지정한 계정의 최신 한도와 리셋 구간을 다시 확인하고 있습니다.";
+"autoResume.reason.targetBusy" = "다른 자동재개 실행이 지정 계정을 사용 중이어서 기다립니다.";
+"autoResume.reason.targetProof" = "같은 대화와 실행인지 확인되지 않아 재개를 보류했습니다.";
+"autoResume.reason.targetAuthorization" = "재개 권한 확인이 만료돼 전송을 보류했습니다.";
+
+"autoResume.reason.turnFailed" = "ChatGPT가 재개 턴을 실패로 기록했습니다. 대화의 오류를 확인하세요. QuotaPie는 같은 입력을 다시 전송하지 않습니다.";
+"autoResume.reason.turnInterrupted" = "ChatGPT에서 재개 턴이 중단됐습니다. 같은 입력을 다시 전송하지 않습니다.";
+"autoResume.reason.turnQuotaBlocked" = "재개한 대화가 다시 사용 한도에 걸렸습니다.";
+
+"autoResume.reason.targetProviderRejected" = "지정 계정의 요청이 제공자 오류로 끝났습니다. 같은 입력은 다시 전송하지 않습니다.";
+"autoResume.reason.targetProviderQuota" = "지정 계정도 제공자로부터 사용 한도 오류를 받았습니다.";
+"autoResume.reason.targetCompletionUnknown" = "지정 계정으로 전송한 요청의 완료를 확인하지 못했습니다. 중복 실행을 막기 위해 다시 보내지 않습니다.";
+"autoResume.repair.parent" = "연결된 자동 복구 기록에서 후속 진행 상태를 확인할 수 있습니다. 이 실패 기록은 보존됩니다.";
+"autoResume.repair.child" = "공급자 전송 전 실패가 확인돼, 같은 대화를 한 번 자동 복구하는 시도입니다.";
+"autoResume.repair.localFailure" = "QuotaPie 내부에서 요청 전달이 실패했습니다. 공급자에게 전송되지 않은 것이 확인됐습니다.";
+
+"alert.resume.auto.incident.title" = "%@ · 자동재개";
+"alert.resume.auto.incident.waiting.message" = "한도 중단을 감지했습니다. 사용 가능한 계정과 같은 대화의 재개 경로를 확인합니다.\n%@";
+"alert.resume.auto.incident.queued.message" = "같은 대화에 재개 요청이 접수됐습니다.\n%@";
+"alert.resume.auto.incident.resumed.message" = "같은 대화에서 이어간 한 턴이 끝났습니다. 전체 목표의 완료 여부는 별도로 확인하세요.\n%@";
+"alert.resume.auto.incident.review.message" = "재개 결과를 확인해야 합니다. QuotaPie 작업 화면에서 이유를 확인하세요.\n%@";
+"alert.resume.auto.source" = "대화가 열린 계정: %@";
+"alert.resume.auto.quota.candidate" = "한도 계정 후보: %@ · 연결 확인 중";
+"alert.resume.auto.quota.confirmed" = "재개에 지정한 한도 계정: %@";
+"alert.resume.auto.quota.used" = "재개 요청을 처리한 계정: %@";

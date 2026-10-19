@@ -92,9 +92,19 @@ enum AutomaticWorkReason {
         case "account-unavailable", "profile-unavailable", "account-identity-unavailable", "account-session-mismatch", "work-binding-changed", "thread-profile-unverified": key = "binding"
         case "legacy-work-active", "work-already-claimed", "work-already-claimed-or-held": key = "busy"
         case "quota-unknown", "quota-stale", "reset-unconfirmed", "awaiting-quota-recovery": key = "quota"
-        case "execution-target-relay-unavailable", "execution-target-native-route-unverified", "execution-target-lease-unavailable": return Strings.t("autoResume.reason.targetRoute")
-        case "execution-target-policy-changed", "execution-target-identity-changed": return Strings.t("autoResume.reason.targetChanged")
-        case "execution-target-quota-period-changed", "execution-target-expired", "execution-target-quota-unavailable": return Strings.t("autoResume.reason.targetQuota")
+        case "host-queue-turn-failed": return Strings.t("autoResume.reason.turnFailed")
+        case "host-queue-turn-interrupted": return Strings.t("autoResume.reason.turnInterrupted")
+        case "host-queue-quota-blocked": return Strings.t("autoResume.reason.turnQuotaBlocked")
+        case "execution-target-provider-rejected": return Strings.t("autoResume.reason.targetProviderRejected")
+        case "execution-target-provider-quota-blocked": return Strings.t("autoResume.reason.targetProviderQuota")
+        case "execution-target-completion-unconfirmed": return Strings.t("autoResume.reason.targetCompletionUnknown")
+        case "execution-target-relay-verifying", "execution-target-native-writer-required", "execution-target-relay-unavailable", "execution-target-native-route-unverified", "execution-target-lease-unavailable": return Strings.t("autoResume.reason.targetRoute")
+        case "execution-target-policy-changed", "execution-target-identity-changed", "execution-target-native-owner-changed", "local-repair-parent-changed", "local-repair-target-changed", "execution-target-local-recovery-changed", "execution-target-local-recovery-generation-changed": return Strings.t("autoResume.reason.targetChanged")
+        case "execution-target-quota-period-changed", "execution-target-expired", "execution-target-quota-unavailable", "execution-target-unavailable", "local-repair-target-unavailable": return Strings.t("autoResume.reason.targetQuota")
+        case "execution-target-lease-busy": return Strings.t("autoResume.reason.targetBusy")
+        case "execution-target-lease-conflict", "execution-target-lease-invalid", "execution-target-message-mismatch", "execution-target-message-order-unverified", "execution-target-turn-unverified", "execution-target-response-unverified", "execution-target-relay-ack-unverified", "execution-target-unverified", "local-repair-unverified", "local-repair-evidence-changed", "execution-target-local-recovery-unverified", "execution-target-local-recovery-conflict", "execution-target-local-recovery-consumed": return Strings.t("autoResume.reason.targetProof")
+        case "local-repair-goal-changed": return Strings.t("autoResume.reason.goal")
+        case "execution-target-authorization-expired", "execution-target-authorization-changed": return Strings.t("autoResume.reason.targetAuthorization")
         case "reserve-reached": key = "reserve"
         case "usage-budget-ended", "turn-budget-ended", "time-budget-ended": key = "budget"
         case "expired": key = "expired"

@@ -23,6 +23,38 @@ final class NotificationPresenterTests: XCTestCase {
         XCTAssertNotEqual(scheduler.added.first?.body, Strings.t("alert.resume.auto.resumed.message", "Project"))
     }
 
+    func testConversationNoticeSeparatesHostAndQuotaAccountAndReplacesItsPriorDisplay() {
+        let group = String(repeating: "c", count: 64)
+        func notice(_ state: String, id: String = "11111111-1111-4111-8111-111111111111") -> ClaimedNotification {
+            makeNotification(id: id, presentation: NotificationPresentationPayload(
+                title: LocalizedMessagePayload(key: "alert.resume.auto.incident.title", params: ["label": .string("Local conversation")]),
+                message: LocalizedMessagePayload(key: "alert.resume.auto.incident.queued.message", params: [
+                    "sourceAccount": .string("Host A"), "quotaAccountLabel": .string("Quota B"),
+                    "quotaTargetState": .string(state), "notificationGroup": .string(group)])))
+        }
+        for state in ["candidate", "confirmed", "used"] {
+            let value = notice(state)
+            XCTAssertEqual(value.localizedTitle, Strings.t("alert.resume.auto.incident.title", "Local conversation"))
+            XCTAssertTrue(value.localizedMessage.contains(Strings.t("alert.resume.auto.source", "Host A")))
+            XCTAssertTrue(value.localizedMessage.contains(Strings.t("alert.resume.auto.quota." + state, "Quota B")))
+            if state != "used" { XCTAssertFalse(value.localizedMessage.contains(Strings.t("alert.resume.auto.quota.used", "Quota B"))) }
+            XCTAssertEqual(value.requestIdentifier, "local.quotapie.auto-resume." + group)
+        }
+        let first = notice("confirmed"), second = notice("used", id: "22222222-2222-4222-8222-222222222222")
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertEqual(first.requestIdentifier, second.requestIdentifier)
+        let client = FakeNotificationClient(claims: [.success(NotificationClaimResponse(notification: first)),
+            .success(NotificationClaimResponse(notification: second)), .success(NotificationClaimResponse(notification: nil))])
+        let scheduler = FakeNotificationScheduler(status: .authorized), ledger = InMemoryNotificationLedger()
+        let drained = expectation(description: "resume updates displayed notice")
+        client.onClaim = { if $0 == 3 { drained.fulfill() } }
+        let presenter = makePresenter(client: client, scheduler: scheduler, ledger: ledger)
+        presenter.statusDidRefresh(actionToken: "action-token"); wait(for: [drained], timeout: 1)
+        XCTAssertEqual(scheduler.added.map(\.opensAutoResume), [true, true])
+        XCTAssertEqual(Set(scheduler.added.map(\.identifier)).count, 1)
+        XCTAssertTrue(ledger.contains(first.id, at: fixedNow)); XCTAssertTrue(ledger.contains(second.id, at: fixedNow))
+    }
+
     func testDuplicateClaimIsAcknowledgedFromLedgerWithoutAddingTwice() {
         let notification = makeNotification()
         let client = FakeNotificationClient(claims: [

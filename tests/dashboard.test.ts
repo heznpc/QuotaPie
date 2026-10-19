@@ -129,6 +129,19 @@ describe("dashboard automatic quota resumption", () => {
     expect(changedPage.element("autoResume").innerHTML).toContain("연결된 계정이 바뀌었습니다");
   });
 
+  test("a recovered source remains visible as the assigned or used quota account", async () => {
+    for (const quotaTargetState of ["candidate", "confirmed", "used"]) {
+      const value = feature();
+      value.incidents = [Object.assign(value.incidents[3]!, { quotaAccount: "personal", quotaAccountLabel: "Recovered account", quotaTargetState })];
+      const page = await render("ko-KR", Object.assign(statusPayload(), { autoResume: value }));
+      const html = page.element("autoResume").innerHTML;
+      const label = quotaTargetState === "candidate" ? "재개 후보 계정" : quotaTargetState === "confirmed" ? "재개에 지정한 한도 계정" : "재개 요청을 처리한 계정";
+      expect(html).toContain(label + ": Recovered account");
+      expect(html).toContain("확인 필요");
+      expect(html).not.toContain("1회 재개 종료");
+    }
+  });
+
   test("authenticated enable/disable and skip, failed save, stale poll race", async () => {
     const before = Object.assign(statusPayload(), { autoResume: feature(), actionToken: "fixture-token" });
     const calls: Array<{ path: string; options: any }> = [];

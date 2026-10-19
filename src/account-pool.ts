@@ -6,7 +6,7 @@ import { codexProfileRoot, codexUsesFileCredentials, dataDirectory, loadConfig, 
 import type { CodexForkParentResult } from "./account-pool-lineage";
 import { codexRequestIdentity } from "./codex-request-identity";
 import { defaultWorkBoundaryPath, profileReference } from "./work-boundary";
-import { portableReplay, filterForeignReasoning } from "./account-replay";
+import { nativeExecutionHistory, portableReplay, filterForeignReasoning } from "./account-replay";
 
 export interface PoolPolicy { enabled: boolean; accounts: string[]; reservePercent?: Record<string, number> }
 export interface PoolAccount {
@@ -177,7 +177,8 @@ function hasUnverifiedAttachments(body: any): boolean {
 type Binding = { account: string; identity: string; source_identity: string; label: string; foreignReasoning?: string[]; confirmed?: boolean };
 type PoolSelectInput = { threadId: string | null; requestId: string; body: unknown; model: string; headers: Headers;
   /** Internal proof from the source guard; never read from request content. */
-  verifiedSource?: { identity: string; credentialDigest: string } };
+  verifiedSource?: { identity: string; credentialDigest: string };
+  fixedTarget?: { account: string; identity: string; preserveNativeHistory?: true } };
 export type SourceHistoryPolicy = "strict" | "authenticated-source";
 export type SourceContinuationInput = {
   threadId: string | null; body: unknown; headers: Headers;
@@ -186,6 +187,8 @@ export type SourceContinuationInput = {
 };
 type SourceOnlyReplay = { sourceReplay: NonNullable<ReturnType<typeof portableReplay>> };
 export class AccountPool {
+  static readonly RUNTIME_API_VERSION = 3;
+  readonly runtimeApiVersion = AccountPool.RUNTIME_API_VERSION;
   readonly sourceContinuationRevision = 2;
   private db: Database;
   private closed = false;
@@ -320,6 +323,14 @@ export class AccountPool {
   async assertSourceContinuationAsync(input: SourceContinuationInput, signal?: AbortSignal): Promise<void> {
     const lineage = await this.forkSnapshot(input, signal);
     this.assertSourceContinuation(input, lineage);
+  }
+  assertTargetContinuationAsync(input: {threadId: string; account: string; identity: string; sourceIdentity: string}, signal?: AbortSignal): Promise<void> {
+    return this.withContentionRetry(() => {
+      const source = this.options.sourceAccount;
+      const binding = this.db.query<Binding, [string,string]>("SELECT * FROM bindings WHERE source=? AND thread=?").get(source, input.threadId);
+      if (!binding || binding.account !== input.account || binding.identity !== input.identity || binding.source_identity !== input.sourceIdentity ||
+          !this.hasCompletedBinding(source, input.threadId, binding)) throw new PoolError("pool_execution_target_history_unverified", 409);
+    }, signal);
   }
   canRecoverAsync(account: string, model: string, body: unknown, signal?: AbortSignal): Promise<boolean> {
     return this.withContentionRetry(() => this.canRecover(account, model, body), signal);
@@ -571,10 +582,32 @@ export class AccountPool {
         "SELECT status,until_ms FROM auth_cooldowns WHERE identity=? AND digest=? AND until_ms>?")
         .get(a.identity, credentialDigest(a.accessToken), now);
       let selected: PoolAccount | undefined, reason: PoolRoute["reason"];
+      const preserveNative = input.fixedTarget?.preserveNativeHistory === true;
+      if (preserveNative && !nativeExecutionHistory(input.body)) throw new PoolError("pool_execution_target_native_history_unverified", 409);
       let foreignReasoning = sourceReplay?.fingerprints ?? saved?.foreignReasoning ?? this.foreignReasoning(sourceID, thread);
-      let replayBody = sourceReplay?.body ?? filterForeignReasoning(input.body, foreignReasoning);
+      let replayBody = preserveNative ? input.body : sourceReplay?.body ?? filterForeignReasoning(input.body, foreignReasoning);
       let previousAccountLabel: string | undefined;
-      if (saved && source.identity !== saved.source_identity) {
+      if (input.fixedTarget) {
+        // A source-only replay is the fallback for unverified local ancestry,
+        // not a prohibition on a separately verified exact native-turn lease.
+        // That lease may use its chosen account while retaining every original
+        // byte; ordinary pool requests still cannot infer cross-account rights.
+        if (!policy.enabled || !policy.accounts.includes(sourceID) || !policy.accounts.includes(input.fixedTarget.account) || sourceReplay && !preserveNative)
+          throw new PoolError("pool_execution_target_unavailable", 409);
+        selected = accounts.find(account => account.id === input.fixedTarget!.account && account.identity === input.fixedTarget!.identity);
+        if (!selected || selected.id === sourceID && !preserveNative) throw new PoolError("pool_execution_target_unavailable", 409);
+        const sameBinding = saved?.account === selected.id && saved.identity === selected.identity && saved.source_identity === source.identity;
+        reason = sameBinding ? "pinned" : "recovered";
+        if (!sameBinding) {
+          const replay = preserveNative ? null : portableReplay(input.body);
+          if (!preserveNative && !replay) throw new PoolError("pool_recovery_requires_full_history", 409);
+          previousAccountLabel = saved?.label ?? source.label;
+          if (replay) {
+            replayBody = replay.body;
+            foreignReasoning = [...new Set([...(foreignReasoning ?? []), ...replay.fingerprints])];
+          }
+        }
+      } else if (saved && source.identity !== saved.source_identity) {
         // A login changed in the trusted local credential store. Honor that
         // explicit login instead of trapping it behind the previous binding.
         const replay = portableReplay(input.body);
@@ -644,7 +677,7 @@ export class AccountPool {
       if (selected.id !== sourceID && !selected.models.includes(input.model)) throw new PoolError("pool_model_unavailable", 409);
       if (selected.id !== sourceID && !SHARED_QUOTA_MODELS.has(input.model)) throw new PoolError("pool_quota_scope_unsupported", 409);
       if (selected.id !== sourceID && hasUnverifiedAttachments(input.body)) throw new PoolError("pool_attachment_account_unverified", 409);
-      if (selected.id !== sourceID && !portableReplay(input.body) &&
+      if (selected.id !== sourceID && !preserveNative && !portableReplay(input.body) &&
           !(saved?.confirmed || saved && this.hasCompletedBinding(sourceID, thread, saved)))
         throw new PoolError("pool_recovery_requires_full_history", 409);
       if (!previous || previous.account !== selected.id || previous.identity !== selected.identity || previous.source_identity !== source.identity)
@@ -652,7 +685,8 @@ export class AccountPool {
       this.db.query(`INSERT INTO bindings VALUES (?,?,?,?,?,?,?) ON CONFLICT(source,thread) DO UPDATE SET
         account=excluded.account,identity=excluded.identity,source_identity=excluded.source_identity,label=excluded.label,updated_ms=excluded.updated_ms`)
         .run(sourceID, thread, selected.id, selected.identity, source.identity, selected.label, now);
-      if (foreignReasoning) this.db.query("INSERT OR REPLACE INTO replay_filters VALUES (?,?,?)")
+      if (preserveNative) this.db.query("DELETE FROM replay_filters WHERE source=? AND thread=?").run(sourceID, thread);
+      else if (foreignReasoning) this.db.query("INSERT OR REPLACE INTO replay_filters VALUES (?,?,?)")
         .run(sourceID, thread, JSON.stringify(foreignReasoning));
       this.db.query("INSERT INTO requests(id,source,thread,account,label,reason,state,at_ms) VALUES (?,?,?,?,?,?,?,?)")
         .run(input.requestId, sourceID, thread, selected.id, selected.label, reason, "started", now);

@@ -6,6 +6,7 @@ import { DEFAULT_CONFIG } from "../src/config";
 import { QuotaDatabase } from "../src/db";
 import { QuotaPieService } from "../src/service";
 import { notificationTopic } from "../src/notification-preferences";
+import { resumeNoticeFamily, type ResumeNoticeIncident } from "../src/quota-resume/notifications";
 import type { WorkExecution } from "../src/work/types";
 
 const resources: Array<() => Promise<void>> = [];
@@ -21,8 +22,7 @@ function fixture(durable = false) {
   config.alerts.enabled = true; config.alerts.macOSNotifications = true;
   config.profile.locale = "ko";
   const state = { accounts: [{account: "plus", label: "Personal", enabled: true, enabledAtMs: 1000,
-    lastScanAtMs: 2000, lastError: null as string | null}], incidents: [] as Array<{id:string;account:string;threadId:string;
-      projectLabel:string;state:string;reason:string|undefined;detectedAtMs:number;policyId:string}> };
+    lastScanAtMs: 2000, lastError: null as string | null}], incidents: [] as Array<ResumeNoticeIncident & {detectedAtMs:number;policyId:string;reason:string|undefined}> };
   const executions: WorkExecution[] = [];
   let service: QuotaPieService;
   let restore = () => {};
@@ -53,7 +53,7 @@ test("healthy monitoring with no incidents stays quiet and each lifecycle notice
   await f.service.deliverAutoResumeNotifications();
   const first = f.service.alerts.pendingAppNotifications();
   expect(first).toHaveLength(1);
-  expect(first[0]?.presentation?.message.key).toBe("alert.resume.auto.waiting.message");
+  expect(first[0]?.presentation?.message.key).toBe("alert.resume.auto.incident.waiting.message");
   expect(notificationTopic(first[0]!)).toBe("resumeReady");
   expect(JSON.stringify(first)).not.toMatch(/private-thread|private-client/);
   await f.service.deliverAutoResumeNotifications();
@@ -64,8 +64,7 @@ test("healthy monitoring with no incidents stays quiet and each lifecycle notice
   await f.service.deliverAutoResumeNotifications();
   expect(f.service.alerts.pendingAppNotifications()).toHaveLength(0);
   f.receipt(true); await f.service.deliverAutoResumeNotifications();
-  expect(f.service.alerts.pendingAppNotifications()[0]?.presentation?.message.key).toBe("alert.resume.auto.queued.message");
-  expect(f.service.alerts.pendingAppNotifications()[0]?.message).toContain("재개 요청이 접수");
+  expect(f.service.alerts.pendingAppNotifications()).toHaveLength(0); // The already displayed interruption makes acceptance redundant.
   f.state.incidents[0]!.state = "resumed";
   await f.service.deliverAutoResumeNotifications();
   expect(f.service.alerts.pendingAppNotifications()).toHaveLength(1);
@@ -103,7 +102,7 @@ test("the durable claim prevents restart duplicates and obsolete claimed notific
   await f.service.deliverAutoResumeNotifications();
   const notices = f.service.alerts.pendingAppNotifications();
   expect(notices).toHaveLength(1); expect(notices[0]?.severity).toBe("warning");
-  expect(notices[0]?.presentation?.message.key).toBe("alert.resume.auto.review.message");
+  expect(notices[0]?.presentation?.message.key).toBe("alert.resume.auto.incident.review.message");
   expect(JSON.stringify(notices)).not.toMatch(/private-provider|secret-token/);
   const review = f.service.claimNextAppNotification()!;
   f.service.completeAppNotification(review.id,review.claimToken,"scheduled");
@@ -163,7 +162,7 @@ test("permission suppression waits for an authorized retry and stale queued stat
   f.state.incidents[0]!.state = "resumed";
   await f.service.retrySuppressedNotifications();
   expect(f.service.alerts.pendingAppNotifications()).toHaveLength(1);
-  expect(f.service.alerts.pendingAppNotifications()[0]?.presentation?.message.key).toBe("alert.resume.auto.resumed.message");
+  expect(f.service.alerts.pendingAppNotifications()[0]?.presentation?.message.key).toBe("alert.resume.auto.incident.resumed.message");
 });
 
 test("global, desktop and resume topic preferences govern the durable outbox", async () => {
@@ -211,4 +210,46 @@ test("delivery failure is contained and closing cancels a pending observer befor
   (f.service as any).scheduleAutoResumeNotifications();
   f.service.stop(); await Bun.sleep(5);
   expect(deliver).not.toHaveBeenCalled(); deliver.mockRestore();
+});
+
+
+test("resume notices name the conversation, distinguish source from target, and never upgrade a candidate to used", async () => {
+  const f = fixture(); f.incident();
+  Object.assign(f.state.incidents[0]!, {quotaAccount:"second",quotaAccountLabel:"Available account",quotaTargetState:"candidate"});
+  await f.service.deliverAutoResumeNotifications();
+  const notice=f.service.alerts.pendingAppNotifications()[0]!;
+  expect(notice.title).toBe("Fixture project · 자동재개");
+  expect(notice.message).toContain("대화가 열린 계정: Personal");
+  expect(notice.message).toContain("한도 계정 후보: Available account");
+  expect(notice.message).not.toContain("요청을 처리한");
+  expect(notice.message).not.toContain("한도 회복");
+  expect(notice.presentation?.message.params.notificationGroup).toMatch(/^[0-9a-f]{64}$/);
+  const first = f.service.claimNextAppNotification()!; f.service.completeAppNotification(first.id,first.claimToken,"scheduled");
+  f.state.incidents[0]!.state="resumed";f.state.incidents[0]!.quotaTargetState="used";
+  await f.service.deliverAutoResumeNotifications();
+  const completed=f.service.alerts.pendingAppNotifications()[0]!;
+  expect(completed.message).toContain("재개 요청을 처리한 계정: Available account");
+  expect(completed.presentation?.message.params.notificationGroup).toBe(notice.presentation?.message.params.notificationGroup);
+});
+
+test("a validated two-repair chain updates one display and skips intermediate notices already covered by its parent", async () => {
+  const f=fixture(true);f.incident();await f.service.deliverAutoResumeNotifications();
+  const original=f.service.claimNextAppNotification()!;f.service.completeAppNotification(original.id,original.claimToken,"scheduled");
+  const parent=f.state.incidents[0]!; parent.state="needs-review";parent.reason="host-queue-turn-failed";
+  parent.localRepairReason="local-before-send-repair-linked";parent.localRepairChildIncidentId="child";
+  const child={...parent,id:"child",policyId:"child",localRepairParentIncidentId:parent.id,
+    repairReason:"local-before-send-repair",localRepairChildIncidentId:"grandchild"};
+  const grandchild={...child,id:"grandchild",policyId:"grandchild",state:"waiting",reason:undefined,
+    localRepairParentIncidentId:"child",localRepairChildIncidentId:undefined,localRepairReason:undefined};
+  f.state.incidents.push(child,grandchild);
+  await f.restart();await f.service.deliverAutoResumeNotifications();
+  expect(f.service.alerts.pendingAppNotifications()).toHaveLength(0);
+  grandchild.state="resumed";await f.service.deliverAutoResumeNotifications();
+  const done=f.service.alerts.pendingAppNotifications();expect(done).toHaveLength(1);
+  expect(done[0]!.presentation?.message.params.notificationGroup).toBe(original.presentation?.message.params.notificationGroup);
+  expect(parent.state).toBe("needs-review");
+  for(const change of [ {account:"foreign"}, {threadId:"foreign"}, {repairReason:"unknown"}, {localRepairChildIncidentId:parent.id} ]) {
+    const corrupt={...child,...change};
+    expect(resumeNoticeFamily(parent,[parent,corrupt,grandchild])).toEqual([parent]);
+  }
 });

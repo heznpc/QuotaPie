@@ -104,6 +104,16 @@ final class AutoResumeTests: XCTestCase {
         }
     }
 
+    func testRecoveredSourceAccountRemainsVisibleAsTheSelectedQuotaAccount() {
+        for state in ["candidate", "confirmed", "used"] {
+            var incident = AutoResumeIncident(id: "same-source", account: "source", threadId: "thread",
+                projectLabel: "Project", state: "needs-review", reason: "host-queue-turn-failed", detectedAtMs: 0, policyId: nil)
+            incident.quotaAccount = "source"; incident.quotaAccountLabel = "Recovered account"; incident.quotaTargetState = state
+            XCTAssertEqual(incident.quotaAccountText, Strings.t("autoResume.quotaTarget." + state, "Recovered account"))
+            XCTAssertEqual(incident.stateTitle, Strings.t("autoResume.state.needs-review"))
+        }
+    }
+
     func testAutoResumePolicyCannotEnterTheOrdinaryEditor() throws {
         let regular = AutomaticWorkPolicy.draft(provider: "codex", account: "personal", buckets: ["codex:primary:300"])
         XCTAssertTrue(regular.isUserEditable)

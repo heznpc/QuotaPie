@@ -20,11 +20,18 @@ struct AutoResumeSummaryPresentation {
             attention = true
             return
         }
-        let history = incidents.filter { $0.account == account.account }.sorted { $0.detectedAtMs > $1.detectedAtMs }
+        let history = incidents.filter { incident in
+            guard incident.account == account.account else { return false }
+            // The detailed history retains the failed attempt. The account
+            // summary follows its verified repair instead of showing an old
+            // failure above a successfully completed continuation.
+            if incident.linkedRepair(in: incidents) != nil { return false }
+            return true
+        }.sorted { $0.detectedAtMs > $1.detectedAtMs }
         let pending = history.filter { !["resumed", "skipped"].contains($0.state) }
         if let incident = pending.first {
             title = incident.stateTitle
-            detail = [incident.projectLabel, incident.quotaAccountText, incident.reasonText].compactMap { $0 }.joined(separator: " · ")
+            detail = [incident.projectLabel, incident.quotaAccountText, incident.displayedReason(in: incidents), incident.repairText(in: incidents)].compactMap { $0 }.joined(separator: " · ")
             attention = !["waiting", "queued", "running"].contains(incident.state)
         } else if let error = account.scanErrorText {
             title = Strings.t("autoResume.summary.unverified")

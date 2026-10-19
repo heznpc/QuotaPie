@@ -34,6 +34,9 @@ final class SemanticLocalizationTests: XCTestCase {
         let params: [String: MessageParameter] = [
             "provider": .string("codex"),
             "account": .string("work"),
+            "sourceAccount": .string("open-account"),
+            "quotaAccountLabel": .string("request-account"),
+            "quotaTargetState": .string("confirmed"),
             "label": .string("weekly"),
             "percent": .number(5),
             "threshold": .number(10),

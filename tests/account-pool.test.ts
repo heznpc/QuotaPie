@@ -598,3 +598,52 @@ test("anonymous routing rejection resolves when the same source later routes a c
   expect(status().error).toBeNull();
   expect(status().rejected).toHaveLength(1);
 }));
+
+
+test("verified native target and temporary source-only lineage fallback preserve history and select only the frozen account",async()=>{
+ const directory=mkdtempSync(join(tmpdir(),"qp-fixed-lineage-")),path=join(directory,"pool.sqlite3");
+ const accounts=[account("a",0),account("b",75)],policy={enabled:true,accounts:["a","b"]};
+ const pool=new AccountPool({path,sourceAccount:"a",accounts:()=>accounts,policy:()=>policy,now:()=>now,forkParentAsync:async()=>({status:"unknown"})});
+ const input={threadId:randomUUID(),requestId:randomUUID(),body:{...body,input:[...body.input,
+   {type:"reasoning",id:"reasoning-id",encrypted_content:"unchanged-native-cache"},{role:"assistant",id:"message-id",content:"prior reply"},
+   {role:"user",content:"[QuotaPie quota recovery:verified-lease]\nContinue"}]},model:body.model,
+   headers:new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"}),
+   fixedTarget:{account:"b",identity:"b-identity",preserveNativeHistory:true as const}};
+ try{
+   const selected=await pool.selectAsync(input);
+   expect(selected?.route).toMatchObject({sourceAccount:"a",account:"b",reason:"recovered"});
+   expect(selected?.body).toBe(input.body);expect(selected?.headers.get("authorization")).toBe("Bearer b-token");
+   expect(input.headers.get("authorization")).toBe("Bearer a-token");
+   expect((selected?.body as any).input[1].encrypted_content).toBe("unchanged-native-cache");
+   expect((selected?.body as any).input[2].id).toBe("message-id");
+ }finally{pool.close();rmSync(directory,{recursive:true,force:true})}
+});
+
+test("source-only fallback without native lease authority cannot cross; fixed targets retain identity and policy guards",()=>fixture(({accounts,policy,path})=>{
+ const pool=new AccountPool({path,sourceAccount:"a",accounts:()=>accounts,policy:()=>policy,now:()=>now,forkParent:()=>({status:"unknown"})});
+ const base={threadId:randomUUID(),requestId:randomUUID(),body,model:body.model,headers:new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"})};
+ try{
+   expect(()=>pool.select(base)).toThrow("pool_source_quota_exhausted");
+   expect(()=>pool.select({...base,fixedTarget:{account:"b",identity:"b-identity"}})).toThrow("pool_execution_target_unavailable");
+   const native={...base,fixedTarget:{account:"b",identity:"b-identity",preserveNativeHistory:true as const}};
+   expect(()=>pool.select({...native,headers:new Headers({authorization:"Bearer wrong","chatgpt-account-id":"a-remote"})})).toThrow("pool_source_identity_mismatch");
+   expect(()=>pool.select({...native,fixedTarget:{...native.fixedTarget,identity:"changed"}})).toThrow("pool_execution_target_unavailable");
+   policy.enabled=false;expect(()=>pool.select(native)).toThrow("pool_execution_target_unavailable");
+   policy.enabled=true;policy.accounts=["a"];expect(()=>pool.select(native)).toThrow("pool_execution_target_unavailable");
+ }finally{pool.close()}
+}));
+
+
+test("an exact verified native lease may choose recovered source A without weakening source auth or its allowance",()=>fixture(({pool,accounts,select})=>{
+ const native={threadId:randomUUID(),requestId:randomUUID(),body,model:body.model,
+   headers:new Headers({authorization:"Bearer a-token","chatgpt-account-id":"a-remote"}),
+   fixedTarget:{account:"a",identity:"a-identity",preserveNativeHistory:true as const}};
+ expect(()=>pool.select(native)).toThrow("pool_source_quota_exhausted");
+ accounts[0]!.remaining=90;accounts[0]!.observedAtMs=now+1;
+ expect(()=>pool.select({...native,headers:new Headers({authorization:"Bearer wrong","chatgpt-account-id":"a-remote"})})).toThrow("pool_source_identity_mismatch");
+ expect(()=>pool.select({...native,fixedTarget:{...native.fixedTarget,identity:"other-login"}})).toThrow("pool_execution_target_unavailable");
+ expect(()=>pool.select({...native,fixedTarget:{account:"a",identity:"a-identity"}})).toThrow("pool_execution_target_unavailable");
+ const chosen=pool.select(native)!;expect(chosen.route).toMatchObject({sourceAccount:"a",account:"a"});
+ expect(chosen.body).toBe(body);expect(chosen.headers.get("authorization")).toBe("Bearer a-token");
+ expect(accounts[0]!.accessToken).toBe("a-token");
+}));

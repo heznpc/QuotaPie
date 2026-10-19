@@ -429,6 +429,21 @@ struct LocalizedMessagePayload: Decodable {
              "alert.resume.auto.waiting.message", "alert.resume.auto.queued.message",
              "alert.resume.auto.resumed.message", "alert.resume.auto.review.message":
             return required("label")
+        case "alert.resume.auto.incident.title":
+            return required("label")
+        case "alert.resume.auto.incident.waiting.message", "alert.resume.auto.incident.queued.message",
+             "alert.resume.auto.incident.resumed.message", "alert.resume.auto.incident.review.message":
+            guard let source = text("sourceAccount") else { return nil }
+            var context = Strings.t("alert.resume.auto.source", source)
+            if let target = text("quotaAccountLabel"), !target.isEmpty,
+               let state = text("quotaTargetState"), ["candidate", "confirmed", "used"].contains(state) {
+                context = Strings.t("alert.resume.auto.quota." + state, target) + "\n" + context
+            }
+            return [context]
+        case "alert.resume.auto.source":
+            return required("sourceAccount")
+        case "alert.resume.auto.quota.candidate", "alert.resume.auto.quota.confirmed", "alert.resume.auto.quota.used":
+            return required("quotaAccountLabel")
         case "alert.resume.auto.scanUnavailable.message":
             return []
         case "alert.jobs.title":
@@ -501,6 +516,13 @@ struct ClaimedNotification: Decodable, Identifiable {
             // The OS replaces this thread's displayed notice. Delivery claims
             // and the completion ledger still use the individual outbox row ID.
             return "local.quotapie.compaction.\(group)"
+        }
+        if presentation?.title.key == "alert.resume.auto.incident.title",
+           presentation?.message.key.hasPrefix("alert.resume.auto.incident.") == true,
+           case .string(let group) = presentation?.message.params["notificationGroup"],
+           group.utf8.count == 64,
+           group.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil {
+            return "local.quotapie.auto-resume.\(group)"
         }
         return "local.quotapie.notification.\(id.lowercased())"
     }

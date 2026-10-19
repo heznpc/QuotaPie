@@ -7,7 +7,7 @@ import type { CodexThreadTurnSummary } from "../src/providers/codex-appserver";
 import { executeHostQueuedQuotaResume, hostQueueClientMessageId, observeHostQueueReceipt,
   wakeAcceptedHostQueue, type HostQueueClient, type HostQueueOptions, type HostQueueReceipt } from "../src/quota-resume/host-queue";
 import type { QuotaResumeEvidence } from "../src/quota-resume/evidence";
-import type { WorkPolicy } from "../src/work/types";
+import type { WorkPolicy, WorkExecutionTarget } from "../src/work/types";
 
 const threadId = "11111111-1111-4111-8111-111111111111";
 const failedTurnId = "22222222-2222-4222-8222-222222222222";
@@ -81,6 +81,32 @@ test("durable intent precedes one unchanged prompt and only its correlated termi
   expect(f.state.lookups.every(args => args[2] === failedTurnId)).toBe(true);
   expect(hostQueueClientMessageId("claim-once")).toBe(hostQueueClientMessageId("claim-once"));
   expect(hostQueueClientMessageId("claim-once")).not.toBe(hostQueueClientMessageId("another-claim"));
+});
+
+test("alternate account execution requires live exact lease ACK before durable queue intent",async()=>{
+  const target={account:"b"} as WorkExecutionTarget;
+  for(const mode of ["missing","unsupported","stale","ready"]){
+    const f=fixture();let ready=false;
+    if(mode!=="missing") f.options.targetLease={
+      acknowledge:async()=>{f.state.order.push("target-ack");if(mode==="unsupported")throw new Error("execution-target-native-route-unverified");ready=mode==="ready";},
+      current:()=>ready,renew:async()=>{f.state.order.push("target-renew");},close:()=>{ready=false;f.state.order.push("target-close");},
+    };
+    f.options.sleep=async ms=>{f.state.now+=ms;f.state.turn=f.terminal();f.state.queue=[];};
+    const outcome=await executeHostQueuedQuotaResume({config:f.config,policy:f.policy,claimId:"target-once",executionTarget:target},f.options);
+    if(mode==="ready"){
+      expect(outcome.status).toBe("turn-finished");expect(f.state.adds).toBe(1);
+      expect(f.state.order.indexOf("target-ack")).toBeLessThan(f.state.order.indexOf("intent"));
+      expect(f.state.receipts.at(-1)?.threadId).toBe(threadId);expect(f.policy.account).toBe("plus");
+    }else{expect(outcome.status).not.toBe("turn-finished");expect(f.state.adds).toBe(0);expect(f.state.receipts).toEqual([]);}
+  }
+});
+
+test("target lease loss after acceptance never falls back or repeats the native queue input",async()=>{
+  const f=fixture();let ready=false;
+  f.options.targetLease={acknowledge:async()=>{ready=true},current:()=>ready,renew:async()=>{throw new Error("execution-target-identity-changed")},close:()=>{ready=false}};
+  const outcome=await executeHostQueuedQuotaResume({config:f.config,policy:f.policy,claimId:"target-once",executionTarget:{account:"b"} as WorkExecutionTarget},f.options);
+  expect(outcome).toMatchObject({status:"uncertain",reason:"execution-target-identity-changed"});
+  expect(f.state.adds).toBe(1);expect(f.state.deletes).toHaveLength(1);expect(f.policy.account).toBe("plus");
 });
 
 test("foreign queued input, including one arriving during preflight, prevents enqueue", async () => {
@@ -317,4 +343,16 @@ test("an active adapter rechecks the host goal after helper preparation before w
   f.options.sleep=async ms=>{f.state.now+=ms;f.state.turn=f.terminal();f.state.queue=[];};
   expect(await f.run()).toMatchObject({status:"turn-finished"});
   expect(goalReads).toBe(1);expect(sends).toBe(0);expect(f.state.adds).toBe(1);expect(f.state.deletes).toEqual([]);
+});
+
+test('typed local repair requires its fixed target and local evidence without impersonating a quota failure',async()=>{
+ for(const mode of ['missing-target','missing-evidence','changed-evidence','ready']){
+  const f=fixture();f.policy.quotaResume!.localBeforeSendRecovery={permitId:'permit',parentExecutionId:'parent',sourceQuotaTurnId:'original'};
+  f.options.readEvidence=async()=>{throw Error('general quota evidence must remain quota only')};
+  let ready=false;f.options.targetLease={acknowledge:async()=>{ready=true},current:()=>ready,renew:async()=>{},close:()=>{ready=false}};
+  if(mode!=='missing-evidence')f.options.localBeforeSendEvidence=async()=>({...f.state.evidence!,kind:'local-before-send',stamp:mode==='changed-evidence'?'changed':'same-snapshot',errorType:'quotapie_subscription_guard',errorCode:'subscription_pool_execution_target_conflict'});
+  f.options.sleep=async ms=>{f.state.now+=ms;f.state.turn=f.terminal();f.state.queue=[]};
+  const result=await executeHostQueuedQuotaResume({config:f.config,policy:f.policy,claimId:'local-repair',...(mode==='missing-target'?{}:{executionTarget:{account:'b'} as WorkExecutionTarget})},f.options);
+  expect(f.state.adds).toBe(mode==='ready'?1:0);expect(result.status).toBe(mode==='ready'?'turn-finished':'activity-paused');
+ }
 });

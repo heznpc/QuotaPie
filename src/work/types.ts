@@ -1,11 +1,12 @@
 export type WorkProvider = "codex" | "claude";
 export type WorkOwner = "local" | "dots";
+export interface LocalBeforeSendRecovery { permitId: string; parentExecutionId: string; sourceQuotaTurnId: string }
 export type WorkStatus = "waiting" | "running" | "turn-finished" | "objective-completed" | "needs-user-input" | "quota-blocked" | "activity-paused" | "time-budget-ended" | "failed" | "uncertain" | "stopped";
 export interface WorkBudget { reservePercent: number; maxUsagePercent: number; targetUsagePercent?: number }
 export interface WorkPolicyInput {
   id: string; provider: WorkProvider; account: string; profileKey: string; accountKey: string;
   purpose?: "quota-resume";
-  quotaResume?: { turnId: string; stamp: string; waitUntilRecovered?: true };
+  quotaResume?: { turnId: string; stamp: string; waitUntilRecovered?: true; localBeforeSendRecovery?: LocalBeforeSendRecovery };
   nativeSessionId: string; cwd: string; model?: string; prompt: string; objective: string;
   completionCriteria: string[]; dispatchOwner: WorkOwner; enabled: boolean;
   trigger: "quota-ready" | "public-announcement" | "scheduled" | "forecast-probability" | "notify-only";
@@ -43,7 +44,7 @@ export interface WorkResult {
   blockingQuestion?: string; completionAssessment?: "machine" | "model-assessed";
   reason?: string; durationSeconds?: number;
 }
-export interface WorkObservation { id: string; atMs: number; buckets: Record<string, { remainingPercent: number; epoch: string; atMs?: number; id?: string }> }
+export interface WorkObservation { quotaAccount?: string; id: string; atMs: number; buckets: Record<string, { remainingPercent: number; epoch: string; atMs?: number; id?: string }> }
 export interface WorkForecast {
   id?: string; eventId?: string; actionProbabilityEstimate: number | null;
   quantileAtMs?: number | null; horizonAtMs: number; calibrationStatus?: string;
@@ -54,11 +55,27 @@ export interface WorkPlanning {
   deadlineAtMs: number | null; deadlineSource: "personal-assumption" | "forecast" | "work-deadline" | null;
   finishAtMs: number | null; startByAtMs: number | null;
 }
+/** Execution quota ownership is separate from the native conversation owner.
+ * Only the collector can create this snapshot; it is never a policy input. */
+export interface WorkExecutionTarget {
+  account: string; profileKey: string; accountKey: string; identity: string;
+  sourceIdentity: string; poolPolicyHash: string;
+  selectedAtMs: number; expiresAtMs: number;
+  budgetByBucket: Record<string, WorkBudget>;
+  baselineByBucket: Record<string, WorkBaseline>;
+}
+export interface WorkTargetAccounting {
+  spentByBucket: Record<string, number>; baselines: Record<string, WorkBaseline>;
+  observationCoverageByBucket?: Record<string, WorkObservationCoverage>;
+  pendingAccountingByBucket?: Record<string, number>;
+}
 export interface WorkExecution {
   id: string; policyId: string; policyRevision: number; owner: WorkOwner;
   policySnapshot: WorkPolicy; turnOrdinal: number; claimedAtMs: number;
   dispatchedAtMs?: number; finishedAtMs?: number; result?: WorkResult;
   accountedDurationSeconds?: number; planning?: WorkPlanning;
+  executionTarget?: WorkExecutionTarget;
+  targetAccounting?: WorkTargetAccounting;
   /** Durable intent/receipt for the existing host's queue. The client message
    * ID correlates a turn; the provider does not deduplicate submissions. */
   hostQueue?: {threadId:string;clientUserMessageId:string;sentAtMs:number;queuedSubmissionId?:string;turnId?:string;

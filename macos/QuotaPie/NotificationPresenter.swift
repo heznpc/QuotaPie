@@ -334,7 +334,7 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
             body: notification.localizedMessage,
             notificationID: notification.id,
             severity: notification.severity,
-            opensAutoResume: notification.presentation?.title.key == "alert.resume.auto.title"
+            opensAutoResume: ["alert.resume.auto.title", "alert.resume.auto.incident.title"].contains(notification.presentation?.title.key ?? "")
         )
         scheduler.add(request) { [weak self] error in
             self?.onMain {

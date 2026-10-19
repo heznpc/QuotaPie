@@ -18,6 +18,7 @@ import { readCodexForkParent } from "./account-pool-lineage";
 import { createSourceHistoryGuard, type SourceHistoryGuard } from "./source-history-guard";
 import { inspectNativeBody, nativeRequestPathAllowed } from "./native-request";
 import { BodyDecodeError, decodeRequestBody, requestEncoding, type BodyDecodeFailure, type RequestEncoding } from "./request-body-decoder";
+import type { ExecutionTargetRelay, FrozenTargetSelection } from "./execution-target-relay";
 import { interactiveRelayPolicy } from "./interactive-relay-policy";
 import { createRelayDiagnostics } from "./relay-diagnostics";
 export { DEFAULT_COMPACTION_ROUTE, routeCompaction, validateCompactionRoute, type CompactionRoute } from "./codex-compaction-policy";
@@ -134,6 +135,7 @@ export interface CompactionProxyOptions {
   accountPool?: AccountPool;
   resolveAccountPool?: () => AccountPool | undefined;
   poolSubscriptionGuard?: (account: string, identity: string) => SubscriptionGuard;
+  executionTargetRelay?: ExecutionTargetRelay;
   subscriptionGuard?: SubscriptionGuard;
   executionMode?: "interactive" | "managed";
   sourceHistoryGuard?: SourceHistoryGuard;
@@ -198,6 +200,8 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
           nativeRequestInspectionVersion: 1,
           nativeRequestPolicy: interactive ? "source-origin" : "managed-allowlist",
           accountPoolOptInVersion: options.resolveAccountPool ? 1 : 0,
+          executionTargetVersion: options.executionTargetRelay?.version ?? 0,
+          executionTargetRelayInstanceId: options.executionTargetRelay?.instanceId ?? null,
           recentNativeRequests,
           executionMode: interactive ? "interactive" : "managed",
           sourceContinuationRevision: interactive ? 3 : options.accountPool?.sourceContinuationRevision ?? 0,
@@ -237,6 +241,14 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
       };
       if (path === "/quotapie-health" && request.method === "GET") {
         return Response.json(snapshot());
+      }
+      if (path === "/quotapie-execution-target/ack" && request.method === "POST") {
+        if (draining || !options.executionTargetRelay) return Response.json({ error: { code: "execution-target-unavailable" } }, { status: 409 });
+        try {
+          const raw = await request.text();
+          if (raw.length > 4096) throw new Error("execution-target-request-too-large");
+          return Response.json(await options.executionTargetRelay.acknowledge(JSON.parse(raw)));
+        } catch (error) { return Response.json({ error: { code: error instanceof PoolError ? error.code.replace(/^pool_/, "").replaceAll("_", "-") : "execution-target-unavailable" } }, { status: 409 }); }
       }
       if (path === "/quotapie-drain" && request.method === "POST") {
         draining = true;
@@ -281,6 +293,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
       let headers = transportHeaders(request.headers);
       let sourceHeaders = new Headers(headers);
       let selectedGuard: SubscriptionGuard | undefined;
+      let frozenTarget: FrozenTargetSelection | null = null;
       // Bun fetch decompresses upstream responses; request identity to keep streaming simple.
       headers.set("accept-encoding", "identity");
       let body: BodyInit | undefined;
@@ -293,8 +306,10 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
       let selectingAccount = false;
       let guardModel: string | undefined;
       const bindSelectedGuard = (selection: NonNullable<typeof poolSelection>) => {
-        if (!interactive || selection.route.account === selection.route.sourceAccount) return undefined;
-        const guard = options.poolSubscriptionGuard?.(selection.route.account, selection.identity);
+        if (!interactive || selection.route.account === selection.route.sourceAccount && !frozenTarget) return undefined;
+        if (frozenTarget && (selection.route.account !== frozenTarget.lease.target.account || selection.identity !== frozenTarget.lease.target.identity))
+          throw new PoolError("pool_execution_target_mismatch", 409);
+        const guard = frozenTarget?.guard ?? options.poolSubscriptionGuard?.(selection.route.account, selection.identity);
         if (!guard) throw new PoolError("pool_target_quota_unavailable", 409);
         const state = guard.check({ headers: selection.headers, model: guardModel });
         if (!state.ready || state.sourceIdentity !== selection.identity)
@@ -381,11 +396,16 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
               throw new SubscriptionRequestError("request-unsupported");
             expectsSse = object(input) && (input.stream === true || (path === "/responses" && isCompaction(path, input)));
             const compact = object(input) && isCompaction(path, input);
+            if (interactive && options.executionTargetRelay && object(input) && typeof input.model === "string") {
+              const identity = requestIdentity(headers);
+              try { frozenTarget = await options.executionTargetRelay.resolve({ ...identity, body: input, model: input.model }); }
+              catch (error) { throw new SubscriptionRequestError(error instanceof PoolError ? error.code : "execution-target-unavailable"); }
+            }
             let savings: ReturnType<TaskSavingsRouter["route"]> | null = null;
             let routed: { body: unknown; routed: boolean } = { body: input, routed: false };
             try {
-              savings = !compact && path === "/responses" ? savingsRouter.route(input, taskPolicy, requestIdentity(headers).threadId) : null;
-              routed = compact ? routeCompaction(path, input, policy) : savings ?? routed;
+              savings = !frozenTarget && !compact && path === "/responses" ? savingsRouter.route(input, taskPolicy, requestIdentity(headers).threadId) : null;
+              routed = !frozenTarget && compact ? routeCompaction(path, input, policy) : savings ?? routed;
             } catch (error) {
               if (!interactive) throw error;
               // Optional classification/catalog failures cannot deny admission.
@@ -427,12 +447,15 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
               if (interactive && options.resolveAccountPool) {
                 try { accountPool = options.resolveAccountPool(); } catch { accountPool = undefined; }
               }
-              const interactivePool = interactive && accountPool && await accountPool.canSelectInteractiveAsync({
+              const sourceRecoveryOnly = interactive && !frozenTarget && options.executionTargetRelay?.sourceRecoveryOnly({ threadId: event.threadId, turnId: event.turnId, body: outgoing });
+              const interactivePool = interactive && !sourceRecoveryOnly && accountPool && await accountPool.canSelectInteractiveAsync({
                 threadId: event.threadId, requestId: event.requestId, headers, body: outgoing, model: event.to }, request.signal);
-              if (accountPool && (!options.subscriptionGuard || interactivePool)) {
+              if (frozenTarget && !accountPool) throw new SubscriptionRequestError("execution-target-unavailable");
+              if (accountPool && (!options.subscriptionGuard || interactivePool || frozenTarget)) {
                 selectingAccount = true;
                 poolSelection = await accountPool.selectAsync({ threadId: event.threadId, requestId: event.requestId,
-                  body: outgoing, model: event.to, headers, verifiedSource }, request.signal);
+                  body: outgoing, model: event.to, headers, verifiedSource,
+                  ...(frozenTarget ? { fixedTarget: { account: frozenTarget.lease.target.account, identity: frozenTarget.lease.target.identity, preserveNativeHistory: true } } : {}) }, request.signal);
                 request.signal.throwIfAborted();
                 poolInput = { body: outgoing, headers: new Headers(headers), verifiedSource };
                 if (poolSelection) {
@@ -452,7 +475,24 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
             }
           }
         }
-        if (interactive && !poolSelection && options.sourceHistoryGuard) {
+        // Native tool routes and uninspected continuations of an already-bound
+        // managed turn must retain its frozen target, never fall back to A.
+        if (interactive && !event && !metadataRequest && options.executionTargetRelay) {
+          const identity = codexRequestIdentity(sourceHeaders);
+          try { frozenTarget = await options.executionTargetRelay.resolve({ threadId: identity.threadId, turnId: identity.turnId, body: null, identityConflict: identity.conflict || identity.fork.status === "invalid" }); }
+          catch (error) { throw new SubscriptionRequestError(error instanceof PoolError ? error.code : "execution-target-unavailable"); }
+          if (frozenTarget) {
+            if (!nativeToolRequest) throw new SubscriptionRequestError("execution-target-request-unverified");
+            accountPool = options.resolveAccountPool?.();
+            if (!accountPool || !identity.threadId) throw new SubscriptionRequestError("execution-target-unavailable");
+            options.executionTargetRelay.assertToolReady(frozenTarget);
+            await accountPool.assertTargetContinuationAsync({ threadId: identity.threadId, account: frozenTarget.account.id, identity: frozenTarget.account.identity, sourceIdentity: frozenTarget.lease.source.identity }, request.signal);
+            headers.set("authorization", `Bearer ${frozenTarget.account.accessToken}`);
+            headers.set("chatgpt-account-id", frozenTarget.account.upstreamAccount);
+            selectedGuard = frozenTarget.guard; guardModel = frozenTarget.lease.model;
+          }
+        }
+        if (interactive && !poolSelection && !frozenTarget && options.sourceHistoryGuard) {
           const source = options.subscriptionGuard!.checkIdentity({ headers: sourceHeaders });
           if (source.account && source.sourceIdentity) try {
             await options.sourceHistoryGuard({ account: source.account, identity: source.sourceIdentity, headers: sourceHeaders, signal: request.signal });
@@ -548,6 +588,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
           if (phase === "cancelled") cancelledCompactions++;
           if (phase === "unverified") unverifiedCompactions++;
         }
+        if (frozenTarget && event) options.executionTargetRelay?.finishRequest(frozenTarget, event.requestId, phase, status, errorCode);
         emit(phase, errorCode);
         if (poolSelection && event) {
           const requestId = event.requestId;
@@ -605,17 +646,22 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
         const guardedFetch: typeof upstreamFetch = async (target, init) => {
           checkSubscription();
           cancellation.signal.throwIfAborted();
+          if (frozenTarget && event) {
+            const fingerprint = createHash("sha256").update(path).update(body instanceof Uint8Array ? body : String(body)).digest("hex");
+            options.executionTargetRelay?.beginRequest(frozenTarget, event.requestId, fingerprint);
+          }
           upstreamAttempted = true;
           return upstreamFetch(target, init);
         };
         const target = `${UPSTREAM}${path}${url.search}`;
         const init: RequestInit = { method: request.method, headers, body, redirect: "manual", signal: cancellation.signal };
         // Streaming uploads and unknown native mutations must not be replayed.
-        let response = interactive && (!event || body instanceof ReadableStream)
+        let response = interactive && (frozenTarget || !event || body instanceof ReadableStream)
           ? await guardedFetch(target, init)
           : await fetchCodexUpstream(guardedFetch, target, init, code => { retryCount++; transportCode = code; });
         receivedResponse = true;
         status = response.status;
+        if (frozenTarget) options.executionTargetRelay?.recordResponse(frozenTarget, event?.requestId ?? nativeRequestId, status);
         responseRequestIds = upstreamRequestIds(response.headers);
         // A web-search service throttle is not evidence that model quota was
         // exhausted. Forward its error without poisoning later model requests.
@@ -623,7 +669,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
         const cooldownRecorded = await recordPoolResponse(response);
         // A rejected HTTP request has produced no model output. Retry once with
         // complete portable history; never retry a 200 stream or partial output.
-        if ((!options.subscriptionGuard || interactive && poolSelection) && status === 429 && cooldownRecorded && poolSelection && poolInput && event && !finished && !cancellation.signal.aborted) {
+        if (!frozenTarget && (!options.subscriptionGuard || interactive && poolSelection) && status === 429 && cooldownRecorded && poolSelection && poolInput && event && !finished && !cancellation.signal.aborted) {
           let replacement: ReturnType<AccountPool["select"]> = null;
           const nextId = randomUUID();
           try {
@@ -775,6 +821,17 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
                   upstreamBytes += next.value.byteLength;
                   if (ownership) ownership.push(next.value, deliver);
                   else deliver(next.value);
+                  // A native client may start its next tool request as soon as
+                  // it reads response.completed, before closing this reader.
+                  // Check the entire current chunk for ownership conflicts first,
+                  // then end this frozen request at its verified terminal frame.
+                  if (frozenTarget && response.ok && ownershipFormat === "sse" &&
+                      !(ownership instanceof NativeResponseOwnershipGuard && ownership.passthrough) &&
+                      observer!.terminal()?.phase === "completed") {
+                    finish("completed"); controller.close();
+                    void reader.cancel().catch(() => {});
+                    return;
+                  }
                   if (delivered) return;
                 }
               }
@@ -822,6 +879,10 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
         if (cancellation.signal.aborted) {
           clientClosed();
           return new Response(null, { status: 499 });
+        }
+        if (error instanceof PoolError) {
+          finish("failed",error.code);
+          return Response.json({error:{type:"quotapie_execution_target",code:error.code,message:"QuotaPie stopped a repeated or unconfirmed native recovery request."}},{status:error.status});
         }
         const failure = transportFailure(error);
         transportCode = failure.transportCode;
