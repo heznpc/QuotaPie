@@ -45,6 +45,7 @@ struct NativeNotificationRequest {
     let body: String
     let notificationID: String
     let severity: String
+    var opensAutoResume: Bool = false
 }
 
 protocol NativeNotificationScheduling: AnyObject {
@@ -84,6 +85,7 @@ final class UserNotificationScheduler: NativeNotificationScheduling {
         content.userInfo = [
             "notificationID": request.notificationID,
             "severity": request.severity,
+            "autoResume": request.opensAutoResume,
         ]
         center.add(
             UNNotificationRequest(identifier: request.identifier, content: content, trigger: nil),
@@ -177,6 +179,7 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
     private let ledger: NotificationDeliveryLedger
     private let now: () -> Date
     private let openPopover: () -> Void
+    private let openAutoResume: (() -> Void)?
     private var actionToken: String?
     private var isDraining = false
 
@@ -185,6 +188,7 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
         scheduler: NativeNotificationScheduling = UserNotificationScheduler(),
         ledger: NotificationDeliveryLedger = UserDefaultsNotificationLedger(),
         now: @escaping () -> Date = Date.init,
+        openAutoResume: (() -> Void)? = nil,
         openPopover: @escaping () -> Void
     ) {
         self.client = client
@@ -192,6 +196,7 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
         self.ledger = ledger
         self.now = now
         self.openPopover = openPopover
+        self.openAutoResume = openAutoResume
         super.init()
     }
 
@@ -328,7 +333,8 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
             title: notification.localizedTitle,
             body: notification.localizedMessage,
             notificationID: notification.id,
-            severity: notification.severity
+            severity: notification.severity,
+            opensAutoResume: notification.presentation?.title.key == "alert.resume.auto.title"
         )
         scheduler.add(request) { [weak self] error in
             self?.onMain {
@@ -402,9 +408,11 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let finish = { [openPopover] in
+        let finish = { [openPopover, openAutoResume] in
             if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
-                openPopover()
+                if response.notification.request.content.userInfo["autoResume"] as? Bool == true,
+                   let openAutoResume { openAutoResume() }
+                else { openPopover() }
             }
             completionHandler()
         }

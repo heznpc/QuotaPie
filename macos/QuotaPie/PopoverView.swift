@@ -88,6 +88,13 @@ struct PopoverView: View {
                     }.font(.caption).contentShape(Rectangle()).padding(16)
                 }.buttonStyle(.plain)
             }
+            if let incidents = model.payload?.autoResume?.incidents,
+               incidents.contains(where: { !["resumed", "skipped"].contains($0.state) }) {
+                Button { showDetails(.work) } label: {
+                    Label(Strings.t("autoResume.summary.review"), systemImage: "play.circle")
+                        .font(.caption).frame(maxWidth: .infinity, alignment: .leading).padding(16)
+                }.buttonStyle(.plain).accessibilityIdentifier("accounts.autoResume")
+            }
         }.frame(maxWidth: .infinity)
     }
 
@@ -120,6 +127,11 @@ struct PopoverView: View {
             }
 #endif
             quotaOverview.padding(20)
+            if let account = model.displayedAccount, account.provider == "codex" {
+                AutoResumeSummary(accountID: account.account, payload: model.payload?.autoResume,
+                                  current: model.canActOnTasks, openWork: { showDetails(.work) })
+                    .padding(.horizontal, 20).padding(.bottom, 16)
+            }
             if let pool = model.payload?.accountPool, pool.enabled || !pool.recent.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
                     Label(Strings.t(pool.enabled ? "pool.enabled" : "pool.disabled"), systemImage: "arrow.triangle.branch")

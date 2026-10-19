@@ -235,11 +235,19 @@ export class AutoResumeController {
         const oldest=lastPage.data.at(-1);
         this.cursors.set(account.account,oldest?.updatedAtMs!==undefined && oldest.updatedAtMs+1000<preference.enabledAtMs ? null : lastPage.nextCursor);
         const threads=[...new Map([...latestPage.data,...(historyPage?.data??[])].map(t=>[t.id,t])).values()];
+        let validationUnavailable=false;
         for(const thread of threads) {
           const current=this.checkedPreference(account.account);
           if(this.closed || !current?.enabled || current.revision!==preference.revision || !this.matches(current)) break;
           if(thread.updatedAtMs!==undefined && thread.updatedAtMs+1000<preference.enabledAtMs) continue;
-          const evidence=await this.deps.evidence(account.account,thread.id);
+          let evidence: QuotaResumeEvidence | null;
+          try { evidence=await this.deps.evidence(account.account,thread.id); }
+          catch {
+            // One unavailable host validation cannot make this scan healthy,
+            // but it must not hide verified incidents in other conversations.
+            validationUnavailable=true;
+            continue;
+          }
           if(!evidence || evidence.failedAtMs<preference.enabledAtMs || evidence.failedAtMs>this.now()) continue;
           const id="quota-resume-"+createHash("sha256").update(JSON.stringify([preference.profileKey,preference.accountKey,thread.id,evidence.turnId])).digest("hex").slice(0,48);
           if(this.incident(id)) continue;
@@ -251,7 +259,9 @@ export class AutoResumeController {
           await this.register(incident);
         }
         const latest=this.preference(account.account);
-        if(latest?.revision===preference.revision) {latest.lastScanAtMs=this.now();latest.lastError=null;this.savePreference(latest);}
+        if(latest?.revision===preference.revision) {
+          latest.lastScanAtMs=this.now();latest.lastError=validationUnavailable?"scan-unavailable":null;this.savePreference(latest);
+        }
       } catch {
         const latest=this.preference(account.account);
         if(latest?.revision===preference.revision) {latest.lastScanAtMs=this.now();latest.lastError="scan-unavailable";this.savePreference(latest);}

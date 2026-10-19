@@ -4,7 +4,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config";
-import { readQuotaResumeEvidence } from "../src/quota-resume/evidence";
+import { QuotaResumeEvidenceUnavailableError, readQuotaResumeEvidence } from "../src/quota-resume/evidence";
 import type { CodexThreadTurnSummary } from "../src/providers/codex-appserver";
 
 const roots: string[] = [];
@@ -191,9 +191,19 @@ test("changed rollout, credential identity or writer ownership while awaiting AP
   }
 });
 
-test("unavailable provider, truncated records and bounded tails missing the turn start fail closed", async () => {
-  const f = fixture(); f.options.readLatestTurn = async () => { throw new Error("unavailable"); };
+test("unavailable provider validation is distinct from a non-quota terminal and exposes no provider text", async () => {
+  const f = fixture(); f.options.readLatestTurn = async () => { throw new Error("Private provider text secret-token"); };
+  const error = await f.read().catch(error => error);
+  expect(error).toBeInstanceOf(QuotaResumeEvidenceUnavailableError);
+  expect(error.message).toBe("quota-resume-evidence-unavailable");
+  expect(String(error)).not.toMatch(/Private|secret-token/);
+  await expect(readQuotaResumeEvidence(f.config,"plus",threadId,{...f.options,readLatestTurn:async()=>null}))
+    .rejects.toBeInstanceOf(QuotaResumeEvidenceUnavailableError);
+  f.records.at(-1)!.payload = { type: "task_complete", turn_id: turnId }; f.save();
   expect(await f.read()).toBeNull();
+});
+
+test("truncated records and bounded tails missing the turn start fail closed", async () => {
   const partial = fixture(); appendFileSync(partial.path, '{"type":'); expect(await partial.read()).toBeNull();
   const bounded = fixture(); bounded.records.splice(3, 0, record("response_item", { type: "message", role: "assistant", content: "x".repeat(16 * 1024 * 1024) }));
   bounded.save(); expect(await bounded.read()).toBeNull(); expect(bounded.reads).toBe(0);

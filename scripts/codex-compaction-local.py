@@ -24,6 +24,7 @@ BEGIN = "# BEGIN QuotaPie compaction relay\n"
 END = "# END QuotaPie compaction relay\n"
 GUARD_REVISION = 3
 RUNTIME_REVISION = 1
+LISTENER_POLICY_VERSION = 2
 UPGRADE_LABEL = LABEL + ".upgrade"
 
 
@@ -394,6 +395,8 @@ class LocalRelay:
             result.update(running=True, relay=self.health(settings))
         except (OSError, ValueError, RuntimeError):
             pass
+        result["listenerUpgrades"] = [state for path, _, settings in self.registered_entries()
+                                      if (state := self.listener_upgrade_status(path, settings)) is not None]
         return result
 
     def install_manager(self):
@@ -436,6 +439,132 @@ class LocalRelay:
                 or job.get("ProgramArguments") != [settings["bun"], str(path.parent / "relay.js"), str(path)]):
             raise RuntimeError("Relay launch agent ownership could not be verified")
         return agent
+
+    def listener_upgrade_binding(self, path, settings):
+        """Called under management.lock; never reads credentials or controls a process."""
+        if path.is_symlink() or json.loads(path.read_text()) != settings:
+            raise RuntimeError("Listener settings changed")
+        agent = self.owned_agent(path, settings)
+        if agent.is_symlink():
+            raise RuntimeError("Listener launch ownership changed")
+        return {"settingsHash": digest(path), "launchAgentHash": digest(agent),
+                "profileKey": hashlib.sha256(str(Path(settings["codex_home"]).resolve()).encode()).hexdigest()}
+
+    @staticmethod
+    def listener_identity(health, profile_key):
+        guard = health.get("subscriptionGuard")
+        if (not isinstance(guard, dict) or guard.get("version") != 1 or guard.get("profileKey") != profile_key
+                or not isinstance(guard.get("account"), str) or not guard["account"].strip()
+                or guard.get("reason") in {"account-unavailable", "account-identity-changed", "profile-mismatch",
+                    "subscription-auth-required", "subscription-auth-unavailable", "request-identity-mismatch"}):
+            raise RuntimeError("Listener profile identity unavailable")
+        return guard["account"]
+
+    def listener_upgrade_status(self, path, settings, health=None):
+        marker = path.parent / "listener-upgrade-pending.json"
+        if not marker.exists() and not marker.is_symlink():
+            return None
+        state = {"generation": path.parent.name, "state": "pending", "reason": "listener-state-unverified",
+                 "handlerApplied": False, "listenerApplied": False}
+        try:
+            if marker.is_symlink():
+                raise RuntimeError("Listener marker ownership changed")
+            raw = marker.read_text()
+            pending = json.loads(raw)
+            binding = self.listener_upgrade_binding(path, settings)
+            if (pending.get("schemaVersion") != 1 or pending.get("listenerPolicyVersion") != LISTENER_POLICY_VERSION
+                    or any(pending.get(key) != value for key, value in binding.items())
+                    or any(not isinstance(pending.get(key), str) or not re.fullmatch(r"[a-f0-9]{64}", pending[key])
+                           for key in ("sourceHash", "bootstrapSourceHash"))):
+                raise RuntimeError("Listener binding changed")
+            binary = path.parent / "relay.js"
+            runtime = path.parent / ("relay-runtime-" + pending["sourceHash"] + ".js")
+            if (binary.is_symlink() or runtime.is_symlink() or digest(binary) != pending["bootstrapSourceHash"]
+                    or digest(runtime) != pending["sourceHash"]):
+                raise RuntimeError("Listener startup files changed")
+            observed = self.health(settings) if health is None else health
+            account = self.listener_identity(observed, binding["profileKey"])
+            if pending.get("account") is not None and pending["account"] != account:
+                raise RuntimeError("Listener account changed")
+            state["handlerApplied"] = observed.get("runtimeSourceHash") == pending["sourceHash"]
+            state["reason"] = "listener-awaiting-natural-restart"
+            if (observed.get("relayRuntimeRevision") == RUNTIME_REVISION and observed.get("reloadSupported") is True
+                    and observed.get("listenerPolicyVersion") == LISTENER_POLICY_VERSION and state["handlerApplied"]):
+                # A health read can race a policy, launch-job or file change.
+                # Recheck the complete binding before removing durable evidence.
+                if (self.listener_upgrade_binding(path, settings) != binding or marker.read_text() != raw
+                        or digest(binary) != pending["bootstrapSourceHash"] or digest(runtime) != pending["sourceHash"]):
+                    raise RuntimeError("Listener binding changed during verification")
+                marker.unlink()
+                state.update(state="applied", reason="listener-verified", listenerApplied=True)
+            return state
+        except (OSError, ValueError, TypeError, AttributeError, RuntimeError, plistlib.InvalidFileException):
+            return {**state, "handlerApplied": False, "reason": "listener-state-unverified"}
+
+    def stage_listener_upgrade(self, path, settings, pending, health):
+        """Remember the immutable startup target before replacing its disk file.
+
+        Request-handler reload cannot change the listener. A natural restart is
+        the only supported completion path; no request-idle heuristic is used.
+        """
+        marker = path.parent / "listener-upgrade-pending.json"
+        binding = self.listener_upgrade_binding(path, settings)
+        if binding["settingsHash"] != pending["settingsHash"]:
+            raise RuntimeError("Staged listener settings changed")
+        binary = path.parent / "relay.js"
+        if binary.is_symlink():
+            raise RuntimeError("Listener bootstrap ownership changed")
+        previous_hash = digest(binary)
+        account = None
+        try:
+            account = self.listener_identity(health, binding["profileKey"])
+        except RuntimeError:
+            if health.get("relayRuntimeRevision") == RUNTIME_REVISION:
+                raise
+        existing = marker.read_text() if marker.exists() else None
+        if marker.is_symlink():
+            raise RuntimeError("Listener marker ownership changed")
+        if existing is not None:
+            prior = json.loads(existing)
+            if (not isinstance(prior, dict) or prior.get("schemaVersion") != 1
+                    or prior.get("listenerPolicyVersion") != LISTENER_POLICY_VERSION
+                    or any(prior.get(key) != value for key, value in binding.items())
+                    or any(not isinstance(prior.get(key), str) or not re.fullmatch(r"[a-f0-9]{64}", prior[key])
+                           for key in ("sourceHash", "bootstrapSourceHash"))
+                    or previous_hash not in {prior.get("bootstrapSourceHash"), prior.get("previousBootstrapSourceHash")}
+                    or prior.get("account") is not None and prior["account"] != account):
+                raise RuntimeError("Pending listener identity changed")
+            prior_runtime = path.parent / ("relay-runtime-" + prior["sourceHash"] + ".js")
+            if prior_runtime.is_symlink() or digest(prior_runtime) != prior["sourceHash"]:
+                raise RuntimeError("Pending listener runtime changed")
+        record = {"schemaVersion": 1, "listenerPolicyVersion": LISTENER_POLICY_VERSION,
+                  "sourceHash": pending["sourceHash"], "bootstrapSourceHash": pending["bootstrapSourceHash"],
+                  "previousBootstrapSourceHash": previous_hash, **binding, "account": account,
+                  "observedPid": health.get("pid") if type(health.get("pid")) is int else None,
+                  "stagedAt": int(time.time() * 1000)}
+        atomic_write(marker, json.dumps(record, indent=2) + "\n", expected=existing)
+
+    def finish_handler_upgrade(self, path, settings, pending, bootstrap, health, method):
+        marker = path.parent / "pending-upgrade.json"
+        if json.loads(marker.read_text()) != pending:
+            raise RuntimeError("Runtime upgrade changed during application")
+        self.stage_listener_upgrade(path, settings, pending, health)
+        replacement = path.parent / "relay-upgrade-replacement.js"
+        # Keep the validated candidate until both durable records are updated,
+        # so an interrupted disk write can be retried without losing its input.
+        shutil.copy2(bootstrap, replacement)
+        os.replace(replacement, path.parent / "relay.js")
+        if json.loads(marker.read_text()) != pending:
+            raise RuntimeError("Runtime upgrade changed during application")
+        state = self.listener_upgrade_status(path, settings, health)
+        if state["reason"] == "listener-state-unverified":
+            raise RuntimeError("Listener application could not be verified")
+        if json.loads(marker.read_text()) != pending:
+            raise RuntimeError("Runtime upgrade changed during application")
+        marker.unlink()
+        bootstrap.unlink()
+        return {"generation": path.parent.name, "method": method, "sourceHash": pending["sourceHash"],
+                "handlerApplied": True, "listenerApplied": state["listenerApplied"]}, state
 
     def stage_runtime(self, path, settings, source):
         directory = path.parent
@@ -511,13 +640,18 @@ class LocalRelay:
 
     def apply_upgrades(self, args=None):
         target = Path(args.codex_home).expanduser().resolve() if args and getattr(args, "codex_home", None) else None
-        applied, deferred = [], []
+        applied, deferred, listeners = [], [], []
         for path, _, settings in self.registered_entries():
             if target is not None and Path(settings["codex_home"]).resolve() != target:
                 continue
             directory, generation = path.parent, path.parent.name
             marker = directory / "pending-upgrade.json"
             if not marker.exists():
+                state = self.listener_upgrade_status(path, settings)
+                if state is not None:
+                    listeners.append(state)
+                    if not state["listenerApplied"]:
+                        deferred.append({"generation": generation, "reason": state["reason"]})
                 continue
             try:
                 self.owned_agent(path, settings)
@@ -531,11 +665,17 @@ class LocalRelay:
                 health = {}
             modern = health.get("relayRuntimeRevision") == RUNTIME_REVISION and health.get("reloadSupported") is True
             if modern and health.get("runtimeSourceHash") == descriptor["sourceHash"]:
-                # The listener itself proves the staged version has taken over.
-                os.replace(bootstrap, directory / "relay.js")
-                marker.unlink()
-                applied.append({"generation": generation, "method": "natural-restart" if pending.get("phase") == "legacy-awaiting-natural-restart" else "verified-reload",
-                                "sourceHash": descriptor["sourceHash"]})
+                # This proves only the handler. The boot-time listener policy
+                # remains independently pending until its health confirms it.
+                try:
+                    result, state = self.finish_handler_upgrade(path, settings, pending, bootstrap, health,
+                        "natural-restart" if pending.get("phase") == "legacy-awaiting-natural-restart" else "verified-reload")
+                    applied.append(result)
+                    listeners.append(state)
+                    if not state["listenerApplied"]:
+                        deferred.append({"generation": generation, "reason": state["reason"]})
+                except (OSError, ValueError, TypeError, RuntimeError, plistlib.InvalidFileException):
+                    deferred.append({"generation": generation, "reason": "listener-state-unverified"})
                 continue
             binary = directory / "relay.js"
             try:
@@ -561,9 +701,11 @@ class LocalRelay:
                     if (not isinstance(acknowledged, dict) or acknowledged.get("runtimeSourceHash") != descriptor["sourceHash"]
                             or checked.get("runtimeSourceHash") != descriptor["sourceHash"]):
                         raise RuntimeError("Runtime reload acknowledgement mismatch")
-                    os.replace(bootstrap, binary)
-                    marker.unlink()
-                    applied.append({"generation": generation, "method": "reload", "sourceHash": descriptor["sourceHash"]})
+                    result, state = self.finish_handler_upgrade(path, settings, pending, bootstrap, checked, "reload")
+                    applied.append(result)
+                    listeners.append(state)
+                    if not state["listenerApplied"]:
+                        deferred.append({"generation": generation, "reason": state["reason"]})
                 except (OSError, ValueError, RuntimeError):
                     try:
                         observed = self.health(settings).get("runtimeSourceHash")
@@ -611,7 +753,7 @@ class LocalRelay:
                 if restored_agent:
                     agent.unlink(missing_ok=True)
                 deferred.append({"generation": generation, "reason": "upgrade-staging-rolled-back"})
-        result = {"applied": applied, "deferred": deferred, "endpoints_preserved": True}
+        result = {"applied": applied, "deferred": deferred, "listenerUpgrades": listeners, "endpoints_preserved": True}
         if args and getattr(args, "watch", False):
             result["watcher"] = self.install_upgrade_watcher()
         return result

@@ -288,10 +288,12 @@ class LifecycleTests(unittest.TestCase):
             waiting = self.relay.apply_upgrades()
         run.assert_not_called()
         self.assertEqual(waiting["applied"], [])
-        self.relay.health = lambda settings: {**self.healthy(settings), "runtimeSourceHash": self.source_hash}
+        self.relay.health = lambda settings: {**self.healthy(settings), "runtimeSourceHash": self.source_hash, "listenerPolicyVersion": 2}
         with patch.object(manager.subprocess, "run") as run, patch.object(manager.urllib.request, "build_opener") as opener:
             result = self.relay.apply_upgrades()
         self.assertEqual(result["applied"][0]["method"], "natural-restart")
+        self.assertTrue(result["applied"][0]["listenerApplied"])
+        self.assertFalse((self.binary.parent / "listener-upgrade-pending.json").exists())
         self.assertFalse(self.pending.exists())
         run.assert_not_called()
         opener.assert_not_called()
@@ -320,6 +322,152 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual([r.full_url.rsplit("/", 1)[-1] for r in requests], ["quotapie-reload"])
         self.assertFalse(any(call.args[0][0] == "launchctl" for call in run.call_args_list))
         self.assertFalse(self.pending.exists())
+        self.assertEqual(result["applied"][0]["handlerApplied"], True)
+        self.assertEqual(result["applied"][0]["listenerApplied"], False)
+        self.assertEqual(result["deferred"], [{"generation": "1", "reason": "listener-awaiting-natural-restart"}])
+        self.assertTrue((self.binary.parent / "listener-upgrade-pending.json").exists())
+
+    def prepare_listener_pending(self):
+        self.prepare_upgrade(modern=True)
+        self.relay.health = lambda settings: {**self.healthy(settings), "runtimeSourceHash": self.source_hash,
+            "pid": 123, "activeRequests": 0}
+        result = self.stage()
+        self.listener_marker = self.binary.parent / "listener-upgrade-pending.json"
+        self.assertTrue(self.listener_marker.exists())
+        self.assertFalse(self.pending.exists())
+        return result
+
+    def test_matching_handler_hash_and_idle_connections_do_not_complete_listener_upgrade(self):
+        result = self.prepare_listener_pending()
+        self.assertEqual(result["applied"][0]["method"], "verified-reload")
+        self.assertFalse(result["applied"][0]["listenerApplied"])
+        original = self.listener_marker.read_bytes()
+        self.assertNotIn(self.settings[1]["token"].encode(), original)
+        with patch.object(manager.subprocess, "run") as run, patch.object(manager.urllib.request, "build_opener") as opener:
+            for _ in range(2):
+                observed = self.relay.apply_upgrades()
+                self.assertEqual(observed["applied"], [])
+                self.assertEqual(observed["listenerUpgrades"][0]["reason"], "listener-awaiting-natural-restart")
+                status = self.relay.status()
+                self.assertFalse(status["listenerUpgrades"][0]["listenerApplied"])
+        run.assert_not_called()
+        opener.assert_not_called()
+        self.assertEqual(self.listener_marker.read_bytes(), original)
+
+    def test_status_completes_listener_only_after_version_hash_and_profile_are_verified(self):
+        self.prepare_listener_pending()
+        original = self.listener_marker.read_bytes()
+        for change in ({"listenerPolicyVersion": 1}, {"listenerPolicyVersion": 2, "runtimeSourceHash": "b" * 64},
+                       {"listenerPolicyVersion": 2, "subscriptionGuard": {"profileKey": "wrong", "account": "fixture"}},
+                       {"listenerPolicyVersion": 2, "subscriptionGuard": {**self.healthy(self.settings[1])["subscriptionGuard"], "account": "other"}},
+                       {"listenerPolicyVersion": 2, "subscriptionGuard": {**self.healthy(self.settings[1])["subscriptionGuard"], "reason": "account-identity-changed"}}):
+            with self.subTest(change=change):
+                self.relay.health = lambda settings: {**self.healthy(settings), "runtimeSourceHash": self.source_hash, **change}
+                status = self.relay.status()
+                self.assertFalse(status["listenerUpgrades"][0]["listenerApplied"])
+                self.assertEqual(self.listener_marker.read_bytes(), original)
+        self.relay.health = lambda settings: {**self.healthy(settings), "runtimeSourceHash": self.source_hash,
+            "listenerPolicyVersion": 2, "pid": 456}
+        with patch.object(manager.subprocess, "run") as run:
+            status = self.relay.status()
+        run.assert_not_called()
+        self.assertEqual(status["listenerUpgrades"][0]["reason"], "listener-verified")
+        self.assertTrue(status["listenerUpgrades"][0]["listenerApplied"])
+        self.assertFalse(self.listener_marker.exists())
+
+    def test_listener_pending_survives_offline_or_changed_settings_launch_job_and_files(self):
+        self.prepare_listener_pending()
+        original = self.listener_marker.read_bytes()
+        self.relay.health = lambda settings: (_ for _ in ()).throw(OSError("offline"))
+        self.assertEqual(self.relay.apply_upgrades()["deferred"][0]["reason"], "listener-state-unverified")
+        self.assertEqual(self.listener_marker.read_bytes(), original)
+        self.relay.health = lambda settings: {**self.healthy(settings), "runtimeSourceHash": self.source_hash, "listenerPolicyVersion": 2}
+        runtime = self.binary.parent / ("relay-runtime-" + self.source_hash + ".js")
+        for path, replacement in ((self.paths[1], json.dumps({**self.settings[1], "unrelated": "changed"}).encode()),
+                                  (self.relay.agent_path(self.settings[1]), b"changed launch job"),
+                                  (self.binary, b"changed bootstrap"), (runtime, b"changed runtime")):
+            saved = path.read_bytes()
+            try:
+                path.write_bytes(replacement)
+                state = self.relay.apply_upgrades()["listenerUpgrades"][0]
+                self.assertEqual(state["reason"], "listener-state-unverified")
+                self.assertFalse(state["listenerApplied"])
+                self.assertEqual(self.listener_marker.read_bytes(), original)
+            finally:
+                path.write_bytes(saved)
+
+    def test_listener_health_race_cannot_erase_changed_binding_or_marker(self):
+        self.prepare_listener_pending()
+        original = self.listener_marker.read_bytes()
+        agent = self.relay.agent_path(self.settings[1])
+        before = agent.read_bytes()
+        for changed in (agent, self.listener_marker):
+            def health(settings):
+                changed.write_bytes(b"changed during health")
+                return {**self.healthy(settings), "runtimeSourceHash": self.source_hash, "listenerPolicyVersion": 2}
+            self.relay.health = health
+            state = self.relay.listener_upgrade_status(self.paths[1], self.settings[1])
+            self.assertEqual(state["reason"], "listener-state-unverified")
+            self.assertFalse(state["listenerApplied"])
+            self.assertTrue(self.listener_marker.exists())
+            if changed == agent:
+                self.assertEqual(self.listener_marker.read_bytes(), original)
+                agent.write_bytes(before)
+            else:
+                self.assertEqual(self.listener_marker.read_bytes(), b"changed during health")
+
+    def test_interrupted_listener_disk_staging_retains_candidate_and_can_be_retried(self):
+        self.prepare_upgrade(modern=True)
+        self.relay.health = lambda settings: {**self.healthy(settings), "runtimeSourceHash": self.source_hash}
+        copy = manager.shutil.copy2
+        def fail(source, destination):
+            if source == self.candidate:
+                raise OSError("synthetic disk failure")
+            return copy(source, destination)
+        with patch.object(manager.shutil, "copy2", side_effect=fail):
+            result = self.stage()
+        self.assertEqual(result["applied"], [])
+        self.assertTrue(self.pending.exists())
+        self.assertTrue(self.candidate.exists())
+        self.assertEqual(self.binary.read_bytes(), b"original relay\n")
+        with patch.object(manager.subprocess, "run") as run:
+            result = self.relay.apply_upgrades()
+        run.assert_not_called()
+        self.assertTrue(result["applied"][0]["handlerApplied"])
+        self.assertFalse(result["applied"][0]["listenerApplied"])
+        self.assertEqual(self.binary.read_bytes(), b"candidate bootstrap\n")
+        self.assertFalse(self.pending.exists())
+
+    def test_new_handler_target_can_advance_while_same_listener_remains_pending(self):
+        self.prepare_listener_pending()
+        before = json.loads(self.listener_marker.read_text())
+        self.source_hash = hashlib.sha256(b"newer runtime\n").hexdigest()
+        def command(args, **kwargs):
+            if args[:2] == ["test-bun", "build"]:
+                Path(args[args.index("--outfile") + 1]).write_bytes(
+                    b"newer runtime\n" if args[2].endswith("codex-relay-runtime.ts") else b"newer bootstrap\n")
+            else:
+                self.assertIn("--check-policy", args)
+            return SimpleNamespace(returncode=0)
+        with patch.object(manager.subprocess, "run", side_effect=command), patch.object(manager.urllib.request, "build_opener") as opener:
+            result = self.relay.upgrade(self.upgrade_args)
+        opener.assert_not_called()
+        self.assertTrue(result["applied"][0]["handlerApplied"])
+        self.assertFalse(result["applied"][0]["listenerApplied"])
+        after = json.loads(self.listener_marker.read_text())
+        self.assertNotEqual(after["sourceHash"], before["sourceHash"])
+        self.assertEqual(after["sourceHash"], self.source_hash)
+        for key in ("account", "profileKey", "launchAgentHash", "settingsHash"):
+            self.assertEqual(after[key], before[key])
+
+    def test_corrupt_listener_marker_is_not_replaced_by_a_repeated_upgrade(self):
+        self.prepare_listener_pending()
+        self.listener_marker.write_text("[]")
+        result = self.stage()
+        self.assertEqual(result["applied"], [])
+        self.assertEqual(result["deferred"][0]["reason"], "listener-state-unverified")
+        self.assertEqual(self.listener_marker.read_text(), "[]")
+        self.assertTrue(self.pending.exists())
 
     def test_failed_reload_acknowledgement_records_uncertainty_without_live_rollback(self):
         self.prepare_upgrade(modern=True)

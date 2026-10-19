@@ -1017,3 +1017,23 @@
 "collection.measuredAt" = "Measured %@";
 "details.loading" = "Loading work and details…";
 "details.refreshFailed" = "Details could not be refreshed. Quota readings remain available.";
+
+"autoResume.summary.unverified" = "Automatic resume needs checking";
+"autoResume.summary.unverifiedDetail" = "The latest conversation state is unavailable; resumption is not confirmed.";
+"autoResume.summary.disabled" = "Automatic resume is off";
+"autoResume.summary.ask" = "Automatically continue the same conversation when quota recovers?";
+"autoResume.summary.delayed" = "Blocked-conversation scan is delayed";
+"autoResume.summary.scope" = "Watching for new quota interruptions after activation.";
+"autoResume.summary.monitoring" = "Automatic resume on · Watching for new interruptions";
+"autoResume.summary.empty" = "No conversation is waiting to resume. A quota reset notice alone does not restart older conversations.";
+"autoResume.summary.since" = "Applies to quota interruptions after %@";
+"autoResume.summary.configure" = "Choose automatic resume settings";
+"autoResume.summary.review" = "Review resume status and conversations";
+"autoResume.summary.lastResumed" = "Latest automatic continuation finished";
+
+"alert.resume.auto.title" = "%@ · %@ automatic resume";
+"alert.resume.auto.waiting.message" = "Detected a quota interruption in %@. The same conversation will continue when quota recovery is confirmed.";
+"alert.resume.auto.queued.message" = "%@: the existing conversation accepted the continuation request. Check its progress in QuotaPie Work.";
+"alert.resume.auto.resumed.message" = "One automatic continuation turn in %@ finished. This does not confirm completion of its overall goal.";
+"alert.resume.auto.review.message" = "The resume state of %@ needs review. Open this notification to inspect the reason.";
+"alert.resume.auto.scanUnavailable.message" = "Could not verify conversations interrupted by quota. Review automatic resume status.";

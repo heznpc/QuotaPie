@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { AutoResumeController, type AutoResumeAccount, type AutoResumeDependencies, type QuotaResumeIncident } from "../src/quota-resume/controller";
-import type { QuotaResumeEvidence } from "../src/quota-resume/evidence";
+import { QuotaResumeEvidenceUnavailableError, type QuotaResumeEvidence } from "../src/quota-resume/evidence";
 import type { CodexThreadTurnSummary } from "../src/providers/codex-appserver";
 import { QuotaStorage } from "../src/storage/database";
 import { WorkStore } from "../src/work/store";
@@ -90,6 +90,35 @@ test("authorization timestamp excludes historical and future failures but enroll
   expect(policy.quotaResume).toEqual({ turnId, stamp: "terminal-snapshot" });
   expect(policy.accountKey).toBe("account-a"); expect(policy.profileKey).toBe("profile-a");
   expect(f.controller.status().accounts[0]).toMatchObject({ enabled: true, enabledAtMs: 1_000, lastScanAtMs: 2_000 });
+});
+
+test("an unavailable candidate marks the scan incomplete while other verified threads continue and later recovery clears the error", async () => {
+  const f = fixture();
+  f.state.threads.push({ id: nextThreadId, name: "Another project", cwd: "/tmp/project", updatedAtMs: 1_500 });
+  let unavailable = true;
+  f.deps.evidence = async (_account, id) => {
+    if (id === threadId && unavailable) throw new QuotaResumeEvidenceUnavailableError();
+    return { ...f.state.evidence!, threadId: id, turnId: id === threadId ? turnId : nextTurnId };
+  };
+  await f.controller.setEnabled("plus", true); f.state.now = 2_000;
+  await f.controller.poll();
+  expect(f.controller.status().accounts[0]).toMatchObject({ enabled: true, lastScanAtMs: 2_000, lastError: "scan-unavailable" });
+  expect(f.controller.incidents().map(i => i.threadId)).toEqual([nextThreadId]);
+  expect(f.work.list()).toHaveLength(1); expect(f.work.executions()).toHaveLength(0);
+  await f.controller.poll();
+  expect(f.controller.status().accounts[0]?.lastError).toBe("scan-unavailable");
+  expect(f.state.registrationCalls).toBe(1);
+  unavailable = false; f.state.now = 3_000; await f.controller.poll();
+  expect(f.controller.status().accounts[0]).toMatchObject({ lastScanAtMs: 3_000, lastError: null });
+  expect(f.controller.incidents()).toHaveLength(2); expect(f.state.registrationCalls).toBe(2);
+  expect(f.work.executions()).toHaveLength(0);
+});
+
+test("a verified non-candidate is a successful scan and does not create a recovery incident", async () => {
+  const f = fixture(); f.state.evidence = null;
+  await f.controller.setEnabled("plus", true); f.state.now = 2_000; await f.controller.poll();
+  expect(f.controller.status().accounts[0]).toMatchObject({ lastScanAtMs: 2_000, lastError: null });
+  expect(f.controller.incidents()).toHaveLength(0); expect(f.work.list()).toHaveLength(0);
 });
 
 test("simultaneous scans share one discovery and registration, and later scans do not duplicate it", async () => {

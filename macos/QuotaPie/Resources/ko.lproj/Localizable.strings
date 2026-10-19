@@ -1017,3 +1017,23 @@
 "collection.measuredAt" = "측정 시각 %@";
 "details.loading" = "작업 및 상세 정보 불러오는 중…";
 "details.refreshFailed" = "상세 정보를 갱신하지 못했습니다. 잔량은 계속 표시합니다.";
+
+"autoResume.summary.unverified" = "자동재개 확인 필요";
+"autoResume.summary.unverifiedDetail" = "최신 대화 상태를 확인하지 못해 재개 여부를 확정할 수 없습니다.";
+"autoResume.summary.disabled" = "자동재개 꺼짐";
+"autoResume.summary.ask" = "한도 회복 후 같은 대화를 자동으로 이어갈까요?";
+"autoResume.summary.delayed" = "중단 대화 감지 지연";
+"autoResume.summary.scope" = "켠 시점 이후 새로 한도에 걸린 대화를 감지합니다.";
+"autoResume.summary.monitoring" = "자동재개 켜짐 · 새 중단 감지 중";
+"autoResume.summary.empty" = "재개를 기다리는 대화가 없습니다. 한도 초기화 안내만으로 과거 대화를 실행하지는 않습니다.";
+"autoResume.summary.since" = "%@ 이후 발생한 한도 중단부터 적용";
+"autoResume.summary.configure" = "자동재개 방식 설정";
+"autoResume.summary.review" = "재개 상태 및 대상 확인";
+"autoResume.summary.lastResumed" = "최근 대화 자동재개 종료";
+
+"alert.resume.auto.title" = "%@ · %@ 자동재개";
+"alert.resume.auto.waiting.message" = "%@ 대화의 한도 중단을 감지했습니다. 실제 한도 회복이 확인되면 같은 대화를 자동으로 이어갑니다.";
+"alert.resume.auto.queued.message" = "%@: 기존 대화에 재개 요청이 접수됐습니다. QuotaPie 작업 화면에서 진행 상태를 확인하세요.";
+"alert.resume.auto.resumed.message" = "%@ 대화의 자동재개 한 턴이 종료됐습니다. 작업 목표 완료 여부와는 별개입니다.";
+"alert.resume.auto.review.message" = "%@ 대화의 재개 상태를 확인해야 합니다. 알림을 눌러 대기 이유를 확인하세요.";
+"alert.resume.auto.scanUnavailable.message" = "한도로 멈춘 대화를 검증하지 못했습니다. 자동재개 상태를 확인하세요.";

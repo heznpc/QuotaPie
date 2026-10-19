@@ -5,6 +5,24 @@ import XCTest
 final class NotificationPresenterTests: XCTestCase {
     private let fixedNow = Date(timeIntervalSince1970: 2_000_000_000)
 
+    func testAutomaticResumeNotificationCarriesWorkNavigationAndLocalizedState() {
+        let presentation = NotificationPresentationPayload(
+            title: LocalizedMessagePayload(key: "alert.resume.auto.title", params: ["provider": .string("Codex"), "account": .string("Plus")]),
+            message: LocalizedMessagePayload(key: "alert.resume.auto.queued.message", params: ["label": .string("Project")]))
+        let notification = makeNotification(presentation: presentation)
+        let client = FakeNotificationClient(claims: [.success(NotificationClaimResponse(notification: notification)),
+                                                   .success(NotificationClaimResponse(notification: nil))])
+        let scheduler = FakeNotificationScheduler(status: .authorized)
+        let drained = expectation(description: "outbox drained")
+        client.onClaim = { if $0 == 2 { drained.fulfill() } }
+        let presenter = makePresenter(client: client, scheduler: scheduler, ledger: InMemoryNotificationLedger())
+        presenter.statusDidRefresh(actionToken: "action-token")
+        wait(for: [drained], timeout: 1)
+        XCTAssertEqual(scheduler.added.first?.opensAutoResume, true)
+        XCTAssertEqual(scheduler.added.first?.body, Strings.t("alert.resume.auto.queued.message", "Project"))
+        XCTAssertNotEqual(scheduler.added.first?.body, Strings.t("alert.resume.auto.resumed.message", "Project"))
+    }
+
     func testDuplicateClaimIsAcknowledgedFromLedgerWithoutAddingTwice() {
         let notification = makeNotification()
         let client = FakeNotificationClient(claims: [

@@ -27,6 +27,7 @@ function fixture(persistent = false) {
   const config = structuredClone(DEFAULT_CONFIG);
   config.accounts.codex = [{ id: ACCOUNT, label: "Fixture Plus", enabled: true, codexHome: profile }];
   config.accounts.claude = []; config.collection.codexEnabled = false; config.alerts.enabled = false;
+  config.resetSignals.enabled = false;
   config.collection.codexCommand = join(root, "never-execute", "codex");
   config.dashboard.host = "127.0.0.1"; config.dashboard.port = 0;
   const databasePath = persistent ? join(root, "quota.sqlite3") : ":memory:";
@@ -106,6 +107,106 @@ function fixture(persistent = false) {
       installFakes();
     } };
 }
+
+async function waitFor(check: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 200 && !check(); attempt++) await Bun.sleep(5);
+  expect(check()).toBe(true);
+}
+
+test("a newly registered ready incident wakes the resident runner once without waiting for its quota timer", async () => {
+  const f = fixture();
+  await f.service.setAutoResumeEnabled(ACCOUNT, true);
+  f.writeFailure(Date.now());
+  await Bun.sleep(2); f.observe(Date.now());
+  let release!: () => void;
+  const discovery = new Promise<void>(resolve => { release = resolve; });
+  const original = f.client.listThreads;
+  const list = spyOn(f.client, "listThreads").mockImplementation(async params => { await discovery; return original(params); });
+  const request = spyOn(f.service, "requestCollection");
+  const watching = f.service.watch();
+  try {
+    // The initial collector pass has no incident. Discovery finishes only
+    // after the normal loop is asleep, so it must wake that existing loop.
+    await waitFor(() => f.service.collectionStatus().nextAttemptAtMs !== null);
+    expect(f.runs()).toBe(0); expect(request).not.toHaveBeenCalled();
+    release();
+    await waitFor(() => f.runs() === 1);
+    await f.service.work.settle();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith();
+    await f.service.autoResume.poll();
+    await (f.service as any).refreshAutoResumeGoals();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(f.service.work.store.executions()).toHaveLength(1);
+  } finally {
+    release(); f.service.stop(); await watching;
+    list.mockRestore(); request.mockRestore();
+  }
+});
+
+test("a fresh host-goal check wakes a blocked ready incident but repeated or revoked checks do not", async () => {
+  const f = fixture();
+  const incident = await f.enableAndDiscover();
+  await Bun.sleep(2); f.observe(Date.now());
+  f.failGoalRead(); await (f.service as any).refreshAutoResumeGoals();
+  const request = spyOn(f.service, "requestCollection");
+  const watching = f.service.watch();
+  try {
+    await waitFor(() => f.service.collectionStatus().nextAttemptAtMs !== null);
+    await (f.service as any).refreshAutoResumeGoals();
+    expect(f.runs()).toBe(0); expect(request).not.toHaveBeenCalled();
+    f.setGoal(null); await (f.service as any).refreshAutoResumeGoals();
+    await waitFor(() => f.runs() === 1);
+    await f.service.work.settle();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(f.service.work.store.get(incident.policyId)?.state.status).toBe("turn-finished");
+    await (f.service as any).refreshAutoResumeGoals();
+    await f.service.setAutoResumeEnabled(ACCOUNT, false);
+    await (f.service as any).refreshAutoResumeGoals();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(f.service.work.store.executions()).toHaveLength(1);
+  } finally { f.service.stop(); await watching; request.mockRestore(); }
+});
+
+test("metadata refresh never wakes a quota-blocked incident or a nonresident service", async () => {
+  const f = fixture();
+  await f.enableAndDiscover();
+  await Bun.sleep(2); f.observe(Date.now(), 100);
+  f.failGoalRead(); await (f.service as any).refreshAutoResumeGoals();
+  const request = spyOn(f.service, "requestCollection");
+  try {
+    (f.service as any).jobsEnabled = true;
+    f.setGoal(null); await (f.service as any).refreshAutoResumeGoals();
+    expect(f.service.work.list()[0]!.admission.reason).toBe("reserve-reached");
+    expect(request).not.toHaveBeenCalled();
+    (f.service as any).jobsEnabled = false;
+    f.failGoalRead(); await (f.service as any).refreshAutoResumeGoals();
+    f.observe(Date.now(), 0);
+    f.setGoal(null); await (f.service as any).refreshAutoResumeGoals();
+    expect(f.service.work.list()[0]!.admission.ready).toBe(true);
+    expect(request).not.toHaveBeenCalled(); expect(f.runs()).toBe(0);
+  } finally { request.mockRestore(); }
+});
+
+test("a newly observed quota lane wakes the runner only after its required budget is added", async () => {
+  const f = fixture();
+  await f.enableAndDiscover();
+  await Bun.sleep(2);
+  const now = Date.now();
+  f.observe(now, 0);
+  f.observe(now, 0, { bucket: "codex:secondary:10080", windowSeconds: 604800 });
+  expect(f.service.work.list()[0]!.admission.reason).toBe("work-bucket-budget-required");
+  const request = spyOn(f.service, "requestCollection");
+  try {
+    (f.service as any).jobsEnabled = true;
+    await (f.service as any).refreshAutoResumeGoals();
+    expect(f.service.work.list()[0]!.admission.ready).toBe(true);
+    expect(request).toHaveBeenCalledTimes(1);
+    await (f.service as any).refreshAutoResumeGoals();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(f.runs()).toBe(0); // Refresh schedules the existing runner; it cannot dispatch directly.
+  } finally { request.mockRestore(); }
+});
 
 async function httpFixture() {
   const f = fixture();

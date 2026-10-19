@@ -26,6 +26,13 @@ export interface QuotaResumeEvidenceOptions {
   authorizeRecoveryTurn?: (evidence: QuotaResumeEvidence) => boolean | Promise<boolean>;
 }
 
+/** A local quota terminal exists, but its required host validation could not
+ * be read. Keep this distinct from a verified non-candidate without exposing
+ * provider error text, conversation content or credentials. */
+export class QuotaResumeEvidenceUnavailableError extends Error {
+  constructor() { super("quota-resume-evidence-unavailable"); this.name = "QuotaResumeEvidenceUnavailableError"; }
+}
+
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const TAIL_BYTES = 16 * 1024 * 1024;
 const RECOVERY_PREFIX = /^\[QuotaPie quota recovery:([a-zA-Z0-9_-]{1,128})\]\r?\n/;
@@ -154,14 +161,20 @@ export async function readQuotaResumeEvidence(config: AppConfig, account: string
       client ??= new CodexAppServerClient(config.collection.codexCommand, account, 8_000, root);
       return client.readLatestTurn(id);
     });
-    const turn = await read(threadId);
-    if (!turn || turn.threadId !== threadId || turn.turnId !== before.turnId || turn.status !== "failed" ||
+    let turn: CodexThreadTurnSummary | null;
+    try { turn = await read(threadId); }
+    catch { throw new QuotaResumeEvidenceUnavailableError(); }
+    if (!turn) throw new QuotaResumeEvidenceUnavailableError();
+    if (turn.threadId !== threadId || turn.turnId !== before.turnId || turn.status !== "failed" ||
         turn.errorCode !== "usageLimitExceeded" || turn.completedAtMs !== Math.floor(before.failedAtMs / 1000) * 1000) return null;
     if (before.recoveryIncidentId !== undefined && await options.authorizeRecoveryTurn?.(before) !== true) return null;
     const after = readLocal(config, account, threadId, (options.now ?? Date.now)(), options.allowNativeWriter);
     if (!after || JSON.stringify(before) !== JSON.stringify(after) || credentials !== credentialStamp(root) ||
         realpathSync(codexProfileRoot(profile)) !== root) return null;
     return after;
-  } catch { return null; }
+  } catch (error) {
+    if (error instanceof QuotaResumeEvidenceUnavailableError) throw error;
+    return null;
+  }
   finally { await client?.close(); }
 }

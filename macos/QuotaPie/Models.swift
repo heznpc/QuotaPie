@@ -418,14 +418,18 @@ struct LocalizedMessagePayload: Decodable {
              "alert.event.title.payment",
              "alert.event.title.creditAdded", "alert.event.title.resetCredits",
              "alert.event.title.resync", "alert.pace.title.measured",
-             "alert.pace.title.projected", "alert.resume.ready.title":
+             "alert.pace.title.projected", "alert.resume.ready.title", "alert.resume.auto.title":
             return required("provider", "account")
         case "alert.remaining.message":
             return required("label", "percent", "threshold")
         case "alert.rapid.message":
             return required("label", "minutes", "drop", "percent")
-        case "alert.stale.message", "alert.resume.ready.message":
+        case "alert.stale.message", "alert.resume.ready.message",
+             "alert.resume.auto.waiting.message", "alert.resume.auto.queued.message",
+             "alert.resume.auto.resumed.message", "alert.resume.auto.review.message":
             return required("label")
+        case "alert.resume.auto.scanUnavailable.message":
+            return []
         case "alert.jobs.title":
             return required("label")
         case "alert.jobs.ready.message", "alert.jobs.succeeded.message",

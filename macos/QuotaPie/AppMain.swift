@@ -113,6 +113,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let presenter = NotificationPresenter(
                 client: client,
                 scheduler: UserNotificationScheduler(center: userNotificationCenter),
+                openAutoResume: { [weak self] in
+                    self?.showPopover()
+                    self?.popoverModel.showDetails(.work)
+                },
                 openPopover: { [weak self] in self?.showPopover() }
             )
             notificationPresenter = presenter

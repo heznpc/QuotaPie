@@ -313,6 +313,27 @@ const CATALOG = {
     en: (p) => `${p.label} has fresh quota again. Open QuotaPie to approve resuming it.`,
     ko: (p) => `${p.label} 한도가 다시 확인됐습니다. QuotaPie에서 재개를 승인해 주세요.`,
   },
+  "alert.resume.auto.title": { en: p => `${p.provider} · ${p.account} automatic continuation`, ko: p => `${p.provider} · ${p.account} 자동 재개` },
+  "alert.resume.auto.waiting.message": {
+    en: p => `${p.label}: a quota-stopped turn was detected. Waiting for fresh quota and session checks.`,
+    ko: p => `${p.label}: 한도로 중단된 대화를 감지했습니다. 한도 회복과 세션 상태를 확인한 뒤 이어갑니다.`,
+  },
+  "alert.resume.auto.queued.message": {
+    en: p => `${p.label}: the existing conversation accepted the continuation request. Check its progress in QuotaPie Work.`,
+    ko: p => `${p.label}: 기존 대화에 재개 요청이 접수됐습니다. QuotaPie 작업 화면에서 진행 상태를 확인하세요.`,
+  },
+  "alert.resume.auto.resumed.message": {
+    en: p => `${p.label}: the continued turn finished. This does not confirm that the whole goal is complete.`,
+    ko: p => `${p.label}: 이어간 한 턴의 종료를 확인했습니다. 전체 목표의 완료 여부는 별도로 확인하세요.`,
+  },
+  "alert.resume.auto.review.message": {
+    en: p => `${p.label}: continuation needs review. Open QuotaPie Work to inspect the result before retrying.`,
+    ko: p => `${p.label}: 재개 상태를 확인해야 합니다. 다시 시도하기 전에 QuotaPie 작업 화면에서 기록을 확인하세요.`,
+  },
+  "alert.resume.auto.scanUnavailable.message": {
+    en: () => "Some quota-stopped conversations could not be verified. Open QuotaPie Work to check monitoring status.",
+    ko: () => "한도로 중단된 대화의 일부를 검증하지 못했습니다. QuotaPie 작업 화면에서 감지 상태를 확인하세요.",
+  },
   "resume.registered": {
     en: (p) => `${p.label} will be offered for resume after fresh quota is confirmed.`,
     ko: (p) => `${p.label} 한도가 다시 확인되면 재개할 수 있도록 알려드립니다.`,

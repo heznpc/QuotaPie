@@ -150,6 +150,8 @@ export class QuotaPieService {
   private autoResumeGoals = new Map<string, {binding: string; observedAtMs: number; reason: string | null}>();
   private jobsEnabled = false;
   private jobNotifications: Promise<void> | null = null;
+  private autoResumeNotifications: Promise<void> | null = null;
+  private autoResumeNotificationTimer: ReturnType<typeof setTimeout> | null = null;
   readonly resetSignals: ResetSignalStore;
   readonly resetTiming: ResetTimingStore;
   private resetTimingError: string | null = null;
@@ -217,12 +219,17 @@ export class QuotaPieService {
     this.work = new WorkController(new WorkStore(this.storage), config, {
       windows: () => this.workWindows(),
       inspect: p => this.inspectWork(p),
-      execute: (p,id,authorized,signal) => {
+      execute: async (p,id,authorized,signal) => {
         const planning = this.work.store.executions().find(e => e.id === id)?.planning;
         if (planning?.forecastId) this.resetTiming.recordExecutionDecision(planning.forecastId, p.revision, Date.now());
-        return p.provider === "claude"
-          ? executeWorkTurn(config,p,{claimId:id,policyRevision:p.revision,timeoutMs:p.maxDurationSeconds*1000,signal,stillAuthorized:authorized})
-          : this.executeCodexPolicy(p,id,authorized,signal);
+        try {
+          return await (p.provider === "claude"
+            ? executeWorkTurn(config,p,{claimId:id,policyRevision:p.revision,timeoutMs:p.maxDurationSeconds*1000,signal,stillAuthorized:authorized})
+            : this.executeCodexPolicy(p,id,authorized,signal));
+        } finally {
+          // The timer runs after WorkController records the returned result.
+          if (p.purpose === "quota-resume") this.scheduleAutoResumeNotifications();
+        }
       },
       announcement: p => this.workOpportunity(p) !== undefined,
       announcementPublishedAtMs: p => {
@@ -335,7 +342,7 @@ export class QuotaPieService {
       return executeHostQueuedQuotaResume({config:this.config,policy:p,claimId:id},{
         client:this.goalClient(profile),stillAuthorized:authorized,signal,
         beforeEnqueue:()=>this.validateAutoResume(p),
-        onReceipt:receipt=>this.work.store.recordHostQueue(id,receipt),
+        onReceipt:receipt=>{ this.work.store.recordHostQueue(id,receipt); this.scheduleAutoResumeNotifications(); },
         readEvidence:(_config,account,threadId,options)=>this.readAutoResumeEvidence(account,threadId,options),
       });
     }
@@ -399,7 +406,7 @@ export class QuotaPieService {
           }
         } catch { /* Ambiguous delivery retains the durable execution fence. */ }
       }
-    })().finally(()=>{this.hostQueueRefresh=null;});
+    })().finally(()=>{this.hostQueueRefresh=null;this.scheduleAutoResumeNotifications();});
     return this.hostQueueRefresh;
   }
   private async validateAutoResume(policy: WorkPolicyInput): Promise<void> {
@@ -427,6 +434,7 @@ export class QuotaPieService {
     if(this.autoResumeGoalRefresh) return this.autoResumeGoalRefresh;
     if(this.closing) return Promise.resolve();
     const pending=this.work.store.list().filter(p=>p.purpose==="quota-resume" && p.enabled && !this.autoResume.blockPolicy(p));
+    const blocked = pending.filter(p => !this.work.admission(p).ready).map(p => p.id);
     this.work.store.migratePendingQuotaResumeLifetime(pending.map(p=>p.id));
     for(const previous of pending) {
       const p=this.work.store.get(previous.id)!;
@@ -438,10 +446,24 @@ export class QuotaPieService {
     const policies=this.work.store.list().filter(p=>p.purpose==="quota-resume" && p.enabled);
     const ids=new Set(policies.map(p=>p.id));
     for(const id of this.autoResumeGoals.keys()) if(!ids.has(id)) this.autoResumeGoals.delete(id);
-    this.autoResumeGoalRefresh=Promise.allSettled(policies.map(p=>this.readAutoResumeGoal(p))).then(()=>{}).finally(()=>{
+    this.autoResumeGoalRefresh=Promise.allSettled(policies.map(p=>this.readAutoResumeGoal(p))).then(()=>{
+      this.wakeReadyAutoResume(blocked);
+    }).finally(()=>{
       this.autoResumeGoalRefresh=null;
     });
     return this.autoResumeGoalRefresh;
+  }
+  private wakeReadyAutoResume(ids: string[]): void {
+    if (!this.jobsEnabled || this.closing || this.stopped) return;
+    if (ids.some(id => {
+      const policy = this.work.store.get(id);
+      return policy?.purpose === "quota-resume" && this.work.admission(policy).ready;
+    })) {
+      // Re-enter the resident collector's existing runner. Registration and
+      // metadata reads never claim work directly, nor force another provider
+      // read when a current observation already establishes capacity.
+      this.requestCollection();
+    }
   }
   private autoResumeBlock(policy: WorkPolicy): string | null {
     if(policy.purpose!=="quota-resume") return null;
@@ -467,6 +489,7 @@ export class QuotaPieService {
     return null;
   }
   private async registerAutoResume(incident: QuotaResumeIncident): Promise<void> {
+    this.scheduleAutoResumeNotifications();
     const evidence=incident.evidence;
     const windows=scopedWorkWindows({provider:"codex",purpose:"quota-resume",account:incident.account,model:evidence.model,budgetByBucket:{}} as WorkPolicyInput,this.workWindows());
     if(!windows.length) throw new Error("quota-unknown");
@@ -481,10 +504,12 @@ export class QuotaPieService {
       maxTurns:1,maxDurationSeconds:3600,maxTotalDurationSeconds:3600,expiresAtMs:incident.detectedAtMs,
       priority:0,activityMode:"unrestricted",onReset:"continue"};
     await this.work.save(policy,null,incident.id);
+    this.wakeReadyAutoResume([policy.id]);
   }
   async setAutoResumeEnabled(account: string, enabled: boolean): Promise<void> {
     await this.autoResume.setEnabled(account,enabled);
-    if(enabled && this.jobsEnabled) void this.autoResume.poll().catch(()=>{});
+    this.scheduleAutoResumeNotifications();
+    if(enabled && this.jobsEnabled) void this.autoResume.poll().catch(()=>{}).finally(()=>this.scheduleAutoResumeNotifications());
   }
   private workGate(p: WorkPolicy) {
     const nowMs=Date.now();
@@ -1679,6 +1704,7 @@ export class QuotaPieService {
     decision: TriggerDecision,
     deliveryKey: string,
     rememberChannels = true,
+    forceNativeOutbox = false,
   ) {
     const nativeConsumerAvailable = this.nativeNotificationTransportAvailable &&
       this.alerts.hasNativeNotificationConsumer();
@@ -1688,7 +1714,7 @@ export class QuotaPieService {
       onChannelSuccess: rememberChannels
         ? (channel) => this.alerts.markChannelDelivered(deliveryKey, channel, Date.now())
         : undefined,
-      queueMacOSNotification: nativeConsumerAvailable
+      queueMacOSNotification: forceNativeOutbox || nativeConsumerAvailable
         ? (notification, key) => this.alerts.queueMacOSNotification(notification, key)
         : undefined,
     });
@@ -1832,6 +1858,7 @@ export class QuotaPieService {
     this.cancelMutedNotifications(nowMs);
     this.cancelObsoleteJobNotifications(nowMs);
     this.cancelObsoleteWorkNotifications(nowMs);
+    this.cancelObsoleteAutoResumeNotifications(nowMs);
     if (!this.config.alerts.enabled || !this.config.alerts.macOSNotifications) {
       this.alerts.cancelAllAppNotifications(nowMs);
       return null;
@@ -1841,6 +1868,8 @@ export class QuotaPieService {
 
   async retrySuppressedNotifications(nowMs = Date.now()): Promise<void> {
     if (!this.config.alerts.enabled || !this.config.alerts.macOSNotifications) return;
+    // This path is invoked only after the native app reports OS permission.
+    await this.deliverAutoResumeNotifications(true);
     const suppressed = new Set(this.alerts.suppressedThresholdKeys());
     if (!suppressed.size) return;
     const windows = this.analyses(nowMs);
@@ -1875,6 +1904,7 @@ export class QuotaPieService {
     this.cancelMutedNotifications(nowMs);
     this.cancelObsoleteJobNotifications(nowMs);
     this.cancelObsoleteWorkNotifications(nowMs);
+    this.cancelObsoleteAutoResumeNotifications(nowMs);
     return this.alerts.renewAppNotification(id, claimToken, nowMs);
   }
 
@@ -1944,6 +1974,100 @@ export class QuotaPieService {
         console.error(`[quotapie] Resume-ready notification failed: ${task.id}`);
       }
     }
+  }
+
+  private scheduleAutoResumeNotifications(): void {
+    if (this.closing || this.stopped || this.autoResumeNotificationTimer) return;
+    this.autoResumeNotificationTimer = setTimeout(() => {
+      this.autoResumeNotificationTimer = null;
+      if (!this.closing && !this.stopped) void this.deliverAutoResumeNotifications().catch(() => {});
+    }, 0);
+  }
+
+  private autoResumeNotificationDecisions() {
+    const status = this.autoResume.status();
+    const decisions: TriggerDecision[] = [], clearedScanKeys: string[] = [];
+    const messageKeys = {
+      waiting: "alert.resume.auto.waiting.message", queued: "alert.resume.auto.queued.message", running: "alert.resume.auto.queued.message",
+      resumed: "alert.resume.auto.resumed.message", "needs-review": "alert.resume.auto.review.message",
+    } as const;
+    for (const incident of status.incidents) {
+      if (!Object.hasOwn(messageKeys, incident.state)) continue;
+      // A durable send intent is not acceptance. A queue acknowledgement or
+      // the exact correlated host turn must exist before the shared notice.
+      const accepted = incident.state === "queued" || incident.state === "running";
+      if (accepted && !this.work.store.executions(incident.policyId)
+        .some(execution => execution.status === "dispatched" && (incident.state === "running"
+          ? execution.hostQueue?.turnId : execution.hostQueue?.queuedSubmissionId))) continue;
+      const messageKey = messageKeys[incident.state as keyof typeof messageKeys];
+      const titleParams = notificationAccountParams(this.notificationConfig(), "codex", incident.account);
+      const messageParams = { label: incident.projectLabel.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 80),
+        provider: "codex", accountId: incident.account, incidentId: incident.id };
+      decisions.push({ key: `auto-resume:incident:${incident.id}:${accepted ? "accepted" : incident.state}`,
+        title: t("alert.resume.auto.title", titleParams, this.locale), message: t(messageKey, messageParams, this.locale),
+        presentation: { title: {key: "alert.resume.auto.title", params: titleParams}, message: {key: messageKey, params: messageParams} },
+        severity: incident.state === "needs-review" ? "warning" : "info" });
+    }
+    for (const account of status.accounts) {
+      const scope = createHash("sha256").update(account.account).digest("hex").slice(0, 24);
+      const key = `auto-resume:scan:${scope}:${account.enabledAtMs ?? 0}`;
+      if (!account.enabled || account.lastError !== "scan-unavailable") { clearedScanKeys.push(key); continue; }
+      const titleParams = notificationAccountParams(this.notificationConfig(), "codex", account.account);
+      const params = {provider: "codex", accountId: account.account};
+      decisions.push({ key, title: t("alert.resume.auto.title", titleParams, this.locale),
+        message: t("alert.resume.auto.scanUnavailable.message", params, this.locale),
+        presentation: {title: {key: "alert.resume.auto.title", params: titleParams},
+          message: {key: "alert.resume.auto.scanUnavailable.message", params}}, severity: "warning" });
+    }
+    return {decisions, clearedScanKeys};
+  }
+
+  /** Durable lifecycle notices never claim a turn or wait in the discovery or
+   * execution path. OS permission suppression is retried only on an authorized
+   * native claim, while unchanged state stays deduplicated across restarts. */
+  deliverAutoResumeNotifications(retrySuppressed = false): Promise<void> {
+    if (this.closing || this.stopped) return Promise.resolve();
+    if (this.autoResumeNotifications) return this.autoResumeNotifications.then(() =>
+      retrySuppressed ? this.deliverAutoResumeNotifications(true) : undefined);
+    this.autoResumeNotifications = (async () => {
+      const {decisions, clearedScanKeys} = this.autoResumeNotificationDecisions();
+      const validKeys = new Set(decisions.map(decision => decision.key));
+      this.alerts.cancelAppNotificationsWhere(item => item.alertKey.startsWith("auto-resume:") && !validKeys.has(item.alertKey));
+      for (const key of clearedScanKeys) {
+        const state = this.alerts.state(key);
+        if (state && !state.armed) this.rearmAlertNotification(key, 0);
+      }
+      const suppressed = new Set(this.alerts.suppressedThresholdKeys());
+      const undelivered = new Set(this.alerts.suppressedThresholdKeys(true));
+      for (const decision of decisions) {
+        if (this.closing || this.stopped) break;
+        if (!notificationAllowed(decision, this.config.alerts) ||
+            !this.config.alerts.macOSNotifications && !this.config.alerts.command?.length) continue;
+        if (undelivered.has(decision.key) && (retrySuppressed || !suppressed.has(decision.key)))
+          this.rearmAlertNotification(decision.key, 0);
+        const claim = this.alerts.claim(decision.key, Date.now(), 0);
+        if (!claim) continue;
+        const deliveryKey = `threshold:${decision.key}:${claim.generation}`;
+        try {
+          // Use only the native outbox even while the app is closed; an
+          // osascript fallback would duplicate its later delivery. The native
+          // claim still checks preferences, obsolescence and OS permission.
+          const result = await this.deliverDecision(decision, deliveryKey, true, true);
+          if (result.complete) this.alerts.completeClaim(decision.key, claim.token, Date.now(), result.suppressed ? "suppressed" : "delivered");
+          else this.alerts.releaseClaim(decision.key, claim.token);
+        } catch { this.alerts.releaseClaim(decision.key, claim.token); }
+      }
+      if (!this.closing && !this.stopped) this.cancelObsoleteAutoResumeNotifications();
+    })().catch(() => {
+      // Notification failure cannot turn a healthy scan into an error or
+      // invalidate the execution's durable receipt. The next observer retries.
+    }).finally(() => { this.autoResumeNotifications = null; });
+    return this.autoResumeNotifications;
+  }
+
+  private cancelObsoleteAutoResumeNotifications(nowMs = Date.now()): void {
+    const validKeys = new Set(this.autoResumeNotificationDecisions().decisions.map(decision => decision.key));
+    this.alerts.cancelAppNotificationsWhere(item => item.alertKey.startsWith("auto-resume:") && !validKeys.has(item.alertKey), nowMs);
   }
 
   /** Uses the existing durable outbox and the user's resume notification preference. */
@@ -2194,6 +2318,7 @@ export class QuotaPieService {
     else this.jobRunner.evaluate(windows, jobsNowMs);
     await this.deliverJobNotifications();
     await this.deliverWorkNotifications();
+    this.scheduleAutoResumeNotifications();
     const triggers = await this.evaluateTriggers(nowMs, windows);
     await this.publishBoundary(nowMs, windows);
     return { events, triggers, windows, collected };
@@ -2272,7 +2397,7 @@ export class QuotaPieService {
         this.workForecastCache.clear();
         // Wake the quota loop so newly collected announcements reach the
         // runner promptly, with fresh account checks before dispatch.
-        if (this.jobsEnabled) this.requestCollection();
+        if (this.jobsEnabled) this.requestCollection(true);
       }
       for (const signal of this.resetSignals.pending(Date.now())) {
         if (this.closing) break;
@@ -2322,7 +2447,7 @@ export class QuotaPieService {
     this.jobsEnabled = true;
     if(!this.autoResumeTimer) {
       const refresh=()=>{
-        void this.autoResume.poll().catch(()=>{});
+        void this.autoResume.poll().catch(()=>{}).finally(()=>this.scheduleAutoResumeNotifications());
         void this.refreshAutoResumeGoals().catch(()=>{});
         void this.refreshHostQueueReceipts().catch(()=>{});
       };
@@ -2352,6 +2477,8 @@ export class QuotaPieService {
 
   stop(): void {
     this.stopped = true;
+    if (this.autoResumeNotificationTimer) clearTimeout(this.autoResumeNotificationTimer);
+    this.autoResumeNotificationTimer = null;
     this.wakeCollection?.();
     if (this.signalTimer) clearInterval(this.signalTimer);
     this.signalTimer = null;
@@ -2371,6 +2498,7 @@ export class QuotaPieService {
     this.goalClients.clear();
     await this.jobRunner.close();
     await this.jobNotifications;
+    await this.autoResumeNotifications;
     await this.signalWork;
     await this.recentWorkRefresh;
     await this.signalCollector.settle();
