@@ -47,6 +47,8 @@ final class StatusClient {
     let baseURL: URL
     var notificationsAuthorized = false
     private let session: URLSession
+    private var quotaSession: URLSession
+    private let quotaConfiguration: URLSessionConfiguration
     private let sessionDelegate: LocalOnlySessionDelegate
 
     init(environment: [String: String] = ProcessInfo.processInfo.environment, operationTimeout: TimeInterval = 5) throws {
@@ -65,6 +67,16 @@ final class StatusClient {
         let delegate = LocalOnlySessionDelegate()
         sessionDelegate = delegate
         session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+        quotaConfiguration = configuration
+        quotaSession = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+    }
+
+    /// Replace only the local quota/collection transport after sleep. Other
+    /// action requests and detail reads keep their original session.
+    func resetQuotaTransport() {
+        let previous = quotaSession
+        quotaSession = URLSession(configuration: quotaConfiguration, delegate: sessionDelegate, delegateQueue: nil)
+        previous.invalidateAndCancel()
     }
 
     func fetch(completion: @escaping (Result<StatusPayload, Error>) -> Void) {
@@ -87,7 +99,7 @@ final class StatusClient {
         var request = URLRequest(url: baseURL.appendingPathComponent("api/quota"))
         request.setValue(Strings.language.rawValue, forHTTPHeaderField: "x-quotapie-locale")
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        return perform(request) { result in
+        return perform(request, using: quotaSession) { result in
             completion(Result { try JSONDecoder().decode(StatusPayload.self, from: result.get()) })
         }
     }
@@ -98,7 +110,7 @@ final class StatusClient {
             request.setValue(nil, forHTTPHeaderField: "content-length")
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.httpBody = try JSONSerialization.data(withJSONObject: ["reason": reason])
-            perform(request) { result in
+            perform(request, using: quotaSession) { result in
                 struct Reply: Decodable { let collection: CollectionRefreshState }
                 completion(Result { try JSONDecoder().decode(Reply.self, from: result.get()).collection })
             }
@@ -556,9 +568,10 @@ final class StatusClient {
     @discardableResult
     private func perform(
         _ request: URLRequest,
+        using selectedSession: URLSession? = nil,
         completion: @escaping (Result<Data, Error>) -> Void
     ) -> URLSessionDataTask {
-        let task = session.dataTask(with: request) { data, response, error in
+        let task = (selectedSession ?? session).dataTask(with: request) { data, response, error in
             if let error {
                 completion(.failure(error))
                 return
@@ -573,6 +586,7 @@ final class StatusClient {
             }
             completion(.success(data ?? Data()))
         }
+        if selectedSession != nil { task.priority = URLSessionTask.highPriority }
         task.resume()
         return task
     }

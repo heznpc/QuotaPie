@@ -71,6 +71,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var lastDetailsFetchAt: Date?
     private var pendingCollectionReason: String?
     private var isRequestingCollection = false
+    private var collectionRequestGeneration = 0
+    private var collectionActionToken: String?
+    private var recoveryPolling = QuotaRecoveryPolling()
+    private var systemWakeMonitor: SystemWakeMonitor?
     private var wakeObserver: NSObjectProtocol?
     private var networkMonitor: NWPathMonitor?
     private var networkWasAvailable: Bool?
@@ -216,6 +220,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         profileUpdateMonitor.stop()
         networkMonitor?.cancel()
+        systemWakeMonitor?.stop()
         quotaRequests.cancel()
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         refreshTimer?.invalidate()
@@ -363,7 +368,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func scheduleRefresh(after seconds: TimeInterval) {
         guard verification == nil || verification?.fastQuota == true else { return }
         refreshTimer?.invalidate()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+        let delay = recoveryPolling.delay(normal: seconds, uptime: ProcessInfo.processInfo.systemUptime)
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             self?.refresh()
         }
         if let refreshTimer { RunLoop.main.add(refreshTimer, forMode: .common) }
@@ -460,7 +466,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func installCollectionRecoveryObservers() {
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
-        ) { [weak self] _ in self?.requestFreshCollection(reason: "wake") }
+        ) { [weak self] _ in self?.handleSystemWake(source: "workspace", atMs: Date().timeIntervalSince1970 * 1_000) }
+        let power = SystemWakeMonitor(onSleep: { [weak self] in
+            DispatchQueue.main.async { self?.recoveryPolling.didSleep() }
+        }, onWake: { [weak self] source, atMs in
+            DispatchQueue.main.async { self?.handleSystemWake(source: source, atMs: atMs) }
+        })
+        systemWakeMonitor = power
+        if !power.start() { statusLogger.notice("Early wake observer unavailable; using workspace notifications") }
         let monitor = NWPathMonitor()
         networkMonitor = monitor
         monitor.pathUpdateHandler = { [weak self] path in
@@ -475,9 +488,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         monitor.start(queue: DispatchQueue(label: "local.quotapie.network"))
     }
 
+    private func handleSystemWake(source: String, atMs: Double) {
+        let accepted = recoveryPolling.acceptWake(uptime: ProcessInfo.processInfo.systemUptime)
+        statusLogger.notice("Quota wake signal accepted=\(accepted) source=\(source, privacy: .public) signalAtMs=\(Int64(atMs)) mainAtMs=\(Int64(Date().timeIntervalSince1970 * 1_000))")
+        guard accepted else { return }
+        requestFreshCollection(reason: "wake")
+    }
+
     private func requestFreshCollection(reason: String) {
         guard !isFixturePreview else { refresh(); return }
         pendingCollectionReason = reason
+        // Opening the popover must not postpone details behind a new burst:
+        // the service may intentionally coalesce a recent visible refresh.
+        if reason != "visible" {
+            recoveryPolling.begin(payload: popoverModel.payload, atMs: Date().timeIntervalSince1970 * 1_000,
+                                  uptime: ProcessInfo.processInfo.systemUptime)
+        }
+        statusLogger.notice("Quota recovery requested reason=\(reason, privacy: .public) atMs=\(Int64(Date().timeIntervalSince1970 * 1_000))")
+        if reason == "wake" || reason == "network" {
+            collectionRequestGeneration += 1
+            isRequestingCollection = false
+            client?.resetQuotaTransport()
+        }
         // Only our local quota HTTP request is replaced; host work and rich
         // detail requests keep running. Ignore its eventual cancellation callback.
         quotaRequests.cancel()
@@ -488,19 +520,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func submitPendingCollectionRequest() {
         guard !isRequestingCollection, let reason = pendingCollectionReason,
-              let client, let token = currentActionToken else { return }
+              let client, let token = collectionActionToken else { return }
         pendingCollectionReason = nil
         isRequestingCollection = true
+        collectionRequestGeneration += 1
+        let generation = collectionRequestGeneration
         popoverModel.collectionRequestError = nil
+        if recoveryPolling.isActive(uptime: ProcessInfo.processInfo.systemUptime) {
+            statusLogger.notice("Quota collection submitted reason=\(reason, privacy: .public) atMs=\(Int64(Date().timeIntervalSince1970 * 1_000))")
+        }
         client.refreshCollection(reason: reason, actionToken: token) { [weak self] result in
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, generation == self.collectionRequestGeneration else { return }
                 self.isRequestingCollection = false
                 switch result {
                 case .success(let collection):
                     self.popoverModel.applyCollectionRefresh(collection)
+                    if self.recoveryPolling.isActive(uptime: ProcessInfo.processInfo.systemUptime) {
+                        self.statusLogger.notice("Quota collection acknowledged atMs=\(Int64(Date().timeIntervalSince1970 * 1_000))")
+                    }
                     self.render()
-                case .failure:
+                case .failure(let error):
+                    if case StatusClientError.httpStatus(let code) = error, (code == 401 || code == 403),
+                       self.collectionActionToken == token {
+                        self.collectionActionToken = nil
+                    }
                     self.popoverModel.collectionRequestError = Strings.t("collection.requestFailed")
                     // Retain the event through startup/network failure. Retrying
                     // this coalesced collection request never resumes a task.
@@ -519,6 +563,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let receive: (Result<StatusPayload, Error>) -> Void = { [weak self] result in
             DispatchQueue.main.async {
                 guard let self, self.quotaRequests.finish(generation) else { return }
+                var freshRecovery = false
                 switch result {
                 case .success(let payload):
                     if self.popoverModel.statusFailure != nil { self.statusLogger.notice("Status connection recovered") }
@@ -527,7 +572,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     } else {
                         self.popoverModel.applyQuota(payload, savingsRevision: savingsRevision,
                                                      compactionRevision: compactionRevision)
-                        try? self.quotaCache?.save(payload)
+                        self.collectionActionToken = payload.actionToken.flatMap { $0.isEmpty ? nil : $0 }
+                        freshRecovery = self.recoveryPolling.observe(payload, uptime: ProcessInfo.processInfo.systemUptime)
+                        if freshRecovery {
+                            let samples = payload.accounts.filter { $0.enabled && $0.collection.isHealthy }.flatMap { $0.windows.map(\.observedAtMs) }
+                            self.statusLogger.notice("Quota recovery fresh payload atMs=\(Int64(Date().timeIntervalSince1970 * 1_000)) measuredMinMs=\(Int64(samples.min() ?? 0)) measuredMaxMs=\(Int64(samples.max() ?? 0))")
+                        }
                     }
                     self.popoverModel.lastSuccessAt = Date()
                     self.popoverModel.lastError = nil
@@ -546,7 +596,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                         }
                     }
                     self.submitPendingCollectionRequest()
-                    self.refreshDetailsIfNeeded()
                     self.scheduleRefresh(after: payload.collection?.refreshing == true || self.popover.isShown || self.verification?.fastQuota == true ? 2 : 10)
                 case .failure(let error):
                     let diagnostic = StatusFailure.diagnostic(error)
@@ -561,6 +610,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     self.scheduleRefresh(after: delay)
                 }
                 self.render()
+                if freshRecovery {
+                    self.statusLogger.notice("Quota recovery menu rendered atMs=\(Int64(Date().timeIntervalSince1970 * 1_000))")
+                }
+                if case .success(let payload) = result {
+                    try? self.quotaCache?.save(payload)
+                    self.refreshDetailsIfNeeded()
+                }
                 self.verification?.record(model: self.popoverModel, item: self.statusItem,
                                           content: self.popover.contentViewController)
             }
@@ -570,7 +626,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func refreshDetailsIfNeeded() {
-        guard usesFastQuota, (popover.isShown || verification?.fastQuota == true), !isFetchingDetails, let client,
+        guard usesFastQuota, !recoveryPolling.isActive(uptime: ProcessInfo.processInfo.systemUptime),
+              (popover.isShown || verification?.fastQuota == true), !isFetchingDetails, let client,
               lastDetailsFetchAt.map({ Date().timeIntervalSince($0) >= 10 }) ?? true else { return }
         isFetchingDetails = true
         popoverModel.detailsLoading = true

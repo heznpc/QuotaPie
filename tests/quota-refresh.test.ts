@@ -31,6 +31,57 @@ function sample(account: string, atMs: number): QuotaObservation {
     source: "codex-app-server", quality: "authoritative" };
 }
 
+test("fresh provider measurements are readable by queued clients before historical analysis", async () => {
+  const f = fixture();
+  let release!: () => void;
+  const provider = new Promise<void>(resolve => { release = resolve; });
+  let readBeforeAnalysis = false;
+  let received: ReturnType<QuotaPieService["quotaAccounts"]> = [];
+  const poll = spyOn(f.service, "pollCodex").mockImplementation(async () => {
+    await provider;
+    f.service.ingestCodexSnapshot([sample("a", Date.now())]);
+    return [];
+  });
+  const claude = spyOn(f.service, "pollClaudeOAuth").mockResolvedValue([]);
+  const reset = spyOn(f.service, "refreshResetTiming").mockImplementation(() => {
+    expect(readBeforeAnalysis).toBe(true);
+  });
+  const boundary = spyOn(f.service, "publishBoundary").mockResolvedValue(undefined);
+  const pending = f.service.tick();
+  const client = new Promise<void>(resolve => setTimeout(() => {
+    received = f.service.quotaAccounts();
+    readBeforeAnalysis = !f.service.collectionStatus().refreshing;
+    resolve();
+  }, 0));
+  try {
+    release();
+    await Promise.all([pending, client]);
+    expect(reset).toHaveBeenCalledTimes(1);
+    expect(received[0]?.windows[0]).toMatchObject({ remainingPercent: 58, freshness: "fresh" });
+  } finally {
+    release(); await pending;
+    poll.mockRestore(); claude.mockRestore(); reset.mockRestore(); boundary.mockRestore(); await f.close();
+  }
+});
+
+test("closing during the post-collection yield never analyses a closed database", async () => {
+  const f = fixture();
+  const poll = spyOn(f.service, "pollCodex").mockResolvedValue([]);
+  const claude = spyOn(f.service, "pollClaudeOAuth").mockResolvedValue([]);
+  const reset = spyOn(f.service, "refreshResetTiming");
+  let closing: Promise<void> | undefined;
+  setTimeout(() => { closing = f.close(); }, 0);
+  try {
+    const result = await f.service.tick();
+    await closing;
+    expect(result).toMatchObject({ collected: false, windows: [], triggers: [] });
+    expect(reset).not.toHaveBeenCalled();
+  } finally {
+    poll.mockRestore(); claude.mockRestore(); reset.mockRestore();
+    if (closing) await closing; else await f.close();
+  }
+});
+
 test("quota HTTP returns persisted measurements and task readiness without historical or forecast scans", async () => {
   const f = fixture(), now = Date.now();
   f.service.ingestCodexSnapshot([sample("a", now - 601000)]);

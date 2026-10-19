@@ -2167,6 +2167,11 @@ export class QuotaPieService {
       this.collecting = false;
       this.collectionFinishedAtMs = Date.now();
     }
+    // Let already queued quota HTTP reads see the persisted provider result
+    // before reset forecasts and history scans occupy this event loop. A
+    // microtask alone would keep those reads waiting behind the analysis.
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    if (this.closing) return { events, triggers: [], windows: [], collected: false };
     // Asynchronous provider reads timestamp their observations when they finish.
     // Evaluate against the post-read clock, preserving an explicitly supplied
     // clock for deterministic callers.
