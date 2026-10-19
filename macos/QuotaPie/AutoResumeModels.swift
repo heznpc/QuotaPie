@@ -30,6 +30,22 @@ struct AutoResumeIncident: Decodable, Identifiable {
     let reason: String?
     let detectedAtMs: Double
     let policyId: String?
+    var quotaAccount: String? = nil
+    var quotaAccountLabel: String? = nil
+    var quotaTargetState: String? = nil
+
+    var quotaAccountText: String? {
+        guard let quotaAccount, quotaAccount != account else { return nil }
+        let label = quotaAccountLabel?.isEmpty == false ? quotaAccountLabel! : quotaAccount
+        let key: String
+        switch quotaTargetState {
+        case "candidate": key = "candidate"
+        case "confirmed": key = "confirmed"
+        case "used": key = "used"
+        default: return nil
+        }
+        return Strings.t("autoResume.quotaTarget." + key, label)
+    }
 
     var canSkip: Bool { state == "waiting" }
     var stateTitle: String {
@@ -52,6 +68,9 @@ struct AutoResumeIncident: Decodable, Identifiable {
         case "host-queue-wake-unavailable": key = "wakeUnavailable"
         case "host-queue-busy": key = "queueBusy"
         case "host-queue-unsupported": key = "queueUnsupported"
+        case "execution-target-relay-unavailable", "execution-target-native-route-unverified", "execution-target-lease-unavailable": key = "targetRoute"
+        case "execution-target-policy-changed", "execution-target-identity-changed": key = "targetChanged"
+        case "execution-target-quota-period-changed", "execution-target-expired", "execution-target-quota-unavailable": key = "targetQuota"
         case "work-turn-limit": key = "limit"
         default: key = "review"
         }

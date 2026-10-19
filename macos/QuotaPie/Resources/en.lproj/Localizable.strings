@@ -1313,3 +1313,11 @@
 "settings.organized.historyCount" = "View %@ records";
 "settings.organized.finishedJobs" = "Finished automatic jobs (%@)";
 "settings.organized.activityHistory" = "Activity history";
+
+"autoResume.conversationAccount" = "Conversation account: %@";
+"autoResume.quotaTarget.candidate" = "Resume candidate: %@ · checking connection";
+"autoResume.quotaTarget.confirmed" = "Allowance account assigned for resume: %@";
+"autoResume.quotaTarget.used" = "Account that handled the resume request: %@";
+"autoResume.reason.targetRoute" = "Verifying the app connection for this conversation. No resume input is sent before verification.";
+"autoResume.reason.targetChanged" = "Resume is paused because the assigned account or account pool settings changed.";
+"autoResume.reason.targetQuota" = "Rechecking the assigned account’s current allowance and reset period.";

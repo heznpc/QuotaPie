@@ -61,6 +61,10 @@ struct AutomaticWorkAdmission: Decodable {
     let ready: Bool
     let reason: String
     let planning: AutomaticWorkPlanning?
+    var executionTarget: AutomaticWorkExecutionTarget? = nil
+}
+struct AutomaticWorkExecutionTarget: Decodable {
+    let account: String
 }
 struct AutomaticWorkPlanning: Decodable {
     let horizonAtMs: Double
@@ -88,6 +92,9 @@ enum AutomaticWorkReason {
         case "account-unavailable", "profile-unavailable", "account-identity-unavailable", "account-session-mismatch", "work-binding-changed", "thread-profile-unverified": key = "binding"
         case "legacy-work-active", "work-already-claimed", "work-already-claimed-or-held": key = "busy"
         case "quota-unknown", "quota-stale", "reset-unconfirmed", "awaiting-quota-recovery": key = "quota"
+        case "execution-target-relay-unavailable", "execution-target-native-route-unverified", "execution-target-lease-unavailable": return Strings.t("autoResume.reason.targetRoute")
+        case "execution-target-policy-changed", "execution-target-identity-changed": return Strings.t("autoResume.reason.targetChanged")
+        case "execution-target-quota-period-changed", "execution-target-expired", "execution-target-quota-unavailable": return Strings.t("autoResume.reason.targetQuota")
         case "reserve-reached": key = "reserve"
         case "usage-budget-ended", "turn-budget-ended", "time-budget-ended": key = "budget"
         case "expired": key = "expired"
@@ -247,6 +254,7 @@ struct AutomaticWorkExecution: Decodable, Identifiable {
     let claimedAtMs: Double
     let status: String
     let result: AutomaticWorkResult?
+    var executionTarget: AutomaticWorkExecutionTarget? = nil
 }
 struct AutomaticWorkDefaults: Decodable { let timeZone: String }
 struct AutomaticWorkResponse: Decodable {

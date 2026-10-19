@@ -69,6 +69,10 @@ struct AutomaticWorkView: View {
                                 Text("\(execution.owner == "dots" ? "Dots" : Strings.t("automatic.local")) · \(Strings.t("automatic.status." + (execution.result?.status ?? execution.status)))")
                                     .font(.caption).foregroundStyle(.secondary)
                                 Text(Date(timeIntervalSince1970: execution.claimedAtMs / 1000), style: .date).font(.caption)
+                                if let target = execution.executionTarget {
+                                    Text(Strings.t("autoResume.quotaTarget.confirmed", data.accounts.first { $0.account == target.account && $0.provider == "codex" }?.label ?? target.account))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
                                 if let detail = execution.result?.report ?? execution.result?.summary ?? execution.result?.reason {
                                     Text(detail).font(.caption).textSelection(.enabled)
                                 }

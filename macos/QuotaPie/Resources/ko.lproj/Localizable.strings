@@ -1313,3 +1313,11 @@
 "settings.organized.historyCount" = "기록 %@개 보기";
 "settings.organized.finishedJobs" = "종료된 자동 작업 %@개";
 "settings.organized.activityHistory" = "활동 기록";
+
+"autoResume.conversationAccount" = "대화 계정: %@";
+"autoResume.quotaTarget.candidate" = "재개 후보 계정: %@ · 연결 확인 중";
+"autoResume.quotaTarget.confirmed" = "재개에 지정한 한도 계정: %@";
+"autoResume.quotaTarget.used" = "재개 요청을 처리한 계정: %@";
+"autoResume.reason.targetRoute" = "이 대화를 처리하는 앱 연결을 확인 중입니다. 확인 전에는 재개 입력을 보내지 않습니다.";
+"autoResume.reason.targetChanged" = "지정한 계정 또는 계정 풀 설정이 바뀌어 재개를 보류했습니다.";
+"autoResume.reason.targetQuota" = "지정한 계정의 최신 한도와 리셋 구간을 다시 확인하고 있습니다.";

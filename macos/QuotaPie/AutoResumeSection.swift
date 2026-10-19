@@ -67,8 +67,12 @@ struct AutoResumeSection: View {
                 Text(incident.stateTitle).font(.caption).foregroundStyle(incident.state == "needs-review" ? Color.orange : Color.secondary)
                     .accessibilityIdentifier("auto-resume-state-" + incident.id)
             }
-            Text(accounts.first { $0.account == incident.account }?.label ?? incident.account)
+            Text(Strings.t("autoResume.conversationAccount", accounts.first { $0.account == incident.account }?.label ?? incident.account))
                 .font(.caption).foregroundStyle(.secondary)
+            if let target = incident.quotaAccountText {
+                Text(target).font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("auto-resume-quota-target-" + incident.id)
+            }
             Text(incident.threadId).font(.caption2.monospaced()).textSelection(.enabled).lineLimit(1)
             if let reason = incident.reasonText { Text(reason).font(.caption).foregroundStyle(.secondary) }
             Text(Date(timeIntervalSince1970: incident.detectedAtMs / 1000), style: .date).font(.caption).foregroundStyle(.secondary)

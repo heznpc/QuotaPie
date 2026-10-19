@@ -24,7 +24,7 @@ struct AutoResumeSummaryPresentation {
         let pending = history.filter { !["resumed", "skipped"].contains($0.state) }
         if let incident = pending.first {
             title = incident.stateTitle
-            detail = [incident.projectLabel, incident.reasonText].compactMap { $0 }.joined(separator: " · ")
+            detail = [incident.projectLabel, incident.quotaAccountText, incident.reasonText].compactMap { $0 }.joined(separator: " · ")
             attention = !["waiting", "queued", "running"].contains(incident.state)
         } else if let error = account.scanErrorText {
             title = Strings.t("autoResume.summary.unverified")
@@ -44,7 +44,7 @@ struct AutoResumeSummaryPresentation {
             attention = false
         } else if let latest = history.first, latest.state == "resumed" {
             title = Strings.t("autoResume.summary.lastResumed")
-            detail = latest.projectLabel + " · " + Strings.t("autoResume.summary.monitoring")
+            detail = [latest.projectLabel, latest.quotaAccountText, Strings.t("autoResume.summary.monitoring")].compactMap { $0 }.joined(separator: " · ")
             attention = false
         } else {
             title = Strings.t("autoResume.summary.monitoring")

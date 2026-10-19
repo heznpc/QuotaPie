@@ -86,6 +86,24 @@ final class AutoResumeTests: XCTestCase {
         XCTAssertFalse(incident.canSkip, "Accepted queue input cannot promise atomic cancellation")
     }
 
+    func testResumeCandidateDoesNotClaimAnotherAccountWasUsed() throws {
+        let original = AutoResumeIncident(id: "target", account: "source", threadId: "thread",
+            projectLabel: "Project", state: "waiting", reason: "execution-target-native-route-unverified", detectedAtMs: 0, policyId: nil)
+        XCTAssertNil(original.quotaAccountText)
+        XCTAssertEqual(original.reasonText, Strings.t("autoResume.reason.targetRoute"))
+        for state in ["candidate", "confirmed", "used", "future-state"] {
+            let json: [String: Any] = ["id": "target", "account": "source", "threadId": "thread",
+                "projectLabel": "Project", "state": "waiting", "detectedAtMs": 0,
+                "quotaAccount": "target", "quotaAccountLabel": "Second account", "quotaTargetState": state]
+            let incident = try JSONDecoder().decode(AutoResumeIncident.self, from: JSONSerialization.data(withJSONObject: json))
+            if state == "future-state" { XCTAssertNil(incident.quotaAccountText) }
+            else {
+                XCTAssertEqual(incident.quotaAccountText, Strings.t("autoResume.quotaTarget." + state, "Second account"))
+                if state != "used" { XCTAssertNotEqual(incident.quotaAccountText, Strings.t("autoResume.quotaTarget.used", "Second account")) }
+            }
+        }
+    }
+
     func testAutoResumePolicyCannotEnterTheOrdinaryEditor() throws {
         let regular = AutomaticWorkPolicy.draft(provider: "codex", account: "personal", buckets: ["codex:primary:300"])
         XCTAssertTrue(regular.isUserEditable)
