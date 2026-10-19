@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { lstatSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { codexProfileRoot, type AppConfig } from "../config";
+import { type AppConfig } from "../config";
+import { codexSessionLocation, type SessionLocationOptions } from "../session-location";
 import { CodexAppServerClient, type CodexThreadTurnSummary } from "../providers/codex-appserver";
 import type { WorkPolicy, WorkResult, WorkExecutionTarget } from "../work/types";
 import { workPolicyExpiresAtMs } from "../work/lifetime";
@@ -46,6 +47,7 @@ export interface HostQueueTargetLease {
   close(reason: string): void;
 }
 export interface HostQueueOptions {
+  sessionLocation?: SessionLocationOptions;
   targetLease?: HostQueueTargetLease;
   stillAuthorized(): boolean;
   /** Account, quota, and host-goal checks immediately before the durable intent. */
@@ -205,13 +207,19 @@ export async function executeHostQueuedQuotaResume(
   if (!Number.isFinite(deadline) || deadline <= startedAt) return done({ status: "time-budget-ended", reason: "host-queue-time-budget-ended" });
   if (executionTarget && !options.targetLease) return done({ status: "activity-paused", reason: "execution-target-relay-unavailable" });
   let targetAcknowledged = false;
-  let root: string;
+  let root: string, ownerAccount: string, locationBinding: string;
+  const currentLocation = () => {
+    const location = codexSessionLocation(config, policy.account, policy.nativeSessionId, options.sessionLocation);
+    if (!location) throw new Error("thread-profile-unverified");
+    if (location.consolidated && !executionTarget) throw new Error("consolidated-execution-target-required");
+    return { root: location.sessionRoot, ownerAccount: location.ownerAccount, credentialRoot: location.credentialRoot,
+      manifestSHA256: location.manifestSHA256 };
+  };
   try {
-    const profile = config.accounts.codex.find(p => p.enabled && p.id === policy.account);
-    if (!profile) throw new Error("profile-unavailable");
-    root = realpathSync(codexProfileRoot(profile));
+    const location = currentLocation();
+    root = location.root; ownerAccount = location.ownerAccount; locationBinding = JSON.stringify(location);
   } catch (error) { return done({ status: "failed", reason: safeReason(error, "profile-unavailable") }); }
-  const ownedClient = options.client ? undefined : new CodexAppServerClient(config.collection.codexCommand, policy.account, 8_000, root);
+  const ownedClient = options.client ? undefined : new CodexAppServerClient(config.collection.codexCommand, ownerAccount, 8_000, root);
   const client: HostQueueClient = options.client ?? ownedClient!;
   const hasNativeWriter = options.hasNativeWriter ?? (() => {
     try { return lstatSync(join(root, "thread-writer-locks", `${policy.nativeSessionId}.lock`)).isFile(); }
@@ -223,8 +231,11 @@ export async function executeHostQueuedQuotaResume(
       return stat.isFile() && policy.quotaResume!.stamp === `${path}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
     } catch { return false; }
   });
-  const authorized = () => !options.signal?.aborted && options.stillAuthorized() && now() < deadline &&
-    (!targetAcknowledged || options.targetLease!.current());
+  const authorized = () => {
+    try { return !options.signal?.aborted && options.stillAuthorized() && now() < deadline &&
+      JSON.stringify(currentLocation()) === locationBinding && (!targetAcknowledged || options.targetLease!.current()); }
+    catch { return false; }
+  };
   const receipt: HostQueueReceipt = { threadId: policy.nativeSessionId, clientUserMessageId: hostQueueClientMessageId(claimId), sentAtMs: now() };
   const receiptOptions = { client, onReceipt: options.onReceipt, afterTurnId: policy.quotaResume.turnId };
   let sendAttempted = false;
@@ -242,6 +253,7 @@ export async function executeHostQueuedQuotaResume(
     const evidence = policy.quotaResume.localBeforeSendRecovery
       ? await options.localBeforeSendEvidence?.() ?? null
       : await (options.readEvidence ?? readQuotaResumeEvidence)(config, policy.account, receipt.threadId, {
+        sessionLocation: options.sessionLocation,
       allowNativeWriter: true, now,
       ...(client.readLatestTurn ? { readLatestTurn: (id: string) => client.readLatestTurn!(id) } : {}),
     });

@@ -8,8 +8,13 @@ import { ExecutionTargetLeaseStore, executionTargetLeasePath, isClosedUnacknowle
 import { CodexAppServerClient, type CodexThreadTurnSummary } from "./providers/codex-appserver";
 import type { CompactionRequestEvent } from "./codex-compaction";
 import { executionPoolPolicyHash } from "./work/execution-target";
+import { codexSessionLocation, codexSessionOrigins } from "./session-location";
+import { readQuotaResumeEvidence, type QuotaResumeEvidence } from "./quota-resume/evidence";
 
-export interface ExecutionTargetRouteProof { identity: string; atMs: number }
+export interface ExecutionTargetRouteProof { identity: string; atMs: number;
+  /** This proves physical native routing, not exhaustion of the host account. */
+  pooledHost?: {account:string;profileKey:string;identity:string;manifestSHA256:string;requestId:string;quotaAccount:string};
+}
 export interface ExecutionTargetRelayMemory {
   instanceId: string;
   routes: Map<string, ExecutionTargetRouteProof>;
@@ -32,6 +37,9 @@ export function createExecutionTargetRelay(options: {
   sourceAccount?: string; codexHome: string; config: () => AppConfig; sourceGuard: SubscriptionGuard;
   memory: ExecutionTargetRelayMemory; leasePath?: string; now?: () => number;
   correlate?: (lease: ExecutionTargetLease) => Promise<CodexThreadTurnSummary | null>;
+  sessionLocation?: typeof codexSessionLocation;
+  sessionOrigins?: typeof codexSessionOrigins;
+  readFailureEvidence?: (lease:ExecutionTargetLease)=>Promise<QuotaResumeEvidence|null>;
   /** Existing listener memory only; never populate from a file or request. */
   inheritedSource?: { identity: string | null; atMs: number | null };
   readLiveSnapshot?: () => Promise<any>;
@@ -54,6 +62,26 @@ export function createExecutionTargetRelay(options: {
     if (!source.ready || source.account !== lease.source.account || source.sourceIdentity !== lease.source.identity ||
         options.sourceAccount !== lease.source.account || profileKey !== lease.source.profileKey || lease.target.sourceIdentity !== source.sourceIdentity)
       failure("source_changed");
+    const consent=lease.source.consent,owner=lease.target.sessionOwner;
+    if(consent || owner) {
+      let location;
+      try {location=consent?(options.sessionLocation??codexSessionLocation)(options.config(),consent.account,lease.source.threadId):null;}catch{failure("source_changed");}
+      if(!consent || !owner || !location?.consolidated || location.ownerAccount!==lease.source.account ||
+          profileReference(location.sessionRoot)!==lease.source.profileKey || profileReference(location.credentialRoot)!==consent.profileKey ||
+          location.manifestSHA256!==consent.manifestSHA256 || owner.manifestSHA256!==consent.manifestSHA256 ||
+          owner.account!==lease.source.account || owner.profileKey!==lease.source.profileKey || owner.accountKey!==lease.source.accountKey || owner.identity!==lease.source.identity)
+        failure("source_changed");
+      const consentGuardKey="consent:"+lease.digest;
+      let consentGuard=memory.guards.get(consentGuardKey);
+      if(!consentGuard) {
+        consentGuard=createSubscriptionGuard({codexHome:location!.credentialRoot,sourceAccount:consent!.account,config:options.config,
+          executionMode:"interactive",quotaObservationMode:"advisory"});
+        memory.guards.set(consentGuardKey,consentGuard);
+      }
+      const consentState=consentGuard.checkIdentity();
+      if(!consentState.ready || consentState.account!==consent!.account || consentState.sourceIdentity!==consent!.identity ||
+          consent!.identity!==lease.target.consentIdentity)failure("source_changed");
+    }
     return source;
   }
   function validate(lease: ExecutionTargetLease, model: string | undefined, bound: boolean): PoolAccount {
@@ -72,6 +100,7 @@ export function createExecutionTargetRelay(options: {
         bound && (lease.state !== "bound" || lease.relayInstanceId !== memory.instanceId)) failure("expired");
     const policy = readPoolPolicy();
     if (!policy.enabled || !policy.accounts.includes(lease.source.account) || !policy.accounts.includes(lease.target.account) ||
+        lease.source.consent && !policy.accounts.includes(lease.source.consent.account) ||
         executionPoolPolicyHash(policy) !== lease.target.poolPolicyHash) failure("policy_changed");
     const config = options.config(), profile = config.accounts.codex.find(p => p.enabled && p.id === lease.target.account);
     if (!profile || profileReference(codexProfileRoot(profile)) !== lease.target.profileKey) failure("target_changed");
@@ -119,32 +148,58 @@ export function createExecutionTargetRelay(options: {
     version: 1 as const, instanceId: memory.instanceId,
     recordRoute(event: CompactionRequestEvent) {
       const { threadId, turnId } = event;
-      if (!threadId || !turnId || event.phase !== "failed" || event.kind !== "response" ||
+      const pooledCompaction=event.kind==="compaction" && event.accountRouting && event.accountRouting.account!==event.accountRouting.sourceAccount;
+      if (!threadId || !turnId || event.phase !== "failed" || event.kind !== "response" && !pooledCompaction ||
           !(event.status === 429 && event.failureOrigin === "provider_http" ||
             [event.errorCode, event.serverError?.code, event.serverError?.type].some(code =>
               ["usage_limit_exceeded", "usage_limit_reached", "quota_exceeded", "insufficient_quota"].includes(code ?? "")))) return;
       const source = options.sourceGuard.checkIdentity();
-      if (!source.ready || !source.sourceIdentity) return;
+      if (!source.ready || !source.sourceIdentity || source.account!==options.sourceAccount || source.profileKey!==profileKey) return;
+      if(event.accountRouting && event.accountRouting.sourceAccount!==source.account)return;
       const atMs = Date.parse(event.at);
       if (!Number.isFinite(atMs) || atMs > now()) return;
+      let pooledHost:ExecutionTargetRouteProof["pooledHost"];
       if(event.accountRouting && event.accountRouting.account!==event.accountRouting.sourceAccount) {
-        // An ordinary pooled response proves nothing about native ownership.
-        // A fixed execution's exact durable terminal can prove this source
-        // listener carried the same conversation even when B supplied quota.
-        if(event.status!==429 || event.failureOrigin!=="provider_http" || !existsSync(path))return;
-        let matches:ExecutionTargetLease[];
-        try { matches=store().list().filter(lease=>lease.relayInstanceId===memory.instanceId &&
+        // A fixed execution requires its exact durable terminal. Ordinary
+        // pooled failures qualify only through a verified consolidation below.
+        if(event.status!==429 || event.failureOrigin!=="provider_http")return;
+        let matches:ExecutionTargetLease[]=[],related:ExecutionTargetLease[]=[];
+        try { if(existsSync(path)) {
+          const leases=store().list();
+          related=leases.filter(lease=>lease.source.profileKey===profileKey&&lease.source.threadId===threadId&&
+            (lease.turnId===turnId || lease.targetRequest?.requestId===event.requestId ||
+              !lease.turnId && lease.createdAtMs<=atMs && lease.state!=="closed" && lease.authorizationValidUntilMs>atMs));
+          matches=leases.filter(lease=>lease.relayInstanceId===memory.instanceId &&
           lease.source.profileKey===profileKey && lease.source.account===source.account &&
           lease.source.identity===source.sourceIdentity && lease.source.threadId===threadId && lease.turnId===turnId &&
           event.accountRouting!.sourceAccount===lease.source.account && event.accountRouting!.account===lease.target.account &&
           lease.targetRequest?.requestId===event.requestId && lease.targetRequest.state==="failed" && lease.targetRequest.status===429 &&
           lease.targetRequest.finishedAtMs!==undefined && lease.targetRequest.finishedAtMs<=atMs &&
           lease.upstreamResponse?.requestId===event.requestId && lease.upstreamResponse.turnId===turnId &&
-          lease.upstreamResponse.identity===lease.target.identity && lease.upstreamResponse.status===429 && lease.upstreamResponse.observedAtMs<=atMs); }
+          lease.upstreamResponse.identity===lease.target.identity && lease.upstreamResponse.status===429 && lease.upstreamResponse.observedAtMs<=atMs); } }
         catch { return; }
-        if(matches.length!==1)return;
+        if(matches.length!==1) {
+          // A verified copied thread has one physical owner and keeps its
+          // original consent. Only an event emitted by that live owner can
+          // prove its native turn used another enrolled allowance.
+          try {
+            if(matches.length || related.length || event.accountRouting.sourceAccount!==source.account ||
+              !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(event.requestId) ||
+              ![threadId,turnId].every(id=>/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(id)))return;
+            const config=options.config(),pool=readPoolPolicy(),accounts=poolAccounts(config);
+            const origins=(options.sessionOrigins??codexSessionOrigins)(config).filter(origin=>origin.enabled&&origin.account&&origin.threadIds.has(threadId));
+            if(origins.length!==1)return;
+            const origin=origins[0]!,location=(options.sessionLocation??codexSessionLocation)(config,origin.account!,threadId);
+            const consent=accounts.find(account=>account.id===origin.account),target=accounts.find(account=>account.id===event.accountRouting!.account);
+            if(!location?.consolidated || location.ownerAccount!==source.account || profileReference(location.sessionRoot)!==profileKey ||
+              !location.manifestSHA256 || !consent || !target || !pool.enabled || !pool.accounts.includes(origin.account!) ||
+              !pool.accounts.includes(event.accountRouting.account))return;
+            pooledHost={account:origin.account!,profileKey:profileReference(location.credentialRoot)!,identity:consent.identity,
+              manifestSHA256:location.manifestSHA256,requestId:event.requestId,quotaAccount:event.accountRouting.account};
+          }catch{return;}
+        }
       }
-      memory.routes.set(threadId + ":" + turnId, { identity: source.sourceIdentity, atMs });
+      memory.routes.set(threadId + ":" + turnId, { identity: source.sourceIdentity, atMs,...(pooledHost?{pooledHost}:{}) });
       while (memory.routes.size > 512) memory.routes.delete(memory.routes.keys().next().value!);
     },
     sourceRecoveryOnly(input: {threadId: string | null; turnId: string | null; body: any}) {
@@ -212,6 +267,20 @@ export function createExecutionTargetRelay(options: {
       if (!proof || !owner || !Number.isInteger(owner.pid) || owner.pid <= 0 ||
           !Number.isFinite(owner.startedAtMs) || owner.startedAtMs > proof.atMs ||
           proof.identity !== lease!.source.identity || proof.atMs > now()) failure("native_route_unverified");
+      if(proof!.pooledHost) {
+        const bound=proof!.pooledHost,consent=lease!.source.consent;
+        if(!consent || consent.account!==bound.account || consent.profileKey!==bound.profileKey || consent.identity!==bound.identity ||
+          consent.manifestSHA256!==bound.manifestSHA256)failure("native_route_unverified");
+        // Local repairs already carry an immutable permit whose parent ACK
+        // checked this root failure. They keep their distinct local terminal.
+        if(!lease!.source.localRecoveryPermitId) {
+          let evidence:QuotaResumeEvidence|null=null;
+          try { evidence=options.readFailureEvidence?await options.readFailureEvidence(lease!):
+            await readQuotaResumeEvidence(options.config(),consent!.account,lease!.source.threadId,{allowNativeWriter:true}); }catch{}
+          if(!evidence || evidence.threadId!==lease!.source.threadId || evidence.turnId!==sourceQuotaTurnId ||
+            evidence.stamp!==lease!.source.evidenceStamp || evidence.model!==lease!.model || evidence.failedAtMs<proof!.atMs || evidence.failedAtMs>now())failure("native_route_unverified");
+        }
+      }
       selection(lease!, lease!.model, false);
       const accepted = store().acknowledge(lease!.executionId, lease!.digest, memory.instanceId, profileKey!);
       return { executionId: accepted.executionId, digest: accepted.digest, relayInstanceId: memory.instanceId,

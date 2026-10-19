@@ -3,7 +3,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { installMacOS, stageRuntime, type InstallDependencies } from "../script/install-macos";
-import { runtimeSourceHash } from "../src/runtime-identity";
+import { RUNTIME_HASH_VERSION, runtimeSourceHash } from "../src/runtime-identity";
 import { QuotaStorage } from "../src/storage/database";
 import { WorkStore } from "../src/work/store";
 
@@ -27,6 +27,7 @@ function fixture(existing = true) {
     file(join(path, "bin/quotapie"), "#!/bin/sh\n");
     file(join(path, "script/awake_hook.py"), "# hook");
     file(join(path, "script/codex-host-wake.py"), "# host wake helper");
+    file(join(path, "script/codex-session-consolidation.py"), "# session consolidation helper");
     file(join(path, "scripts/codex-compaction-local.py"), 'LABEL = "local.quotapie.compaction"\nclass LocalRelay: pass\n# provider compatibility helper');
     file(join(path, "script/install-macos.ts"), "// installer");
     file(join(path, "script/install.sh"), "#!/bin/sh");
@@ -116,7 +117,7 @@ function fixture(existing = true) {
       if (url.endsWith("/api/work")) return { policies: [], executions: [] };
       if (url.endsWith("/health")) return { ok: false, accounts: [{ health: "never-attempted", errorCategory: "auth-required" }] };
       const pid = jobs.get(labels[0]!); if (!pid) throw new Error("offline");
-      return { schemaVersion: 1, hashVersion: 2, sourceHash: fail === "identity" && pid >= 200 ? "wrong" : runtimeSourceHash(runtime), pid, startedAt: new Date().toISOString() };
+      return { schemaVersion: 1, hashVersion: RUNTIME_HASH_VERSION, sourceHash: fail === "identity" && pid >= 200 ? "wrong" : runtimeSourceHash(runtime), pid, startedAt: new Date().toISOString() };
     },
   };
   return { root, home, source, supplied, runtime, app, cli, config, data, agents, calls, jobs, configText, deps,
@@ -147,11 +148,14 @@ function maintainedFixture() {
   return {...f,storage,store,preference,incident,close(){storage.close();f.close();}};
 }
 
-function legacyMaintainedFixture(version?: 1) {
+function legacyMaintainedFixture(version?: 1 | 2) {
   const f=maintainedFixture(), read=f.deps.json!;
-  rmSync(join(f.runtime,"script/codex-host-wake.py"));
-  rmSync(join(f.runtime,"scripts/codex-compaction-local.py"));
-  const sourceHash=runtimeSourceHash(f.runtime,1);
+  if (version !== 2) {
+    rmSync(join(f.runtime,"script/codex-host-wake.py"));
+    rmSync(join(f.runtime,"scripts/codex-compaction-local.py"));
+  }
+  rmSync(join(f.runtime,"script/codex-session-consolidation.py"));
+  const sourceHash=runtimeSourceHash(f.runtime,version ?? 1);
   f.deps.json=async(url,options)=>{
     if(url.endsWith("/api/runtime") && readFileSync(join(f.runtime,"src/cli.ts"),"utf8")==="old-runtime")
       return {schemaVersion:1,...(version===undefined?{}:{hashVersion:version}),sourceHash,
@@ -270,15 +274,16 @@ test("existing or late old manager processes prevent replacement and no manager 
 });
 
 test("a verified legacy collector without new helpers upgrades using its explicit original hash algorithm",async()=>{
-  for(const version of [undefined,1] as const) {
+  for(const version of [undefined,1,2] as const) {
     const f=legacyMaintainedFixture(version);
     try {
       expect(()=>runtimeSourceHash(f.runtime)).toThrow();
-      expect(runtimeSourceHash(f.runtime,1)).toBe(f.legacyHash);
+      expect(runtimeSourceHash(f.runtime,version ?? 1)).toBe(f.legacyHash);
       const result=await f.run();
-      expect(result.hashVersion).toBe(2);expect(result.sourceHash).toBe(runtimeSourceHash(f.runtime));
+      expect(result.hashVersion).toBe(3);expect(result.sourceHash).toBe(runtimeSourceHash(f.runtime));
       expect(existsSync(join(f.runtime,"script/codex-host-wake.py"))).toBe(true);
       expect(existsSync(join(f.runtime,"scripts/codex-compaction-local.py"))).toBe(true);
+      expect(existsSync(join(f.runtime,"script/codex-session-consolidation.py"))).toBe(true);
       expect(f.store.fences()).toEqual([]);
       expect(f.storage.db.query<{value:string},[]>("SELECT value FROM quota_resume_preferences").get()!.value).toBe(f.preference);
     } finally {f.close();}
@@ -286,7 +291,7 @@ test("a verified legacy collector without new helpers upgrades using its explici
 });
 
 test("legacy migration rejects changed code and unknown hash versions before any process mutation",async()=>{
-  for(const failure of ["changed-code",null,3,"1"] as const) {
+  for(const failure of ["changed-code",null,4,"1"] as const) {
     const f=legacyMaintainedFixture(), read=f.deps.json!;
     if(failure==="changed-code")writeFileSync(join(f.runtime,"src/server.ts"),"changed after collector startup");
     else f.deps.json=async(url,options)=>{
@@ -303,12 +308,13 @@ test("legacy migration rejects changed code and unknown hash versions before any
 
 test("new collector verification never accepts the legacy hash version during activation or stability",async()=>{
   for(const phase of ["activation","stability"] as const) {
+   for(const version of [1,2] as const) {
     const f=legacyMaintainedFixture(), read=f.deps.json!;let reads=0;
     f.deps.json=async(url,options)=>{
       const result=await read(url,options);
       if(url.endsWith("/api/runtime") && readFileSync(join(f.runtime,"src/cli.ts"),"utf8")==="new-runtime") {
         reads++;
-        if(phase==="activation" || reads>1)return {...result,hashVersion:1};
+        if(phase==="activation" || reads>1)return {...result,hashVersion:version};
       }
       return result;
     };
@@ -318,7 +324,22 @@ test("new collector verification never accepts the legacy hash version during ac
       expect(runtimeSourceHash(f.runtime,1)).toBe(f.legacyHash);
       expect(f.store.fences()).toEqual([]);
     } finally {f.close();}
+   }
   }
+});
+
+test("a changed consolidation helper invalidates current installed identity before process mutation",async()=>{
+  const f=maintainedFixture(),read=f.deps.json!,sourceHash=runtimeSourceHash(f.runtime);
+  f.deps.json=async(url,options)=>{
+    const result=await read(url,options);
+    return url.endsWith("/api/runtime")?{...result,sourceHash}:result;
+  };
+  writeFileSync(join(f.runtime,"script/codex-session-consolidation.py"),"changed after collector startup");
+  try {
+    await expect(f.run()).rejects.toThrow("runtime identity cannot be verified");
+    expect(f.calls.some(command=>command[1]==="bootout")).toBe(false);
+    expect(f.store.fences()).toEqual([]);
+  } finally {f.close();}
 });
 
 test("rollback retains maintenance when the restored collector reports a different hash algorithm",async()=>{

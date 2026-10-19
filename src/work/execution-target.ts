@@ -10,11 +10,17 @@ export function executionPoolPolicyHash(policy: PoolPolicy): string {
 
 export function validExecutionTarget(source: WorkPolicy, target: WorkExecutionTarget, nowMs: number): boolean {
   const hash = /^[a-f0-9]{64}$/;
-  const sameSource = target?.account === source.account;
+  const owner=target?.sessionOwner;
+  if(owner && (owner.account===source.account || owner.profileKey===source.profileKey || owner.accountKey===source.accountKey ||
+      !/^[a-z0-9][a-z0-9._-]{0,31}$/.test(owner.account) ||
+      ![owner.profileKey,owner.accountKey,owner.identity,owner.manifestSHA256,target.consentIdentity].every(v=>typeof v==="string"&&hash.test(v)) || owner.identity!==target.sourceIdentity))return false;
+  if(!owner && target?.consentIdentity!==undefined)return false;
+  const sourceAccount=owner?.account??source.account, sourceProfileKey=owner?.profileKey??source.profileKey,sourceAccountKey=owner?.accountKey??source.accountKey;
+  const sameSource = target?.account === sourceAccount;
   const identityMatches = sameSource
-    ? !!source.quotaResume?.localBeforeSendRecovery && target.profileKey === source.profileKey &&
-      target.accountKey === source.accountKey && target.identity === target.sourceIdentity
-    : target?.profileKey !== source.profileKey && target?.accountKey !== source.accountKey && target?.identity !== target?.sourceIdentity;
+    ? (!!source.quotaResume?.localBeforeSendRecovery || !!owner) && target.profileKey === sourceProfileKey &&
+      target.accountKey === sourceAccountKey && target.identity === target.sourceIdentity
+    : target?.profileKey !== sourceProfileKey && target?.accountKey !== sourceAccountKey && target?.identity !== target?.sourceIdentity;
   if (source.provider !== "codex" || source.purpose !== "quota-resume" || !source.quotaResume ||
       source.dispatchOwner !== "local" || source.maxTurns !== 1 || !target ||
       !/^[a-z0-9][a-z0-9._-]{0,31}$/.test(target.account) ||

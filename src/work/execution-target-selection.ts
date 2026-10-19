@@ -7,6 +7,7 @@ import type { WorkExecutionTarget, WorkPolicy } from "./types";
 export interface ExecutionTargetAccounts {
   pool: PoolPolicy; accounts: PoolAccount[]; windows: WindowAnalysis[];
   binding(account: string): { profileKey: string; accountKey: string } | null;
+  sessionOwner?(policy: WorkPolicy): {account:string;profileKey:string;accountKey:string;identity:string;manifestSHA256?:string}|null;
   nowMs: number; maxAgeMs: number;
 }
 
@@ -26,17 +27,22 @@ function selectTarget(source:WorkPolicy,input:ExecutionTargetAccounts,localRepai
   if (source.provider !== "codex" || source.purpose !== "quota-resume" || !source.quotaResume || !source.model ||
       !source.enabled || source.state.activeExecutionId || source.state.turns || source.state.status !== "waiting" ||
       !input.pool.enabled || !input.pool.accounts.includes(source.account)) return null;
+  const owner=input.sessionOwner?.(source);
+  if(input.sessionOwner && !owner)return null;
+  const consolidated=!!owner&&owner.account!==source.account;
+  if(consolidated && !/^[a-f0-9]{64}$/.test(owner.manifestSHA256??""))return null;
   const sourceWindows = workWindows(source, input.windows);
   // Missing/stale source evidence alone never authorizes a different identity.
-  if (!localRepair && !sourceWindows.some(w => w.quality === "authoritative" && w.freshness === "fresh" &&
+  if (!localRepair && !consolidated && !sourceWindows.some(w => w.quality === "authoritative" && w.freshness === "fresh" &&
       w.observedAtMs <= input.nowMs && input.nowMs - w.observedAtMs <= input.maxAgeMs &&
       (w.remainingPercent === 0 || w.metadata?.ordinaryUsageAllowed === false || w.metadata?.spendControlReached === true))) return null;
-  const origin = input.accounts.find(a => a.id === source.account), sourceBinding = input.binding(source.account);
-  if (!origin || !sourceBinding || sourceBinding.profileKey !== source.profileKey || sourceBinding.accountKey !== source.accountKey) return null;
-  for (const account of input.accounts.filter(a => (localRepair || a.id !== source.account) && input.pool.accounts.includes(a.id))
+  const origin = input.accounts.find(a => a.id === (owner?.account??source.account)), consent=input.accounts.find(a=>a.id===source.account), sourceBinding = input.binding(source.account);
+  if (!origin || !consent || !sourceBinding || sourceBinding.profileKey !== source.profileKey || sourceBinding.accountKey !== source.accountKey ||
+      owner&&(origin.identity!==owner.identity || !input.pool.accounts.includes(owner.account))) return null;
+  for (const account of input.accounts.filter(a => (localRepair || consolidated || a.id !== source.account) && input.pool.accounts.includes(a.id))
     .sort((a,b) => (b.remaining ?? -1) - (a.remaining ?? -1))) {
     const binding = input.binding(account.id);
-    if (!binding || account.id !== source.account && account.identity === origin.identity || account.tokenExpiresAt <= input.nowMs + 30_000 ||
+    if (!binding || account.id !== (owner?.account??source.account) && account.identity === origin.identity || account.tokenExpiresAt <= input.nowMs + 30_000 ||
         !account.models.includes(source.model) || account.validUntil <= input.nowMs || account.remaining === null || account.remaining <= 0) continue;
     const quotaScope = { ...source, account: account.id, budgetByBucket: {} };
     const windows = workWindows(quotaScope, input.windows);
@@ -47,6 +53,7 @@ function selectTarget(source:WorkPolicy,input:ExecutionTargetAccounts,localRepai
     const observation = workObservation({ ...quotaScope, budgetByBucket }, input.windows, input.nowMs);
     if (!observation || Object.keys(observation.buckets).length !== windows.length) continue;
     const target: WorkExecutionTarget = { account: account.id, ...binding, identity: account.identity, sourceIdentity: origin.identity,
+      ...(consolidated?{sessionOwner:{...owner!,manifestSHA256:owner!.manifestSHA256!},consentIdentity:consent.identity}:{}),
       poolPolicyHash: executionPoolPolicyHash(input.pool), selectedAtMs: input.nowMs,
       expiresAtMs: input.nowMs + Math.min(source.maxDurationSeconds, source.maxTotalDurationSeconds - source.state.totalDurationSeconds, 3600) * 1000,
       budgetByBucket, baselineByBucket: Object.fromEntries(Object.entries(observation.buckets).map(([bucket,value]) => [bucket, {
@@ -62,9 +69,13 @@ export function validateQuotaExecutionTarget(source: WorkPolicy, target: WorkExe
   if (!validExecutionTarget(source, target, input.nowMs)) return "execution-target-expired";
   if (!input.pool.enabled || !input.pool.accounts.includes(source.account) || !input.pool.accounts.includes(target.account) ||
       executionPoolPolicyHash(input.pool) !== target.poolPolicyHash) return "execution-target-policy-changed";
-  const origin = input.accounts.find(a => a.id === source.account), account = input.accounts.find(a => a.id === target.account);
+  const owner=input.sessionOwner?.(source), frozenOwner=target.sessionOwner;
+  if(input.sessionOwner && !owner || frozenOwner && (!owner || ["account","profileKey","accountKey","identity","manifestSHA256"].some(key=>(frozenOwner as any)[key] !== (owner as any)[key])) ||
+      !frozenOwner && owner && owner.account!==source.account)return "execution-target-session-owner-changed";
+  const origin = input.accounts.find(a => a.id === (owner?.account??source.account)), account = input.accounts.find(a => a.id === target.account);
   const binding = input.binding(target.account), sourceBinding = input.binding(source.account);
-  if (!origin || origin.identity !== target.sourceIdentity || !sourceBinding || sourceBinding.profileKey !== source.profileKey || sourceBinding.accountKey !== source.accountKey ||
+  if (!origin || origin.identity !== target.sourceIdentity || frozenOwner && input.accounts.find(a=>a.id===source.account)?.identity!==target.consentIdentity ||
+      !sourceBinding || sourceBinding.profileKey !== source.profileKey || sourceBinding.accountKey !== source.accountKey ||
       !account || account.identity !== target.identity || !binding || binding.profileKey !== target.profileKey || binding.accountKey !== target.accountKey)
     return "execution-target-identity-changed";
   if (!source.model || !account.models.includes(source.model) || account.tokenExpiresAt <= input.nowMs + 30_000)

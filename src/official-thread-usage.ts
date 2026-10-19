@@ -1,18 +1,28 @@
 import { Database } from "bun:sqlite";
 import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { codexProfileRoot, type CodexAccountConfig } from "./config";
+import { codexProfileRoot, type CodexAccountConfig, type AppConfig } from "./config";
+import { codexSessionLocation, codexSessionOrigins, type SessionLocationOptions } from "./session-location";
 export interface OfficialThreadCandidate { threadId:string; title:string; createdAtMs:number; descendantIds:string[]; ownershipBasis?:"profile"|"creator_account" }
 export interface OfficialThreadUsage {
  threadId:string;title:string;createdAtMs:number;scope:"lifetime";descendantCount:number;ownershipBasis:"profile"|"creator_account";
  weeklyLimitPercent:number|null;fiveHourLimitPercent:number|null;dataStatus:string;
  groups:{model:string;reasoningEffort:string;weeklyLimitPercent:number|null;fiveHourLimitPercent:number|null}[];
 }
-export function readOfficialThreadCandidates(profile:CodexAccountConfig,expectedUpstreamAccount?:string):OfficialThreadCandidate[]{
- const root=realpathSync(codexProfileRoot(profile));
+export function readOfficialThreadCandidates(profile:CodexAccountConfig,expectedUpstreamAccount?:string,
+ options:{config?:AppConfig;sessionLocation?:SessionLocationOptions}={}):OfficialThreadCandidate[]{
+ const location=options.config?codexSessionLocation(options.config,profile.id,undefined,options.sessionLocation):null;
+ if(options.config&&!location)return[];
+ const credentialRoot=location?.credentialRoot??realpathSync(codexProfileRoot(profile));
+ const root=location?.sessionRoot??credentialRoot;
+ const origins=options.config?codexSessionOrigins(options.config,options.sessionLocation):[];
+ const eligible=(id:string)=>{
+  const owners=origins.filter(o=>o.sessionRoot===root&&o.threadIds.has(id));
+  return owners.length===1?owners[0]!.account===profile.id&&owners[0]!.enabled:owners.length===0&&!location?.consolidated;
+ };
  const name=readdirSync(root).filter(n=>/^state_\d+\.sqlite$/.test(n)).sort((a,b)=>Number(b.match(/\d+/)![0])-Number(a.match(/\d+/)![0]))[0];
  if(!name)return [];
- const account=JSON.parse(readFileSync(join(root,"auth.json"),"utf8")).tokens?.account_id;
+ const account=JSON.parse(readFileSync(join(credentialRoot,"auth.json"),"utf8")).tokens?.account_id;
  if(typeof account!=="string"||!account||(expectedUpstreamAccount!==undefined&&account!==expectedUpstreamAccount))throw Error("thread_account_unknown");
  const dbPath=realpathSync(join(root,name));
  if(!dbPath.startsWith(root+"/"))throw Error("thread_metadata_outside_profile");
@@ -25,13 +35,14 @@ export function readOfficialThreadCandidates(profile:CodexAccountConfig,expected
   const ownerRows=db.query("SELECT id,creator_account_id FROM threads LIMIT 10001").all() as {id:string;creator_account_id:string|null}[];
   if(ownerRows.length>10000)throw Error("thread_metadata_too_large");
   const ownership=new Map(ownerRows.map(r=>[r.id,r.creator_account_id]));
-  const roots=db.query("SELECT id,title,created_at FROM threads WHERE id NOT IN (SELECT child_thread_id FROM thread_spawn_edges) ORDER BY updated_at DESC LIMIT 60").all() as {id:string;title:string;created_at:number}[];
+  const roots=db.query("SELECT id,title,created_at FROM threads WHERE id NOT IN (SELECT child_thread_id FROM thread_spawn_edges) ORDER BY updated_at DESC LIMIT 10001").all() as {id:string;title:string;created_at:number}[];
+  if(roots.length>10000)throw Error("thread_metadata_too_large");
   const result:OfficialThreadCandidate[]=[],claimed=new Set<string>();let count=0;
   for(const r of roots){
-   if((ownership.get(r.id)!=null&&ownership.get(r.id)!==account)||children.has(r.id)||!r.id||!Number.isFinite(r.created_at)||r.created_at<=0)continue;
+   if(!eligible(r.id)||(ownership.get(r.id)!=null&&ownership.get(r.id)!==account)||children.has(r.id)||!r.id||!Number.isFinite(r.created_at)||r.created_at<=0)continue;
    const seen=new Set<string>([r.id]),pending=[...(adj.get(r.id)??[])];
    while(pending.length&&seen.size<=1000){const id=pending.pop()!;if(seen.has(id))continue;seen.add(id);pending.push(...(adj.get(id)??[]));}
-   if([...seen].some(id=>!ownership.has(id)||(ownership.get(id)!=null&&ownership.get(id)!==account))||seen.size>1000||count+seen.size>1000||[...seen].some(id=>claimed.has(id)))continue;
+   if([...seen].some(id=>!eligible(id)||!ownership.has(id)||(ownership.get(id)!=null&&ownership.get(id)!==account))||seen.size>1000||count+seen.size>1000||[...seen].some(id=>claimed.has(id)))continue;
    for(const id of seen)claimed.add(id);count+=seen.size;
    result.push({threadId:r.id,title:r.title.slice(0,500),createdAtMs:r.created_at*1000,descendantIds:[...seen].filter(id=>id!==r.id),ownershipBasis:[...seen].every(id=>ownership.get(id)===account)?"creator_account":"profile"});
    if(result.length===20)break;

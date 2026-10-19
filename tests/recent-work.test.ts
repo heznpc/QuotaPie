@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, type AppConfig } from "../src/config";
@@ -148,5 +149,33 @@ describe("recent work metadata index", () => {
     codexFile(f.codex, "bad", [meta("not-a-uuid"), usage(99, NOW - 10)]);
     const items = await index().summaries(f.config, NOW);
     expect(items).toHaveLength(1); expect(items[0]!.tokenCount).toBe(0);
+  });
+  test("consolidated B retains its label and task ID while canonical copies are counted once",async()=>{
+    const f=fixture(),root=realpathSync(f.dir),primary=realpathSync(f.codex),source=join(root,"source");
+    mkdirSync(join(source,"sessions","2026","10","06"),{recursive:true});
+    const own=codexFile(source,"b",[meta(B),usage(70,NOW-1000)]);
+    copyFileSync(own,join(primary,"sessions","2026","10","06","b.jsonl"));
+    codexFile(primary,"a",[meta(A),usage(30,NOW-2000)]);
+    // A stale retired copy must never add to its canonical continuation.
+    appendFileSync(own,JSON.stringify(usage(700,NOW-500))+"\n");
+    const primaryAppData=join(root,"primary-app"),sourceData=join(root,"source-app"),directory=join(root,"QuotaPie");
+    for(const path of [primaryAppData,sourceData,directory])mkdirSync(path,{mode:0o700});
+    const manifestPath=join(directory,"manifest.json"),markerPath=join(directory,"session-consolidation.json");
+    const manifest=JSON.stringify({version:1,sourceHome:source,primaryHome:primary,threadIds:[B]});
+    writeFileSync(manifestPath,manifest,{mode:0o600});
+    writeFileSync(markerPath,JSON.stringify({version:1,state:"complete",completedAtMs:NOW-1000,
+      primary:{codexHome:primary,appData:primaryAppData},sources:[{codexHome:source,appData:sourceData,manifestPath,
+        manifestSHA256:createHash("sha256").update(manifest).digest("hex")}]}),{mode:0o600});
+    f.config.accounts.claude=[];
+    f.config.accounts.codex=[{id:"a",label:"Account A",enabled:true,codexHome:primary},{id:"b",label:"Account B",enabled:true,codexHome:source}];
+    const reader=new RecentWorkIndex({inventoryTtlMs:0,sessionLocation:{markerPath,primaryHome:primary,primaryAppData}});
+    const items=await reader.summaries(f.config,NOW);
+    expect(items).toHaveLength(2);
+    expect(items.find(x=>x.account==="b")).toMatchObject({id:resumeTaskKey("codex","b",B),accountLabel:"Account B",tokenCount:70});
+    expect(items.find(x=>x.account==="a")?.tokenCount).toBe(30);
+    f.config.accounts.codex[0]!.enabled=false;
+    expect((await reader.summaries(f.config,NOW)).map(x=>[x.account,x.tokenCount])).toEqual([["b",70]]);
+    f.config.accounts.codex[0]!.enabled=true;f.config.accounts.codex[1]!.enabled=false;
+    expect((await reader.summaries(f.config,NOW)).map(x=>[x.account,x.tokenCount])).toEqual([["a",30]]);
   });
 });

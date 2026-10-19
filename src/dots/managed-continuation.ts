@@ -2,7 +2,8 @@ import { spawnSync } from "node:child_process";
 import { Database } from "bun:sqlite";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { codexProfileRoot, type AppConfig } from "../config";
+import { type AppConfig } from "../config";
+import { codexSessionLocation, type SessionLocationOptions } from "../session-location";
 import { AccountPool, poolAccounts, readPoolPolicy } from "../account-pool";
 import { readCodexForkParent } from "../account-pool-lineage";
 import { compactionCodexArgs, startCompactionProxy } from "../codex-compaction";
@@ -72,10 +73,15 @@ export interface ManagedContinuationResult {
  * official CLI must still acquire its own native writer lock at dispatch.
  * Never acquire/remove another owner's lock or terminate that owner here. */
 export function inspectManagedSession(config: AppConfig, policy: Pick<DotPolicy, "account" | "threadId">,
-  transport: "managed-cli" | "host-queue" = "managed-cli") {
+  transport: "managed-cli" | "host-queue" = "managed-cli", sessionLocation: SessionLocationOptions = {}) {
   const profile = config.accounts.codex.find(p => p.enabled && p.id === policy.account);
   if (!profile) throw new Error("profile-unavailable");
-  const root = realpathSync(codexProfileRoot(profile));
+  const location = codexSessionLocation(config, policy.account, policy.threadId, sessionLocation);
+  if (!location) throw new Error("thread-profile-unverified");
+  // Moving storage does not authorize a new CLI to infer using its owner's
+  // credentials. Consolidated conversations continue through the native host.
+  if (location.consolidated && transport === "managed-cli") throw new Error("consolidated-host-queue-required");
+  const root = location.sessionRoot;
   let nativeWriterPresent = false;
   try {
     lstatSync(join(root, "thread-writer-locks", policy.threadId + ".lock"));

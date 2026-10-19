@@ -10,6 +10,7 @@ struct CodexDesktopProfile: Codable, Identifiable, Equatable {
     var collectionAccount: String? = nil
     var dockIcon: CodexDockIcon? = nil
     var restoreOnLogin: Bool? = nil
+    var credentialOnly: Bool? = nil
 
     static func canonical(_ path: String) -> String {
         var ancestor = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL
@@ -59,8 +60,236 @@ struct CodexDesktopProfile: Codable, Identifiable, Equatable {
     }
 }
 
+/// The backend publishes this only after preserving and verifying the original
+/// session IDs and history. An in-progress record never changes launch routing.
+struct CodexSessionConsolidation: Decodable, Equatable {
+    struct Root: Codable, Equatable { let codexHome: String; let appData: String }
+    let version: Int
+    let state: String
+    let primary: Root
+    let sources: [Root]
+    let completedAtMs: Double?
+
+    static var markerURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/QuotaPie/session-consolidation.json")
+    }
+    static func protectedData(at url: URL) -> Data? {
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard descriptor >= 0 else { return nil }
+        defer { Darwin.close(descriptor) }
+        var before = stat()
+        guard fstat(descriptor, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
+              before.st_uid == getuid(), before.st_mode & 0o022 == 0,
+              before.st_size > 0, before.st_size <= 64 * 1024 else { return nil }
+        var bytes = [UInt8](repeating: 0, count: Int(before.st_size)), offset = 0
+        let total = bytes.withUnsafeMutableBytes { buffer -> Int in
+            while offset < buffer.count {
+                let count = Darwin.read(descriptor, buffer.baseAddress!.advanced(by: offset), buffer.count - offset)
+                if count <= 0 { return -1 }
+                offset += count
+            }
+            return offset
+        }
+        var after = stat()
+        guard total == bytes.count, fstat(descriptor, &after) == 0,
+              before.st_size == after.st_size, before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec else { return nil }
+        return Data(bytes)
+    }
+    static func read(at url: URL = markerURL, primary expected: CodexDesktopProfile = .primary,
+                     now: Date = Date()) -> Self? {
+        guard let data = protectedData(at: url), let value = try? JSONDecoder().decode(Self.self, from: data), value.version == 1,
+              ["complete", "waiting-for-source-exit"].contains(value.state), value.sources.count <= 128,
+              value.primary.codexHome == CodexDesktopProfile.canonical(expected.codexHome),
+              value.primary.appData == CodexDesktopProfile.canonical(expected.appData) else { return nil }
+        var seen = Set<String>()
+        for source in value.sources {
+            guard source.codexHome.hasPrefix("/"), source.appData.hasPrefix("/"),
+                  source.codexHome == CodexDesktopProfile.canonical(source.codexHome),
+                  source.appData == CodexDesktopProfile.canonical(source.appData),
+                  source.codexHome != value.primary.codexHome, source.appData != value.primary.appData,
+                  source.codexHome != source.appData,
+                  seen.insert(source.codexHome + "\n" + source.appData).inserted else { return nil }
+        }
+        if value.state == "complete" {
+            guard let completed = value.completedAtMs, completed.isFinite, completed > 0,
+                  completed <= now.timeIntervalSince1970 * 1000 else { return nil }
+        }
+        return value
+    }
+    func contains(_ profile: CodexDesktopProfile) -> Bool {
+        sources.contains { $0.codexHome == CodexDesktopProfile.canonical(profile.codexHome) &&
+            $0.appData == CodexDesktopProfile.canonical(profile.appData) }
+    }
+    func completed(_ profile: CodexDesktopProfile) -> Bool { state == "complete" && contains(profile) }
+}
+
+/// Keep a launch denylist across restarts, separate from the authority to route
+/// sessions. Retired sources never reopen when the completion marker is lost.
+final class CodexSessionConsolidationHistory {
+    // Profile shortcuts have their own bundle ID, so standard defaults would
+    // silently miss the menu app's retirement records.
+    static let shared = CodexSessionConsolidationHistory(defaults: UserDefaults(suiteName: "local.quotapie.menubar"),
+        retirementsURL: CodexSessionConsolidation.markerURL.deletingLastPathComponent().appendingPathComponent("session-consolidation-retirements.json"))
+    private struct Record: Codable { let version: Int; let sources: [CodexSessionConsolidation.Root] }
+    private let defaults: UserDefaults?
+    private let primary: CodexDesktopProfile
+    private let key = "local.quotapie.session-consolidation-retirements.v1"
+    private let lock = NSLock()
+    private var completed: [CodexSessionConsolidation.Root] = []
+    private var recordUnverified = false
+    private let retirementsURL: URL?
+    private var retirementFileSeen = false
+    init(defaults: UserDefaults? = nil, primary: CodexDesktopProfile = .primary, retirementsURL: URL? = nil) {
+        self.defaults = defaults; self.primary = primary
+        self.retirementsURL = retirementsURL
+        defer { refreshRetirements() }
+        guard let saved = defaults?.object(forKey: key) else { return }
+        guard let data = saved as? Data, data.count <= 64 * 1024,
+              let record = try? JSONDecoder().decode(Record.self, from: data), record.version == 1,
+              record.sources.count <= 128 else { recordUnverified = true; return }
+        var seen = Set<String>()
+        for source in record.sources {
+            guard source.codexHome.hasPrefix("/"), source.appData.hasPrefix("/"),
+                  source.codexHome == CodexDesktopProfile.canonical(source.codexHome),
+                  source.appData == CodexDesktopProfile.canonical(source.appData), source.codexHome != source.appData,
+                  source.codexHome != CodexDesktopProfile.canonical(primary.codexHome),
+                  source.appData != CodexDesktopProfile.canonical(primary.appData),
+                  seen.insert(source.codexHome + "\n" + source.appData).inserted else { recordUnverified = true; return }
+        }
+        completed = record.sources
+    }
+    func observe(_ snapshot: CodexSessionConsolidation?) {
+        refreshRetirements()
+        guard let snapshot, snapshot.state == "complete" else { return }
+        lock.lock(); defer { lock.unlock() }
+        let before = completed
+        for source in snapshot.sources where !completed.contains(source) { completed.append(source) }
+        // Never replace an unreadable denylist with a possibly partial snapshot.
+        if let defaults, !recordUnverified, completed != before {
+            guard completed.count <= 128, let data = try? JSONEncoder().encode(Record(version: 1, sources: completed)),
+                  data.count <= 64 * 1024 else { recordUnverified = true; return }
+            defaults.set(data, forKey: key)
+            if !defaults.synchronize() { recordUnverified = true }
+        }
+    }
+    func contains(_ profile: CodexDesktopProfile) -> Bool {
+        refreshRetirements()
+        lock.lock(); defer { lock.unlock() }
+        return completed.contains { $0.codexHome == CodexDesktopProfile.canonical(profile.codexHome) &&
+            $0.appData == CodexDesktopProfile.canonical(profile.appData) }
+    }
+    func requiresVerification(_ profile: CodexDesktopProfile) -> Bool {
+        refreshRetirements()
+        lock.lock(); defer { lock.unlock() }
+        let home = CodexDesktopProfile.canonical(profile.codexHome), data = CodexDesktopProfile.canonical(profile.appData)
+        if recordUnverified && (home != CodexDesktopProfile.canonical(primary.codexHome) ||
+            data != CodexDesktopProfile.canonical(primary.appData)) { return true }
+        // A new appData directory must not reopen a retired CODEX_HOME (or vice
+        // versa). Only the original exact pair can use verified primary routing.
+        let exact = completed.contains { $0.codexHome == home && $0.appData == data }
+        return !exact && completed.contains { retired in
+            [retired.codexHome, retired.appData].contains(home) || [retired.codexHome, retired.appData].contains(data)
+        }
+    }
+    private func refreshRetirements() {
+        guard let url = retirementsURL else { return }
+        lock.lock(); defer { lock.unlock() }
+        var info = stat()
+        if lstat(url.path, &info) != 0 {
+            if errno != ENOENT || retirementFileSeen { recordUnverified = true }
+            return
+        }
+        retirementFileSeen = true
+        guard url.deletingLastPathComponent().standardizedFileURL.path ==
+                url.deletingLastPathComponent().resolvingSymlinksInPath().path,
+              let data = CodexSessionConsolidation.protectedData(at: url),
+              let record = try? JSONDecoder().decode(Record.self, from: data), record.version == 1,
+              record.sources.count <= 128 else { recordUnverified = true; return }
+        var paths = Set<String>()
+        for source in record.sources {
+            guard [source.codexHome, source.appData].allSatisfy({ path in
+                path.hasPrefix("/") && path.utf8.count <= 4096 && path == CodexDesktopProfile.canonical(path) && paths.insert(path).inserted
+            }), !CodexProcessIdentity(codexHome: source.codexHome, appData: source.appData).overlaps(primary) else {
+                recordUnverified = true; return
+            }
+        }
+        let before = completed
+        for source in record.sources where !completed.contains(source) { completed.append(source) }
+        if !recordUnverified, completed != before, let defaults {
+            guard completed.count <= 128, let data = try? JSONEncoder().encode(Record(version: 1, sources: completed)),
+                  data.count <= 64 * 1024 else { recordUnverified = true; return }
+            defaults.set(data, forKey: key)
+            if !defaults.synchronize() { recordUnverified = true }
+        }
+    }
+}
+
+/// A requested migration must not revive a source after it exits or after reboot.
+/// Waiting permits activation of the existing exact host; running permits neither.
+struct CodexSessionConsolidationActivity: Decodable, Equatable {
+    let version: Int
+    let state: String
+    let source: CodexSessionConsolidation.Root
+    let primary: CodexSessionConsolidation.Root
+    let updatedAtMs: Double
+    static var statusURL: URL {
+        CodexSessionConsolidation.markerURL.deletingLastPathComponent().appendingPathComponent("session-consolidation-status.json")
+    }
+    static func read(at url: URL = statusURL, primary expected: CodexDesktopProfile = .primary,
+                     now: Date = Date()) -> Self? {
+        guard let data = CodexSessionConsolidation.protectedData(at: url),
+              let value = try? JSONDecoder().decode(Self.self, from: data), value.version == 1,
+              ["running", "waiting-for-source-exit", "blocked"].contains(value.state), value.updatedAtMs.isFinite, value.updatedAtMs > 0,
+              value.updatedAtMs <= now.timeIntervalSince1970 * 1000,
+              value.primary.codexHome == CodexDesktopProfile.canonical(expected.codexHome),
+              value.primary.appData == CodexDesktopProfile.canonical(expected.appData),
+              value.source.codexHome.hasPrefix("/"), value.source.appData.hasPrefix("/"),
+              value.source.codexHome == CodexDesktopProfile.canonical(value.source.codexHome),
+              value.source.appData == CodexDesktopProfile.canonical(value.source.appData),
+              !CodexProcessIdentity(codexHome: value.source.codexHome, appData: value.source.appData).overlaps(expected) else { return nil }
+        return value
+    }
+    func blocks(_ profile: CodexDesktopProfile) -> Bool {
+        CodexProcessIdentity(codexHome: source.codexHome, appData: source.appData).overlaps(profile)
+    }
+    func matches(_ profile: CodexDesktopProfile) -> Bool {
+        source.codexHome == CodexDesktopProfile.canonical(profile.codexHome) &&
+            source.appData == CodexDesktopProfile.canonical(profile.appData)
+    }
+}
+
+enum CodexProfileLaunchIntent { case work, accountLogin }
+enum CodexProfileLaunchRestriction { case none, existingOnly, waiting, running, unverified }
+
+private func consolidationRestriction(_ profile: CodexDesktopProfile, intent: CodexProfileLaunchIntent,
+                                      snapshot: CodexSessionConsolidation?, activity: CodexSessionConsolidationActivity?) -> CodexProfileLaunchRestriction {
+    if let activity, activity.blocks(profile) {
+        if activity.state == "running" { return .running }
+        if activity.state == "blocked" { return .unverified }
+        return intent == .work && activity.matches(profile) ? .existingOnly : .waiting
+    }
+    if let snapshot, snapshot.state == "waiting-for-source-exit", snapshot.sources.contains(where: {
+        CodexProcessIdentity(codexHome: $0.codexHome, appData: $0.appData).overlaps(profile)
+    }) {
+        return intent == .work && snapshot.contains(profile) ? .existingOnly : .waiting
+    }
+    return .none
+}
+
+extension CodexDesktopProfile {
+    func launchProfile(intent: CodexProfileLaunchIntent, consolidation: CodexSessionConsolidation?,
+                       primary: Self = .primary) throws -> Self {
+        if intent == .accountLogin {
+            guard consolidation?.completed(self) != true else { throw ProfileError.consolidated }
+            return self
+        }
+        return credentialOnly == true || consolidation?.completed(self) == true ? primary : self
+    }
+}
+
 enum ProfileError: LocalizedError {
-    case paths, name, appMissing, identity, launch, storage
+    case paths, name, appMissing, identity, launch, storage, consolidated, consolidationUnavailable, consolidationRunning, consolidationPending
     var errorDescription: String? {
         Strings.t("profiles.error." + String(describing: self))
     }
@@ -130,10 +359,31 @@ struct CodexProcessIdentity: Codable {
     }
 }
 
+struct CodexProfileRunningApplication {
+    let processIdentifier: pid_t
+    let executableURL: URL?
+    let activate: () -> Bool
+}
+
 final class CodexProfileLauncher {
     private let readIdentity: (pid_t) -> CodexProcessIdentity?
-    init(readIdentity: @escaping (pid_t) -> CodexProcessIdentity? = { CodexProcessIdentity.read(pid: $0) }) {
-        self.readIdentity = readIdentity
+    private let consolidation: () -> CodexSessionConsolidation?
+    private let consolidationActivity: () -> CodexSessionConsolidationActivity?
+    private let consolidationHistory: CodexSessionConsolidationHistory
+    private let runningApplications: () -> [CodexProfileRunningApplication]
+    init(readIdentity: @escaping (pid_t) -> CodexProcessIdentity? = { CodexProcessIdentity.read(pid: $0) },
+         consolidation: @escaping () -> CodexSessionConsolidation? = { CodexSessionConsolidation.read() },
+         activity: @escaping () -> CodexSessionConsolidationActivity? = { CodexSessionConsolidationActivity.read() },
+         history: CodexSessionConsolidationHistory = .shared,
+         runningApplications: @escaping () -> [CodexProfileRunningApplication] = {
+             NSWorkspace.shared.runningApplications.map { app in
+                 CodexProfileRunningApplication(processIdentifier: app.processIdentifier, executableURL: app.executableURL,
+                     activate: { app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps]) })
+             }
+         }) {
+        self.readIdentity = readIdentity; self.consolidation = consolidation; self.consolidationHistory = history
+        self.consolidationActivity = activity
+        self.runningApplications = runningApplications
     }
     static func appURL() -> URL? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -141,21 +391,48 @@ final class CodexProfileLauncher {
             .map { URL(fileURLWithPath: $0) }.first { Bundle(url: $0)?.bundleIdentifier == "com.openai.codex" }
     }
 
-    func open(_ profile: CodexDesktopProfile, appURL: URL? = nil, activate: Bool = true,
-              completion: @escaping (Result<Void, Error>) -> Void) {
+    func open(_ requestedProfile: CodexDesktopProfile, appURL: URL? = nil, activate: Bool = true,
+              intent: CodexProfileLaunchIntent = .work, completion: @escaping (Result<Void, Error>) -> Void) {
+        let profile: CodexDesktopProfile
+        let restriction: CodexProfileLaunchRestriction
+        do {
+            let snapshot = consolidation(); consolidationHistory.observe(snapshot)
+            if consolidationHistory.requiresVerification(requestedProfile) ||
+                consolidationHistory.contains(requestedProfile) && snapshot?.completed(requestedProfile) != true {
+                throw ProfileError.consolidationUnavailable
+            }
+            profile = try requestedProfile.launchProfile(intent: intent, consolidation: snapshot)
+            restriction = consolidationRestriction(profile, intent: intent, snapshot: snapshot, activity: consolidationActivity())
+            if restriction == .running { throw ProfileError.consolidationRunning }
+            if restriction == .waiting { throw ProfileError.consolidationPending }
+            if restriction == .unverified { throw ProfileError.consolidationUnavailable }
+        }
+        catch { completion(.failure(error)); return }
         guard let url = appURL ?? Self.appURL(), let executable = Bundle(url: url)?.executableURL else {
             completion(.failure(ProfileError.appMissing)); return
         }
-        let applications = NSWorkspace.shared.runningApplications.filter { $0.executableURL?.resolvingSymlinksInPath() == executable.resolvingSymlinksInPath() }
+        let applications = runningApplications().filter { $0.executableURL?.resolvingSymlinksInPath() == executable.resolvingSymlinksInPath() }
         for application in applications {
             guard let identity = readIdentity(application.processIdentifier) else {
                 completion(.failure(ProfileError.identity)); return
             }
             if identity.matches(profile) {
-                completion(!activate || application.activate(options: [.activateAllWindows, .activateIgnoringOtherApps]) ? .success(()) : .failure(ProfileError.launch))
+                let snapshot = consolidation()
+                let latest = consolidationRestriction(profile, intent: intent, snapshot: snapshot, activity: consolidationActivity())
+                if latest == .running { completion(.failure(ProfileError.consolidationRunning)); return }
+                if latest == .unverified || snapshot?.completed(profile) == true { completion(.failure(ProfileError.consolidationUnavailable)); return }
+                if latest == .waiting { completion(.failure(ProfileError.consolidationPending)); return }
+                completion(!activate || application.activate() ? .success(()) : .failure(ProfileError.launch))
                 return
             }
             if identity.overlaps(profile) { completion(.failure(ProfileError.paths)); return }
+        }
+        // Re-read after the process inventory: migration can be requested while
+        // locating the app. Never recreate a waiting source or touch its files.
+        let latest = consolidationRestriction(profile, intent: intent, snapshot: consolidation(), activity: consolidationActivity())
+        if restriction != .none || latest != .none {
+            completion(.failure(latest == .running ? ProfileError.consolidationRunning :
+                latest == .unverified ? ProfileError.consolidationUnavailable : ProfileError.consolidationPending)); return
         }
         do {
             try CodexDesktopProfile.validate([profile])
@@ -212,12 +489,24 @@ final class CodexProfilesModel: ObservableObject {
     @Published private(set) var profiles: [CodexDesktopProfile] = []
     @Published var busy = false
     @Published var message: String?
+    @Published private(set) var consolidation: CodexSessionConsolidation?
+    @Published private(set) var consolidationStatus: SessionConsolidationReply?
+    @Published private(set) var consolidationActivity: CodexSessionConsolidationActivity?
+    private let consolidationReader: () -> CodexSessionConsolidation?
+    private let activityReader: () -> CodexSessionConsolidationActivity?
+    private let consolidationHistory: CodexSessionConsolidationHistory
     private let defaults: UserDefaults
-    private let launcher = CodexProfileLauncher()
+    private let launcher: CodexProfileLauncher
     private let key = "local.quotapie.codex-desktop-profiles.v1"
 
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
+    init(defaults: UserDefaults = .standard,
+         consolidation: @escaping () -> CodexSessionConsolidation? = { CodexSessionConsolidation.read() },
+         activity: @escaping () -> CodexSessionConsolidationActivity? = { CodexSessionConsolidationActivity.read() },
+         history: CodexSessionConsolidationHistory = .shared) {
+        self.defaults = defaults; self.consolidationReader = consolidation; self.consolidationHistory = history
+        self.activityReader = activity; self.consolidationActivity = activity()
+        self.launcher = CodexProfileLauncher(consolidation: consolidation, activity: activity, history: history)
+        self.consolidation = consolidation(); history.observe(self.consolidation)
         if let data = defaults.data(forKey: key) {
             do {
                 let saved = try JSONDecoder().decode([CodexDesktopProfile].self, from: data)
@@ -230,7 +519,8 @@ final class CodexProfilesModel: ObservableObject {
         let id = UUID().uuidString.lowercased()
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/QuotaPie/CodexProfiles/" + id)
         let profile = CodexDesktopProfile(id: id, name: name.trimmingCharacters(in: .whitespacesAndNewlines),
-            codexHome: home ?? root.appendingPathComponent("home").path, appData: data ?? root.appendingPathComponent("app-data").path)
+            codexHome: home ?? root.appendingPathComponent("home").path, appData: data ?? root.appendingPathComponent("app-data").path,
+            restoreOnLogin: false, credentialOnly: home == nil && data == nil)
         save(profiles + [profile])
     }
     func rememberDockIcon(_ icon: CodexDockIcon, for profile: CodexDesktopProfile) {
@@ -245,7 +535,42 @@ final class CodexProfilesModel: ObservableObject {
         // Remove only the launch registration. Never delete files or stop apps.
         save(profiles.filter { $0.id != profile.id })
     }
+    func refreshConsolidation() {
+        let next = consolidationReader(); consolidationHistory.observe(next)
+        if consolidation != next { consolidation = next }
+        let activity = activityReader()
+        if consolidationActivity != activity { consolidationActivity = activity }
+        let statusURL = CodexSessionConsolidationActivity.statusURL
+        let status = CodexSessionConsolidation.protectedData(at: statusURL).flatMap { try? JSONDecoder().decode(SessionConsolidationReply.self, from: $0) }
+        if consolidationStatus != status { consolidationStatus = status }
+    }
+    var automaticRestorationProfiles: [CodexDesktopProfile] {
+        refreshConsolidation()
+        return profiles.filter { allowsAutomaticRestoration($0) }
+    }
+    func isKnownConsolidated(_ profile: CodexDesktopProfile) -> Bool { consolidationHistory.contains(profile) }
+    func requiresConsolidationVerification(_ profile: CodexDesktopProfile) -> Bool {
+        consolidationHistory.requiresVerification(profile) ||
+            consolidationHistory.contains(profile) && consolidation?.completed(profile) != true ||
+            consolidationRestriction(profile, intent: .accountLogin, snapshot: consolidation, activity: consolidationActivity) == .unverified
+    }
+    func isConsolidationRunning(_ profile: CodexDesktopProfile) -> Bool {
+        consolidationActivity?.state == "running" && consolidationActivity?.blocks(profile) == true
+    }
+    func isConsolidationPending(_ profile: CodexDesktopProfile) -> Bool {
+        consolidationRestriction(profile, intent: .accountLogin, snapshot: consolidation, activity: consolidationActivity) == .waiting
+    }
+    func allowsAccountLogin(_ profile: CodexDesktopProfile) -> Bool {
+        !consolidationHistory.contains(profile) && !requiresConsolidationVerification(profile) &&
+            !isConsolidationRunning(profile) && !isConsolidationPending(profile)
+    }
+    func allowsAutomaticRestoration(_ profile: CodexDesktopProfile) -> Bool {
+        profile.credentialOnly != true && !consolidationHistory.contains(profile) &&
+            !requiresConsolidationVerification(profile) && !isConsolidationRunning(profile) && !isConsolidationPending(profile)
+    }
     func setRestoreOnLogin(_ enabled: Bool, for profile: CodexDesktopProfile) {
+        refreshConsolidation()
+        guard allowsAutomaticRestoration(profile) else { return }
         save(profiles.map { item in
             var next = item
             if item.id == profile.id { next.restoreOnLogin = enabled }
@@ -287,12 +612,43 @@ final class CodexProfilesModel: ObservableObject {
             }
         } catch { busy = false; message = Strings.t("profiles.connectFailed") }
     }
-    func open(_ profile: CodexDesktopProfile) {
-        guard !busy else { return }; busy = true; message = nil
-        launcher.open(profile) { [weak self] result in
+    func requestConsolidation(_ profile: CodexDesktopProfile, token: String?) {
+        refreshConsolidation()
+        guard !busy, profile.id != "primary", !isKnownConsolidated(profile), !requiresConsolidationVerification(profile), !isConsolidationRunning(profile),
+              let token, !token.isEmpty else { return }
+        busy = true; message = nil
+        do {
+            let client = try StatusClient(operationTimeout: 60)
+            connectionClient = client
+            client.consolidateSessions(profile, actionToken: token) { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.busy = false; self.refreshConsolidation()
+                    switch result {
+                    case .success(let status):
+                        self.consolidationStatus = status
+                        if self.consolidation?.completed(profile) == true { self.message = Strings.t("profiles.consolidatedAccount") }
+                        else if status.state == "waiting-for-source-exit" { self.message = Strings.t("profiles.consolidationPending") }
+                        else if ["blocked", "failed"].contains(status.state) { self.message = Strings.t("profiles.consolidationFailed") }
+                        else { self.message = Strings.t("profiles.consolidationRequested") }
+                    case .failure: self.message = Strings.t("profiles.consolidationFailed")
+                    }
+                    self.connectionClient = nil
+                }
+            }
+        } catch { busy = false; message = Strings.t("profiles.consolidationFailed") }
+    }
+    func open(_ profile: CodexDesktopProfile, intent: CodexProfileLaunchIntent = .work) {
+        refreshConsolidation()
+        guard !busy else { return }
+        if requiresConsolidationVerification(profile) { message = Strings.t("profiles.error.consolidationUnavailable"); return }
+        busy = true; message = nil
+        launcher.open(profile, intent: intent) { [weak self] result in
             self?.busy = false
             switch result {
-            case .success: self?.message = Strings.t("profiles.opened", profile.name)
+            case .success:
+                self?.message = intent == .accountLogin ? Strings.t("profiles.openedLogin", profile.name)
+                    : Strings.t("profiles.openedWork")
             case .failure(let error): self?.message = error.localizedDescription
             }
         }

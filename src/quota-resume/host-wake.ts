@@ -3,7 +3,8 @@ import { Database } from "bun:sqlite";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { codexProfileRoot, type AppConfig } from "../config";
+import { type AppConfig } from "../config";
+import { codexSessionLocation, type SessionLocationOptions } from "../session-location";
 import { metadataPath } from "../dots/thread-reader";
 
 export interface HostWakeResult { status: "sent" | "unavailable"; reason?: string }
@@ -19,6 +20,7 @@ interface WakeChild {
   exited: Promise<number>; kill(): unknown;
 }
 export interface HostWakeDependencies {
+  sessionLocation?: SessionLocationOptions;
   platform?: string;
   launch?: () => WakeChild;
   timeoutMs?: number;
@@ -90,15 +92,17 @@ async function repairProvider(input: HelperRequest, signal: AbortSignal): Promis
 export async function wakeHostQueuedThread(request: HostWakeRequest, deps: HostWakeDependencies = {}): Promise<HostWakeResult> {
   if ((deps.platform ?? process.platform) !== "darwin") return unavailable("host-wake-platform-unavailable");
   if (!UUID.test(request.threadId)) return unavailable("host-wake-thread-invalid");
-  const binding = (): HelperRequest => {
-    const profiles = request.config.accounts.codex.filter(p => p.enabled && p.id === request.account);
-    if (profiles.length !== 1) throw new Error();
-    return { account: request.account, codexHome: realpathSync(codexProfileRoot(profiles[0]!)), threadId: request.threadId };
+  const binding = () => {
+    const location = codexSessionLocation(request.config, request.account, request.threadId, deps.sessionLocation);
+    if (!location) throw new Error();
+    return { input: { account: location.ownerAccount, codexHome: location.sessionRoot, threadId: request.threadId },
+      credentialRoot: location.credentialRoot, manifestSHA256: location.manifestSHA256 };
   };
-  let input: HelperRequest;
-  try { input = binding(); } catch { return unavailable("host-wake-profile-unavailable"); }
+  let bound: ReturnType<typeof binding>;
+  try { bound = binding(); } catch { return unavailable("host-wake-profile-unavailable"); }
+  const input: HelperRequest = bound.input;
   const authorized = () => {
-    try { return request.stillAuthorized?.() !== false && JSON.stringify(binding()) === JSON.stringify(input); }
+    try { return request.stillAuthorized?.() !== false && JSON.stringify(binding()) === JSON.stringify(bound); }
     catch { return false; }
   };
   if (!authorized()) return unavailable("host-wake-authorization-changed");

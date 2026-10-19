@@ -1,4 +1,7 @@
 import { autoResumeIncidentNotice, resumeNoticeFamily } from "./quota-resume/notifications";
+import { SessionConsolidation } from "./session-consolidation";
+import { codexSessionLocation, codexSessionOrigins } from "./session-location";
+import { InstallMaintenance } from "../script/install-maintenance";
 import { correlateResetTicket, resetTicketFollowupDelay } from "./reset-ticket-correlation";
 import { inspectManagedSession } from "./dots/managed-continuation";
 import { AutoResumeController, type QuotaResumeIncident } from "./quota-resume/controller";
@@ -172,6 +175,7 @@ export class QuotaPieService {
   private signalTimer: ReturnType<typeof setInterval> | null = null;
   private signalWork: Promise<void> | null = null;
   private codexClients = new Map<string, CodexAppServerClient>();
+  private consolidationQuiesced = new Set<string>();
   private codexRetries = new Map<string, { failures: number; atMs: number }>();
   private codexNextPollMs = new Map<string, number>();
   private collectionStartedAtMs: number | null = null;
@@ -197,6 +201,7 @@ export class QuotaPieService {
   private readonly accountBindings: AccountBindingStore;
   private readonly workBoundaryPath: string | null;
   private readonly quotaBoundaryPath: string | null;
+  readonly sessionConsolidation: SessionConsolidation;
 
   constructor(
     readonly config: AppConfig,
@@ -278,11 +283,16 @@ export class QuotaPieService {
       accounts: () => this.config.accounts.codex.filter(p=>p.enabled).map(p=>({account:p.id,
         label:this.accountLabel("codex",p.id),profileKey:resumeProfileKey(this.config,"codex",p.id),
         accountKey:this.accountBindings.identityKey(codexProfileRoot(p))})),
-      listThreads: (account,cursor) => {
+      listThreads: async (account,cursor) => {
         const profile=this.config.accounts.codex.find(p=>p.enabled&&p.id===account);
         if(!profile) throw new Error("account-unavailable");
-        return this.goalClient(profile).listThreads({limit:50,cursor,sortKey:"updated_at",sortDirection:"desc",archived:false,
+        const location=codexSessionLocation(this.config,account);
+        if(!location) throw new Error("session-location-unavailable");
+        const page=await this.goalClient(profile).listThreads({limit:50,cursor,sortKey:"updated_at",sortDirection:"desc",archived:false,
           useStateDbOnly:true,modelProviders:[],sourceKinds:["cli","vscode","exec","appServer"]});
+        const foreign=codexSessionOrigins(this.config).filter(origin=>origin.sessionRoot===location.sessionRoot&&origin.account!==account);
+        return {...page,data:page.data.filter(thread=>(!location.threadIds||location.threadIds.has(thread.id))&&
+          !foreign.some(origin=>origin.threadIds.has(thread.id)))};
       },
       evidence: (account,threadId) => {
         const profile=this.config.accounts.codex.find(p=>p.enabled&&p.id===account);
@@ -312,6 +322,33 @@ export class QuotaPieService {
       validateLocalRepair: (incident,policy) => this.validateLocalRepairIncident(incident,policy),
       ownsExecution: id => this.work.ownsExecution(id),
       execution: id => this.work.store.getExecution(id),
+    });
+    this.sessionConsolidation = new SessionConsolidation(config, {
+      quiesceSource: async source => {
+        const ids=config.accounts.codex.filter(p=>realpathSync(codexProfileRoot(p))===source.codexHome).map(p=>p.id);
+        for(const id of ids)this.consolidationQuiesced.add(id);
+        try {
+          const clients:CodexAppServerClient[]=[];
+          for(const id of ids){
+            const quota=this.codexClients.get(id);if(quota){clients.push(quota);this.codexClients.delete(id);}
+            for(const [key,client] of this.goalClients)if(key===id||key.startsWith(id+"\0")){
+              clients.push(client);this.goalClients.delete(key);
+            }
+          }
+          await Promise.all(clients.map(client=>client.close()));
+          return ()=>{for(const id of ids){this.consolidationQuiesced.delete(id);this.codexNextPollMs.delete(id);}};
+        } catch(error){for(const id of ids)this.consolidationQuiesced.delete(id);throw error;}
+      },
+      recoverFence: requestKey => InstallMaintenance.recoverConsolidation(this.db.db.filename, requestKey,
+        [...config.accounts.codex.map(p => ({ provider: "codex" as const, account: p.id })),
+          ...config.accounts.claude.map(p => ({ provider: "claude" as const, account: p.id }))]),
+      acquireFence: requestKey => {
+        const fence = InstallMaintenance.acquireConsolidation(this.db.db.filename, requestKey,
+          [...config.accounts.codex.map(p => ({ provider: "codex" as const, account: p.id })),
+            ...config.accounts.claude.map(p => ({ provider: "claude" as const, account: p.id }))]);
+        if (!fence) throw new Error("consolidation-admission-unavailable");
+        return fence;
+      },
     });
     this.jobRunner = new ManagedJobRunner(this.jobs, config, {
       work: this.work,
@@ -371,8 +408,21 @@ export class QuotaPieService {
     return {profileKey,accountKey,cwd:original.cwd,model:original.model};
   }
   private executionTargetInputs() {
-    return { pool: readPoolPolicy(), accounts: poolAccounts(this.config), windows: this.workWindows(), nowMs: Date.now(),
+    const accounts=poolAccounts(this.config);
+    return { pool: readPoolPolicy(), accounts, windows: this.workWindows(), nowMs: Date.now(),
       maxAgeMs: this.config.collection.staleAfterSeconds*1000,
+      sessionOwner: (policy: WorkPolicy) => {
+        try {
+          const location=codexSessionLocation(this.config,policy.account,policy.nativeSessionId);
+          if(!location)return null;
+          const profile=this.config.accounts.codex.find(p=>p.id===location.ownerAccount);
+          const owner=accounts.find(p=>p.id===location.ownerAccount);
+          if(!profile||!owner)return null;
+          const profileKey=resumeProfileKey(this.config,"codex",profile.id),accountKey=this.accountBindings.identityKey(codexProfileRoot(profile));
+          return profileKey&&accountKey?{account:profile.id,profileKey,accountKey,identity:owner.identity,
+            ...(location.manifestSHA256?{manifestSHA256:location.manifestSHA256}:{})}:null;
+        } catch{return null;}
+      },
       binding: (account:string) => {
         const profile=this.config.accounts.codex.find(p=>p.enabled&&p.id===account);
         if(!profile) return null;
@@ -384,7 +434,8 @@ export class QuotaPieService {
     if(p.provider!=="codex" || p.purpose!=="quota-resume" || !p.enabled || p.state.activeExecutionId || p.state.turns) return null;
     try {
       const profile=this.config.accounts.codex.find(a=>a.enabled&&a.id===p.account);
-      if(!profile || !lstatSync(join(codexProfileRoot(profile),"thread-writer-locks",`${p.nativeSessionId}.lock`)).isFile()) return null;
+      const location=profile?codexSessionLocation(this.config,p.account,p.nativeSessionId):null;
+      if(!location || !lstatSync(join(location.sessionRoot,"thread-writer-locks",`${p.nativeSessionId}.lock`)).isFile()) return null;
       const inputs=this.executionTargetInputs(),repair=p.quotaResume?.localBeforeSendRecovery;
       const previous=repair?this.work.store.getExecution(repair.parentExecutionId)?.executionTarget:undefined;
       if(repair&&!previous)return null;
@@ -1086,6 +1137,8 @@ export class QuotaPieService {
     if (!profiles.length) return [];
     const requireFileCredentials = profiles.length > 1;
     const outcomes = await Promise.all(profiles.map(async (profile) => {
+      if(this.consolidationQuiesced.has(profile.id))
+        return {ok:false as const,skipped:true,events:[] as QuotaEvent[],message:"session consolidation pending"};
       const nextAttemptMs = this.codexRetries.get(profile.id)?.atMs ?? this.codexNextPollMs.get(profile.id) ?? 0;
       if (respectRetry && nextAttemptMs > Date.now()) {
         return { ok: false as const, skipped: true, events: [] as QuotaEvent[], message: "collection pending" };
@@ -1319,6 +1372,7 @@ export class QuotaPieService {
   }
 
   private codexClient(profile: CodexAccountConfig): CodexAppServerClient {
+    if(this.consolidationQuiesced.has(profile.id))throw new Error("session-consolidation-running");
     let client = this.codexClients.get(profile.id);
     if (!client) {
       client = this.createCodexClient(profile);
@@ -1656,12 +1710,16 @@ export class QuotaPieService {
   }
 
   private goalClient(profile: CodexAccountConfig): CodexAppServerClient {
-    let client = this.goalClients.get(profile.id);
+    if(this.consolidationQuiesced.has(profile.id))throw new Error("session-consolidation-running");
+    const location=codexSessionLocation(this.config,profile.id);
+    if(!location)throw new Error("session-location-unavailable");
+    const key=location.consolidated?profile.id+"\0"+location.sessionRoot:profile.id;
+    let client = this.goalClients.get(key);
     if (!client) {
       // Goal lookups cannot hold up the quota collector, and a caller's
       // inherited CODEX_HOME must not redefine the configured default profile.
-      client = new CodexAppServerClient(this.config.collection.codexCommand, profile.id, 8_000, codexProfileRoot(profile));
-      this.goalClients.set(profile.id, client);
+      client = new CodexAppServerClient(this.config.collection.codexCommand, location.ownerAccount, 8_000, location.sessionRoot);
+      this.goalClients.set(key, client);
     }
     return client;
   }
@@ -1893,15 +1951,18 @@ export class QuotaPieService {
       if (basename(this.config.collection.codexCommand) !== "codex") {
         throw new ResumeTargetError("the configured Codex command must have the executable name codex");
       }
-      target = await findCodexResumeTarget(this.codexClient(profile), task.account, task.taskKey);
+      const location=codexSessionLocation(this.config,task.account);
+      if(!location)throw new ResumeTargetError("the Codex session store is unavailable");
+      target = await findCodexResumeTarget(location.consolidated?this.goalClient(profile):this.codexClient(profile), task.account, task.taskKey);
       if (!target) throw new ResumeTargetError("the Codex task is no longer available in this account");
+      if(location.threadIds&&!location.threadIds.has(target.nativeId))throw new ResumeTargetError("the session does not belong to the consolidated profile");
       if (!await resumeWorkingDirectoryAvailable(target.cwd)) {
         throw new ResumeTargetError("the task working directory is no longer available");
       }
       return {
         executable: this.config.collection.codexCommand,
         arguments: ["resume", "-C", target.cwd, target.nativeId],
-        environment: { CODEX_HOME: codexProfileRoot(profile) },
+        environment: { CODEX_HOME: location.consolidated ? location.sessionRoot : codexProfileRoot(profile) },
         workingDirectory: target.cwd,
       };
     }
@@ -2745,6 +2806,7 @@ export class QuotaPieService {
     this.jobsEnabled = true;
     if(!this.autoResumeTimer) {
       const refresh=()=>{
+        void this.sessionConsolidation.tick().catch(()=>{});
         void this.autoResume.poll().catch(()=>{}).finally(()=>this.scheduleAutoResumeNotifications());
         void this.refreshAutoResumeGoals().catch(()=>{});
         void this.refreshHostQueueReceipts().catch(()=>{});
@@ -2787,6 +2849,7 @@ export class QuotaPieService {
   async close(): Promise<void> {
     this.stop();
     this.closing = true;
+    await this.sessionConsolidation.close();
     await this.autoResume.close();
     await this.hostQueueRefresh;
     this.nativeNotificationTransportAvailable = false;

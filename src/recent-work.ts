@@ -4,8 +4,9 @@ import { execFile } from "node:child_process";
 import { open, readdir, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, relative } from "node:path";
 import { promisify } from "node:util";
-import { codexProfileRoot, resolveUserPath, type AppConfig } from "./config";
+import { resolveUserPath, type AppConfig } from "./config";
 import { normalizeSessionId, resumeTaskKey } from "./session-discovery";
+import { codexSessionLocation, codexSessionOrigins, type CodexSessionOrigin, type SessionLocationOptions } from "./session-location";
 import type { Provider } from "./types";
 
 export interface RecentWorkSummary {
@@ -27,8 +28,8 @@ interface FileCache {
   session?: string; cwd?: string; helper: boolean; fork: boolean; baseline?: number;
   forkAt?: number; lastActive: number; records: Map<string, Usage>; truncated: boolean;
 }
-interface Profile { provider: "codex" | "claude"; account: string; label: string; root: string }
-interface Options { inventoryTtlMs?: number; maxFiles?: number; maxBytesPerFile?: number; maxRecordsPerFile?: number }
+interface Profile { provider: "codex" | "claude"; account: string; label: string; root: string; unrestricted?: boolean }
+interface Options { inventoryTtlMs?: number; maxFiles?: number; maxBytesPerFile?: number; maxRecordsPerFile?: number; sessionLocation?: SessionLocationOptions }
 const WEEK = 7 * 24 * 60 * 60 * 1000;
 const exec = promisify(execFile);
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -153,7 +154,7 @@ export class RecentWorkIndex {
   private caches = new Map<string, FileCache>();
   private inventory = new Map<string, { at: number; paths: string[] }>();
   private labels = new Map<string, { at: number; value: string }>();
-  private options: Required<Options>;
+  private options: Required<Omit<Options,"sessionLocation">> & Pick<Options,"sessionLocation">;
   private pending?: { key: string; promise: Promise<RecentWorkSummary[]> };
   constructor(options: Options = {}) {
     this.options = { inventoryTtlMs: 10_000, maxFiles: 2_000, maxBytesPerFile: 2_000_000, maxRecordsPerFile: 2_000, ...options };
@@ -171,15 +172,35 @@ export class RecentWorkIndex {
   }
   private async collect(config: AppConfig, nowMs: number): Promise<RecentWorkSummary[]> {
     const profiles: Profile[] = [], roots = new Set<string>();
+    let origins: CodexSessionOrigin[] = [], codexLocationsAvailable = true;
+    try { origins = codexSessionOrigins(config, this.options.sessionLocation); }
+    catch { codexLocationsAvailable = false; }
     for (const provider of ["codex", "claude"] as const) {
       for (const profile of config.accounts[provider]) {
         if (!profile.enabled) continue;
-        let root: string;
-        try { root = await realpath(provider === "codex" ? codexProfileRoot(profile as AppConfig["accounts"]["codex"][number]) : resolveUserPath((profile as AppConfig["accounts"]["claude"][number]).configDir)); } catch { continue; }
+        let root: string, unrestricted = true;
+        try {
+          if (provider === "codex") {
+            if (!codexLocationsAvailable) continue;
+            const location = codexSessionLocation(config, profile.id, undefined, this.options.sessionLocation);
+            if (!location) continue;
+            root = location.sessionRoot; unrestricted = !location.consolidated;
+          } else root = await realpath(resolveUserPath((profile as AppConfig["accounts"]["claude"][number]).configDir));
+        } catch { continue; }
         const identity = `${provider}:${root}`;
-        if (roots.has(identity)) continue;
+        if (roots.has(identity)) {
+          // A disabled canonical account must not be re-enabled indirectly by
+          // a moved account. Only its own configured profile is unrestricted.
+          if (unrestricted) {
+            const existing = profiles.find(value => value.provider === provider && value.root === root)!;
+            if (!existing.unrestricted) {
+              existing.account = profile.id; existing.label = profile.nickname?.trim() || profile.label; existing.unrestricted = true;
+            }
+          }
+          continue;
+        }
         roots.add(identity);
-        profiles.push({ provider, root, account: profile.id, label: profile.nickname?.trim() || profile.label });
+        profiles.push({ provider, root, account: profile.id, label: profile.nickname?.trim() || profile.label, unrestricted });
       }
     }
     const retained = new Set<string>();
@@ -193,10 +214,20 @@ export class RecentWorkIndex {
           let cached: FileCache | null;
           try { cached = await this.read(path, profile.provider, profile.root); } catch { return; }
           if (!cached?.session || !cached.cwd || !isAbsolute(cached.cwd) || cached.helper || cached.lastActive < nowMs - WEEK || cached.lastActive > nowMs + 60_000) return;
-          const id = resumeTaskKey(profile.provider, profile.account, cached.session);
+          let account = profile.account, accountLabel = profile.label;
+          if (profile.provider === "codex") {
+            const owners = origins.filter(value => value.sessionRoot === profile.root && value.threadIds.has(cached!.session!));
+            if (owners.length > 1) return;
+            if (owners.length === 1) {
+              const owner = owners[0]!;
+              if (!owner.enabled || !owner.account || !owner.label) return;
+              account = owner.account; accountLabel = owner.label;
+            } else if (!profile.unrestricted) return;
+          }
+          const id = resumeTaskKey(profile.provider, account, cached.session);
           let session = sessions.get(id);
           if (!session) {
-            session = { summary: { id, provider: profile.provider, account: profile.account, accountLabel: profile.label,
+            session = { summary: { id, provider: profile.provider, account, accountLabel,
               projectLabel: "", tokenCount: 0, lastActiveAtMs: cached.lastActive }, cwd: cached.cwd, records: new Map() };
             sessions.set(id, session);
           }

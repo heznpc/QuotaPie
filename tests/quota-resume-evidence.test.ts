@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
@@ -45,6 +46,45 @@ test("quota task_complete is matched to the exact failed API turn without return
   // Detection does not depend on quota readiness or make any inference call.
   f.config.reservePercent.codex = { short: 100, weekly: 100, other: 100 };
   expect(await f.read()).toEqual(result);
+});
+
+function consolidate(f:ReturnType<typeof fixture>) {
+  const container=realpathSync(mkdtempSync(join(tmpdir(),"quotapie-moved-evidence-")));roots.push(container);
+  const primaryHome=join(container,"primary"),primaryAppData=join(container,"primary-app"),sourceData=join(container,"source-app"),directory=join(container,"QuotaPie");
+  for(const path of [primaryHome,primaryAppData,sourceData,directory,join(primaryHome,"sessions"),join(primaryHome,"thread-writer-locks")])mkdirSync(path,{mode:0o700});
+  writeFileSync(join(primaryHome,"auth.json"),"{\"primary\":true}");
+  f.config.accounts.codex.push({id:"default",label:"Primary",enabled:true,codexHome:primaryHome});
+  const path=join(primaryHome,"sessions","copied.jsonl");copyFileSync(f.path,path);
+  const db=new Database(join(primaryHome,"state_5.sqlite"));db.run("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, cwd TEXT)");
+  db.run("INSERT INTO threads VALUES (?,?,?)",[threadId,path,f.root]);db.close();
+  const manifestPath=join(directory,"manifest.json"),markerPath=join(directory,"session-consolidation.json");
+  const manifest=JSON.stringify({version:1,sourceHome:f.root,primaryHome,threadIds:[threadId]});
+  writeFileSync(manifestPath,manifest,{mode:0o600});
+  writeFileSync(markerPath,JSON.stringify({version:1,state:"complete",completedAtMs:failedAt-100,
+    primary:{codexHome:primaryHome,appData:primaryAppData},sources:[{codexHome:f.root,appData:sourceData,manifestPath,
+      manifestSHA256:createHash("sha256").update(manifest).digest("hex")}]}),{mode:0o600});
+  return {path,primaryHome,options:{...f.options,sessionLocation:{markerPath,primaryHome,primaryAppData,nowMs:now}}};
+}
+test("moved B evidence uses canonical history with B consent/auth unchanged",async()=>{
+  const f=fixture(),m=consolidate(f);
+  appendFileSync(f.path,JSON.stringify(record("event_msg",{type:"user_message",message:"retired source noise"}))+"\n");
+  const evidence=await readQuotaResumeEvidence(f.config,"plus",threadId,m.options);
+  expect(evidence).toMatchObject({threadId,turnId,cwd:f.root});expect(evidence?.stamp).toContain(m.path);
+  expect(f.config.accounts.codex[0]!.codexHome).toBe(f.root);
+  expect(await readQuotaResumeEvidence(f.config,"plus",turnId,m.options)).toBeNull();
+  expect(f.reads).toBe(1);
+});
+test("new canonical activity supersedes the retired B failure without reading the old store",async()=>{
+  const f=fixture(),m=consolidate(f);
+  appendFileSync(m.path,JSON.stringify(record("event_msg",{type:"user_message",message:"current source continuation"}))+"\n");
+  expect(await readQuotaResumeEvidence(f.config,"plus",threadId,m.options)).toBeNull();expect(f.reads).toBe(0);
+});
+test("both source subscription and canonical owner credentials remain pinned across evidence reads",async()=>{
+  for(const changed of ["source","primary"]){
+    const f=fixture(),m=consolidate(f),credential=join(changed==="source"?f.root:m.primaryHome,"auth.json");
+    const options={...m.options,readLatestTurn:async()=>{writeFileSync(credential,"{\"changed\":true,\"more\":1}");return f.turn;}};
+    expect(await readQuotaResumeEvidence(f.config,"plus",threadId,options)).toBeNull();
+  }
 });
 
 test.each(["completed", "interrupted", "inProgress"] as const)("API %s supersedes the old local quota record", async status => {

@@ -3,7 +3,8 @@ import { accessSync, closeSync, constants, fstatSync, openSync, readSync, readdi
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { spawnSync } from "node:child_process";
-import { codexProfileRoot, codexUsesFileCredentials, type AppConfig } from "../config";
+import { codexUsesFileCredentials, type AppConfig } from "../config";
+import { codexSessionLocation, type SessionLocationOptions } from "../session-location";
 import { resumeProfileKey, type ResumeGate } from "../resume-gate";
 import { readGate } from "./policy";
 import type { DotPolicy } from "./store";
@@ -27,6 +28,7 @@ export interface ProfileThreadStatus {
   evidence: { profileMatched: true; accountMatched: true; sessionMetadataMatched: true; rolloutPathMatched: true };
 }
 export interface ThreadReaderOptions {
+  sessionLocation?: SessionLocationOptions;
   readGate?: (policy: DotPolicy) => Promise<ResumeGate>;
   binary?: () => string | null;
   transport?: (binary: string, codexHome: string) => Promise<ThreadReadTransport>;
@@ -196,17 +198,28 @@ export async function readConfiguredThread(config: AppConfig, policy: DotPolicy,
   const profile = config.accounts.codex.find(item => item.id === policy.account && item.enabled);
   if (!profile || resumeProfileKey(config, "codex", policy.account) !== policy.profileKey)
     throw new Error("profile-mismatch");
-  const root = realpathSync(codexProfileRoot(profile));
+  const location = codexSessionLocation(config, policy.account, policy.threadId, options.sessionLocation);
+  if (!location) throw new Error("thread-profile-unverified");
+  const root = location.sessionRoot;
+  const owner = config.accounts.codex.find(item => item.id === location.ownerAccount);
+  if (!owner || !codexUsesFileCredentials(owner)) throw new Error("subscription-file-credentials-required");
+  const storageIdentity = localIdentity(root);
+  const sameLocation = () => {
+    const current = codexSessionLocation(config, policy.account, policy.threadId, options.sessionLocation);
+    return current?.sessionRoot === root && current.credentialRoot === location.credentialRoot &&
+      current.ownerAccount === location.ownerAccount && current.manifestSHA256 === location.manifestSHA256;
+  };
   const path = metadataPath(root, policy.threadId);
   const gateReader = options.readGate ?? (p => readGate(config, p));
   const verify = async () => {
     if (!codexUsesFileCredentials(profile)) throw new Error("subscription-file-credentials-required");
-    const identity = localIdentity(root);
+    const identity = localIdentity(location.credentialRoot);
     const gate = await gateReader(policy);
     if (gate.provider !== "codex" || gate.account !== policy.account || gate.profileKey !== policy.profileKey ||
         gate.accountKey !== policy.accountKey || resumeProfileKey(config, "codex", policy.account) !== policy.profileKey)
       throw new Error("account-profile-mismatch");
-    if (!codexUsesFileCredentials(profile) || localIdentity(root).continuity !== identity.continuity)
+    if (!codexUsesFileCredentials(profile) || !codexUsesFileCredentials(owner) || !sameLocation() ||
+        localIdentity(location.credentialRoot).continuity !== identity.continuity || localIdentity(root).continuity !== storageIdentity.continuity)
       throw new Error("account-profile-mismatch");
     return identity;
   };
@@ -216,9 +229,9 @@ export async function readConfiguredThread(config: AppConfig, policy: DotPolicy,
   const transport = await (options.transport ?? openTransport)(binary, root);
   try {
     await transport.request("initialize", { clientInfo: { name: "quotapie_thread_reader", version: "0.1.0" }, capabilities: { experimentalApi: true } });
-    const before = accountIdentity(await transport.request("account/read", { refreshToken: false }), expected.email);
+    const before = accountIdentity(await transport.request("account/read", { refreshToken: false }), storageIdentity.email);
     const result = await transport.request("thread/read", { threadId: policy.threadId, includeTurns: false });
-    const after = accountIdentity(await transport.request("account/read", { refreshToken: false }), expected.email);
+    const after = accountIdentity(await transport.request("account/read", { refreshToken: false }), storageIdentity.email);
     if (before !== after) throw new Error("account-profile-mismatch");
     if ((await verify()).continuity !== expected.continuity) throw new Error("account-profile-mismatch");
     const thread = (result as any)?.thread;
@@ -253,12 +266,23 @@ export async function readExecutionConfiguration(config: AppConfig, policy: DotP
   const profile = config.accounts.codex.find(p => p.enabled && p.id === policy.account);
   if (!profile || !isAbsolute(cwd) || resumeProfileKey(config, "codex", policy.account) !== policy.profileKey || !codexUsesFileCredentials(profile))
     throw new Error("execution-config-unverified");
-  const root = realpathSync(codexProfileRoot(profile)), identity = localIdentity(root);
+  const location = codexSessionLocation(config, policy.account, policy.threadId, options.sessionLocation);
+  if (!location) throw new Error("thread-profile-unverified");
+  const root = location.sessionRoot, identity = localIdentity(location.credentialRoot), storageIdentity = localIdentity(root);
+  const owner = config.accounts.codex.find(item => item.id === location.ownerAccount);
+  if (!owner || !codexUsesFileCredentials(owner)) throw new Error("subscription-file-credentials-required");
+  const sameLocation = () => {
+    const current = codexSessionLocation(config, policy.account, policy.threadId, options.sessionLocation);
+    return current?.sessionRoot === root && current.credentialRoot === location.credentialRoot &&
+      current.ownerAccount === location.ownerAccount && current.manifestSHA256 === location.manifestSHA256;
+  };
   const gateReader = options.readGate ?? (p => readGate(config, p));
   const verify = async () => {
     const gate = await gateReader(policy);
     if (gate.accountKey !== policy.accountKey || gate.profileKey !== policy.profileKey || gate.account !== policy.account ||
-        !codexUsesFileCredentials(profile) || localIdentity(root).continuity !== identity.continuity) throw new Error("account-profile-mismatch");
+        !codexUsesFileCredentials(profile) || !codexUsesFileCredentials(owner) || !sameLocation() ||
+        localIdentity(location.credentialRoot).continuity !== identity.continuity || localIdentity(root).continuity !== storageIdentity.continuity)
+      throw new Error("account-profile-mismatch");
   };
   await verify();
   const binary = (options.binary ?? findBundledCodex)();
@@ -266,7 +290,7 @@ export async function readExecutionConfiguration(config: AppConfig, policy: DotP
   const transport = await (options.transport ?? openTransport)(binary, root);
   try {
     await transport.request("initialize", { clientInfo: { name: "quotapie_execution_config_reader", version: "0.1.0" }, capabilities: { experimentalApi: true } });
-    accountIdentity(await transport.request("account/read", { refreshToken: false }), identity.email);
+    accountIdentity(await transport.request("account/read", { refreshToken: false }), storageIdentity.email);
     const result = await transport.request("config/read", { cwd, includeLayers: true }) as any;
     if (!result?.config || typeof result.config !== "object" || !Array.isArray(result.layers) || result.layers.length > 128)
       throw new Error("execution-config-unverified");
@@ -294,7 +318,8 @@ export async function readExecutionConfiguration(config: AppConfig, policy: DotP
     const stamps = [...paths].map(path => ({ path, stamp: configurationStamp(path) }));
     await verify();
     return { mcpServers: [...servers].sort(), unchanged() {
-      try { return stamps.every(({ path, stamp }) => configurationStamp(path) === stamp); } catch { return false; }
+      try { return sameLocation() && localIdentity(location.credentialRoot).continuity === identity.continuity &&
+        localIdentity(root).continuity === storageIdentity.continuity && stamps.every(({ path, stamp }) => configurationStamp(path) === stamp); } catch { return false; }
     } };
   } finally { await transport.close(); }
 }

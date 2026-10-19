@@ -60,6 +60,11 @@ export interface WorkPlanning {
 export interface WorkExecutionTarget {
   account: string; profileKey: string; accountKey: string; identity: string;
   sourceIdentity: string; poolPolicyHash: string;
+  /** Original consent credential, independently pinned when another host owns storage. */
+  consentIdentity?: string;
+  /** Physical host after a verified same-ID consolidation. Policy account is
+   * still the original consent account; no old failure stamp is rewritten. */
+  sessionOwner?: {account:string;profileKey:string;accountKey:string;identity:string;manifestSHA256:string};
   selectedAtMs: number; expiresAtMs: number;
   budgetByBucket: Record<string, WorkBudget>;
   baselineByBucket: Record<string, WorkBaseline>;

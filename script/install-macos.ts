@@ -56,7 +56,7 @@ function reportedHashVersion(identity: any): RuntimeHashVersion | null {
   // Older collectors did not report a version. Do not try multiple algorithms
   // against a failed hash: the advertised version selects exactly one input set.
   if (!Object.hasOwn(identity, "hashVersion")) return 1;
-  return identity.hashVersion === 1 || identity.hashVersion === RUNTIME_HASH_VERSION ? identity.hashVersion : null;
+  return identity.hashVersion === 1 || identity.hashVersion === 2 || identity.hashVersion === RUNTIME_HASH_VERSION ? identity.hashVersion : null;
 }
 
 /** Copy executable inputs only. Never follow links into a checkout's private data. */
@@ -92,7 +92,7 @@ export function stageRuntime(source: string, destination: string) {
     copyFileSync(join(source, "LICENSE"), join(destination, "LICENSE"), constants.COPYFILE_EXCL);
     chmodSync(join(destination, "LICENSE"), 0o600);
   }
-  for (const file of ["bin/quotapie", "src/cli.ts", "script/awake_hook.py", "script/codex-host-wake.py", "scripts/codex-compaction-local.py", "script/install.sh", "script/install-macos.ts", "packages/quota-core/src/index.ts", "packages/quota-core/package.json"]) {
+  for (const file of ["bin/quotapie", "src/cli.ts", "script/awake_hook.py", "script/codex-host-wake.py", "script/codex-session-consolidation.py", "scripts/codex-compaction-local.py", "script/install.sh", "script/install-macos.ts", "packages/quota-core/src/index.ts", "packages/quota-core/package.json"]) {
     if (!existsSync(join(destination, file))) throw new Error(`Missing runtime input: ${file}`);
   }
 }

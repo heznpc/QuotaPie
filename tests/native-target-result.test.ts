@@ -31,6 +31,19 @@ test("exact host turn plus the same target request's completed 2xx preserves com
   expect(reconcileNativeTargetResult(finished,fixture())).toBe(finished);
 });
 
+test("consolidated completion matches consent B independently from physical host A",()=>{
+ const f=fixture();f.policy.account="b";f.policy.profileKey=hash(3);f.policy.accountKey=hash(4);
+ f.target.sessionOwner={account:"a",profileKey:hash(1),accountKey:hash(2),identity:f.target.sourceIdentity,manifestSHA256:hash(0)};
+ f.target.consentIdentity=f.target.identity;
+ f.lease.source.consent={account:"b",profileKey:hash(3),accountKey:hash(4),identity:f.target.identity,manifestSHA256:hash(0)};
+ expect(reconcileNativeTargetResult(finished,f)).toBe(finished);
+ f.lease.source.consent.identity=hash(8);
+ expect(reconcileNativeTargetResult(finished,f).reason).toBe("execution-target-response-unverified");
+ f.lease.source.consent.identity=f.target.identity;
+ f.lease.source.consent.account="c";
+ expect(reconcileNativeTargetResult(finished,f).reason).toBe("execution-target-response-unverified");
+});
+
 test("host completion alone cannot certify a missing or mismatched target response",()=>{
   const changes:Array<(f:ReturnType<typeof fixture>)=>void>=[
     f=>{delete f.lease.targetRequest;}, f=>{delete f.lease.upstreamResponse;},

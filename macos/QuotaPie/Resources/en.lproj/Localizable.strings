@@ -506,22 +506,22 @@
 
 "savings.pending" = "Settings were saved, but relay acknowledgement is still pending. Check the applied status.";
 
-"profiles.title" = "Codex accounts · Open apps";
-"profiles.primary" = "Main";
-"profiles.description" = "Open each account in its own app instance, in either order. An already running profile is brought forward.";
-"profiles.open" = "Open / Focus";
+"profiles.title" = "Codex account connections";
+"profiles.primary" = "Primary app";
+"profiles.description" = "Keep conversations in the primary app and select quota through the account pool. Existing separate conversations use the primary app after consolidation completes.";
+"profiles.open" = "Open conversations";
 "profiles.restoreOnLogin" = "Reopen this account after restarting the Mac";
 "profiles.remove" = "Unregister";
 "profiles.paths" = "Profile folders";
 "profiles.appData" = "App data";
-"profiles.add" = "Add profile";
+"profiles.add" = "Add account connection";
 "profiles.name" = "Name (e.g. Work)";
-"profiles.newHint" = "Leave folders unset for a new profile, then sign in in its app. To register an existing launcher, select both of its folders. Credentials are never copied.";
+"profiles.newHint" = "A new account gets a sign-in folder without automatic launch. Sign in, then connect its quota. Imported folders keep their existing connection until their conversations are consolidated.";
 "profiles.chooseHome" = "Choose existing Codex home…";
 "profiles.chooseData" = "Choose existing app data…";
 "profiles.cancel" = "Cancel";
 "profiles.register" = "Register";
-"profiles.scope" = "Sign in through the app, then connect quota. Collection works without a proxy; Auto routing is separate. Unregister removes only the launch entry, preserving collection accounts, files and running apps.";
+"profiles.scope" = "Account connections and original files are preserved. Consolidated conversations open in the primary app. Running legacy apps are left open.";
 "profiles.opened" = "%@ app process confirmed. Complete sign-in in that app if needed.";
 "profiles.error.paths" = "Profile folders overlap or conflict with a running app. Choose separate Codex home and app-data folders.";
 "profiles.error.name" = "Enter a profile name.";
@@ -568,7 +568,7 @@
 "menu.account.refreshNeeded" = "Refresh needed";
 
 "profiles.accountNotLinked" = "No unique Codex app is linked to this account. Check the connection in Settings → Codex accounts.";
-"profiles.openAccount" = "Open %@ Codex app";
+"profiles.openAccount" = "Open conversations · %@";
 "profiles.connectedWithRelay" = "Connected quota collection and model routing. Existing apps and tasks may still use their previous connection. Reopen this profile app after current work finishes.";
 "profiles.profile_relay_failed" = "Quota collection was registered, but model routing could not be connected. Custom server settings are preserved. Check the relay and connect again.";
 
@@ -1388,6 +1388,22 @@
 "claudeDesktop.detail.stale" = "This is an earlier reading. Wait for a new check before relying on it.";
 "claudeDesktop.detail.failed" = "The Claude app connection could not be verified. Check that the app and local QuotaPie service are available, then try connecting again.";
 
+"profiles.accountLogin" = "Account sign-in";
+"profiles.openedLogin" = "Verified the sign-in app for %@. Use the primary app for conversation work.";
+"profiles.openedWork" = "Opened the conversation app.";
+"profiles.consolidationPending" = "Waiting for the legacy app to exit. Running work remains in place; conversations will be consolidated after it closes.";
+"profiles.consolidationComplete" = "Consolidated conversations open in the primary app. Account connections remain available to the quota pool.";
+"profiles.consolidatedAccount" = "The account remains connected. Conversations open in the primary app.";
+"profiles.loginOnly" = "Sign-in connection only. No separate app is opened automatically; conversation work opens in the primary app.";
+"profiles.error.consolidated" = "This account’s conversations are consolidated. The account remains connected and conversations open in the primary app.";
+
+"profiles.consolidate" = "Consolidate conversations in the primary app";
+"profiles.consolidationRequested" = "Consolidation requested. Existing connections remain until a verified completion record is available.";
+"profiles.consolidationFailed" = "The consolidation request could not be confirmed. Existing conversations and connections are unchanged.";
+
+"profiles.error.consolidationUnavailable" = "The consolidation record needs verification again. Opening the legacy app is blocked to keep conversations together. The primary app remains available.";
+"profiles.error.consolidationRunning" = "Conversations are being consolidated. Opening or restoring this separate app is temporarily on hold; running work is unchanged.";
+"profiles.error.consolidationPending" = "New launches and automatic restoration of this separate app are on hold for consolidation. If it is already running, only its existing window opens.";
 "collection.claude-desktop-unavailable" = "Claude desktop connection unavailable";
 "collection.claude-desktop-keychain" = "Claude session access needs permission";
 "collection.account-mismatch" = "Claude account changed";

@@ -134,3 +134,28 @@ test("a proven unsent local repair selects fresh B or C without changing its sou
   expect(selectLocalRepairExecutionTarget(f.p,prior,f.input)).toBeNull();
  }finally{await f.end()}
 });
+
+test("consolidated B keeps consent while primary A hosts and fresh B, A or C supplies an explicit target",async()=>{
+ const f=fixture();try{
+  const p={...f.p,account:"b",profileKey:hash(3),accountKey:hash(4)};
+  const owner={account:"a",profileKey:hash(1),accountKey:hash(2),identity:hash(7),manifestSHA256:hash(0)};
+  f.input.sessionOwner=()=>owner;
+  // B is already usable: a moved session still requires a frozen lease on A.
+  const first=selectQuotaExecutionTarget(p,f.input)!;
+  expect(first.account).toBe("b");expect(first.sourceIdentity).toBe(hash(7));expect(first.sessionOwner).toEqual(owner);
+  expect(validExecutionTarget(p,first,NOW)).toBe(true);expect(validateQuotaExecutionTarget(p,first,f.input)).toBeNull();
+  expect(p.account).toBe("b");expect(p.nativeSessionId).toBe(THREAD);
+  f.input.accounts[0]!.remaining=100;f.input.windows[0]!.remainingPercent=100;f.input.windows[0]!.metadata!.ordinaryUsageAllowed=true;
+  const primary=selectQuotaExecutionTarget(p,f.input)!;
+  expect(primary.account).toBe("a");expect(validExecutionTarget(p,primary,NOW)).toBe(true);
+  f.input.windows[0]!.remainingPercent=0;f.input.windows[1]!.remainingPercent=0;
+  expect(selectQuotaExecutionTarget(p,f.input)?.account).toBe("c");
+  f.input.sessionOwner=()=>({...owner,manifestSHA256:hash(9)});
+  expect(validateQuotaExecutionTarget(p,first,f.input)).toBe("execution-target-session-owner-changed");
+  f.input.sessionOwner=()=>null;
+  expect(selectQuotaExecutionTarget(p,f.input)).toBeNull();
+  expect(validateQuotaExecutionTarget(p,first,f.input)).toBe("execution-target-session-owner-changed");
+  f.input.sessionOwner=()=>({...owner,manifestSHA256:undefined});
+  expect(selectQuotaExecutionTarget(p,f.input)).toBeNull();
+ }finally{await f.end()}
+});

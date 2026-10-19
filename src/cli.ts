@@ -295,6 +295,27 @@ async function main(): Promise<number> {
 
   const config = loadConfig();
   outputLocale = resolveLocale(config.profile.locale);
+  if (command === "sessions") {
+    const action = args[0];
+    if (action !== "status" && action !== "consolidate") throw new Error("Use sessions status or sessions consolidate --source-home PATH --source-app-data PATH");
+    const origin = apiOrigin(config.dashboard.host, config.dashboard.port);
+    const statusResponse = await fetch(origin + "/api/status", { redirect: "error", signal: AbortSignal.timeout(5000) });
+    if (!statusResponse.ok) throw new Error("consolidation-service-unavailable");
+    const status = await statusResponse.json() as any;
+    if (typeof status.actionToken !== "string") throw new Error("consolidation-service-unavailable");
+    const source = action === "consolidate" ? {
+      codexHome: optionValue(args, "--source-home", outputLocale),
+      appData: optionValue(args, "--source-app-data", outputLocale),
+    } : null;
+    if (source && (!source.codexHome || !source.appData)) throw new Error("consolidation-invalid-source");
+    const response = await fetch(origin + "/api/session-consolidation", {
+      method: source ? "POST" : "GET", redirect: "error", signal: AbortSignal.timeout(5000),
+      headers: { "x-quotapie-action-token": status.actionToken, ...(source ? { "content-type": "application/json" } : {}) },
+      ...(source ? { body: JSON.stringify({ source }) } : {}),
+    });
+    console.log(JSON.stringify(await response.json(), null, 2));
+    return response.ok ? 0 : 1;
+  }
   const configuredAccount = selectedAccount == null || [
     ...config.accounts.codex,
     ...config.accounts.claude,

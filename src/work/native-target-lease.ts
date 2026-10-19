@@ -3,9 +3,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { codexProfileRoot, type AppConfig } from "../config";
+import { codexSessionLocation } from "../session-location";
 import { hostQueueClientMessageId, type HostQueueReceipt, type HostQueueTargetLease } from "../quota-resume/host-queue";
 import { ExecutionTargetLeaseStore, type ExecutionTargetLease } from "./execution-target-lease";
 import { executionTargetDigest } from "./execution-target";
+import { profileReference } from "../work-boundary";
 import type { WorkExecutionTarget, WorkPolicy, WorkResult } from "./types";
 
 /** A host terminal is not proof that the selected account finished its request.
@@ -19,9 +21,14 @@ export function reconcileNativeTargetResult(result: WorkResult, input: {
     ...(result.durationSeconds === undefined ? {} : { durationSeconds: result.durationSeconds }) });
   const unknownResponse = () => result.status === "turn-finished"
     ? classified("uncertain", "execution-target-response-unverified") : result;
+  const consent=lease?.source.consent??lease?.source;
+  const owner=target.sessionOwner;
   if (!lease || !receipt || lease.executionId !== executionId || lease.policyId !== policy.id ||
-      lease.policyRevision !== policy.revision || lease.source.account !== policy.account ||
-      lease.source.profileKey !== policy.profileKey || lease.source.accountKey !== policy.accountKey ||
+      lease.policyRevision !== policy.revision || consent?.account !== policy.account ||
+      consent.profileKey !== policy.profileKey || consent.accountKey !== policy.accountKey ||
+      !!lease.source.consent!==!!owner || owner && (lease.source.account!==owner.account || lease.source.profileKey!==owner.profileKey ||
+        lease.source.accountKey!==owner.accountKey || lease.source.consent?.identity!==target.consentIdentity ||
+        lease.source.consent?.manifestSHA256!==owner.manifestSHA256) ||
       lease.source.identity !== target.sourceIdentity || lease.source.threadId !== policy.nativeSessionId ||
       lease.source.failedTurnId !== policy.quotaResume?.turnId || lease.source.evidenceStamp !== policy.quotaResume?.stamp ||
       executionTargetDigest(lease.target) !== executionTargetDigest(target) ||
@@ -51,7 +58,8 @@ function boundedJSON(path: string): any {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 export function nativeTargetRelayEndpoint(config: AppConfig, policy: WorkPolicy): string {
-  const profile = config.accounts.codex.find(p => p.enabled && p.id === policy.account);
+  const location=codexSessionLocation(config,policy.account,policy.nativeSessionId);
+  const profile = config.accounts.codex.find(p => p.id === location?.ownerAccount);
   if (!profile) throw new Error("execution-target-relay-unavailable");
   const root = realpathSync(codexProfileRoot(profile));
   const manifest = boundedJSON(join(homedir(), ".local/lib/quotapie-compaction/current.json"));
@@ -66,12 +74,13 @@ export function nativeTargetRelayEndpoint(config: AppConfig, policy: WorkPolicy)
 }
 
 export async function inspectNativeTargetOwner(config: AppConfig, policy: WorkPolicy): Promise<{pid:number;startedAtMs:number}> {
-  const profile = config.accounts.codex.find(p => p.enabled && p.id === policy.account);
+  const location=codexSessionLocation(config,policy.account,policy.nativeSessionId);
+  const profile = config.accounts.codex.find(p => p.id === location?.ownerAccount);
   if (!profile || process.platform !== "darwin") throw new Error("execution-target-native-route-unverified");
   const helper = fileURLToPath(new URL("../../script/codex-host-wake.py", import.meta.url));
   const child = Bun.spawn(["/usr/bin/python3", "-B", helper, "--inspect-owner"], { stdin: "pipe", stdout: "pipe", stderr: "ignore",
     env: {PATH:"/usr/bin:/bin:/usr/sbin:/sbin",LANG:"en_US.UTF-8"}, timeout: 5000 });
-  child.stdin.write(JSON.stringify({account:policy.account,codexHome:realpathSync(codexProfileRoot(profile)),threadId:policy.nativeSessionId}) + "\n");
+  child.stdin.write(JSON.stringify({account:profile.id,codexHome:realpathSync(codexProfileRoot(profile)),threadId:policy.nativeSessionId}) + "\n");
   child.stdin.end();
   let output = "";
   for await (const bytes of child.stdout) {
@@ -88,6 +97,7 @@ export async function inspectNativeTargetOwner(config: AppConfig, policy: WorkPo
  * verifies the exact digest, identity and generation before the only enqueue. */
 export function nativeTargetLease(config: AppConfig, policy: WorkPolicy, executionId: string, target: WorkExecutionTarget,
   authorized: () => boolean, options: {store?:ExecutionTargetLeaseStore;endpoint?:()=>string;owner?:()=>Promise<{pid:number;startedAtMs:number}>;
+    sessionLocation?:typeof codexSessionLocation;
     fetch?:typeof fetch;now?:()=>number;renewalIntervalMs?:number} = {}): HostQueueTargetLease {
   const store = options.store ?? new ExecutionTargetLeaseStore(), now = options.now ?? Date.now;
   const endpoint = options.endpoint ?? (() => nativeTargetRelayEndpoint(config,policy));
@@ -95,8 +105,16 @@ export function nativeTargetLease(config: AppConfig, policy: WorkPolicy, executi
   let verifiedOwner: {pid:number;startedAtMs:number} | undefined, ownerCheckedAtMs = 0;
   let closed=false,revoked=false,timer:ReturnType<typeof setInterval>|undefined,renewal:Promise<void>|null=null;
   const readOwner = options.owner ?? (() => inspectNativeTargetOwner(config,policy));
+  const ownerBindingCurrent=()=>{
+    if(!target.sessionOwner)return true;
+    try {
+      const location=(options.sessionLocation??codexSessionLocation)(config,policy.account,policy.nativeSessionId),owner=target.sessionOwner;
+      return !!location?.consolidated && location.ownerAccount===owner.account && location.manifestSHA256===owner.manifestSHA256 &&
+        profileReference(location.sessionRoot)===owner.profileKey;
+    }catch{return false;}
+  };
   const current = () => {
-    if (closed || revoked || !lease || !acknowledgedEndpoint || !authorized()) return false;
+    if (closed || revoked || !lease || !acknowledgedEndpoint || !authorized() || !ownerBindingCurrent()) return false;
     try {
       const fresh = store.get(executionId);
       return endpoint() === acknowledgedEndpoint && !!fresh && fresh.digest === lease.digest &&
@@ -123,7 +141,7 @@ export function nativeTargetLease(config: AppConfig, policy: WorkPolicy, executi
     async acknowledge() {
       if(current()){await renew();return;}
       if(closed || revoked)throw new Error("execution-target-authorization-changed");
-      if (!authorized()) throw new Error("execution-target-authorization-changed");
+      if (!authorized() || !ownerBindingCurrent()) throw new Error("execution-target-authorization-changed");
       const owner = await readOwner();
       if (!authorized()) throw new Error("execution-target-authorization-changed");
       lease = store.request(policy,executionId,hostQueueClientMessageId(executionId),target,now(),owner);
@@ -138,7 +156,7 @@ export function nativeTargetLease(config: AppConfig, policy: WorkPolicy, executi
       }
       const recorded = store.get(executionId);
       if (!authorized() || endpoint() !== url || value?.executionId !== executionId || value.digest !== lease.digest ||
-          typeof value.relayInstanceId !== "string" || !value.relayInstanceId || value.sourceProfileKey !== policy.profileKey || value.targetIdentity !== target.identity ||
+          typeof value.relayInstanceId !== "string" || !value.relayInstanceId || value.sourceProfileKey !== lease.source.profileKey || value.targetIdentity !== target.identity ||
           !Number.isFinite(value.acknowledgedAtMs) || value.acknowledgedAtMs < startedAt || value.acknowledgedAtMs > now() || now()-value.acknowledgedAtMs > 5000 ||
           !recorded || recorded.digest !== lease.digest || recorded.relayInstanceId !== value.relayInstanceId || recorded.acknowledgedAtMs !== value.acknowledgedAtMs)
         throw new Error("execution-target-relay-ack-unverified");

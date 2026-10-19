@@ -3,9 +3,10 @@ import { constants, lstatSync, readdirSync, realpathSync, statSync, type Stats }
 import { open, type FileHandle } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
-import { codexProfileRoot, codexUsesFileCredentials, type AppConfig } from "../config";
+import { codexUsesFileCredentials, type AppConfig } from "../config";
 import { metadataPath } from "../dots/thread-reader";
 import { CodexAppServerClient, type CodexThreadTurnSummary } from "../providers/codex-appserver";
+import { codexSessionLocation, type SessionLocationOptions } from "../session-location";
 
 export interface QuotaResumeEvidence {
   threadId: string;
@@ -26,6 +27,7 @@ export interface QuotaResumeEvidenceOptions {
   allowNativeWriter?: boolean;
   /** Bind a marked turn to the exact prior execution, not merely its prompt. */
   authorizeRecoveryTurn?: (evidence: QuotaResumeEvidence) => boolean | Promise<boolean>;
+  sessionLocation?: SessionLocationOptions;
 }
 
 /** A local quota terminal exists, but its required host validation could not
@@ -65,10 +67,13 @@ function userText(entry: any): string | undefined {
 
 /** This file is a quiescent snapshot, not ownership of the native writer lock.
  * task_complete can carry an error; its name alone never proves successful work. */
-async function readLocal(config: AppConfig, account: string, threadId: string, nowMs: number, allowNativeWriter = false): Promise<QuotaResumeEvidence | null> {
+async function readLocal(config: AppConfig, account: string, threadId: string, nowMs: number, allowNativeWriter = false,
+  sessionOptions?: SessionLocationOptions): Promise<QuotaResumeEvidence | null> {
   const profile = config.accounts.codex.find(p => p.enabled && p.id === account);
   if (!profile || !UUID.test(threadId) || !Number.isFinite(nowMs) || !codexUsesFileCredentials(profile)) return null;
-  const root = realpathSync(codexProfileRoot(profile));
+  const location = codexSessionLocation(config, account, threadId, sessionOptions);
+  if (!location) return null;
+  const root = location.sessionRoot;
   if (!allowNativeWriter && !writerAbsent(root, threadId)) return null;
   const path = metadataPath(root, threadId);
   let file: FileHandle | undefined;
@@ -186,12 +191,16 @@ export async function readQuotaResumeEvidence(config: AppConfig, account: string
   try {
     const profile = config.accounts.codex.find(p => p.enabled && p.id === account);
     if (!profile) return null;
-    const root = realpathSync(codexProfileRoot(profile)), credentials = credentialStamp(root);
-    const before = await readLocal(config, account, threadId, (options.now ?? Date.now)(), options.allowNativeWriter);
+    const location = codexSessionLocation(config, account, threadId, options.sessionLocation);
+    if (!location) return null;
+    const owner = config.accounts.codex.find(p => p.id === location.ownerAccount);
+    if (!owner || !codexUsesFileCredentials(owner)) return null;
+    const root = location.sessionRoot, credentials = credentialStamp(location.credentialRoot), sessionCredentials = credentialStamp(root);
+    const before = await readLocal(config, account, threadId, (options.now ?? Date.now)(), options.allowNativeWriter, options.sessionLocation);
     if (!before) return null;
     if (before.recoveryIncidentId !== undefined && !options.authorizeRecoveryTurn) return null;
     const read = options.readLatestTurn ?? ((id: string) => {
-      client ??= new CodexAppServerClient(config.collection.codexCommand, account, 8_000, root);
+      client ??= new CodexAppServerClient(config.collection.codexCommand, location.ownerAccount, 8_000, root);
       return client.readLatestTurn(id);
     });
     let turn: CodexThreadTurnSummary | null;
@@ -201,14 +210,19 @@ export async function readQuotaResumeEvidence(config: AppConfig, account: string
     if (turn.threadId !== threadId || turn.turnId !== before.turnId || turn.status !== "failed" ||
         turn.errorCode !== "usageLimitExceeded" || turn.completedAtMs !== Math.floor(before.failedAtMs / 1000) * 1000) return null;
     if (before.recoveryIncidentId !== undefined && await options.authorizeRecoveryTurn?.(before) !== true) return null;
-    const after = await readLocal(config, account, threadId, (options.now ?? Date.now)(), options.allowNativeWriter);
+    const after = await readLocal(config, account, threadId, (options.now ?? Date.now)(), options.allowNativeWriter, options.sessionLocation);
     // The profile list and native credential-store mode may change while the
     // local read yields. Re-resolve the enabled profile instead of trusting the
     // object captured before the first await.
     const currentProfile = config.accounts.codex.find(p => p.enabled && p.id === account);
+    const currentLocation = codexSessionLocation(config, account, threadId, options.sessionLocation);
+    const currentOwner = config.accounts.codex.find(p => p.id === location.ownerAccount);
     if (!after || !currentProfile || !codexUsesFileCredentials(currentProfile) ||
-        realpathSync(codexProfileRoot(currentProfile)) !== root ||
-        JSON.stringify(before) !== JSON.stringify(after) || credentials !== credentialStamp(root)) return null;
+        !currentOwner || !codexUsesFileCredentials(currentOwner) || currentLocation?.ownerAccount !== location.ownerAccount ||
+        !currentLocation || currentLocation.credentialRoot !== location.credentialRoot || currentLocation.sessionRoot !== root ||
+        currentLocation.manifestSHA256 !== location.manifestSHA256 ||
+        JSON.stringify(before) !== JSON.stringify(after) || credentials !== credentialStamp(location.credentialRoot) ||
+        sessionCredentials !== credentialStamp(root)) return null;
     return after;
   } catch (error) {
     if (error instanceof QuotaResumeEvidenceUnavailableError) throw error;

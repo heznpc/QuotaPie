@@ -356,6 +356,13 @@ final class StatusClient {
         } catch { completion(.failure(error)) }
     }
 
+    func consolidateSessions(_ profile: CodexDesktopProfile, actionToken: String,
+                             completion: @escaping (Result<SessionConsolidationReply, Error>) -> Void) {
+        workRequest(path: ["api", "session-consolidation"], body: ["source": [
+            "codexHome": CodexDesktopProfile.canonical(profile.codexHome),
+            "appData": CodexDesktopProfile.canonical(profile.appData)]], actionToken: actionToken, completion: completion)
+    }
+
     func connectProfile(_ profile: CodexDesktopProfile, actionToken: String,
                         completion: @escaping (Result<ProfileConnectionReply, Error>) -> Void) {
         do {
@@ -670,6 +677,12 @@ final class StatusClient {
         task.resume()
         return task
     }
+}
+
+struct SessionConsolidationReply: Decodable, Equatable {
+    let state: String
+    let reason: String?
+    let threadCount: Int?
 }
 
 struct ProfileConnectionReply: Decodable {

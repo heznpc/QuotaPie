@@ -100,8 +100,8 @@ test("fixed execution requires same live source failure then pins exact target t
 test("a hot-reloaded relay replaces an obsolete DB adapter while retaining generation and existing leases",()=>fixture(async f=>{
   const p=await prepared(f);expect((await p.ack()).status).toBe(200);
   const memory=f.memory.executionTarget,previous=memory.store,generation=memory.instanceId;
-  Object.defineProperty(previous,"runtimeApiVersion",{value:4});
-  Object.defineProperty(previous,"bindRequest",{value:()=>{throw new Error("obsolete-v4-binding");}});
+  Object.defineProperty(previous,"runtimeApiVersion",{value:6});
+  Object.defineProperty(previous,"bindRequest",{value:()=>{throw new Error("obsolete-v6-binding");}});
   Object.defineProperty(previous,"validateLocalRecoveryPermit",{value:undefined});
   expect((await p.ack()).status).toBe(200);
   expect(memory.store).not.toBe(previous);expect(memory.instanceId).toBe(generation);
@@ -116,6 +116,32 @@ test("ACK without this listener's actual failed source turn does not dispatch",(
   const p=await prepared(f,false); const ack=await p.ack(); expect(ack.status).toBe(409);
   expect(await ack.json()).toMatchObject({error:{code:"execution-target-native-route-unverified"}});
   const result=await p.recover(); expect(result.status).toBeGreaterThanOrEqual(400); await result.text();expect(f.sent).toHaveLength(0);
+}));
+
+for(const targetAccount of ["a","b"])test(`consolidated B consent uses physical A proof and freezes ${targetAccount}; B auth change revokes it`,()=>fixture(async f=>{
+  const previous=await prepared(f),accounts=poolAccounts(f.config),a=accounts.find(v=>v.id==="a")!,b=accounts.find(v=>v.id==="b")!;
+  f.accounts[0].row.windows[0].remainingPercent=90;f.publish();
+  const policy={...previous.policy,account:"b",profileKey:profileReference(f.accounts[1].home),accountKey:"b".repeat(64)};
+  const owner={account:"a",profileKey:profileReference(f.accounts[0].home)!,accountKey:"a".repeat(64),identity:a.identity,manifestSHA256:"c".repeat(64)};
+  const target={...previous.target,account:targetAccount,identity:targetAccount==="a"?a.identity:b.identity,
+    profileKey:profileReference(f.accounts[targetAccount==="a"?0:1].home),accountKey:targetAccount.repeat(64),sessionOwner:owner,consentIdentity:b.identity};
+  const store=new ExecutionTargetLeaseStore(join(f.data,"execution-target-leases.sqlite3"));
+  try{
+    store.closeLease(previous.lease.executionId,previous.lease.digest,"fixture-replaced");
+    const lease=store.request(policy,randomUUID(),randomUUID(),target,Date.now(),previous.lease.source.nativeOwner);
+    const relay=createExecutionTargetRelay({sourceAccount:"a",codexHome:f.accounts[0].home,config:()=>f.config,
+      sourceGuard:createSubscriptionGuard({sourceAccount:"a",codexHome:f.accounts[0].home,config:()=>f.config,executionMode:"interactive",quotaObservationMode:"advisory"}),
+      memory:f.memory.executionTarget,sessionLocation:()=>({account:"b",ownerAccount:"a",credentialRoot:realpathSync(f.accounts[1].home),
+        sessionRoot:realpathSync(f.accounts[0].home),consolidated:true,threadIds:new Set([f.thread]),manifestSHA256:owner.manifestSHA256})});
+    const ack=await relay.acknowledge({executionId:lease.executionId,digest:lease.digest});
+    expect(ack.sourceProfileKey).toBe(owner.profileKey);
+    const request={threadId:f.thread,turnId:randomUUID(),body:{input:[{role:"user",content:policy.prompt}]},model};
+    const selected=await relay.resolve(request);expect(selected?.account.id).toBe(targetAccount);
+    expect(selected?.lease.source.account).toBe("a");expect(selected?.lease.source.consent?.account).toBe("b");
+    writeFileSync(join(f.accounts[1].home,"auth.json"),JSON.stringify({auth_mode:"chatgpt",tokens:{account_id:"changed",access_token:f.accounts[1].token}}));
+    await expect(relay.resolve(request)).rejects.toThrow("pool_execution_target_source_changed");
+    expect(f.sent).toHaveLength(0);
+  }finally{store.close();}
 }));
 
 test("fixed target 429 never selects source or any other account",()=>fixture(async f=>{
@@ -155,6 +181,44 @@ test("ordinary pooled B quota errors never create a native source recovery proof
   const response=await f.request(undefined,turnHeaders(turn));expect(response.status).toBe(429);await response.text();
   expect(f.sent).toHaveLength(1);expect(f.sent[0].headers.get("chatgpt-account-id")).toBe("b");
   expect(f.memory.executionTarget.routes.has(f.thread+":"+turn)).toBe(false);
+}));
+for(const variant of ["verified","compaction","missing-manifest","wrong-source","wrong-thread","changed-stamp","not-enrolled","invalid-fixed-receipt"])
+test(`consolidated ordinary pool failure needs exact primary route and fresh host evidence: ${variant}`,()=>fixture(async f=>{
+  const p=await prepared(f,false),failed=randomUUID();
+  const store=new ExecutionTargetLeaseStore(join(f.data,"execution-target-leases.sqlite3"));
+  try{
+    store.closeLease(p.lease.executionId,p.lease.digest,"fixture-replaced");
+    f.serve(async()=>new Response(JSON.stringify({error:{code:"usage_limit_reached"}}),{status:429,headers:{"content-type":"application/json"}}));
+    const response=variant==="compaction"?await f.runtime.fetch(new Request(`http://127.0.0.1/${"a".repeat(48)}/backend-api/codex/responses/compact`,{
+      method:"POST",headers:{authorization:`Bearer ${f.accounts[0].token}`,"chatgpt-account-id":"a",session_id:f.thread,...turnHeaders(failed)},
+      body:JSON.stringify({model,input:f.history})})):await f.request(undefined,turnHeaders(failed));
+    expect(response.status).toBe(429);await response.text();
+    const event=f.runtime.snapshot().recent.find((e:any)=>e.turnId===failed&&e.phase==="failed");expect(event).toBeDefined();
+    const accounts=poolAccounts(f.config),a=accounts.find(v=>v.id==="a")!,b=accounts.find(v=>v.id==="b")!;
+    const location={account:"b",ownerAccount:"a",credentialRoot:realpathSync(f.accounts[1].home),sessionRoot:realpathSync(f.accounts[0].home),
+      consolidated:true,threadIds:new Set([f.thread]),manifestSHA256:"c".repeat(64)};
+    const target={...p.target,consentIdentity:b.identity,sessionOwner:{account:"a",profileKey:profileReference(f.accounts[0].home),accountKey:"a".repeat(64),identity:a.identity,manifestSHA256:location.manifestSHA256}};
+    const policy={...p.policy,account:"b",profileKey:profileReference(f.accounts[1].home),accountKey:"b".repeat(64),quotaResume:{turnId:variant==="invalid-fixed-receipt"?p.failed:failed,stamp:"actual-current-stamp"}};
+    const lease=store.request(policy,randomUUID(),randomUUID(),target,Date.now(),p.lease.source.nativeOwner);
+    if(variant==="invalid-fixed-receipt") {
+      store.acknowledge(lease.executionId,lease.digest,f.memory.executionTarget.instanceId,lease.source.profileKey);
+      store.bindCorrelatedTurn(lease.executionId,lease.digest,f.memory.executionTarget.instanceId,
+        {threadId:f.thread,turnId:failed,clientUserMessageId:lease.clientUserMessageId});
+    }
+    const relay=createExecutionTargetRelay({sourceAccount:"a",codexHome:f.accounts[0].home,config:()=>f.config,memory:f.memory.executionTarget,
+      sourceGuard:createSubscriptionGuard({sourceAccount:"a",codexHome:f.accounts[0].home,config:()=>f.config,executionMode:"interactive",quotaObservationMode:"advisory"}),
+      sessionLocation:()=>location,sessionOrigins:()=>variant==="missing-manifest"?[]:[{account:"b",enabled:true,label:"B",sessionRoot:location.sessionRoot,threadIds:location.threadIds}],
+      readFailureEvidence:async()=>({threadId:variant==="wrong-thread"?randomUUID():f.thread,turnId:failed,stamp:variant==="changed-stamp"?"changed":policy.quotaResume.stamp,
+        failedAtMs:Date.parse(event.at),cwd:"/fixture",model})});
+    if(variant==="not-enrolled"){f.policy.accounts=["a"];f.publish();}
+    relay.recordRoute(variant==="wrong-source"?{...event,accountRouting:{...event.accountRouting,sourceAccount:"b"}}:event);
+    const key=f.thread+":"+failed;
+    if(["missing-manifest","wrong-source","not-enrolled","invalid-fixed-receipt"].includes(variant))expect(f.memory.executionTarget.routes.has(key)).toBe(false);
+    else expect(f.memory.executionTarget.routes.get(key)?.pooledHost).toMatchObject({account:"b",quotaAccount:"b",requestId:event.requestId});
+    if(["verified","compaction"].includes(variant))expect(await relay.acknowledge({executionId:lease.executionId,digest:lease.digest})).toMatchObject({sourceProfileKey:target.sessionOwner.profileKey});
+    else await expect(relay.acknowledge({executionId:lease.executionId,digest:lease.digest})).rejects.toThrow("pool_execution_target_native_route_unverified");
+    expect(f.sent).toHaveLength(1);
+  }finally{store.close();}
 }));
 test("fixed B route proof requires exact durable request, turn, target identity and provider origin",()=>fixture(async f=>{
   const p=await prepared(f);await(await p.ack()).text();

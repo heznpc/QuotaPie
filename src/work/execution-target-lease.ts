@@ -24,6 +24,7 @@ export interface LocalRecoveryPermit extends LocalRecoveryPermitInput {
 export interface ExecutionTargetLease {
   version: 1; executionId: string; policyId: string; policyRevision: number;
   source: { account: string; profileKey: string; accountKey: string; identity: string;
+    consent?: {account:string;profileKey:string;accountKey:string;identity:string;manifestSHA256:string};
     threadId: string; failedTurnId: string; evidenceStamp: string; nativeOwner?: {pid:number;startedAtMs:number};
     sourceQuotaTurnId?: string; localRecoveryPermitId?: string; localRecoveryParentExecutionId?: string };
   target: WorkExecutionTarget; model?: string; marker: string; promptHash: string; clientUserMessageId: string;
@@ -57,7 +58,7 @@ export function readExecutionTargetLease(id: string, path = executionTargetLease
  * for this exact digest, then enqueue once through its existing durable receipt.
  * The 15s renewable authorization fence stops execution after collector loss. */
 export class ExecutionTargetLeaseStore {
-  static readonly RUNTIME_API_VERSION = 6;
+  static readonly RUNTIME_API_VERSION = 7;
   readonly runtimeApiVersion = ExecutionTargetLeaseStore.RUNTIME_API_VERSION;
   private db: Database;
   constructor(path = executionTargetLeasePath()) {
@@ -91,6 +92,7 @@ export class ExecutionTargetLeaseStore {
           permit.failedTurnId!==source.failedTurnId || permit.sourceQuotaTurnId!==source.sourceQuotaTurnId || permit.consumedExecutionId!==current.executionId ||
           !/^[a-f0-9]{64}$/.test(permit.goalFingerprint) || goalFingerprint!==undefined&&goalFingerprint!==permit.goalFingerprint ||
           ["account","profileKey","accountKey","identity","threadId"].some(key=>(source as any)[key] !== (previous.source as any)[key]) ||
+          JSON.stringify(source.consent)!==JSON.stringify(previous.source.consent) ||
           ["sourceIdentity","poolPolicyHash"].some(key=>(current.target as any)[key] !== (previous.target as any)[key]) ||
           current.model!==previous.model || source.nativeOwner?.pid!==previous.source.nativeOwner?.pid ||
           source.nativeOwner?.startedAtMs!==previous.source.nativeOwner?.startedAtMs)
@@ -164,6 +166,7 @@ export class ExecutionTargetLeaseStore {
     const parent=this.get(source.localRecoveryParentExecutionId)!;
     if(permit.consumedExecutionId!==undefined && permit.consumedExecutionId!==lease.executionId ||
         ["account","profileKey","accountKey","identity","threadId"].some(key=>(source as any)[key] !== (parent.source as any)[key]) ||
+        JSON.stringify(source.consent)!==JSON.stringify(parent.source.consent) ||
         ["sourceIdentity","poolPolicyHash"].some(key=>(lease.target as any)[key] !== (parent.target as any)[key]) ||
         lease.model!==parent.model || source.nativeOwner?.pid!==parent.source.nativeOwner?.pid ||
         source.nativeOwner?.startedAtMs!==parent.source.nativeOwner?.startedAtMs)
@@ -175,8 +178,10 @@ export class ExecutionTargetLeaseStore {
         !policy.quotaResume || !UUID.test(policy.quotaResume.turnId) || !validExecutionTarget(policy, target, nowMs) ||
         !policy.prompt.startsWith(`[QuotaPie quota recovery:${policy.id}]\n`)) throw new Error("execution-target-lease-invalid");
     const recovery=policy.quotaResume.localBeforeSendRecovery;
-    const source:ExecutionTargetLease["source"] = { account: policy.account, profileKey: policy.profileKey, accountKey: policy.accountKey,
+    const owner=target.sessionOwner;
+    const source:ExecutionTargetLease["source"] = { account: owner?.account??policy.account, profileKey: owner?.profileKey??policy.profileKey, accountKey: owner?.accountKey??policy.accountKey,
       identity: target.sourceIdentity, threadId: policy.nativeSessionId, failedTurnId: policy.quotaResume.turnId, evidenceStamp: policy.quotaResume.stamp,
+      ...(owner?{consent:{account:policy.account,profileKey:policy.profileKey,accountKey:policy.accountKey,identity:target.consentIdentity!,manifestSHA256:owner.manifestSHA256}}:{}),
       ...(nativeOwner ? {nativeOwner} : {}),...(recovery?{sourceQuotaTurnId:recovery.sourceQuotaTurnId,
         localRecoveryPermitId:recovery.permitId,localRecoveryParentExecutionId:recovery.parentExecutionId}:{}) };
     const marker = `[QuotaPie quota recovery:${policy.id}]`, promptHash = digest(policy.prompt);

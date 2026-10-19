@@ -3,7 +3,8 @@ import { constants, lstatSync, realpathSync, statSync, type Stats } from "node:f
 import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
-import { codexProfileRoot, codexUsesFileCredentials, dataDirectory, type AppConfig } from "../config";
+import { codexUsesFileCredentials, dataDirectory, type AppConfig } from "../config";
+import { codexSessionLocation, type SessionLocationOptions } from "../session-location";
 import { metadataPath } from "../dots/thread-reader";
 import type { CodexThreadGoal, CodexThreadTurnSummary } from "../providers/codex-appserver";
 import type { WorkExecution, WorkPolicy } from "../work/types";
@@ -86,12 +87,17 @@ export async function readLocalDenialLogReceipt(endpoint:string,failedAtMs:numbe
 export async function readLocalBeforeSendEvidence(config:AppConfig, execution:WorkExecution, client:{
   readLatestTurn(threadId:string):Promise<CodexThreadTurnSummary|null>;
   readTurnForClientMessage(threadId:string,clientId:string,afterTurnId?:string):Promise<CodexThreadTurnSummary|null>;
-}):Promise<LocalBeforeSendEvidence|null> {
+}, options: { sessionLocation?: SessionLocationOptions } = {}):Promise<LocalBeforeSendEvidence|null> {
   const p=execution.policySnapshot,receipt=execution.hostQueue;
   if(!receipt?.turnId || !receipt.queuedSubmissionId || receipt.threadId!==p.nativeSessionId) return null;
   const profile=config.accounts.codex.find(a=>a.enabled&&a.id===p.account);
   if(!profile || !codexUsesFileCredentials(profile))return null;
-  const root=realpathSync(codexProfileRoot(profile)),auth=join(root,"auth.json"),credentials=fileStamp(lstatSync(auth));
+  const location=codexSessionLocation(config,p.account,p.nativeSessionId,options.sessionLocation);if(!location)return null;
+  const owner=config.accounts.codex.find(a=>a.id===location.ownerAccount);if(!owner||!codexUsesFileCredentials(owner))return null;
+  const root=location.sessionRoot,auth=join(location.credentialRoot,"auth.json"),ownerAuth=join(root,"auth.json");
+  const credentials=fileStamp(lstatSync(auth)),ownerCredentials=fileStamp(lstatSync(ownerAuth));
+  const sameLocation=()=>{const current=codexSessionLocation(config,p.account,p.nativeSessionId,options.sessionLocation);return current?.sessionRoot===root&&
+    current.credentialRoot===location.credentialRoot&&current.ownerAccount===location.ownerAccount&&current.manifestSHA256===location.manifestSHA256;};
   const read=async():Promise<LocalBeforeSendEvidence|null>=>{
     const path=metadataPath(root,p.nativeSessionId),file=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
     try {
@@ -142,7 +148,8 @@ export async function readLocalBeforeSendEvidence(config:AppConfig, execution:Wo
     for(const turn of [correlated,latest])if(!turn||turn.threadId!==before.threadId||turn.turnId!==before.turnId||turn.status!=="failed"||
       turn.completedAtMs!==Math.floor(before.failedAtMs/1000)*1000||turn.errorCode==="usageLimitExceeded")return null;
     const after=await read(),fresh=config.accounts.codex.find(a=>a.enabled&&a.id===p.account);
-    return after&&fresh&&codexUsesFileCredentials(fresh)&&realpathSync(codexProfileRoot(fresh))===root&&credentials===fileStamp(lstatSync(auth))&&
+    return after&&fresh&&codexUsesFileCredentials(fresh)&&codexUsesFileCredentials(owner)&&sameLocation()&&
+      credentials===fileStamp(lstatSync(auth))&&ownerCredentials===fileStamp(lstatSync(ownerAuth))&&
       JSON.stringify(before)===JSON.stringify(after)?after:null;
   }catch{return null;}
 }
@@ -163,15 +170,22 @@ export async function createLocalRepair(config:AppConfig,parentIncidentId:string
   const sourceQuotaTurnId=policy.quotaResume?.localBeforeSendRecovery?.sourceQuotaTurnId??policy.quotaResume!.turnId;
   const goal=await client.readThreadGoal(policy.nativeSessionId);if(goal&&!['active','usageLimited'].includes(goal.status))return null;
   const lease=readExecutionTargetLease(execution.id),target=execution.executionTarget!,accounts=poolAccounts(config);
+  const location=codexSessionLocation(config,policy.account,policy.nativeSessionId);if(!location)return null;
+  const consent=lease?.source.consent??lease?.source;
   if(!lease?.acknowledgedAtMs||lease.targetRequest||lease.upstreamResponse||lease.source.threadId!==policy.nativeSessionId||
     lease.source.failedTurnId!==policy.quotaResume?.turnId||lease.source.evidenceStamp!==policy.quotaResume?.stamp||
+    consent?.account!==policy.account||consent?.profileKey!==policy.profileKey||consent?.accountKey!==policy.accountKey||
+    lease.source.account!==location.ownerAccount||
+    (location.consolidated?(lease.source.consent?.manifestSHA256!==location.manifestSHA256):lease.source.consent!==undefined)||
+    (location.consolidated&&(!target.consentIdentity||lease.source.consent?.identity!==target.consentIdentity||
+      !accounts.some(a=>a.id===policy.account&&a.identity===target.consentIdentity)))||
     lease.target.identity!==target.identity||lease.target.poolPolicyHash!==executionPoolPolicyHash(readPoolPolicy())||
-    !accounts.some(a=>a.id===policy.account&&a.identity===lease.source.identity)||!accounts.some(a=>a.id===target.account&&a.identity===target.identity))return null;
+    !accounts.some(a=>a.id===location.ownerAccount&&a.identity===lease.source.identity)||!accounts.some(a=>a.id===target.account&&a.identity===target.identity))return null;
   const endpoint=nativeTargetRelayEndpoint(config,policy),owner=await inspectNativeTargetOwner(config,policy);
   if(owner.pid!==lease.source.nativeOwner?.pid||owner.startedAtMs!==lease.source.nativeOwner?.startedAtMs)return null;
   const response=await fetch(endpoint+"/quotapie-health",{signal:AbortSignal.timeout(5000),redirect:"error"});if(!response.ok)return null;
   const health:any=await response.json();
-  if(health.executionTargetRelayInstanceId!==lease.relayInstanceId||health.subscriptionGuard?.account!==policy.account||health.subscriptionGuard?.profileKey!==policy.profileKey)return null;
+  if(health.executionTargetRelayInstanceId!==lease.relayInstanceId||health.subscriptionGuard?.account!==lease.source.account||health.subscriptionGuard?.profileKey!==lease.source.profileKey)return null;
   if(lease.localRecoveryPermit){
     const store=new ExecutionTargetLeaseStore();
     try{

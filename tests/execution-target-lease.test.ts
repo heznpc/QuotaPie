@@ -31,6 +31,21 @@ test("unacknowledged lease cannot route; exact source/thread/prompt binds just o
   expect(()=>f.store.bindRequest({...f.request(f.body),relayInstanceId:"new-generation"},NOW)).toThrow();
  }finally{f.store.close()}
 });
+
+test("consolidated lease keeps B consent but only physical A listener may acknowledge and bind",()=>{
+ const f=fixture();try{
+  f.store.closeLease(EXECUTION,f.lease.digest,"fixture-replaced");
+  const policy={...f.policy,account:"b",profileKey:hash(3),accountKey:hash(4)};
+  const target={...f.target,consentIdentity:f.target.identity,sessionOwner:{account:"a",profileKey:hash(1),accountKey:hash(2),identity:f.target.sourceIdentity,manifestSHA256:hash(9)}};
+  const lease=f.store.request(policy,OTHER,CLIENT,target,NOW);
+  expect(lease.source).toMatchObject({account:"a",profileKey:hash(1),accountKey:hash(2),identity:target.sourceIdentity,
+   threadId:THREAD,failedTurnId:FAILED,consent:{account:"b",profileKey:hash(3),accountKey:hash(4),identity:f.target.identity,manifestSHA256:hash(9)}});
+  expect(()=>f.store.acknowledge(OTHER,lease.digest,"relay-generation",policy.profileKey,NOW)).toThrow();
+  f.store.acknowledge(OTHER,lease.digest,"relay-generation",target.sessionOwner.profileKey,NOW);
+  expect(f.store.bindRequest(f.request({input:[{role:"user",content:policy.prompt}]}),NOW)?.target.account).toBe("b");
+  expect(f.store.get(OTHER)?.source.consent?.account).toBe("b");
+ }finally{f.store.close()}
+});
 test("native context envelope needs exact official client-message receipt and never falls to ordinary routing",()=>{
  const f=fixture();try{
   f.store.acknowledge(EXECUTION,f.lease.digest,"relay-generation",f.policy.profileKey,NOW);
@@ -212,6 +227,22 @@ test("live ACK adapter requires current listener's exact durable acknowledgement
    else {await expect(handle.acknowledge()).rejects.toThrow();expect(handle.current()).toBe(false);}
   }finally{handle.close("test-ended");store.close()}
  }
+});
+test("consolidated native ACK validates physical A profile while preserving original B policy",async()=>{
+ const f=fixture();f.store.close();const store=new ExecutionTargetLeaseStore(":memory:");
+ const owner={account:"a",profileKey:f.policy.profileKey,accountKey:f.policy.accountKey,identity:f.target.sourceIdentity,manifestSHA256:hash(9)};
+ const policy={...f.policy,account:"b",profileKey:f.target.profileKey,accountKey:f.target.accountKey};
+ const target={...f.target,consentIdentity:f.target.identity,sessionOwner:owner};
+ // profileReference is independently derived from the physical session root.
+ const root=mkdtempSync(join(tmpdir(),"qp-physical-primary-")),profileKey=(await import("../src/work-boundary")).profileReference(root)!;
+ owner.profileKey=profileKey;
+ const handle=nativeTargetLease(structuredClone(DEFAULT_CONFIG),policy,EXECUTION,target,()=>true,{store,now:()=>NOW,
+  endpoint:()=>"http://127.0.0.1:12345/token/backend-api/codex",owner:async()=>({pid:41,startedAtMs:NOW-100000}),
+  sessionLocation:()=>({account:"b",ownerAccount:"a",credentialRoot:"/credential-b",sessionRoot:root,consolidated:true,threadIds:new Set([THREAD]),manifestSHA256:hash(9)}),
+  fetch:(async(_url:any,init:any)=>{const request=JSON.parse(init.body),lease=store.acknowledge(EXECUTION,request.digest,"relay-generation",owner.profileKey,NOW);
+   return Response.json({executionId:EXECUTION,digest:lease.digest,relayInstanceId:lease.relayInstanceId,acknowledgedAtMs:NOW,sourceProfileKey:owner.profileKey,targetIdentity:target.identity});}) as typeof fetch});
+ try{await handle.acknowledge();expect(handle.current()).toBe(true);expect(store.get(EXECUTION)?.source.consent?.account).toBe("b");}
+ finally{handle.close("test-ended");store.close();rmSync(root,{recursive:true,force:true});}
 });
 test("only matching actual target provider response becomes usage evidence",()=>{
  const f=fixture();try{

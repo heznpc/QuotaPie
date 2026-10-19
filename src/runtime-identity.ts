@@ -4,10 +4,10 @@ import { join, resolve } from "node:path";
 
 // Hash executable inputs, not the repository revision: documentation-only commits
 // do not invalidate an installed service. The server captures this once at start.
-export const RUNTIME_HASH_VERSION = 2;
-export type RuntimeHashVersion = 1 | typeof RUNTIME_HASH_VERSION;
+export const RUNTIME_HASH_VERSION = 3;
+export type RuntimeHashVersion = 1 | 2 | typeof RUNTIME_HASH_VERSION;
 export function runtimeSourceHash(root = resolve(import.meta.dir, ".."), version: RuntimeHashVersion = RUNTIME_HASH_VERSION): string {
-  if (version !== 1 && version !== RUNTIME_HASH_VERSION) throw new Error("Unsupported runtime hash version");
+  if (version !== 1 && version !== 2 && version !== RUNTIME_HASH_VERSION) throw new Error("Unsupported runtime hash version");
   const hash = createHash("sha256");
   function add(relative: string) {
     const bytes = readFileSync(join(root, relative));
@@ -29,10 +29,12 @@ export function runtimeSourceHash(root = resolve(import.meta.dir, ".."), version
   add("script/awake_hook.py");
   // Version 1 is the fixed input set used by collectors predating host wake.
   // It is retained only to verify an existing installation during migration.
-  if (version === 2) {
+  if (version === 2 || version === 3) {
     add("script/codex-host-wake.py");
     add("scripts/codex-compaction-local.py");
   }
+  // Version 2's input set remains fixed for verifying existing installations.
+  if (version === 3) add("script/codex-session-consolidation.py");
   return hash.digest("hex");
 }
 

@@ -14,18 +14,41 @@ struct CodexProfilesView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(Strings.t("profiles.title")).font(.headline)
             Text(Strings.t("profiles.description")).font(.callout).foregroundStyle(.secondary)
+            if let consolidation = profiles.consolidation {
+                Text(Strings.t(consolidation.state == "complete" ? "profiles.consolidationComplete" : "profiles.consolidationPending"))
+                    .font(.callout).foregroundStyle(consolidation.state == "complete" ? Color.secondary : Color.orange)
+                    .accessibilityIdentifier("codex-session-consolidation-status")
+            }
+            if profiles.consolidationStatus?.state == "waiting-for-source-exit", profiles.consolidation?.state != "waiting-for-source-exit" {
+                Text(Strings.t("profiles.consolidationPending")).font(.callout).foregroundStyle(.orange)
+            }
+            if ["blocked", "failed"].contains(profiles.consolidationStatus?.state ?? "") {
+                Text(Strings.t("profiles.consolidationFailed")).font(.callout).foregroundStyle(.orange)
+            }
             ForEach(profiles.profiles) { profile in
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
                         Text(profile.name).fontWeight(.medium)
                         Spacer()
                         Button(Strings.t("profiles.open")) { profiles.open(profile) }
+                            .disabled(profiles.requiresConsolidationVerification(profile) ||
+                                (profiles.isConsolidationRunning(profile) && profile.credentialOnly != true))
+                        if profile.id != "primary" {
+                            Button(Strings.t("profiles.accountLogin")) { profiles.open(profile, intent: .accountLogin) }
+                                .disabled(!profiles.allowsAccountLogin(profile))
+                        }
                         Button(Strings.t("profiles.connect")) {
                             profiles.connect(profile, token: status.payload?.actionToken)
                         }.disabled(!status.canActOnTasks)
                         if profile.id != "primary" {
                             Button(Strings.t("profiles.remove")) { profiles.remove(profile) }
                         }
+                    }
+                    if profile.id != "primary" && !profiles.isKnownConsolidated(profile) {
+                        Button(Strings.t("profiles.consolidate")) {
+                            profiles.requestConsolidation(profile, token: status.payload?.actionToken)
+                        }.disabled(!status.canActOnTasks || profiles.isConsolidationRunning(profile) || profiles.requiresConsolidationVerification(profile))
+                        .accessibilityIdentifier("consolidate-codex-sessions-" + profile.id)
                     }
                     if let account = profile.collectionAccount {
                         if let observed = status.payload?.accounts.first(where: { $0.provider == "codex" && $0.account == account }) {
@@ -43,11 +66,24 @@ struct CodexProfilesView: View {
                                 onRetry: actions.retryTask, onDismiss: actions.dismissTask)
                         }
                     }
-                    CodexDockIconPicker(profile: profile, actionToken: status.payload?.actionToken, profiles: profiles)
-                    if profile.id != "primary" {
+                    if profiles.allowsAutomaticRestoration(profile) {
+                        CodexDockIconPicker(profile: profile, actionToken: status.payload?.actionToken, profiles: profiles)
+                    }
+                    if profile.id != "primary" && profiles.allowsAutomaticRestoration(profile) {
                         Toggle(Strings.t("profiles.restoreOnLogin"), isOn: Binding(
                             get: { profile.restoreOnLogin != false },
                             set: { profiles.setRestoreOnLogin($0, for: profile) }))
+                    }
+                    if profiles.requiresConsolidationVerification(profile) {
+                        Text(Strings.t("profiles.error.consolidationUnavailable")).font(.caption).foregroundStyle(.orange)
+                    } else if profiles.isConsolidationRunning(profile) {
+                        Text(Strings.t("profiles.error.consolidationRunning")).font(.caption).foregroundStyle(.orange)
+                    } else if profiles.isConsolidationPending(profile) {
+                        Text(Strings.t("profiles.error.consolidationPending")).font(.caption).foregroundStyle(.orange)
+                    } else if profiles.consolidation?.completed(profile) == true {
+                        Text(Strings.t("profiles.consolidatedAccount")).font(.caption).foregroundStyle(.secondary)
+                    } else if profile.credentialOnly == true {
+                        Text(Strings.t("profiles.loginOnly")).font(.caption).foregroundStyle(.secondary)
                     }
                     DisclosureGroup(Strings.t("profiles.paths")) {
                         Text("CODEX_HOME: " + profile.codexHome).textSelection(.enabled)
@@ -59,6 +95,7 @@ struct CodexProfilesView: View {
             if let message = profiles.message { Text(message).font(.caption).foregroundStyle(.secondary) }
             Text(Strings.t("profiles.scope")).font(.caption).foregroundStyle(.secondary)
         }
+        .onAppear { profiles.refreshConsolidation() }
         .disabled(profiles.busy)
         .sheet(isPresented: $adding) {
             VStack(alignment: .leading, spacing: 14) {

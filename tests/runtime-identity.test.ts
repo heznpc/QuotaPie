@@ -14,16 +14,28 @@ test("legacy hash version retains exactly the original input set while current i
       const text="fixture:"+file;mkdirSync(dirname(join(root,file)),{recursive:true});writeFileSync(join(root,file),text);
       expected.update(`${file}\0${Buffer.byteLength(text)}\0`);expected.update(text);
     }
-    const legacyHash=expected.digest("hex");
+    const legacyHash=expected.copy().digest("hex");
     expect(runtimeSourceHash(root,1)).toBe(legacyHash);
     expect(()=>runtimeSourceHash(root)).toThrow();
     for(const file of ["script/codex-host-wake.py","scripts/codex-compaction-local.py"]) {
       mkdirSync(dirname(join(root,file)),{recursive:true});writeFileSync(join(root,file),"new helper");
+      expected.update(`${file}\0${Buffer.byteLength("new helper")}\0`);expected.update("new helper");
     }
+    const versionTwoHash=expected.copy().digest("hex");
     expect(runtimeSourceHash(root,1)).toBe(legacyHash);
-    expect(runtimeSourceHash(root,2)).not.toBe(legacyHash);
-    expect(()=>runtimeSourceHash(root,3 as 1)).toThrow("Unsupported runtime hash version");
-    expect(captureRuntimeIdentity().hashVersion).toBe(2);
+    expect(runtimeSourceHash(root,2)).toBe(versionTwoHash);
+    expect(()=>runtimeSourceHash(root)).toThrow();
+    const helper="script/codex-session-consolidation.py";
+    writeFileSync(join(root,helper),"new consolidation helper");
+    expected.update(`${helper}\0${Buffer.byteLength("new consolidation helper")}\0`);expected.update("new consolidation helper");
+    expect(runtimeSourceHash(root)).toBe(expected.digest("hex"));
+    expect(runtimeSourceHash(root,1)).toBe(legacyHash);
+    expect(runtimeSourceHash(root,2)).toBe(versionTwoHash);
+    writeFileSync(join(root,helper),"changed consolidation helper");
+    expect(runtimeSourceHash(root,1)).toBe(legacyHash);
+    expect(runtimeSourceHash(root,2)).toBe(versionTwoHash);
+    expect(()=>runtimeSourceHash(root,4 as 1)).toThrow("Unsupported runtime hash version");
+    expect(captureRuntimeIdentity().hashVersion).toBe(3);
   } finally {rmSync(root,{recursive:true,force:true});}
 });
 
@@ -31,7 +43,7 @@ test("runtime identity detects changed and missing code but ignores notes and bu
   const root = mkdtempSync(join(tmpdir(), "quotapie-identity-"));
   try {
     for (const path of ["src", "bin", "script", "scripts", "dist"]) mkdirSync(join(root, path));
-    for (const file of ["src/cli.ts", "bin/quotapie", "script/awake_hook.py", "script/codex-host-wake.py", "scripts/codex-compaction-local.py"]) writeFileSync(join(root, file), "initial");
+    for (const file of ["src/cli.ts", "bin/quotapie", "script/awake_hook.py", "script/codex-host-wake.py", "scripts/codex-compaction-local.py", "script/codex-session-consolidation.py"]) writeFileSync(join(root, file), "initial");
     mkdirSync(join(root, "packages/quota-core/src"), { recursive: true });
     writeFileSync(join(root, "packages/quota-core/package.json"), "{}");
     writeFileSync(join(root, "packages/quota-core/src/index.ts"), "initial");
@@ -39,6 +51,11 @@ test("runtime identity detects changed and missing code but ignores notes and bu
     writeFileSync(join(root, "TODO.md"), "notes");
     writeFileSync(join(root, "dist/app"), "build");
     expect(runtimeSourceHash(root)).toBe(initial);
+    writeFileSync(join(root, "script/codex-session-consolidation.py"), "changed consolidation helper");
+    expect(runtimeSourceHash(root)).not.toBe(initial);
+    unlinkSync(join(root, "script/codex-session-consolidation.py"));
+    expect(() => runtimeSourceHash(root)).toThrow();
+    writeFileSync(join(root, "script/codex-session-consolidation.py"), "initial");
     writeFileSync(join(root, "script/codex-host-wake.py"), "changed wake helper");
     expect(runtimeSourceHash(root)).not.toBe(initial);
     unlinkSync(join(root, "script/codex-host-wake.py"));

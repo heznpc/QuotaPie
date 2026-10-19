@@ -55,7 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var selectionSubscription: AnyCancellable?
     private var activationObserver: NSObjectProtocol?
     private var lifecycleObservers: [NSObjectProtocol] = []
-    private let profileUpdateMonitor = CodexProfileUpdateMonitor(profiles: { CodexProfilesModel.shared.profiles },
+    private let profileUpdateMonitor = CodexProfileUpdateMonitor(profiles: { CodexProfilesModel.shared.automaticRestorationProfiles },
         defaults: .standard, installShortcuts: true)
     private let verification = AppVerification.current
     private var isFixturePreview: Bool {

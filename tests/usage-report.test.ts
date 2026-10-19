@@ -1,7 +1,8 @@
 import { zstdCompressSync } from "node:zlib";
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, realpathSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, realpathSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config";
@@ -23,6 +24,29 @@ const context = (model: string) => ({ type: "turn_context", payload: { model } }
 const usage = (at: number, input: number, cached: number, output: number, last?: number) => ({ timestamp: iso(at), type: "event_msg", payload: { type: "token_count", info: { total_token_usage: { input_tokens: input, cached_input_tokens: cached, output_tokens: output, total_tokens: input + output }, last_token_usage: last == null ? null : { input_tokens: last, total_tokens: last } } } });
 function file(path: string, records: unknown[]) { mkdirSync(join(path, ".."), { recursive: true }); writeFileSync(path, records.map(r => JSON.stringify(r)).join("\n") + "\n"); return path; }
 const query = { fromMs: FROM, toMs: NOW, timeZone: "Asia/Seoul" };
+test("completed consolidation preserves B attribution and totals once while only canonical appends advance usage",async()=>{
+  const f=fixture(),primaryHome=realpathSync(f.codex),sourceHome=join(realpathSync(f.dir),"other"),primaryAppData=join(realpathSync(f.dir),"primary-app"),sourceData=join(realpathSync(f.dir),"source-app"),directory=join(realpathSync(f.dir),"QuotaPie");
+  for(const path of [sourceHome,primaryAppData,sourceData,directory])mkdirSync(path,{mode:0o700});
+  f.config.accounts.codex.push({id:"other",label:"Other",enabled:true,codexHome:sourceHome});
+  const markerPath=join(directory,"session-consolidation.json"),manifestPath=join(directory,"manifest.json");
+  const index=new UsageReportIndex({relayRoot:null,relayLogsRoot:null,sessionLocation:{markerPath,primaryHome,primaryAppData}});
+  file(join(primaryHome,"sessions","a.jsonl"),[meta(A),context("sol"),usage(FROM+1000,100,0,0)]);
+  const old=file(join(sourceHome,"sessions","b.jsonl"),[meta(B),context("astra"),usage(FROM+1000,200,0,0)]);
+  const before=await index.report(f.config,query);expect(before.total.totalTokens).toBe(300);
+  const copied=join(primaryHome,"sessions","b.jsonl");copyFileSync(old,copied);
+  const manifest=JSON.stringify({version:1,sourceHome,primaryHome,threadIds:[B]});writeFileSync(manifestPath,manifest,{mode:0o600});
+  writeFileSync(markerPath,JSON.stringify({version:1,state:"complete",completedAtMs:NOW-1000,primary:{codexHome:primaryHome,appData:primaryAppData},sources:[{codexHome:sourceHome,appData:sourceData,manifestPath,manifestSHA256:createHash("sha256").update(manifest).digest("hex")}]}),{mode:0o600});
+  const db=new Database(join(primaryHome,"state_5.sqlite"));db.exec("CREATE TABLE threads(id TEXT,title TEXT,rollout_path TEXT)");db.run("INSERT INTO threads VALUES(?,?,?)",[B,"Canonical B title",copied]);db.close();
+  appendFileSync(old,JSON.stringify(usage(FROM+2000,900,0,0))+"\n");
+  const after=await index.report(f.config,query);expect(after.total.totalTokens).toBe(300);
+  expect(after.sessions.find(s=>s.sessionId===B)).toMatchObject({id:before.sessions.find(s=>s.sessionId===B)!.id,account:"other",label:"Canonical B title",totalTokens:200});
+  appendFileSync(copied,JSON.stringify(usage(FROM+3000,250,0,0))+"\n");
+  expect((await index.report(f.config,{...query,provider:"codex",account:"other"})).total.totalTokens).toBe(250);
+  f.config.accounts.codex[0]!.enabled=false;
+  expect((await index.report(f.config,query)).total.totalTokens).toBe(250);
+  f.config.accounts.codex[0]!.enabled=true;f.config.accounts.codex[1]!.enabled=false;
+  expect((await index.report(f.config,query)).total.totalTokens).toBe(100);
+});
 test("cumulative deltas, model changes, mirror dedupe and equal preceding range", async () => {
   const f = fixture(); const rows = [meta(), context("astra"), usage(FROM - 1000, 100, 20, 10), usage(FROM + 1000, 200, 40, 20), context("sol"), usage(FROM + 2000, 300, 60, 30), usage(FROM + 3000, 300, 60, 30)];
   file(join(f.codex, "sessions", "main.jsonl"), rows); file(join(f.codex, "archived_sessions", "mirror.jsonl"), rows);

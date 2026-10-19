@@ -5,7 +5,8 @@ import { constants } from "node:fs";
 import { open, readdir, realpath, type FileHandle } from "node:fs/promises";
 import { basename, join, relative } from "node:path";
 import { homedir } from "node:os";
-import { codexProfileRoot, resolveUserPath, dataDirectory, type AppConfig } from "./config";
+import { resolveUserPath, dataDirectory, type AppConfig } from "./config";
+import { codexSessionLocation, codexSessionOrigins, type CodexSessionOrigin, type SessionLocationOptions } from "./session-location";
 import { parseCompactionRequestEvent, type CompactionRequestEvent } from "../packages/quota-core/src/events.js";
 
 export interface UsageTotals {
@@ -35,7 +36,7 @@ export interface UsageReportQuery {
   fromMs: number; toMs: number; timeZone?: string; provider?: string; account?: string; relayRoot?: string; resetBoundaries?: readonly UsageResetBoundary[];
   requestEvents?: readonly CompactionRequestEvent[];
 }
-interface Options { maxBytesPerScan?: number; maxFiles?: number; maxRecordsPerFile?: number; inventoryTtlMs?: number; relayRoot?: string | null; relayLogsRoot?: string | null }
+interface Options { maxBytesPerScan?: number; maxFiles?: number; maxRecordsPerFile?: number; inventoryTtlMs?: number; relayRoot?: string | null; relayLogsRoot?: string | null; sessionLocation?: SessionLocationOptions }
 type Provider = "codex" | "claude" | "relay";
 interface Source { path: string; root: string; provider: Provider; account: string; accountLabel: string }
 interface Usage extends UsageTotals { key: string; at: number; model: string; session: string; project: string; helper: boolean; repositoryUrl?: string; parentSessionId?: string; agentName?: string }
@@ -157,7 +158,9 @@ function projection(line: string, cache: Cache) {
 export class UsageReportIndex {
   private caches = new Map<string, Cache>(); private inventory: Source[] = []; private inventoryAt = 0; private inventoryKey = "";
   private compressedSkipped = 0; private skipped = 0; private failedPaths = new Set<string>(); private pending?: Promise<UsageReport>; private cursor = 0;
-  private options: Required<Options>;
+  private options: Required<Omit<Options,"sessionLocation">> & Pick<Options,"sessionLocation">;
+  private codexOrigins: CodexSessionOrigin[] = [];
+  private codexOriginalRoots = new Set<string>();
   constructor(options: Options = {}) { this.options = { maxBytesPerScan: 64 * 1024 * 1024, maxFiles: 10000, maxRecordsPerFile: 100000,
     inventoryTtlMs: 30000, relayRoot: join(homedir(), ".local/lib/quotapie-compaction"), relayLogsRoot: join(dataDirectory(), "relay-logs"), ...options }; }
   async report(config: AppConfig, query: UsageReportQuery): Promise<UsageReport> {
@@ -167,7 +170,23 @@ export class UsageReportIndex {
     try { return await run; } finally { if (this.pending === run) this.pending = undefined; }
   }
   private async discover(config: AppConfig, relayRoot?: string) {
-    const key = JSON.stringify([config.accounts, relayRoot]); if (key === this.inventoryKey && Date.now() - this.inventoryAt < this.options.inventoryTtlMs) return;
+    const profiles = new Map<string,Omit<Source,"path">>();
+    this.codexOriginalRoots.clear(); let codexAvailable = true;
+    try { this.codexOrigins = codexSessionOrigins(config,this.options.sessionLocation); }
+    catch { this.codexOrigins = []; codexAvailable = false; }
+    for (const provider of ["codex","claude"] as const) for (const account of config.accounts[provider]) {
+      if (!account.enabled || provider === "codex" && !codexAvailable) continue;
+      try {
+        const location = provider === "codex" ? codexSessionLocation(config,account.id,undefined,this.options.sessionLocation) : null;
+        if (provider === "codex" && !location) continue;
+        const root = location?.sessionRoot ?? await realpath(resolveUserPath((account as AppConfig["accounts"]["claude"][number]).configDir));
+        const key = `${provider}:${root}`, source = {root,provider,account:account.id,accountLabel:account.nickname?.trim()||account.label};
+        if (provider === "codex" && !location!.consolidated) this.codexOriginalRoots.add(root);
+        if (!profiles.has(key) || provider === "codex" && !location!.consolidated) profiles.set(key,source);
+      } catch { /* An invalid migration cannot revive a retired store. */ }
+    }
+    const key = JSON.stringify([[...profiles.values()], this.codexOrigins.map(o=>({...o,threadIds:[...o.threadIds]})),relayRoot]);
+    if (key === this.inventoryKey && Date.now() - this.inventoryAt < this.options.inventoryTtlMs) return;
     this.skipped = 0; this.compressedSkipped = 0; this.failedPaths.clear(); const inventory: Source[] = [], roots = new Set<string>();
     const visit = async (dir: string, source: Omit<Source, "path">, depth = 0): Promise<void> => {
       if (depth > 7) { this.skipped++; return; } let entries;
@@ -180,11 +199,9 @@ export class UsageReportIndex {
         else if (entry.isFile() && (source.provider === "relay" ? /(?:relay\.log(?:\.\d+)?|\.jsonl(?:\.\d+)?)$/.test(entry.name) : entry.name.endsWith(".jsonl"))) inventory.push({ ...source, path });
       }
     };
-    for (const provider of ["codex", "claude"] as const) for (const account of config.accounts[provider]) {
-      if (!account.enabled) continue; let root: string;
-      try { root = await realpath(provider === "codex" ? codexProfileRoot(account as AppConfig["accounts"]["codex"][number]) : resolveUserPath((account as AppConfig["accounts"]["claude"][number]).configDir)); } catch { this.skipped++; continue; }
+    for (const source of profiles.values()) {
+      const {root,provider}=source;
       if (roots.has(`${provider}:${root}`)) continue; roots.add(`${provider}:${root}`);
-      const source = { root, provider, account: account.id, accountLabel: account.nickname?.trim() || account.label };
       for (const folder of provider === "codex" ? ["sessions", "archived_sessions"] : ["projects"]) await visit(join(root, folder), source);
     }
     for (const relay of [relayRoot ?? this.options.relayRoot, this.options.relayLogsRoot]) if (relay) {
@@ -203,6 +220,16 @@ export class UsageReportIndex {
     this.inventory = inventory; this.inventoryAt = Date.now(); this.inventoryKey = key;
     const paths = new Set(inventory.map(s => s.path)); for (const path of this.caches.keys()) if (!paths.has(path)) this.caches.delete(path);
   }
+  private attributedSource(source:Source,session:string):Source|null {
+    if (source.provider !== "codex") return source;
+    const origins=this.codexOrigins.filter(o=>o.sessionRoot===source.root&&o.threadIds.has(session));
+    if (origins.length>1) return null;
+    if (origins.length===1) {
+      const owner=origins[0]!;
+      return owner.enabled&&owner.account&&owner.label ? {...source,account:owner.account,accountLabel:owner.label} : null;
+    }
+    return this.codexOriginalRoots.has(source.root)?source:null;
+  }
   private async scan(source: Source, budget: number, handles: Map<string, ScanHandle>): Promise<number> {
     let held = handles.get(source.path);
     if (!held) {
@@ -214,6 +241,7 @@ export class UsageReportIndex {
           cache = { source, identity, offset: 0, mtime: 0, size: 0, skipLine: false, session: "", model: "unknown", project: "Project", helper: false,
             compactions: new Map(), records: new Map(), events: new Map(), malformed: 0, capped: false, complete: false }; this.caches.set(path, cache);
         }
+        cache.source = source;
         if (cache.complete && cache.size === info.size && cache.mtime === info.mtimeMs) { await file.close(); return 0; }
         cache.source = source; cache.size = info.size; cache.mtime = info.mtimeMs;
         held = { file, cache, size: info.size }; handles.set(source.path, held);
@@ -277,12 +305,13 @@ export class UsageReportIndex {
     const records = new Map<string, { source: Source; usage: Usage }>(), requests = new Map<string, CompactionRequestEvent>();
     for (const cache of this.caches.values()) {
       result.coverage.malformedLines += cache.malformed; if (cache.capped) result.coverage.filesSkipped++;
+      const attributedSource=this.attributedSource(cache.source,cache.session);if(!attributedSource)continue;
       for (const usage of cache.records.values()) { const key = `${cache.source.provider}:${usage.key}`, old = records.get(key);
-        const source = old && old.source.account !== cache.source.account ? { ...cache.source, account: "unknown", accountLabel: "계정 귀속 불명" } : cache.source;
+        const source = old && old.source.account !== attributedSource.account ? { ...attributedSource, account: "unknown", accountLabel: "계정 귀속 불명" } : attributedSource;
         if (!old || old.usage.totalTokens < usage.totalTokens || source.account === "unknown") records.set(key, { source, usage: old && old.usage.totalTokens > usage.totalTokens ? old.usage : usage }); }
       for (const [id, marker] of cache.compactions) {
         const key = `${cache.source.provider}:${id}`, old = localCompactions.get(key);
-        const source = old && old.source.account !== cache.source.account ? {...cache.source,account:"unknown",accountLabel:"계정 귀속 불명"} : cache.source;
+        const source = old && old.source.account !== attributedSource.account ? {...attributedSource,account:"unknown",accountLabel:"계정 귀속 불명"} : attributedSource;
         localCompactions.set(key, {source, ...marker});
       }
       for (const e of cache.events.values()) { const old = requests.get(e.requestId); if (!old || stamp(old.at) <= stamp(e.at)) requests.set(e.requestId, e); }
@@ -364,14 +393,15 @@ export class UsageReportIndex {
     for (const account of config.accounts.codex.filter(a => a.enabled)) {
       let db: Database | undefined;
       try {
-        const root = await realpath(codexProfileRoot(account));
+        const location=codexSessionLocation(config,account.id,undefined,this.options.sessionLocation);if(!location)continue;
+        const root = location.sessionRoot;
         const name = (await readdir(root)).filter(n => /^state_\d+\.sqlite$/.test(n)).sort((a,b) => Number(b.slice(6,-7)) - Number(a.slice(6,-7)))[0];
         if (!name) continue;
         const dbPath = await realpath(join(root,name)); if (!contained(root,dbPath)) continue;
         db = new Database(dbPath, {readonly:true,strict:true});
         const lookup = db.query<{title:string;rollout_path:string},[string]>("SELECT title, rollout_path FROM threads WHERE id=?");
         const indexed = new Map<string,Set<string>>();
-        for (const c of this.caches.values()) if (c.source.provider === "codex" && c.source.account === account.id) {
+        for (const c of this.caches.values()) if (c.source.provider === "codex" && this.attributedSource(c.source,c.session)?.account === account.id) {
           const paths = indexed.get(c.session) ?? new Set<string>(); paths.add(c.source.path); indexed.set(c.session,paths);
         }
         for (const session of result.sessions.filter(s => s.provider === "codex" && s.account === account.id && s.sessionId)) {

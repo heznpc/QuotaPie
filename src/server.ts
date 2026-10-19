@@ -56,7 +56,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
   const dots = new DotsConnection({ config: () => config });
   const usageReports = new UsageReportAPI(config, service.db.db, options.compactionRoot);
   const officialUsage = new OfficialUsageAPI(config, fetch, undefined, (account, query, now) =>
-    officialUsageBoundary(service.db.db, config, account, query, now), readOfficialThreadCandidates);
+    officialUsageBoundary(service.db.db, config, account, query, now), (profile, expected) => readOfficialThreadCandidates(profile, expected, { config }));
   const dashboardFile = Bun.file(new URL("./dashboard.html", import.meta.url));
   const actionToken = randomBytes(32).toString("base64url");
   const tokenMatches = (candidate: string | null): boolean => {
@@ -76,6 +76,18 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
       const allowedHosts = new Set(["127.0.0.1", "localhost", "::1", config.dashboard.host.toLowerCase()]);
       if (!hostname || !allowedHosts.has(hostname)) return json({ error: "invalid_host" }, 403);
       const url = new URL(request.url);
+      if (url.pathname === "/api/session-consolidation") {
+        if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token")))
+          return json({ error: "forbidden" }, 403);
+        if (request.method === "GET") return json(service.sessionConsolidation.status());
+        if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+        try {
+          const body = await request.text();
+          if (body.length > 16384) throw new Error("consolidation-invalid-source");
+          return json(service.sessionConsolidation.request(JSON.parse(body)), 202);
+        } catch (error) { return json({ error: error instanceof Error && /^consolidation-[a-z-]+$/.test(error.message)
+          ? error.message : "consolidation-request-failed" }, 409); }
+      }
       if (url.pathname === "/api/official-usage") {
         if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
         const origin = request.headers.get("origin");

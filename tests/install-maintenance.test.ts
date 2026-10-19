@@ -5,7 +5,7 @@ import {tmpdir} from "node:os";
 import {QuotaStorage} from "../src/storage/database";
 import {WorkStore} from "../src/work/store";
 import type {WorkPolicyInput} from "../src/work/types";
-import {InstallMaintenance} from "../script/install-maintenance";
+import {InstallMaintenance,type MaintenanceOwner,type MaintenanceOwnerProbe} from "../script/install-maintenance";
 
 function fixture() {
   const directory=mkdtempSync(join(tmpdir(),"quotapie-maintenance-")), path=join(directory,"quotapie.sqlite3");
@@ -75,4 +75,70 @@ test("a failed recovery keeps fences durable; release never removes another owne
     expect(()=>maintenance!.release()).toThrow("fence changed");
     expect(f.store.fences()[0]!.reason).toBe("changed-by-another-owner");
   } finally {maintenance?.close();f.close();}
+});
+
+const requestKey="a".repeat(64);
+const owner=(start="2000000000.000001",pid=process.pid):MaintenanceOwner=>({pid,uid:process.getuid!(),start});
+function setSavedOwner(f:ReturnType<typeof fixture>,saved:MaintenanceOwner){
+ for(const row of f.storage.db.query<{id:string;value:string},[]>("SELECT id,value FROM work_fences WHERE id LIKE 'install:%'").all()){
+  const value=JSON.parse(row.value);value.consolidation.owner=saved;
+  f.storage.db.query("UPDATE work_fences SET value=? WHERE id=?").run(JSON.stringify(value),row.id);
+ }
+}
+test("same migration request recovers only a provably dead owner without changing work consent",()=>{
+ const f=fixture();let fence:InstallMaintenance|null=null;const self=owner(),dead=owner("1999999999.000001",999999);
+ const probe:MaintenanceOwnerProbe=pid=>pid===process.pid?self:null;
+ try{
+  const saved=f.store.get("work");fence=InstallMaintenance.acquireConsolidation(f.path,requestKey,accounts,probe)!;
+  fence.close();fence=null;setSavedOwner(f,dead);
+  fence=InstallMaintenance.acquireConsolidation(f.path,requestKey,accounts,probe)!;
+  expect((f.store.fences()[0] as any).consolidation.owner).toEqual(self);expect(f.store.get("work")).toEqual(saved);
+  expect(f.store.claimRequest("work","local",1,"held").execution).toBeNull();
+  fence.release();fence=null;expect(f.store.fences()).toEqual([]);
+ }finally{fence?.close();f.close();}
+});
+test("recovery-only inspection never creates a migration fence",()=>{
+ const f=fixture(),self=owner();
+ try{
+  const saved=f.store.get("work");
+  expect(InstallMaintenance.recoverConsolidation(f.path,requestKey,accounts,()=>self)).toBeNull();
+  expect(f.store.fences()).toEqual([]);expect(f.store.get("work")).toEqual(saved);
+ }finally{f.close();}
+});
+for(const scenario of ["alive","unknown","wrong-key","other-install","modified","busy"])
+test(`migration recovery preserves ${scenario} fence without weakening ordinary installation`,()=>{
+ const f=fixture();let fence:InstallMaintenance|null=null;const self=owner(),saved=owner("1999999999.000001",999999);
+ const probe:MaintenanceOwnerProbe=pid=>pid===process.pid?self:null;
+ try{
+  fence=scenario==="other-install"?InstallMaintenance.acquire(f.path,"ordinary-install",accounts):InstallMaintenance.acquireConsolidation(f.path,requestKey,accounts,probe);
+  fence!.close();fence=null;
+  if(scenario!=="other-install")setSavedOwner(f,saved);
+  if(scenario==="busy")f.storage.db.query("INSERT INTO work_executions(id,policy_id,value) VALUES(?,?,?)").run("busy","work",JSON.stringify({status:"claimed"}));
+  const before=f.store.fences();
+  const inspect:MaintenanceOwnerProbe=pid=>{
+   if(pid===process.pid)return self;
+   if(scenario==="alive")return saved;
+   if(scenario==="unknown")return "unknown";
+   if(scenario==="modified"){
+    const row:any=f.storage.db.query("SELECT id,value FROM work_fences LIMIT 1").get();const value=JSON.parse(row.value);value.reason="changed";
+    f.storage.db.query("UPDATE work_fences SET value=? WHERE id=?").run(JSON.stringify(value),row.id);
+   }
+   return null;
+  };
+  expect(()=>InstallMaintenance.acquireConsolidation(f.path,scenario==="wrong-key"?"b".repeat(64):requestKey,accounts,inspect)).toThrow();
+  if(scenario!=="modified")expect(f.store.fences()).toEqual(before);else expect(f.store.fences()[0]?.reason).toBe("changed");
+  expect(()=>InstallMaintenance.acquire(f.path,"ordinary-retry",accounts)).toThrow();
+ }finally{fence?.close();f.close();}
+});
+test("an orphaned apply helper keeps the fence after collector death until its exact generation exits",()=>{
+ const f=fixture();let fence:InstallMaintenance|null=null;let self=owner(),helper:MaintenanceOwner|null=owner("2000000000.000002",999998);
+ const probe:MaintenanceOwnerProbe=pid=>pid===process.pid?self:pid===999998?helper:null;
+ try{
+  fence=InstallMaintenance.acquireConsolidation(f.path,requestKey,accounts,probe)!;fence.protectProcess(999998);
+  expect(()=>fence!.release()).toThrow("helper-active");fence.close();fence=null;
+  self=owner("2000000001.000001");
+  expect(()=>InstallMaintenance.acquireConsolidation(f.path,requestKey,accounts,probe)).toThrow("helper-active");
+  helper=null;fence=InstallMaintenance.acquireConsolidation(f.path,requestKey,accounts,probe)!;
+  fence.assertHeldAndIdle();fence.release();fence=null;expect(f.store.fences()).toEqual([]);
+ }finally{fence?.close();f.close();}
 });

@@ -82,7 +82,7 @@ describe("api compatibility during the displayText rename", () => {
 });
 
 test("runtime identity is captured once, without paths or configuration", async () => {
-  const { runtimeSourceHash } = await import("../src/runtime-identity");
+  const { RUNTIME_HASH_VERSION, runtimeSourceHash } = await import("../src/runtime-identity");
   const config = structuredClone(DEFAULT_CONFIG);
   config.dashboard.port = 0;
   const service = new QuotaPieService(config, new QuotaDatabase(":memory:"));
@@ -91,7 +91,7 @@ test("runtime identity is captured once, without paths or configuration", async 
     const url = `http://127.0.0.1:${server.port}/api/runtime`;
     const first = await (await fetch(url)).json();
     expect(first).toEqual(await (await fetch(url)).json());
-    expect(first).toMatchObject({ schemaVersion: 1, hashVersion: 2, pid: process.pid, sourceHash: runtimeSourceHash() });
+    expect(first).toMatchObject({ schemaVersion: 1, hashVersion: RUNTIME_HASH_VERSION, pid: process.pid, sourceHash: runtimeSourceHash() });
     expect(Object.keys(first).sort()).toEqual(["hashVersion", "pid", "schemaVersion", "sourceHash", "startedAt"]);
     expect((await fetch(url, { method: "POST" })).status).toBe(405);
   } finally { server.stop(true); service.close(); }
