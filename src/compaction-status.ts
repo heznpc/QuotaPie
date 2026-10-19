@@ -1,7 +1,8 @@
 import { sessionEfficiencyInsights } from "./session-efficiency";
 import { readdir, readFile, rename, writeFile, unlink } from "node:fs/promises";
 import { IncrementalJsonlReader } from "./incremental-jsonl";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import type { ModelNotificationEvent } from "./model-notifications";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CompactionRequestEvent } from "./codex-compaction";
@@ -94,7 +95,7 @@ export class CompactionStatusReader {
   private cached: Awaited<ReturnType<CompactionStatusReader["collect"]>> | null = null;
   private pending: ReturnType<CompactionStatusReader["collect"]> | null = null;
   private evidence = new Map<string, CompactionRequestEvent>();
-  private notificationEvidence: CompactionRequestEvent[] = [];
+  private notificationEvidence: ModelNotificationEvent[] = [];
   notificationEvents() { return this.notificationEvidence; }
   private evidenceLoaded = false;
   private savedEvidence = "";
@@ -170,7 +171,12 @@ export class CompactionStatusReader {
           if (ongoing(item.phase)) activeIds.add(item.requestId);
         }
       } catch { /* Never include endpoint/token-bearing transport errors in status. */ }
-      return { reachable, records: [...records.values()], activeIds, health, path: join(directory, "settings.json") };
+      // This namespace comes from local profile settings, never response metadata.
+      // Unknown/legacy profiles remain distinct by relay generation.
+      const scope = typeof settings.codex_home === "string" && settings.codex_home.startsWith("/")
+        ? settings.codex_home : directory;
+      const notificationScope = createHash("sha256").update(`quotapie:relay-profile:${scope}`).digest("hex");
+      return { reachable, records: [...records.values()], activeIds, health, notificationScope, path: join(directory, "settings.json") };
     }));
     const installed = generations.filter(g => g !== null);
     const merged = new Map(this.evidence);
@@ -184,7 +190,8 @@ export class CompactionStatusReader {
     for (const id of insights.flatMap(i => i.requestIds).slice(-200)) {
       const evidence = merged.get(id); if (evidence) retained.set(id, evidence);
     }
-    this.notificationEvidence = notificationEvidence;
+    const notificationScopes = new Map(installed.flatMap(g => g.records.map(record => [record.requestId, g.notificationScope] as const)));
+    this.notificationEvidence = notificationEvidence.map(record => ({...record, notificationScope: notificationScopes.get(record.requestId)}));
     this.evidence = retained;
     const serialized = JSON.stringify([...retained.values()]);
     if (installed.length && serialized !== this.savedEvidence) {

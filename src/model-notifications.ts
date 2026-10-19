@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { CompactionRequestEvent } from "./codex-compaction";
 import type { TriggerDecision } from "./types";
 import type { AppConfig } from "./config";
@@ -5,6 +6,8 @@ import { t, type Locale, type MessageKey } from "./i18n";
 import { notificationAllowed } from "./notification-preferences";
 import { AlertStore } from "./storage/alert-store";
 import type { QuotaStorage } from "./storage/database";
+
+export type ModelNotificationEvent = CompactionRequestEvent & { notificationScope?: string };
 
 interface RouteState {
   started: number;
@@ -22,7 +25,7 @@ const short = (model: string) => model.replace(/^gpt-\d+(?:\.\d+)?-/, "");
 export class ModelNotifications {
   constructor(private storage: QuotaStorage, private alerts: AlertStore) {}
 
-  observe(events: CompactionRequestEvent[], config: AppConfig, locale: Locale, now = Date.now()): void {
+  observe(events: ModelNotificationEvent[], config: AppConfig, locale: Locale, now = Date.now()): void {
     this.storage.transaction(() => {
       for (const event of [...events].sort((a, b) =>
         (Date.parse(a.at) - a.durationMs) - (Date.parse(b.at) - b.durationMs) || Date.parse(a.at) - Date.parse(b.at))) {
@@ -40,6 +43,8 @@ export class ModelNotifications {
         const route = `${event.to}:${event.reasoningEffort}:${event.routed}`;
         const changed = !previous || previous.route !== route;
         const sameRequest = previous?.request === event.requestId;
+        // Late snapshots cannot regress an already observed terminal request.
+        if (sameRequest && previous && !ongoing(previous.phase) && ongoing(event.phase)) continue;
         const failed = ["failed", "cancelled", "unverified"].includes(event.phase);
         const state: RouteState = {
           started, request: event.requestId, route, routed: event.routed, phase: event.phase,
@@ -58,13 +63,30 @@ export class ModelNotifications {
         } else if (event.routed && event.responseModel && event.responseModel !== previous?.responseModel) {
           key = "model.notice.confirmed";
         }
-        if (key) {
+        const notificationGroup = compact ? createHash("sha256").update(
+          JSON.stringify(["quotapie:compaction", event.notificationScope ?? null,
+            event.notificationScope && event.threadId ? "thread:" + event.threadId : "request:" + event.requestId])).digest("hex") : null;
+        const groupScope = notificationGroup ? `compaction-group:${notificationGroup}` : null;
+        const groupRow = groupScope ? this.storage.db.query<{ payload: string }, [string]>(
+          "SELECT payload FROM model_notification_state WHERE scope = ?").get(groupScope) : null;
+        const groupPrevious: RouteState | null = groupRow ? JSON.parse(groupRow.payload) : null;
+        // Separate provider requests are not declared retries or recoveries. We
+        // show only the latest request in this conversation, retaining all events.
+        const latestInGroup = !groupPrevious || started > groupPrevious.started ||
+          started === groupPrevious.started && event.requestId >= groupPrevious.request;
+        if (compact && key === "model.notice.failed") {
+          if (event.phase === "cancelled" && event.errorCode === "client_disconnected") key = "model.notice.cancelled";
+          else if (event.phase === "failed" && (event.errorCode === "provider_stream_error" ||
+            event.errorCode === "upstream_http_error" && event.status >= 500)) key = "model.notice.providerFailed";
+        }
+        if (key && latestInGroup) {
           const titleKey = compact ? "model.notice.compaction" : event.routed ? "model.notice.savings" : "model.notice.original";
           const params = {
             fromLabel: `${short(event.from)} ${event.requestedEffort ?? "?"}`,
             toLabel: `${short(event.to)} ${event.reasoningEffort ?? "?"}`,
             label: event.responseModel ? short(event.responseModel) : "?",
             detail: String(Math.round(event.durationMs / 1000)),
+            ...(notificationGroup ? { notificationGroup } : {}),
           };
           const decision: TriggerDecision = {
             key: `model:${scope}:${event.requestId}:${key}`, title: t(titleKey, {}, locale),
@@ -74,9 +96,15 @@ export class ModelNotifications {
           if (config.alerts.macOSNotifications && notificationAllowed(decision, config.alerts)) {
             // Native-only, with a short TTL: model transitions should not later
             // appear as though an old request is still being routed.
+            if (notificationGroup) this.alerts.cancelAppNotificationsWhere(item =>
+              item.presentation?.title.key === "model.notice.compaction" &&
+              item.presentation.message.params.notificationGroup === notificationGroup, now);
             this.alerts.queueMacOSNotification(decision, decision.key, now, now + 120_000);
           }
         }
+        if (groupScope && latestInGroup) this.storage.db.query(`INSERT INTO model_notification_state(scope, payload, updated_at_ms) VALUES (?, ?, ?)
+          ON CONFLICT(scope) DO UPDATE SET payload=excluded.payload, updated_at_ms=excluded.updated_at_ms`)
+          .run(groupScope, JSON.stringify(state), at);
         // Muted observations are consumed too, so unmuting cannot replay them.
         this.storage.db.query(`INSERT INTO model_notification_state(scope, payload, updated_at_ms) VALUES (?, ?, ?)
           ON CONFLICT(scope) DO UPDATE SET payload=excluded.payload, updated_at_ms=excluded.updated_at_ms`)

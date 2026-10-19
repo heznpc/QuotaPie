@@ -55,6 +55,84 @@ final class NotificationPresenterTests: XCTestCase {
         XCTAssertTrue(client.releases.isEmpty)
     }
 
+    func testCompactionUpdatesDisplayPerThreadButKeepsEachRowsDeliveryLedger() {
+        let group = String(repeating: "ab", count: 32)
+        let first = makeNotification(presentation: compactionPresentation(group: .string(group), messageKey: "model.notice.providerFailed"))
+        let second = makeNotification(id: "22222222-2222-4222-8222-222222222222",
+                                      presentation: compactionPresentation(group: .string(group), messageKey: "model.notice.completed"))
+        let client = FakeNotificationClient(claims: [
+            .success(NotificationClaimResponse(notification: first)),
+            .success(NotificationClaimResponse(notification: second)),
+            .success(NotificationClaimResponse(notification: first)),
+            .success(NotificationClaimResponse(notification: nil)),
+        ])
+        let scheduler = FakeNotificationScheduler(status: .authorized)
+        let ledger = InMemoryNotificationLedger()
+        let drained = expectation(description: "thread display updated and duplicate row acknowledged")
+        client.onClaim = { if $0 == 4 { drained.fulfill() } }
+        let presenter = makePresenter(client: client, scheduler: scheduler, ledger: ledger)
+        presenter.statusDidRefresh(actionToken: "action-token")
+        wait(for: [drained], timeout: 1)
+
+        XCTAssertEqual(scheduler.added.map(\.identifier), Array(repeating: "local.quotapie.compaction.\(group)", count: 2))
+        XCTAssertEqual(scheduler.added.map(\.notificationID), [first.id, second.id])
+        XCTAssertEqual(scheduler.added.map(\.body), [first.localizedMessage, second.localizedMessage])
+        XCTAssertNotEqual(first.localizedMessage, second.localizedMessage)
+        XCTAssertEqual(client.completions.map(\.id), [first.id, second.id, first.id])
+        XCTAssertEqual(client.completions.map(\.disposition), [.scheduled, .scheduled, .scheduled])
+        XCTAssertEqual(client.renewals.map(\.id), [first.id, second.id])
+        XCTAssertTrue(ledger.contains(first.id, at: fixedNow))
+        XCTAssertTrue(ledger.contains(second.id, at: fixedNow))
+        XCTAssertFalse(ledger.contains(first.requestIdentifier, at: fixedNow))
+        XCTAssertTrue(client.releases.isEmpty)
+    }
+
+    func testDifferentCompactionThreadsHaveIndependentDisplayIdentifiers() {
+        let first = makeNotification(presentation: compactionPresentation(group: .string(String(repeating: "a", count: 64))))
+        let second = makeNotification(presentation: compactionPresentation(group: .string(String(repeating: "b", count: 64))))
+        XCTAssertNotEqual(first.requestIdentifier, second.requestIdentifier)
+        XCTAssertEqual(first.requestIdentifier, "local.quotapie.compaction." + String(repeating: "a", count: 64))
+        XCTAssertEqual(second.requestIdentifier, "local.quotapie.compaction." + String(repeating: "b", count: 64))
+    }
+
+    func testInvalidOrMissingCompactionGroupKeepsUniqueRowIdentifier() {
+        let invalid: [MessageParameter?] = [nil, .null, .bool(true), .number(12), .string(""),
+            .string(String(repeating: "a", count: 63)), .string(String(repeating: "a", count: 65)),
+            .string(String(repeating: "A", count: 64)), .string(String(repeating: "g", count: 64)),
+            .string(String(repeating: "a", count: 64) + "\n"), .string(" " + String(repeating: "a", count: 63)),
+            .string("/" + String(repeating: "a", count: 63)), .string(String(repeating: "ａ", count: 64))]
+        for group in invalid {
+            let notification = makeNotification(presentation: compactionPresentation(group: group))
+            XCTAssertEqual(notification.requestIdentifier, "local.quotapie.notification.\(notification.id)")
+        }
+    }
+
+    func testGroupCannotMergeOtherNotificationTopicsOrPlainFallbackMessages() {
+        let group = String(repeating: "a", count: 64)
+        for titleKey in ["model.notice.savings", "alert.remaining.title", "alert.resume.auto.title", "model.notice.compaction "] {
+            let notification = makeNotification(presentation: compactionPresentation(group: .string(group), titleKey: titleKey))
+            XCTAssertEqual(notification.requestIdentifier, "local.quotapie.notification.\(notification.id)")
+        }
+        let titleOnlyGroup = makeNotification(presentation: NotificationPresentationPayload(
+            title: LocalizedMessagePayload(key: "model.notice.compaction", params: ["notificationGroup": .string(group)]),
+            message: LocalizedMessagePayload(key: "model.notice.failed", params: [:])))
+        XCTAssertEqual(titleOnlyGroup.requestIdentifier, "local.quotapie.notification.\(titleOnlyGroup.id)")
+        let plain = makeNotification()
+        XCTAssertEqual(plain.requestIdentifier, "local.quotapie.notification.\(plain.id)")
+    }
+
+    func testCompactionServerErrorAndClientCancellationRenderTheirDistinctMessages() {
+        for key in ["model.notice.providerFailed", "model.notice.cancelled"] {
+            let notification = makeNotification(presentation: compactionPresentation(group: nil, messageKey: key))
+            XCTAssertEqual(notification.localizedMessage, Strings.t(key, "model", "6"))
+            XCTAssertNotEqual(notification.localizedMessage, notification.message)
+            XCTAssertNotEqual(notification.localizedMessage, key)
+            XCTAssertNotEqual(notification.localizedMessage, Strings.t("model.notice.failed", "model", "6"))
+            let incomplete = LocalizedMessagePayload(key: key, params: ["toLabel": .string("model")])
+            XCTAssertEqual(incomplete.rendered(fallback: "missing duration"), "missing duration")
+        }
+    }
+
     func testDeniedAuthorizationCompletesAsSuppressed() {
         let notification = makeNotification()
         let client = FakeNotificationClient(claims: [
@@ -360,6 +438,18 @@ final class NotificationPresenterTests: XCTestCase {
             expiresAtMs: expiresAtMs ?? fixedNow.timeIntervalSince1970 * 1_000 + 60_000,
             claimToken: "claim-token"
         )
+    }
+
+    private func compactionPresentation(
+        group: MessageParameter?,
+        titleKey: String = "model.notice.compaction",
+        messageKey: String = "model.notice.failed"
+    ) -> NotificationPresentationPayload {
+        var params: [String: MessageParameter] = ["toLabel": .string("model"), "detail": .string("6"), "label": .string("model")]
+        params["notificationGroup"] = group
+        return NotificationPresentationPayload(
+            title: LocalizedMessagePayload(key: titleKey, params: [:]),
+            message: LocalizedMessagePayload(key: messageKey, params: params))
     }
 }
 

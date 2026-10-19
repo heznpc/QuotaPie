@@ -59,6 +59,7 @@ test("compaction through both profile relays reaches the native notification out
     await writeFile(join(root, "current.json"), JSON.stringify({ settings_path: paths[0], profile_settings: { second: paths[1] } }));
     const reader = new CompactionStatusReader(root);
     expect((await reader.status()).recent).toHaveLength(2);
+    expect(new Set(reader.notificationEvents().map(event=>event.notificationScope)).size).toBe(2);
     const observer = new ModelNotifications(service.storage, service.alerts);
     observer.observe(reader.notificationEvents(), config, "ko");
     const notifications = service.alerts.pendingAppNotifications(Date.now());

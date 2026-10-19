@@ -3,13 +3,13 @@ import { randomUUID } from "node:crypto";
 import { DEFAULT_CONFIG } from "../src/config";
 import { QuotaDatabase } from "../src/db";
 import { QuotaPieService } from "../src/service";
-import { ModelNotifications } from "../src/model-notifications";
+import { ModelNotifications, type ModelNotificationEvent } from "../src/model-notifications";
 import { notificationTopic } from "../src/notification-preferences";
 import type { CompactionRequestEvent } from "../src/codex-compaction";
 
 const now = Date.now();
-const base = (patch: Partial<CompactionRequestEvent> = {}): CompactionRequestEvent => ({
-  requestId: randomUUID(), threadId: randomUUID(), turnId: null, kind: "compaction", from: "gpt-6-astra", to: "gpt-5.6-sol",
+const base = (patch: Partial<ModelNotificationEvent> = {}): ModelNotificationEvent => ({
+  notificationScope: "fixture-profile-one", requestId: randomUUID(), threadId: randomUUID(), turnId: null, kind: "compaction", from: "gpt-6-astra", to: "gpt-5.6-sol",
   requestedEffort: "xhigh", reasoningEffort: "low", routed: true, phase: "started", status: 0, at: new Date(now).toISOString(), durationMs: 0, ...patch,
 });
 function setup() {
@@ -33,10 +33,10 @@ test("compaction start, headers, finish and restart deliver once with honest mod
     expect(pending()).toHaveLength(1);
     const end = { ...headers, phase: "completed" as const, at: new Date(now + 3000).toISOString(), durationMs: 3000 };
     observer.observe([end], config, "ko", now + 3000);
-    expect(pending()).toHaveLength(2);
-    expect(pending()[1]?.message).toContain("응답 모델: 미확인");
+    expect(pending()).toHaveLength(1);
+    expect(pending()[0]?.message).toContain("응답 모델: 미확인");
     new ModelNotifications(service.storage, service.alerts).observe([end], config, "ko", now + 4000);
-    expect(pending()).toHaveLength(2);
+    expect(pending()).toHaveLength(1);
   } finally { await service.close(); }
 });
 
@@ -90,4 +90,53 @@ test("a fresh request can report failure after an earlier request on the same ro
     observer.observe([{...second, phase: "failed", at: new Date(now + 3000).toISOString(), durationMs: 1000}], config, "ko", now + 3000);
     expect(pending().filter(n => n.severity === "warning")).toHaveLength(2);
   } finally { await service.close(); }
+});
+
+test("compaction replaces pending and claimed notices while preserving durable per-request evidence", async () => {
+  const {config,service,observer,pending}=setup();
+  try {
+    const first=base(); observer.observe([first],config,"ko",now);
+    const claim=service.alerts.claimNextAppNotification(now)!;
+    const group=claim.presentation!.message.params.notificationGroup;
+    expect(group).toMatch(/^[0-9a-f]{64}$/);
+    expect(group).not.toContain(first.threadId!);
+    const failure={...first,phase:"failed" as const,failureOrigin:"provider_protocol" as const,errorCode:"provider_stream_error",durationMs:2000,at:new Date(now+2000).toISOString()};
+    observer.observe([failure],config,"ko",now+2000);
+    expect(service.alerts.renewAppNotification(claim.id,claim.claimToken,now+2000)).toBe(false);
+    expect(service.alerts.completeAppNotification(claim.id,claim.claimToken,"scheduled",now+2000)).toBe(false);
+    expect(pending()).toHaveLength(1);
+    expect(pending()[0]!.message).toContain("서버 오류");
+    const second=base({threadId:first.threadId,at:new Date(now+10000).toISOString()});
+    observer.observe([second],config,"ko",now+10000);
+    expect(pending()).toHaveLength(1);
+    expect(pending()[0]!.presentation!.message.params.notificationGroup).toBe(group);
+    const complete={...second,phase:"completed" as const,responseModel:"gpt-5.6-sol",durationMs:28000,at:new Date(now+38000).toISOString()};
+    observer.observe([complete],config,"ko",now+38000);
+    expect(pending()).toHaveLength(1); expect(pending()[0]!.message).toContain("압축 요청 완료");
+    const id=pending()[0]!.id;
+    new ModelNotifications(service.storage,service.alerts).observe([{...failure,at:new Date(now+40000).toISOString(),durationMs:40000},second,complete],config,"ko",now+40000);
+    expect(pending().map(x=>x.id)).toEqual([id]);
+    const rows=service.storage.db.query<{scope:string},[]>("SELECT scope FROM model_notification_state WHERE scope LIKE 'compaction:%'").all();
+    expect(rows.map(x=>x.scope).sort()).toEqual([`compaction:${first.requestId}`,`compaction:${second.requestId}`].sort());
+  } finally {await service.close();}
+});
+
+test("different conversations and unidentified requests are never merged", async () => {
+  const {config,service,observer,pending}=setup();
+  try {
+    const threadId=randomUUID();
+    observer.observe([base({threadId}),base({threadId,notificationScope:"profile-two"}),base({threadId:null}),base({threadId:null}),
+      base({threadId,notificationScope:undefined}),base({threadId,notificationScope:undefined})],config,"ko",now);
+    expect(pending()).toHaveLength(6);
+    expect(new Set(pending().map(x=>x.presentation!.message.params.notificationGroup)).size).toBe(6);
+  } finally {await service.close();}
+});
+
+test("client cancellation and unverified completion do not claim a provider failure",async()=>{
+  const {config,service,observer,pending}=setup();
+  try {
+    observer.observe([base({phase:"cancelled",errorCode:"client_disconnected",failureOrigin:"client"}),base({phase:"unverified"}),base({phase:"failed",failureOrigin:"provider_protocol",errorCode:"response_incomplete"})],config,"ko",now);
+    expect(pending().map(x=>x.presentation!.message.key).sort()).toEqual(["model.notice.cancelled","model.notice.failed","model.notice.failed"]);
+    expect(pending().every(x=>!x.message.includes("서버 오류"))).toBe(true);
+  } finally {await service.close();}
 });

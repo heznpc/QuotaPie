@@ -404,7 +404,7 @@ struct LocalizedMessagePayload: Decodable {
         case "model.notice.completed":
             guard let to = text("toLabel"), let detail = text("detail"), let label = text("label") else { return nil }
             return [to, detail, label == "?" ? Strings.t("model.notice.unknown") : label]
-        case "model.notice.failed":
+        case "model.notice.failed", "model.notice.providerFailed", "model.notice.cancelled":
             return required("toLabel", "detail")
         case "signal.resetCredits", "signal.credits", "signal.limits", "signal.student", "signal.discounts", "signal.events":
             return required("provider")
@@ -493,7 +493,15 @@ struct ClaimedNotification: Decodable, Identifiable {
     let claimToken: String
 
     var requestIdentifier: String {
-        "local.quotapie.notification.\(id.lowercased())"
+        if presentation?.title.key == "model.notice.compaction",
+           case .string(let group) = presentation?.message.params["notificationGroup"],
+           group.utf8.count == 64,
+           group.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil {
+            // The OS replaces this thread's displayed notice. Delivery claims
+            // and the completion ledger still use the individual outbox row ID.
+            return "local.quotapie.compaction.\(group)"
+        }
+        return "local.quotapie.notification.\(id.lowercased())"
     }
 
     var localizedTitle: String {

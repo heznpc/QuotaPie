@@ -493,6 +493,8 @@
 "model.notice.confirmed" = "Request: %@. Response model: %@. Effort is the requested value.";
 "model.notice.completed" = "%@ request completed in %@s. Response model: %@. Composer unchanged.";
 "model.notice.failed" = "%@ request did not establish completion (%@s). Open QuotaPie for evidence.";
+"model.notice.providerFailed" = "%@ compaction request received a server error after %@s. This request did not complete. Check QuotaPie for subsequent status.";
+"model.notice.cancelled" = "%@ compaction request was cancelled by the client after %@s.";
 "notification.topic.modelChanges" = "Model changes (compaction and Auto savings)";
 "savings.off" = "Off";
 

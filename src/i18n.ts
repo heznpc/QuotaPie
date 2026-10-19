@@ -33,6 +33,8 @@ export function resolveLocale(
 export type WindowKind = "five-hour" | "weekly" | "monthly" | "other";
 
 export interface MessageParams {
+  /** Opaque presentation identity, never a session path or executable action. */
+  notificationGroup?: string;
   label?: string;
   provider?: string;
   account?: string;
@@ -345,6 +347,8 @@ const CATALOG = {
   "model.notice.request": { en: p => `${p.fromLabel} → ${p.toLabel} requested. Response model unconfirmed; composer unchanged.`, ko: p => `${p.fromLabel} → ${p.toLabel}로 요청했습니다. 응답 모델은 아직 미확인입니다. 입력창 설정은 유지됩니다.` },
   "model.notice.confirmed": { en: p => `Request: ${p.toLabel}. Response model: ${p.label}. Effort is the requested value.`, ko: p => `요청 설정: ${p.toLabel}. 응답 모델: ${p.label}. 추론 단계는 요청에 지정한 값입니다.` },
   "model.notice.completed": { en: p => `${p.toLabel} request completed in ${p.detail}s. Response model: ${p.label === "?" ? "unconfirmed" : p.label}. Composer unchanged.`, ko: p => `${p.toLabel} 압축 요청 완료 · ${p.detail}초. 응답 모델: ${p.label === "?" ? "미확인" : p.label}. 입력창 설정은 유지됩니다.` },
+  "model.notice.providerFailed": { en: p => `${p.toLabel} compaction request received a server error after ${p.detail}s. This request did not complete. Check QuotaPie for subsequent status.`, ko: p => `${p.toLabel} 압축 요청에 서버 오류가 발생했습니다 · ${p.detail}초. 완료된 요청이 아니며, 이후 상태는 QuotaPie에서 확인할 수 있습니다.` },
+  "model.notice.cancelled": { en: p => `${p.toLabel} compaction request was cancelled by the client after ${p.detail}s.`, ko: p => `${p.toLabel} 압축 요청이 클라이언트에서 중단됐습니다 · ${p.detail}초.` },
   "model.notice.failed": { en: p => `${p.toLabel} request did not establish completion (${p.detail}s). Open QuotaPie for evidence.`, ko: p => `${p.toLabel} 요청의 완료를 확인하지 못했습니다 · ${p.detail}초. QuotaPie에서 상태와 근거를 확인하세요.` },
   "alert.work.notice.message": { en: () => "A reset opportunity is available. This policy is set to notify only.", ko: () => "리셋 전 작업 기회가 있습니다. 이 설정은 알림만 보냅니다." },
   "alert.work.forecastUnavailable.message": { en: () => "The reset probability is not verified. Work is paused under your notification preference.", ko: () => "리셋 확률이 검증되지 않았습니다. 알림 설정에 따라 작업을 대기합니다." },
