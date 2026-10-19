@@ -356,7 +356,7 @@ for(const kind of ["current","other","missing","expired-current","closed-restart
     db.query("UPDATE execution_target_leases SET value=? WHERE id=?").run(JSON.stringify(lease),lease.executionId);db.close();
   }
   const different=kind==="other"||kind==="closed-restart-other";
-  const proof=kind==="missing"?null:{threadId:f.thread,turnId:different?other:p.turn,status:different?"completed":"inProgress",errorCode:null,completedAtMs:null};
+  const proof=kind==="missing"?null:{threadId:f.thread,turnId:different?other:p.turn,status:different?"completed":"inProgress",errorCode:null,completedAtMs:different?Math.floor(Date.now()/1000)*1000:null};
   const relay=resolver(f,async()=>proof,kind==="closed-restart-other");
   const body={model,input:[...f.history.slice(0,-1),{role:"user",content:p.policy.prompt},{role:"user",content:"<environment_context>current host context</environment_context>"}]};
   if(kind==="missing"||kind==="expired-current") {
@@ -367,6 +367,75 @@ for(const kind of ["current","other","missing","expired-current","closed-restart
     expect((await relay.resolve({threadId:f.thread,turnId:p.turn,body,model}))?.account.id).toBe("b");
     const result=await f.request(body,turnHeaders(p.turn));expect(result.status).toBe(200);await result.text();expect(f.sent[0].headers.get("chatgpt-account-id")).toBe("b");
   }
+}));
+
+for(const count of [1,2]) test(`manual pre-turn compact reconciles ${count} closed unbound recovery markers without reauthorizing them`,()=>fixture(async f=>{
+  const p=await prepared(f);expect((await p.ack()).status).toBe(200);
+  const store=new ExecutionTargetLeaseStore(join(f.data,"execution-target-leases.sqlite3"));
+  try{
+    store.closeLease(p.lease.executionId,p.lease.digest,"host-queue-execution-ended");
+    const historical=[{lease:p.lease,turn:p.turn,prompt:p.policy.prompt}];
+    if(count===2){
+      const policy={...p.policy,id:"second-failed-recovery",prompt:"[QuotaPie quota recovery:second-failed-recovery]\nContinue once."};
+      const lease=store.request(policy,randomUUID(),randomUUID(),p.target,Date.now(),p.lease.source.nativeOwner);
+      store.acknowledge(lease.executionId,lease.digest,f.memory.executionTarget.instanceId,lease.source.profileKey);
+      store.closeLease(lease.executionId,lease.digest,"host-queue-execution-ended");
+      historical.push({lease,turn:randomUUID(),prompt:policy.prompt});
+    }
+    const turn=randomUUID(),body={model,input:[{type:"compaction",encrypted_content:"native-history"},
+      ...historical.map(old=>({role:"user",content:old.prompt}))]};
+    const seen:string[]=[],relay=resolver(f,async(lease:any)=>{
+      seen.push(lease.executionId);const old=historical.find(old=>old.lease.executionId===lease.executionId)!;
+      return {threadId:f.thread,turnId:old.turn,status:"failed",errorCode:"other",completedAtMs:Math.floor(Date.now()/1000)*1000};
+    });
+    expect(await relay.resolve({threadId:f.thread,turnId:turn,body,model,historyOnly:true})).toBeNull();
+    expect(seen).toHaveLength(count);
+    for(const old of historical){
+      expect(store.get(old.lease.executionId)).toMatchObject({state:"closed",turnId:old.turn});
+      expect(store.get(old.lease.executionId)?.targetRequest).toBeUndefined();
+    }
+    f.serve(async()=>Response.json({output:[{type:"compaction",encrypted_content:"source-compact"}]}));
+    const raw=JSON.stringify(body),response=await rawRecovery(f,{turn},raw,"/responses/compact");
+    expect(response.status).toBe(200);await response.text();expect(f.sent).toHaveLength(1);
+    expect(f.sent[0].body).toBe(raw);expect(f.sent[0].headers.get("chatgpt-account-id")).toBe("a");
+    const replay=await rawRecovery(f,{turn:randomUUID()},raw,"/responses");
+    expect(replay.status).toBe(400);await replay.text();expect(f.sent).toHaveLength(1);
+  }finally{store.close();}
+}));
+
+for(const variant of ["missing","wrong-thread","current-turn","still-running","duplicate-turn","before-ack","future"])
+test(`closed historical marker still fails closed without distinct terminal host receipts: ${variant}`,()=>fixture(async f=>{
+  const p=await prepared(f);expect((await p.ack()).status).toBe(200);
+  const store=new ExecutionTargetLeaseStore(join(f.data,"execution-target-leases.sqlite3"));
+  try{
+    store.closeLease(p.lease.executionId,p.lease.digest,"host-queue-execution-ended");
+    if(variant==="duplicate-turn"){
+      const policy={...p.policy,id:"second-failed-recovery",prompt:"[QuotaPie quota recovery:second-failed-recovery]\nContinue once."};
+      const lease=store.request(policy,randomUUID(),randomUUID(),p.target,Date.now(),p.lease.source.nativeOwner);
+      store.acknowledge(lease.executionId,lease.digest,f.memory.executionTarget.instanceId,lease.source.profileKey);
+      store.closeLease(lease.executionId,lease.digest,"host-queue-execution-ended");
+    }
+    const turn=randomUUID(),body={model,input:[{role:"user",content:p.policy.prompt},
+      ...(variant==="duplicate-turn"?[{role:"user",content:"[QuotaPie quota recovery:second-failed-recovery]\nContinue once."}]:[])]};
+    const relay=resolver(f,async()=>variant==="missing"?null:{threadId:variant==="wrong-thread"?randomUUID():f.thread,
+      turnId:variant==="current-turn"?turn:p.turn,status:variant==="still-running"?"inProgress":"failed",errorCode:"other",
+      completedAtMs:variant==="before-ack"?Date.now()-60000:variant==="future"?Date.now()+60000:Math.floor(Date.now()/1000)*1000});
+    await expect(relay.resolve({threadId:f.thread,turnId:turn,body,model,historyOnly:true})).rejects.toThrow("pool_execution_target_message_unverified");
+    expect(store.get(p.lease.executionId)?.turnId).toBeUndefined();expect(store.get(p.lease.executionId)?.targetRequest).toBeUndefined();
+    expect(f.sent).toHaveLength(0);
+  }finally{store.close();}
+}));
+
+test("an acknowledged attempt closed before enqueue cannot block an unrelated new manual turn",()=>fixture(async f=>{
+  const p=await prepared(f);expect((await p.ack()).status).toBe(200);
+  const store=new ExecutionTargetLeaseStore(join(f.data,"execution-target-leases.sqlite3"));
+  try{
+    store.closeLease(p.lease.executionId,p.lease.digest,"queue-failed-before-enqueue");
+    let correlations=0;const relay=resolver(f,async()=>{correlations++;return null;});
+    const body={model,input:[{role:"user",content:"My unrelated new manual request"}]};
+    expect(await relay.resolve({threadId:f.thread,turnId:randomUUID(),body,model})).toBeNull();
+    expect(correlations).toBe(0);expect(store.get(p.lease.executionId)?.turnId).toBeUndefined();
+  }finally{store.close();}
 }));
 
 for(const body of ["invalid-json",JSON.stringify({input:[]})]) test(`bound inference holds uninspected body ${body}`,()=>fixture(async f=>{

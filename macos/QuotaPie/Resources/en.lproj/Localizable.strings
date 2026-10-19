@@ -1387,3 +1387,8 @@
 "claudeDesktop.detail.network" = "The Claude app quota lookup could not finish. QuotaPie will check again later.";
 "claudeDesktop.detail.stale" = "This is an earlier reading. Wait for a new check before relying on it.";
 "claudeDesktop.detail.failed" = "The Claude app connection could not be verified. Check that the app and local QuotaPie service are available, then try connecting again.";
+
+"collection.claude-desktop-unavailable" = "Claude desktop connection unavailable";
+"collection.claude-desktop-keychain" = "Claude session access needs permission";
+"collection.account-mismatch" = "Claude account changed";
+"collection.desktop-no-windows" = "Connected · numeric limits not provided";

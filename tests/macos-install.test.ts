@@ -53,7 +53,7 @@ function fixture(existing = true) {
   }
   const deps: Partial<InstallDependencies> = {
     platform: "darwin", uid: 501, bun: process.execPath,
-    env: { ...process.env, QUOTAPIE_CONFIG: config, QUOTAPIE_HOME: data, CODEX_HOME: "/unchanged-codex-home" },
+    env: { ...process.env, SIGN_IDENTITY: undefined, QUOTAPIE_CONFIG: config, QUOTAPIE_HOME: data, CODEX_HOME: "/unchanged-codex-home" },
     sleep: async () => {},
     async run(command, env) {
       calls.push(command);
@@ -66,7 +66,16 @@ function fixture(existing = true) {
         application(join(command[3]!, "QuotaPie.app"), "new-app"); return ok();
       }
       if (command[0] === "/usr/bin/ditto") { cpSync(command[1]!, command[2]!, { recursive: true }); return ok(); }
-      if (command[0] === "/usr/bin/codesign") return ok();
+      if (command[0] === "/usr/bin/security") return fail === "signing" ? ok("") : ok('1) AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA "Developer ID Application: Fixture (FIXTURE123)"');
+      if (command[0] === "/usr/bin/codesign") {
+        if (!command.includes("--display")) return ok();
+        if (command.includes("-r-")) return ok(fail === "prebuilt-unstable-dr" ? 'designated => cdhash H"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"'
+          : 'designated => identifier "local.quotapie.claude-session-helper" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = FIXTURE123');
+        const installed = command.at(-1) === join(app, "Contents/Helpers/QuotaPieClaudeSessionHelper");
+        const info = installed || fail === "prebuilt-adhoc" ? "Signature=adhoc\nTeamIdentifier=not set\n"
+          : `Identifier=${fail === "prebuilt-identifier" ? "unexpected-helper" : "local.quotapie.claude-session-helper"}\nTeamIdentifier=FIXTURE123\n`;
+        return { code: 0, stdout: "", stderr: info };
+      }
       if (command[0] === "/usr/bin/plutil") {
         if (command.includes("json")) return ok(readFileSync(command.at(-1)!, "utf8"));
         JSON.parse(readFileSync(command.at(-1)!, "utf8")); return ok();
@@ -439,11 +448,25 @@ test("prebuilt installation preserves config, credentials and data, pins paths a
     expect(collector.EnvironmentVariables.BUN_BIN).toBe(process.execPath);
     expect(collector.EnvironmentVariables.PATH.startsWith(dirname(process.execPath))).toBe(true);
     expect(f.calls.some(command => command[0] === "/usr/bin/xcrun" || command[2] === "init")).toBe(false);
+    expect(f.calls.some(command => command.includes("--sign"))).toBe(false);
     const second = await f.run();
     expect(second.sourceHash).toBe(first.sourceHash);
     expect(second.collectorPid).not.toBe(first.collectorPid);
     expect(readFileSync(f.config, "utf8")).toBe(f.configText);
   } finally { f.close(); }
+});
+
+test("prebuilt ad-hoc or unstable helper identity is rejected before the running installation is stopped", async () => {
+  for (const failure of ["prebuilt-adhoc", "prebuilt-identifier", "prebuilt-unstable-dr"]) {
+    const f = fixture();
+    try {
+      f.setFailure(failure);
+      await expect(f.run()).rejects.toThrow(failure === "prebuilt-unstable-dr" ? "unstable designated requirement" : "stable identifier");
+      expect(f.calls.some(command => command[1] === "bootout" || command.includes("--sign"))).toBe(false);
+      expect(f.jobs.get(labels[0]!)).toBe(100);
+      expect(readFileSync(join(f.app, "Contents/MacOS/QuotaPie"), "utf8")).toBe("old-app");
+    } finally { f.close(); }
+  }
 });
 
 for (const errorCategory of ["claude-code-unavailable", "access-denied"]) {
@@ -468,6 +491,29 @@ test("build failure leaves the running installation and exact plists intact", as
     expect(f.agents.map(path => readFileSync(path, "utf8"))).toEqual(before);
     expect(readFileSync(join(f.runtime, "src/cli.ts"), "utf8")).toBe("old-runtime");
     expect(readFileSync(join(f.app, "Contents/MacOS/QuotaPie"), "utf8")).toBe("old-app");
+    expect(f.jobs.get(labels[0]!)).toBe(100);
+  } finally { f.close(); }
+});
+
+test("source installation uses a stable Developer ID helper identifier before stopping services", async () => {
+  const f = fixture();
+  try {
+    await f.run(false);
+    const sign = f.calls.find(command => command.includes("--sign") && command.at(-1)?.endsWith("/QuotaPieClaudeSessionHelper"));
+    expect(sign).toContain("local.quotapie.claude-session-helper");
+    expect(sign).toContain("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    expect(sign).not.toContain("-");
+    expect(f.calls.indexOf(sign!)).toBeLessThan(f.calls.findIndex(command => command[1] === "bootout"));
+  } finally { f.close(); }
+});
+
+test("missing stable signing identity leaves the approved helper and running services untouched", async () => {
+  const f = fixture();
+  try {
+    f.setFailure("signing");
+    await expect(f.run(false)).rejects.toThrow("Developer ID Application");
+    expect(f.calls.some(command => command[1] === "bootout" || command.includes("--sign"))).toBe(false);
+    expect(readFileSync(join(f.app, "Contents/Helpers/QuotaPieClaudeSessionHelper"), "utf8")).toBe("desktop-helper");
     expect(f.jobs.get(labels[0]!)).toBe(100);
   } finally { f.close(); }
 });

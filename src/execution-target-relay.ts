@@ -217,7 +217,7 @@ export function createExecutionTargetRelay(options: {
       return { executionId: accepted.executionId, digest: accepted.digest, relayInstanceId: memory.instanceId,
         acknowledgedAtMs: accepted.acknowledgedAtMs, sourceProfileKey: profileKey, targetIdentity: accepted.target.identity };
     },
-    async resolve(input: { threadId: string | null; turnId: string | null; body: unknown; model?: string; identityConflict?: boolean }): Promise<FrozenTargetSelection | null> {
+    async resolve(input: { threadId: string | null; turnId: string | null; body: unknown; model?: string; identityConflict?: boolean; historyOnly?: boolean }): Promise<FrozenTargetSelection | null> {
       const marker = lastUserText(input.body)?.startsWith("[QuotaPie quota recovery:") === true;
       if (!existsSync(path)) return null;
       const all = store().list().filter(lease => lease.source.profileKey === profileKey && !isClosedUnacknowledgedTargetLease(lease));
@@ -247,6 +247,25 @@ export function createExecutionTargetRelay(options: {
           proof.turnId===input.turnId && proof.status!=="inProgress")failure("message_unverified");
         return proof!;
       };
+      if (pending.length && pending.every(lease => lease.state === "closed" ||
+          lease.expiresAtMs <= now() || lease.authorizationValidUntilMs <= now())) {
+        if (pending.length > 8) failure("conflict");
+        const seen = new Set<string>(), proofs: Array<{lease: ExecutionTargetLease; proof: CodexThreadTurnSummary}> = [];
+        for (const lease of pending) {
+          // A pre-turn compact contains earlier messages, even when a failed
+          // recovery marker is its last user item. Only the host's immutable
+          // client-message receipt can prove that marker belongs to an old turn.
+          const proof = await correlate(lease);
+          if (seen.has(proof.turnId) || proof.turnId !== input.turnId &&
+              (proof.status === "inProgress" || !lease.acknowledgedAtMs || proof.completedAtMs === null ||
+                !Number.isFinite(proof.completedAtMs) || proof.completedAtMs < Math.floor(lease.acknowledgedAtMs / 1000) * 1000 ||
+                proof.completedAtMs > now())) failure("message_unverified");
+          seen.add(proof.turnId); proofs.push({lease, proof});
+        }
+        for (const {lease, proof} of proofs) store().bindCorrelatedTurn(lease.executionId, lease.digest, memory.instanceId,
+          {threadId: input.threadId, turnId: proof.turnId, clientUserMessageId: lease.clientUserMessageId}, now());
+        pending = [];
+      }
       if (pending.length > 1) {
         const current=pending.filter(lease=>lease.state==="acknowledged" && lease.expiresAtMs>now() && lease.authorizationValidUntilMs>now());
         const historical=pending.filter(lease=>lease!==current[0]);
@@ -285,8 +304,14 @@ export function createExecutionTargetRelay(options: {
           { threadId: input.threadId, turnId: proof!.turnId, clientUserMessageId: candidate.clientUserMessageId }, now());
       }
       let lease: ExecutionTargetLease | null;
-      try { lease = store().bindRequest({ sourceProfileKey: profileKey!, threadId: input.threadId, turnId: input.turnId, body: input.body, relayInstanceId: memory.instanceId }); }
-      catch { failure("unavailable"); }
+      try { lease = store().bindRequest({ sourceProfileKey: profileKey!, threadId: input.threadId, turnId: input.turnId,
+        body: input.body, relayInstanceId: memory.instanceId, historyOnly: input.historyOnly }); }
+      catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "execution-target-lease-conflict") failure("conflict");
+        if (["execution-target-turn-unverified", "execution-target-message-order-unverified", "execution-target-message-mismatch"].includes(code)) failure("message_unverified");
+        failure("unavailable");
+      }
       return lease! ? selection(lease!, input.model, true) : null;
     },
   };

@@ -12,6 +12,7 @@ export const COLLECTOR_FILES = [
   "script/awake_hook.py",
   "script/install.sh",
   "script/install-macos.ts",
+  "script/sign-macos.ts",
   "scripts/codex-compaction-local.py",
 ] as const;
 

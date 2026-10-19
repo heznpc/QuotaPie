@@ -64,6 +64,7 @@ function subscriptionError(reason: string) {
     "quota-exhausted": "The subscription quota is exhausted. Wait for quota recovery; paid credits are not a fallback.",
     "quota-stale": "A fresh quota observation is unavailable. Retry after quota collection has refreshed.",
     "collection-unavailable": "The quota collector is unavailable. Restore quota collection before retrying.",
+    "quota-observation-unavailable": "The local quota observation could not be read. QuotaPie needs a fresh verified observation before this managed request can continue.",
     "quota-unknown": "The current subscription allowance has not been verified. Retry after quota collection succeeds.",
     "reset-unconfirmed": "The quota reset has not been confirmed. Wait for a fresh quota observation.",
     "upstream-quota-hold": "The provider rejected a previous inference request for quota or billing limits. Wait for a newer quota observation before retrying.",
@@ -72,6 +73,9 @@ function subscriptionError(reason: string) {
     "request-identity-mismatch": "This request does not match the configured Codex login. Reopen the task in its owning account profile.",
     "subscription-auth-required": "This relay requires the configured ChatGPT subscription login.",
     "subscription-auth-unavailable": "The configured ChatGPT login is expired or unavailable. Refresh that profile's login before retrying.",
+    "guard-unavailable": "QuotaPie could not read or validate its local account protection settings. Restore the account connection and local settings before retrying.",
+    "budget-baseline-invalid": "The automatic continuation has an invalid quota budget. QuotaPie must prepare a verified budget before retrying.",
+    "budget-baseline-changed": "The quota period changed since this automatic continuation was approved. QuotaPie must verify a new budget before retrying.",
     "profile-mismatch": "The quota observation belongs to a different account profile.",
     "model-unverified": "This model has not been verified for the configured subscription.",
     "route-unsupported": "This request route is not supported by subscription protection.",
@@ -80,6 +84,28 @@ function subscriptionError(reason: string) {
     "pool_lineage_conflict": "This task's reported parent does not match its saved Codex history. Its account ownership could not be verified.",
     "pool_source_history_unverified": "This request contains history whose original account could not be verified. Continue from the original task and account profile.",
     "pool_source_continuation_mismatch": "This task's saved history belongs to a different account. Reopen it in its original account profile.",
+    "pool_source_continuation_unavailable": "The local account ownership record could not be read. QuotaPie must restore access to that record before continuing this task.",
+    "source-continuation-unverified": "QuotaPie could not verify this task's original account history. The original account binding must be verified before continuing.",
+    "execution-target-unavailable": "The automatic continuation's account binding could not be read or validated. QuotaPie must verify that binding before continuing.",
+    "execution-target-identity-changed": "The account selected for this automatic continuation changed. QuotaPie must verify the intended account before continuing.",
+    "execution-target-request-unverified": "This native request could not be matched to its authorized automatic continuation. QuotaPie must verify its host turn before continuing.",
+    "pool_execution_target_unavailable": "The saved automatic continuation could not be read or validated. QuotaPie must verify its saved account binding before continuing.",
+    "pool_execution_target_conflict": "QuotaPie found conflicting saved automatic continuation attempts for this conversation. Their host turn receipts must be reconciled before continuing.",
+    "pool_execution_target_message_unverified": "QuotaPie could not match the automatic continuation to its official host turn receipt. The receipt must be verified before continuing this conversation.",
+    "pool_execution_target_expired": "The authorization for this automatic continuation expired. QuotaPie must verify a new continuation before retrying.",
+    "pool_execution_target_identity_required": "The thread or turn identity needed to verify this automatic continuation is missing. No account binding was changed.",
+    "pool_execution_target_identity_conflict": "This automatic continuation contains conflicting thread or turn identities. No account binding was changed.",
+    "pool_execution_target_source_changed": "The original account for this automatic continuation changed. Restore its verified account connection before continuing.",
+    "pool_execution_target_target_changed": "The selected account profile for this automatic continuation changed. QuotaPie must verify the intended account before continuing.",
+    "pool_execution_target_target_unavailable": "The selected account's login or model is unavailable. QuotaPie must verify that account before continuing.",
+    "pool_execution_target_model_changed": "The requested model differs from the model authorized for this automatic continuation. QuotaPie must verify a new continuation before retrying.",
+    "pool_execution_target_policy_changed": "The account routing policy changed after this automatic continuation was approved. QuotaPie must verify a new continuation before retrying.",
+    "pool_execution_target_quota_unavailable": "The selected account's quota could not be verified for this automatic continuation. Wait for a fresh quota observation.",
+    "pool_execution_target_native_route_unverified": "QuotaPie could not verify this conversation's original quota failure in its live account connection. No continuation was authorized.",
+    "pool_execution_target_repeat_or_unverified_send": "QuotaPie could not verify that this automatic continuation is a new, authorized request. It was not sent again.",
+    "pool_execution_target_response_unconfirmed": "The preceding response for this automatic continuation has not been confirmed. QuotaPie must verify its completion before sending the next request.",
+    "pool_execution_target_local_recovery_unverified": "The authorization to recover this locally interrupted continuation could not be verified. QuotaPie must reconcile its saved host turn receipt.",
+    "pool_execution_target_local_recovery_changed": "The authorization to recover this locally interrupted continuation changed or was already used. No additional request was sent.",
     "request-unsupported": "This request format is not supported by subscription protection.",
   };
   return { type: "quotapie_subscription_guard",
@@ -398,7 +424,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
             const compact = object(input) && isCompaction(path, input);
             if (interactive && options.executionTargetRelay && object(input) && typeof input.model === "string") {
               const identity = requestIdentity(headers);
-              try { frozenTarget = await options.executionTargetRelay.resolve({ ...identity, body: input, model: input.model }); }
+              try { frozenTarget = await options.executionTargetRelay.resolve({ ...identity, body: input, model: input.model, historyOnly: path === "/responses/compact" }); }
               catch (error) { throw new SubscriptionRequestError(error instanceof PoolError ? error.code : "execution-target-unavailable"); }
             }
             let savings: ReturnType<TaskSavingsRouter["route"]> | null = null;

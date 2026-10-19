@@ -57,8 +57,8 @@ build_bundle() {
 }
 
 # `bundle` stops before the three things the packaging path must not do: kill a
-# running copy, ad-hoc sign (package-macos.sh applies the real Developer ID
-# signature, and an ad-hoc one would just be overwritten), and launch anything.
+# running copy, sign (the installer or package-macos.sh applies the Developer ID
+# signature after preparing the bundle), and launch anything.
 if [ "$MODE" = "bundle" ]; then
   build_bundle
   echo "$APP_BUNDLE"
@@ -72,9 +72,8 @@ esac
 
 # Keep the installed app available until its replacement has built successfully.
 build_bundle
-codesign --force --sign - --timestamp=none "$APP_CONTENTS/Helpers/QuotaPiePowerHelper"
-codesign --force --sign - --timestamp=none "$APP_CONTENTS/Helpers/QuotaPieClaudeSessionHelper"
-codesign --force --sign - --timestamp=none "$APP_BUNDLE" >/dev/null
+QUOTAPIE_MENU_APP="${QUOTAPIE_MENU_APP:-$HOME/Applications/QuotaPie.app}" \
+  bun "$ROOT_DIR/script/sign-macos.ts" app "$APP_BUNDLE"
 
 development_pids() {
   local pid

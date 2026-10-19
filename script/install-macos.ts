@@ -8,6 +8,7 @@ import { loadConfig } from "../src/config";
 import { RUNTIME_HASH_VERSION, runtimeSourceHash, type RuntimeHashVersion } from "../src/runtime-identity";
 import { withRelaySettingsLock } from "../src/relay-settings";
 import { InstallMaintenance } from "./install-maintenance";
+import { signMacOSApp, verifyPrebuiltClaudeHelper } from "./sign-macos";
 
 type Result = { code: number; stdout: string; stderr: string };
 type Job = { loaded: boolean; pid: number | null };
@@ -202,10 +203,10 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
       throw new Error("Managed work state could not be verified; the running installation was not stopped.");
     }
   }
-  async function run(command: string[], customEnv = env) {
+  async function run(command: string[], customEnv = env, includeStderr = false) {
     const result = await deps.run(command, customEnv);
     if (result.code !== 0) throw new Error(`${basename(command[0]!)} failed: ${result.stderr.trim().slice(0, 2000) || result.stdout.trim().slice(0, 2000) || result.code}`);
-    return result.stdout;
+    return result.stdout + (includeStderr ? result.stderr : "");
   }
   async function job(label: string): Promise<Job> {
     const result = await deps.run(["/bin/launchctl", "print", `${domain}/${label}`], env);
@@ -308,9 +309,7 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
       console.log("Building the macOS app; the installed version remains running.");
       await run(["/bin/bash", join(source, "script/build_and_run.sh"), "bundle", join(work, "build")]);
       await run(["/usr/bin/ditto", join(work, "build/QuotaPie.app"), stagedApp]);
-      await run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", join(stagedApp, "Contents/Helpers/QuotaPiePowerHelper")]);
-      await run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", join(stagedApp, "Contents/Helpers/QuotaPieClaudeSessionHelper")]);
-      await run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", stagedApp]);
+      await signMacOSApp(stagedApp, { run: command => run(command, env, true), identity: deps.env.SIGN_IDENTITY, previousApp: app });
     }
     const appInfo = await plist(join(stagedApp, "Contents/Info.plist"));
     if (appInfo.CFBundleIdentifier !== LABELS[1] || appInfo.CFBundleExecutable !== "QuotaPie"
@@ -319,6 +318,7 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
     if (!present(desktopHelper) || lstatSync(desktopHelper).isSymbolicLink() || !statSync(desktopHelper).isFile()) {
       throw new Error("The supplied app is missing its Claude desktop session helper.");
     }
+    if (options.app) await verifyPrebuiltClaudeHelper(stagedApp, { run: command => run(command, env, true), previousApp: app });
     await run(["/usr/bin/codesign", "--verify", "--deep", "--strict", stagedApp]);
     const stagedConfig = join(work, "initial-config.json");
     if (!existsSync(config)) {

@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # Build, sign, notarize, and staple QuotaPie.app plus its DMG.
 #
-# script/build_and_run.sh ad-hoc signs for local use. An ad-hoc designated
-# requirement is a bare cdhash with no team anchor, so Gatekeeper on any other
-# Mac refuses it outright — that build launches on the machine that made it and
-# nowhere else. Developer ID signing plus notarization is what makes a
-# downloaded copy open, and this script is the only path that produces one.
+# Local builds also use a stable Developer ID helper signature so Keychain
+# approval survives updates. This distribution path additionally notarizes
+# and staples the app for downloads onto other Macs.
 #
 # The bundle includes the menu bar client, its fixed-function power helper, and
 # the collector runtime in Contents/Resources/Collector. The DMG's installer
@@ -54,7 +52,7 @@ build_app() {
   # path a local run takes, so the bundle signed here cannot drift from the one
   # developers actually test.
   #
-  # `bundle` deliberately skips the pkill, the ad-hoc signature, and the launch
+  # `bundle` deliberately skips process changes, signing, and the launch
   # that the other modes perform, and writes to the directory named here instead
   # of dist/ — so packaging never disturbs a running copy or the local build.
   ( cd "${ROOT}" && ./script/build_and_run.sh bundle "${PRODUCTS_DIR}" >/dev/null )
@@ -80,19 +78,10 @@ die() { printf 'package-macos: %s\n' "$*" >&2; exit 1; }
 # Unlike a local-only tool, there is no useful ad-hoc fallback here: the whole
 # point of this script is producing something another Mac will open. Fail loudly
 # rather than emitting a bundle that looks packaged and is not distributable.
-if [ -z "${SIGN_IDENTITY:-}" ]; then
-  SIGN_IDENTITY="$(
-    security find-identity -v -p codesigning 2>/dev/null \
-      | grep "Developer ID Application" \
-      | head -n 1 \
-      | sed -n 's/.*"\(.*\)".*/\1/p'
-  )"
-fi
-[ -n "${SIGN_IDENTITY}" ] \
-  || die "no Developer ID Application identity in the keychain — cannot produce a distributable build"
+command -v bun >/dev/null 2>&1 || die "Bun is required to prepare the bundled collector (https://bun.sh)"
+SIGN_IDENTITY="$(bun "${ROOT}/script/sign-macos.ts" identity)"
 
 [ -f "${ENTITLEMENTS}" ] || die "missing entitlements file: ${ENTITLEMENTS}"
-command -v bun >/dev/null 2>&1 || die "Bun is required to prepare the bundled collector (https://bun.sh)"
 
 # ── Build ────────────────────────────────────────────────────────────
 if [ "${SKIP_BUILD:-}" != "1" ]; then
@@ -164,7 +153,7 @@ done < <(find "${APP}" -depth \( -name '*.framework' -o -name '*.xpc' -o -name '
 
 # Fixed-function privileged helper must carry the same release signature.
 sign "${APP}/Contents/Helpers/QuotaPiePowerHelper"
-sign "${APP}/Contents/Helpers/QuotaPieClaudeSessionHelper"
+SIGN_IDENTITY="${SIGN_IDENTITY}" bun "${ROOT}/script/sign-macos.ts" helper "${APP}/Contents/Helpers/QuotaPieClaudeSessionHelper"
 
 # Then the main executable, then the wrapper with the app's entitlements.
 sign "${APP}/Contents/MacOS/${EXECUTABLE}"

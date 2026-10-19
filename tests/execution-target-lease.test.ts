@@ -71,6 +71,19 @@ test("restart preserves immutable target, duplicate request and closed lease tom
   expect(()=>reopened.request(f.policy,EXECUTION,CLIENT,f.target,NOW)).toThrow();
  }finally{reopened.close();rmSync(directory,{recursive:true,force:true})}
 });
+test("pre-turn compact ignores only a closed marker proven to belong to a different turn",()=>{
+ const f=fixture();try{
+  f.store.acknowledge(EXECUTION,f.lease.digest,"relay-generation",f.policy.profileKey,NOW);
+  f.store.bindCorrelatedTurn(EXECUTION,f.lease.digest,"relay-generation",{threadId:THREAD,turnId:TURN,clientUserMessageId:CLIENT},NOW);
+  expect(()=>f.store.bindRequest({...f.request(f.body,OTHER),historyOnly:true},NOW)).toThrow();
+  f.store.closeLease(EXECUTION,f.lease.digest,"host-queue-execution-ended");
+  expect(()=>f.store.bindRequest(f.request(f.body,OTHER),NOW)).toThrow();
+  expect(()=>f.store.bindRequest({...f.request(f.body),historyOnly:true},NOW)).toThrow();
+  expect(()=>f.store.bindRequest({...f.request(f.body,""),historyOnly:true},NOW)).toThrow("execution-target-turn-unverified");
+  expect(f.store.bindRequest({...f.request(f.body,OTHER),historyOnly:true},NOW)).toBeNull();
+  expect(f.store.get(EXECUTION)?.state).toBe("closed");expect(f.store.get(EXECUTION)?.turnId).toBe(TURN);
+ }finally{f.store.close()}
+});
 for(const acknowledged of [false,true]) test(`closed preflight row preserves audit without obscuring next lease (acknowledged ${acknowledged})`,()=>{
  const f=fixture();try{
   if(acknowledged)f.store.acknowledge(EXECUTION,f.lease.digest,"relay-generation",f.policy.profileKey,NOW);

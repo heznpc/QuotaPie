@@ -57,7 +57,7 @@ export function readExecutionTargetLease(id: string, path = executionTargetLease
  * for this exact digest, then enqueue once through its existing durable receipt.
  * The 15s renewable authorization fence stops execution after collector loss. */
 export class ExecutionTargetLeaseStore {
-  static readonly RUNTIME_API_VERSION = 5;
+  static readonly RUNTIME_API_VERSION = 6;
   readonly runtimeApiVersion = ExecutionTargetLeaseStore.RUNTIME_API_VERSION;
   private db: Database;
   constructor(path = executionTargetLeasePath()) {
@@ -248,7 +248,7 @@ export class ExecutionTargetLeaseStore {
   }
   /** Bind only the exact authorized new user message. Later requests in that
    * same native turn retain B, even if A recovers or B becomes unavailable. */
-  bindRequest(input: {sourceProfileKey: string; threadId: string; turnId: string; body: unknown; relayInstanceId: string}, nowMs = Date.now()): ExecutionTargetLease | null {
+  bindRequest(input: {sourceProfileKey: string; threadId: string; turnId: string; body: unknown; relayInstanceId: string; historyOnly?: boolean}, nowMs = Date.now()): ExecutionTargetLease | null {
     return this.db.transaction(() => {
       const candidates = this.list().filter(lease => lease.source.profileKey === input.sourceProfileKey && lease.source.threadId === input.threadId &&
         !isClosedUnacknowledgedTargetLease(lease));
@@ -272,7 +272,11 @@ export class ExecutionTargetLeaseStore {
       // receipt. Historical markers inside pre-turn compact input cannot select
       // a different (often closed) lease over that verified current turn.
       const bound = candidates.filter(lease => lease.turnId === input.turnId);
-      const matches = bound.length ? bound : candidates.filter(lease => marker === lease.marker);
+      const matches = bound.length ? bound : candidates.filter(lease => marker === lease.marker &&
+        // Compact input precedes the new user turn and contains only history.
+        // A closed marker with an official, different turn is a tombstone, not
+        // current authorization. Ordinary inference cannot replay that marker.
+        !(input.historyOnly === true && lease.state === "closed" && lease.turnId !== undefined && lease.turnId !== input.turnId));
       if (!matches.length) {
         // An unknown recovery marker must never fall into ordinary pool routing.
         if (marker && candidates.some(lease=>lease.state!=="closed" && lease.expiresAtMs>nowMs)) throw new Error("execution-target-lease-unavailable");
