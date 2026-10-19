@@ -553,6 +553,11 @@
 "accounts.list.usageBlocked" = "제공자가 사용을 제한한 한도가 있습니다";
 "accounts.list.limitBlocked" = "사용 제한됨";
 "accounts.list.permissionUnknown" = "사용 가능 여부 미확인";
+"accounts.list.previous" = "이전 값";
+"accounts.list.remaining" = "남은 한도";
+"menu.account.loginRequired" = "로그인 필요";
+"menu.account.loginExpired" = "로그인 만료";
+"menu.account.refreshNeeded" = "갱신 필요";
 
 "profiles.accountNotLinked" = "이 계정에 연결된 Codex 앱을 찾지 못했습니다. 설정의 Codex 계정에서 앱 연결을 확인해 주세요.";
 "profiles.openAccount" = "%@ Codex 앱 열기";

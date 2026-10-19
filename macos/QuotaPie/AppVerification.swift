@@ -15,6 +15,7 @@ struct AppVerification: Decodable {
     struct NavigationClick: Decodable { let x: Double; let y: Double }
     let focusedResumeTaskID: String?
     let contentHeight: Double?
+    let appearance: String?
     let interactive: Bool?
     let inspectAutoResume: Bool?
     let fastQuota: Bool?
@@ -48,6 +49,7 @@ struct AppVerification: Decodable {
     }
 
     func selectInitialAccount(in model: PopoverModel) {
+        if let appearance { NSApp.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua) }
         model.selectInitialCodexAccount(frontmost: frontmostProfileID.flatMap(identity),
                                         running: runningProfileIDs.compactMap(identity), profiles: profiles)
         if let initialSection, let section = DetailSection(rawValue: initialSection) {
@@ -77,6 +79,7 @@ struct AppVerification: Decodable {
         var rendered = false
         var mountedContentWindow: NSWindow?
         var autoResumeControls: [[String: Any]] = []
+        var scrollRegions: [[String: Double]] = []
         if let button = item.button,
            let bitmap = button.bitmapImageRepForCachingDisplay(in: button.bounds) {
             button.cacheDisplay(in: button.bounds, to: bitmap)
@@ -87,8 +90,10 @@ struct AppVerification: Decodable {
         if let content {
             let window = mountedWindow ?? Self.interactiveWindow ?? NSWindow(contentViewController: content)
             mountedContentWindow = window
-            let height = contentHeight ?? Double(content.view.fittingSize.height)
-            window.setContentSize(NSSize(width: model.detailSection == nil ? 380 : 460, height: min(1200, max(280, height))))
+            if let appearance { window.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua) }
+            let fittingSize = content.view.fittingSize
+            let height = contentHeight ?? Double(fittingSize.height)
+            window.setContentSize(NSSize(width: fittingSize.width, height: min(1200, max(1, height))))
             if interactive == true, Self.interactiveWindow == nil {
                 Self.interactiveWindow = window
                 NSApp.setActivationPolicy(.regular)
@@ -97,6 +102,22 @@ struct AppVerification: Decodable {
                 NSApp.activate(ignoringOtherApps: true)
             }
             content.view.layoutSubtreeIfNeeded()
+            if mountedWindow == nil, phase == nil, fastQuota != true {
+                // Let the mounted hosting view finish its layout before
+                // capturing pixels and using their coordinates for input.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    withExtendedLifetime(window) { record(model: model, item: item, content: content, mountedWindow: window, navigationStep: navigationStep) }
+                }
+                return
+            }
+            func inspectScrollRegions(_ view: NSView) {
+                if let scroll = view as? NSScrollView {
+                    scrollRegions.append(["viewportHeight": scroll.contentView.bounds.height,
+                        "documentHeight": scroll.documentView?.bounds.height ?? 0])
+                }
+                for child in view.subviews { inspectScrollRegions(child) }
+            }
+            inspectScrollRegions(content.view)
             // Mount the real SwiftUI surface first so its authenticated work
             // request runs. Only this asynchronous section needs readiness.
             if model.detailSection == .work, model.lastError == nil,
@@ -125,6 +146,8 @@ struct AppVerification: Decodable {
             }
             if inspectAutoResume == true { inspectControls(content.view) }
 #endif
+            content.view.display()
+            window.displayIfNeeded()
             if let bitmap = content.view.bitmapImageRepForCachingDisplay(in: content.view.bounds) {
                 content.view.cacheDisplay(in: content.view.bounds, to: bitmap)
                 if let png = bitmap.representation(using: .png, properties: [:]) {
@@ -133,8 +156,10 @@ struct AppVerification: Decodable {
                         // background so text remains readable in standalone evidence.
                         let image = NSImage(size: content.view.bounds.size)
                         image.lockFocus()
-                        NSColor.windowBackgroundColor.setFill()
-                        content.view.bounds.fill()
+                        content.view.effectiveAppearance.performAsCurrentDrawingAppearance {
+                            NSColor.windowBackgroundColor.setFill()
+                            content.view.bounds.fill()
+                        }
                         NSImage(data: png)?.draw(in: content.view.bounds)
                         image.unlockFocus()
                         guard let tiff = image.tiffRepresentation,
@@ -157,6 +182,11 @@ struct AppVerification: Decodable {
             "menuAccessibleLabel": item.button?.accessibilityLabel() ?? "",
             "menuHasImage": item.button?.image != nil,
             "menuVisible": item.isVisible,
+            "menuText": item.button?.title ?? "",
+            "viewWidth": content?.view.bounds.width ?? 0,
+            "viewHeight": content?.view.bounds.height ?? 0,
+            "appearance": content?.view.effectiveAppearance.name.rawValue ?? "",
+            "scrollRegions": scrollRegions,
             "viewRendered": rendered,
             "detailSection": model.detailSection?.rawValue as Any? ?? NSNull(),
             "isShowingAccountList": model.isShowingAccountList,

@@ -619,11 +619,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         guard let button = statusItem.button else { return }
         let headline = popoverModel.selectedHeadline
         let selected = popoverModel.selectedAccount
+        let accountAttention = selected.flatMap(MenuBarAccountStatus.title(for:))
         let badge = selected.map { AccountBadge(accountID: $0.id, name: $0.accountLabel) }
-        let readyTasks = popoverModel.lastError == nil
+        let readyTasks = popoverModel.canActOnTasks
             ? (popoverModel.payload?.resumeTasks.filter(\.isReady) ?? [])
             : []
         if readyTasks.isEmpty, !popoverModel.showingStartupCache, popoverModel.lastError == nil,
+           accountAttention == nil,
            let headline, ["normal", "pace-risk"].contains(headline.kind),
            let provider = headline.provider,
            let remaining = headline.remainingPercent, remaining.isFinite {
@@ -685,6 +687,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 ?? popoverModel.statusFailure?.shortText ?? Strings.t("headline.disconnected")
             color = .systemOrange
             toolTip = popoverModel.lastError ?? Strings.t("status.tooltip")
+        } else if let accountAttention {
+            title = accountAttention
+            color = .secondaryLabelColor
+            toolTip = [selected?.collection.isHealthy == false ? selected?.collection.actionText : accountAttention,
+                       headline?.localizedTitle, popoverModel.measurementDate.map {
+                           Strings.t("collection.measuredAt", $0.formatted(date: .abbreviated, time: .shortened))
+                       }].compactMap { $0 }.joined(separator: "\n")
         } else {
             title = headline?.localizedTitle ?? Strings.t("headline.checking")
             if headline?.kind == "degraded" || headline?.kind == "setup" { color = .secondaryLabelColor }

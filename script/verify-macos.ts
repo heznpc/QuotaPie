@@ -12,6 +12,11 @@ interface Observation {
   menuHasImage: boolean;
   menuAccessibleLabel: string;
   viewRendered: boolean;
+  viewWidth?: number;
+  viewHeight?: number;
+  menuText?: string;
+  appearance?: string;
+  scrollRegions?: Array<{viewportHeight:number;documentHeight:number}>;
   detailSection?: string;
   focusedResumeTaskID?: string | null;
   activeTaskIDs?: string[];
@@ -98,7 +103,7 @@ async function run() {
         names.recognitionLevel = .accurate
         names.recognitionLanguages = ["en-US", "ko-KR"]
         names.usesLanguageCorrection = false
-        names.regionOfInterest = CGRect(x: 0.14, y: 0, width: 0.7, height: 1)
+        names.regionOfInterest = CGRect(x: 0.115, y: 0, width: 0.75, height: 1)
         try VNImageRequestHandler(url: URL(fileURLWithPath: CommandLine.arguments[1])).perform([names])
         rows += (names.results ?? []).compactMap { observation in
           guard let text = observation.topCandidates(1).first?.string else { return nil }
@@ -111,6 +116,8 @@ async function run() {
   };
   let rowClick: {x:number;y:number} | undefined;
   let backClick: {x:number;y:number} | undefined;
+  let singleAccountHeight = 0;
+  let threeAccountHeight = 0;
   let malformed = false;
   let fastQuotaScenario = false;
   const fastQuotaRequests: Array<{path:string;method:string;token:string|null;reason?:string}> = [];
@@ -174,6 +181,17 @@ async function run() {
       windows:account("default", "Claude Main", 37).windows.map(window=>({...window,provider:"claude",bucket:"five_hour",freshness:"stale",observedAtMs:Date.now()-3_600_000}))},
     {...account("disabled", "Disabled", 91), enabled:false},
   ];
+  const weeklyWindow = (value: ReturnType<typeof account>, remaining: number) => ({...value.windows[0]!,
+    bucket:value.provider === "claude" ? "seven_day" : "codex:secondary", label:"Weekly", windowSeconds:604800,
+    remainingPercent:remaining, usedPercent:100-remaining});
+  const columnAccounts = [
+    {...baseAccounts[0]!,windows:[weeklyWindow(baseAccounts[0]!,42)]},
+    account("second","Second",73),
+    {...account("third","Team",28),provider:"claude",windows:[
+      {...account("third","Team",28).windows[0]!,provider:"claude",bucket:"five_hour"},
+      {...weeklyWindow(account("third","Team",28),67),provider:"claude",bucket:"seven_day"}]},
+  ];
+  const manyAccounts = [baseAccounts[0]!, ...Array.from({length:11},(_,index)=>account(`extra${index}`,`Account ${index+2}`,63-index))];
   const automaticPolicy = { id: "fixture-work", provider: "claude", account: "default", nativeSessionId: "fixture-session",
     model: "original-session-model", prompt: "Continue the selected work", objective: "Shared work fixture", completionCriteria: ["Evidence recorded"],
     dispatchOwner: "local", enabled: false, trigger: "quota-ready", resetWithinMinutes: 60,
@@ -231,6 +249,12 @@ async function run() {
       { name: "both-main-frontmost", running: ["second", "main"], frontmost: "main", expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "no-running-account", running: [], frontmost: null, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "account-list-mixed", running: ["main"], frontmost: null, mixedAccounts: true, expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "account-list-single", running: ["main"], frontmost: null, singleAccount: true, expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "account-list-light", running: ["main"], frontmost: null, mixedAccounts: true, appearance:"light", expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "account-list-dark", running: ["main"], frontmost: null, mixedAccounts: true, appearance:"dark", expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "account-list-many", running: ["main"], frontmost: null, manyAccounts: true, expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "account-list-columns", running: ["main"], frontmost: null, columnAccounts: true, expected: { account: "codex/default", remaining: 42, label: "Main" } },
+      { name: "account-auth-menu", running: ["main"], frontmost: null, mixedAccounts: true, initialAccountID:"claude/default", expected: { account: "claude/default", remaining: 37, label: "Claude Main" } },
       { name: "account-list-blocked", running: ["main"], frontmost: null, blockedAccounts: true, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "account-detail-second", running: ["main"], frontmost: null, mixedAccounts: true, initialAccountID: "codex/second", expected: { account: "codex/second", remaining: 100, label: "Second" } },
       { name: "account-list-navigation", running: ["main"], frontmost: null, mixedAccounts: true, expected: { account: "codex/second", remaining: 100, label: "Second" } },
@@ -250,7 +274,9 @@ async function run() {
       { name: "host-goals-absent", running: ["main"], frontmost: null, withTasks: true, goalState: "no_goal", initialSection: "work", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
     ]) {
       malformed = scenario.expected == null;
-      payload.accounts = "mixedAccounts" in scenario ? mixedAccounts : "blockedAccounts" in scenario ? blockedAccounts : baseAccounts;
+      payload.accounts = "mixedAccounts" in scenario ? mixedAccounts : "blockedAccounts" in scenario ? blockedAccounts :
+        "singleAccount" in scenario ? [baseAccounts[0]!] : "manyAccounts" in scenario ? manyAccounts :
+        "columnAccounts" in scenario ? columnAccounts : baseAccounts;
       fastQuotaScenario = "fastQuota" in scenario;
       payload.resumeTasks = "withTasks" in scenario ? pausedTasks : [];
       payload.jobs = "withTasks" in scenario ? managedJobs : [];
@@ -271,6 +297,7 @@ async function run() {
       await writeFile(request, JSON.stringify({ endpoint: `http://127.0.0.1:${server.port}`, reportPath, profiles,
         runningProfileIDs: scenario.running, frontmostProfileID: scenario.frontmost,
         contentHeight: "contentHeight" in scenario ? scenario.contentHeight : undefined,
+        appearance: "appearance" in scenario ? scenario.appearance : undefined,
         inspectAutoResume: scenario.name === "auto-resume",
         fastQuota: fastQuotaScenario, quotaCachePath,
         focusedResumeTaskID: "focusedResumeTaskID" in scenario ? scenario.focusedResumeTaskID : undefined,
@@ -279,12 +306,38 @@ async function run() {
         navigationClicks: scenario.name === "account-list-navigation" ? [rowClick, backClick] : undefined }));
       await exec(["/usr/bin/open", "-W", "-n", "-g", app, "--args", "--verification", request], 20_000);
       const observed = JSON.parse(await readFile(reportPath, "utf8")) as Observation;
-      if (["auto-resume", "account-list-mixed", "account-list-blocked", "account-detail-second"].includes(scenario.name)) {
+      if (["auto-resume", "account-list-mixed", "account-list-blocked", "account-list-columns", "account-detail-second"].includes(scenario.name)) {
         observed.renderedText = await recognizeText(reportPath, scenario.name === "account-list-mixed");
       }
       const failures = smokeFailures(observed, scenario.expected);
       const expectedList = !("initialSection" in scenario) && !("initialAccountID" in scenario);
       if (observed.isShowingAccountList !== expectedList) failures.push("wrong_popover_landing_page");
+      if (scenario.name === "account-list-single") {
+        singleAccountHeight = observed.viewHeight ?? 0;
+        if (singleAccountHeight < 80 || singleAccountHeight > 250 || observed.viewWidth !== 360) failures.push("single_account_not_content_sized");
+      }
+      if (scenario.name === "account-list-light" || scenario.name === "account-list-dark") {
+        threeAccountHeight = observed.viewHeight ?? 0;
+        if (threeAccountHeight <= singleAccountHeight || threeAccountHeight > 440 || observed.viewWidth !== 360) failures.push("three_accounts_not_compact");
+        if ((observed.scrollRegions ?? []).some(region=>region.documentHeight > region.viewportHeight + 1)) failures.push("three_accounts_unnecessarily_scroll");
+        const expectedAppearance = scenario.name.endsWith("dark") ? "NSAppearanceNameDarkAqua" : "NSAppearanceNameAqua";
+        if (observed.appearance !== expectedAppearance) failures.push("fixture_appearance_not_applied");
+      }
+      if (scenario.name === "account-list-many") {
+        if ((observed.viewHeight ?? 0) > 600 || (observed.viewHeight ?? 0) <= threeAccountHeight || observed.enabledAccountIDs?.length !== 12)
+          failures.push("many_accounts_not_bounded");
+        if (!(observed.scrollRegions ?? []).some(region=>region.documentHeight > region.viewportHeight + 100)) failures.push("many_accounts_cannot_scroll");
+      }
+      if (scenario.name === "account-list-columns") {
+        const text = observed.renderedText ?? [];
+        const weekly = text.find(row=>row.text.replace(/\s/g,"") === "42%");
+        const short = text.find(row=>row.text.replace(/\s/g,"") === "73%");
+        if (!weekly || !short || weekly.left < short.left + 0.1) failures.push("missing_limit_shifted_columns");
+      }
+      if (scenario.name === "account-auth-menu") {
+        const warning = observed.locale === "ko" ? "로그인" : "Sign in";
+        if (!observed.menuText?.includes(warning) || observed.menuText.includes("37%") || observed.menuAccessibleLabel.includes("37%")) failures.push("auth_needed_looks_like_healthy_quota");
+      }
       if (scenario.name === "account-list-mixed") {
         const text = observed.renderedText ?? [];
         const normalized = (value:string) => value.replace(/\s/g, "");
@@ -292,9 +345,16 @@ async function run() {
         for (const label of ["Main", "Second", "Claude Main", "18%", "100%", "37%"])
           if (!allText.includes(normalized(label))) failures.push("account_list_missing_" + label);
         if (allText.includes("Disabled")) failures.push("disabled_account_visible");
+        if (!allText.includes(observed.locale === "ko" ? "남은한도" : "Remainingquota")) failures.push("remaining_percent_semantics_missing");
+        const header = observed.locale === "ko" ? "내 계정" : "Your accounts";
+        const work = observed.locale === "ko" ? "작업" : "Work";
+        const more = observed.locale === "ko" ? "더 보기" : "More";
+        if (!text.some(row=>normalized(row.text).includes(normalized(header)) && row.top < 0.1)) failures.push("account_list_header_not_visible");
+        for (const label of [work, more])
+          if (!text.some(row=>normalized(row.text).includes(normalized(label)) && row.top > 0.85)) failures.push("account_list_footer_missing_" + label);
         const authText = observed.locale === "ko" ? "로그인이 필요합니다" : "Sign-in required";
         if (!allText.includes(normalized(authText))) failures.push("account_list_hides_auth_error");
-        const cachedText = observed.locale === "ko" ? "이전 수집값" : "Previous readings";
+        const cachedText = observed.locale === "ko" ? "이전 값" : "Previous reading";
         if (!allText.toLowerCase().includes(normalized(cachedText).toLowerCase())) failures.push("account_list_hides_cached_status");
         if (observed.enabledAccountIDs?.join(",") !== "codex/default,codex/second,claude/default") failures.push("account_list_scope");
         const row = text.find(row=>normalized(row.text) === "Second");

@@ -553,6 +553,11 @@
 "accounts.list.usageBlocked" = "The provider has restricted one or more limits";
 "accounts.list.limitBlocked" = "Usage restricted";
 "accounts.list.permissionUnknown" = "Usage permission unconfirmed";
+"accounts.list.previous" = "Previous reading";
+"accounts.list.remaining" = "Remaining quota";
+"menu.account.loginRequired" = "Sign in required";
+"menu.account.loginExpired" = "Sign-in expired";
+"menu.account.refreshNeeded" = "Refresh needed";
 
 "profiles.accountNotLinked" = "No unique Codex app is linked to this account. Check the connection in Settings → Codex accounts.";
 "profiles.openAccount" = "Open %@ Codex app";

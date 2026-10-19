@@ -21,56 +21,74 @@ struct PopoverView: View {
     }
 
     private var accountList: some View {
+        // Select a complete surface so native popover chrome and the chosen
+        // content share one rendering subtree on macOS.
+        ViewThatFits(in: .vertical) {
+            accountListFrame {
+                accountListContent.fixedSize(horizontal: false, vertical: true)
+            }
+            accountListFrame {
+                ScrollView { accountListContent }
+                    .frame(height: max(1, model.popoverDetailHeight - 86))
+            }
+        }
+        .frame(width: 360)
+        .frame(maxHeight: model.popoverDetailHeight)
+        .accessibilityIdentifier("accounts.list")
+    }
+
+    private func accountListFrame<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
-                Text(Strings.t("accounts.list.title")).font(.headline)
+                Text(Strings.t("accounts.list.title")).font(.system(size: 13, weight: .semibold))
+                    .accessibilityLabel(Strings.t("accounts.list.title") + ", " + Strings.t("accounts.list.count", String(model.enabledAccounts.count)))
                 Spacer()
                 if model.payload?.collection?.refreshing == true {
-                    Text(Strings.t("collection.refreshing")).font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Text(Strings.t("accounts.list.count", String(model.enabledAccounts.count)))
-                        .font(.caption).foregroundStyle(.secondary)
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .accessibilityLabel(Strings.t("collection.refreshing"))
                 }
-            }.padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 12)
+                Text(Strings.t("accounts.list.remaining")).font(.caption).foregroundStyle(.secondary)
+            }.padding(.horizontal, 16).frame(height: 44)
             Divider()
-            ScrollView {
-                VStack(spacing: 0) {
-                    if model.enabledAccounts.isEmpty {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text(model.lastError == nil ? Strings.t("popover.noAccounts") : model.statusFailureText)
-                                .font(.callout).foregroundStyle(.secondary)
-                            Button(Strings.t("action.openSettings")) { showDetails(.settings) }
-                        }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
-                    } else {
-                        ForEach(model.enabledAccounts) { account in
-                            AccountListRow(account: account, showingStartupCache: model.showingStartupCache,
-                                           transportFailure: model.lastError == nil ? nil : model.statusFailureText,
-                                           select: { model.showAccount(account) })
-                            if account.id != model.enabledAccounts.last?.id { Divider().padding(.horizontal, 20) }
-                        }
-                    }
-                    if let message = model.collectionRequestError ?? model.accountOpenError {
-                        Text(message).font(.caption).foregroundStyle(.orange)
-                            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.bottom, 12)
-                    }
-                    if !model.activeTasks.isEmpty {
-                        Divider().padding(.horizontal, 20)
-                        Button { showDetails(.work) } label: {
-                            HStack {
-                                Label(model.taskOverviewSummary, systemImage: "play.circle")
-                                Spacer(minLength: 4)
-                                Image(systemName: "chevron.right").font(.caption2)
-                            }.font(.caption).contentShape(Rectangle()).padding(20)
-                        }.buttonStyle(.plain)
-                    }
-                }
-            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            content()
             Divider()
-            footer.padding(.horizontal, 16).padding(.vertical, 12)
+            footer.padding(.horizontal, 12).frame(height: 40)
         }
-        .frame(width: 380, height: min(model.popoverDetailHeight,
-            max(280, CGFloat(model.enabledAccounts.count) * 146 + 110 + (model.activeTasks.isEmpty ? 0 : 60))))
-        .accessibilityIdentifier("accounts.list")
+        .frame(width: 360)
+    }
+
+    private var accountListContent: some View {
+        VStack(spacing: 0) {
+            if model.enabledAccounts.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(model.lastError == nil ? Strings.t("popover.noAccounts") : model.statusFailureText)
+                        .font(.callout).foregroundStyle(.secondary)
+                    Button(Strings.t("action.openSettings")) { showDetails(.settings) }
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(16)
+            } else {
+                ForEach(model.enabledAccounts) { account in
+                    AccountListRow(account: account, showingStartupCache: model.showingStartupCache,
+                                   transportFailure: model.lastError == nil ? nil : model.statusFailureText,
+                                   select: { model.showAccount(account) })
+                    if account.id != model.enabledAccounts.last?.id { Divider().padding(.horizontal, 16) }
+                }
+            }
+            if let message = model.collectionRequestError ?? model.accountOpenError {
+                Text(message).font(.caption).foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.bottom, 12)
+            }
+            if !model.activeTasks.isEmpty {
+                Divider().padding(.horizontal, 16)
+                Button { showDetails(.work) } label: {
+                    HStack {
+                        Label(model.taskOverviewSummary, systemImage: "play.circle")
+                        Spacer(minLength: 4)
+                        Image(systemName: "chevron.right").font(.caption2)
+                    }.font(.caption).contentShape(Rectangle()).padding(16)
+                }.buttonStyle(.plain)
+            }
+        }.frame(maxWidth: .infinity)
     }
 
     private var overview: some View {
@@ -88,7 +106,7 @@ struct PopoverView: View {
             Divider()
             footer.padding(.horizontal, 16).padding(.vertical, 12)
         }
-        .frame(width: 380, height: model.popoverDetailHeight)
+        .frame(width: 360, height: model.popoverDetailHeight)
     }
 
     private var overviewContent: some View {
@@ -348,16 +366,28 @@ struct PopoverView: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 18) {
+        HStack(spacing: 12) {
             Button(action: actions.refresh) {
-                Label(Strings.t("action.refresh"), systemImage: "arrow.clockwise")
-            }.help(Strings.t("action.refreshHelp"))
-            Spacer(minLength: 0)
+                Image(systemName: "arrow.clockwise").frame(width: 24, height: 24)
+            }
+            .accessibilityLabel(Strings.t("action.refresh"))
+            .accessibilityIdentifier("footer.refresh")
+            .help(Strings.t("action.refreshHelp"))
             Button(Strings.t("detail.work")) { showDetails(.work) }
-            Button(Strings.t("overview.activityDetail")) { showDetails(.activity) }
-            Button(Strings.t("detail.settings")) { showDetails(.settings) }
+                .accessibilityIdentifier("footer.work")
+            Spacer(minLength: 0)
+            Menu(Strings.t("action.more")) {
+                Button(Strings.t("overview.activityDetail")) { showDetails(.activity) }
+                Button(Strings.t("detail.resets")) { showDetails(.resets) }
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+            .accessibilityIdentifier("footer.more")
+            Button { showDetails(.settings) } label: { Image(systemName: "gearshape").frame(width: 24, height: 24) }
+                .accessibilityLabel(Strings.t("detail.settings"))
+                .accessibilityIdentifier("footer.settings")
+                .help(Strings.t("detail.settings"))
         }
-        .font(.caption).buttonStyle(.borderless)
+        .font(.system(size: 12)).controlSize(.small).buttonStyle(.borderless)
     }
 
     private func detailButton(_ key: String, section: DetailSection) -> some View {
