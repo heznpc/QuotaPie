@@ -482,9 +482,10 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
                 try { accountPool = options.resolveAccountPool(); } catch { accountPool = undefined; }
               }
               const sourceRecoveryOnly = interactive && !frozenTarget && options.executionTargetRelay?.sourceRecoveryOnly({ threadId: event.threadId, turnId: event.turnId, body: outgoing });
-              if (interactive && (frozenTarget || sourceRecoveryOnly)) options.manualAccountRouting?.assertCompatible({ threadId: event.threadId,
-                ...(frozenTarget ? { target: frozenTarget.lease.target } : { sourceRecoveryOnly: true }) });
-              if (interactive && !frozenTarget && !sourceRecoveryOnly && options.manualAccountRouting) {
+              // An explicit next-request choice takes precedence over an automatic recovery marker.
+              // A leased execution target remains immutable.
+              if (interactive && frozenTarget) options.manualAccountRouting?.assertCompatible({ threadId: event.threadId, target: frozenTarget.lease.target });
+              if (interactive && !frozenTarget && options.manualAccountRouting) {
                 manualTarget = options.manualAccountRouting.response({ threadId: event.threadId, turnId: event.turnId,
                   model: event.to, body: outgoing, identityConflict: codexRequestIdentity(sourceHeaders).fork.status === "invalid" });
                 if (manualTarget && !accountPool) throw new PoolError("pool_manual_policy_changed", 409);

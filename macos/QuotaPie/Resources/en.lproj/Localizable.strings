@@ -1530,3 +1530,5 @@
 "sessionAccount.unverified" = "Verifying processing account";
 "sessionAccount.processing" = "Processing · %@";
 "sessionAccount.last" = "Last processed · %@";
+
+"sessionAccount.other" = "Other conversation";

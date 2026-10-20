@@ -40,7 +40,14 @@ struct PopoverView: View {
             }.padding(20).frame(width: 360)
         }
         .sheet(item: $model.requestAccountTarget) { account in
-            RequestAccountSelectionView(account: account, actions: actions)
+            RequestAccountSelectionView(account: account, actions: actions) { threadID in
+                model.inspectedConversationID = threadID
+                model.requestAccountResult = nil
+                if let index = model.requestAccountCatalog?.conversations.firstIndex(where: { $0.threadId == threadID }) {
+                    model.requestAccountCatalog?.conversations[index].targetAccount = account.account
+                }
+                actions.loadRequestAccounts { _ in }
+            }
         }
     }
 
@@ -84,9 +91,9 @@ struct PopoverView: View {
 
     private var accountListContent: some View {
         VStack(spacing: 0) {
-            SessionAccountView(model: model)
+            SessionAccountView(model: model, selectAccount: selectRequestAccount)
             Divider().padding(.horizontal, 16)
-            if model.enabledAccounts.contains(where: { $0.provider == "codex" }),
+            if model.displayedConversation == nil, model.enabledAccounts.contains(where: { $0.provider == "codex" }),
                let routing = model.payload?.routing, !routing.active.isEmpty || !routing.recent.isEmpty {
                 RoutingSummaryButton(model: model) { showDetails(.activity) }
                 Divider().padding(.horizontal, 16)
@@ -159,7 +166,7 @@ struct PopoverView: View {
 
     private func selectRequestAccount(_ account: AccountState) {
         guard !model.requestAccountApplying else { return }
-        guard let thread = FocusedConversation.match(title: model.focusedConversationTitle, catalog: model.requestAccountCatalog) else {
+        guard let thread = model.displayedConversation else {
             model.chooseRequestAccount(account)
             return
         }
@@ -169,7 +176,13 @@ struct PopoverView: View {
             model.requestAccountApplying = false
             switch result {
             case .success(let assignment):
-                model.requestAccountResult = thread.displayTitle + " · " + Strings.t("requestAccount.next", assignment.label)
+                guard assignment.threadId == thread.threadId, assignment.account == account.account else {
+                    model.requestAccountResult = StatusClientError.invalidResponse.localizedDescription
+                    return
+                }
+                if let index = model.requestAccountCatalog?.conversations.firstIndex(where: { $0.threadId == thread.threadId }) {
+                    model.requestAccountCatalog?.conversations[index].targetAccount = assignment.account
+                }
                 actions.loadRequestAccounts { _ in }
             case .failure(let error): model.requestAccountResult = error.localizedDescription
             }
@@ -208,7 +221,7 @@ struct PopoverView: View {
 
     private var overviewContent: some View {
         VStack(alignment: .leading, spacing: 16) {
-            SessionAccountView(model: model)
+            SessionAccountView(model: model, selectAccount: selectRequestAccount)
             Divider().padding(.horizontal, 16)
             quotaOverview
             if let error = model.accountOpenError {

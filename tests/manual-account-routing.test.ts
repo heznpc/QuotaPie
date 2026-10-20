@@ -188,10 +188,19 @@ test("selected target 429 is returned once with no automatic source credit fallb
   expect(f.sent).toHaveLength(1); expect(f.sent[0].headers.get("chatgpt-account-id")).toBe("b");
 }));
 
-test("source-only automatic recovery conflicts with manual selection instead of silently using source", () => fixture(async f => {
+test("automatic recovery honors the explicit next-request account without source fallback", () => fixture(async f => {
   await f.select();
   const response = await f.request({ model, input: [...f.history.slice(0, 1), { role: "user", content: "[QuotaPie quota recovery:test]\nContinue" }], stream: true });
-  expect(response.status).toBe(409); expect(await response.json()).toMatchObject({ error: { code: "pool_manual_execution_conflict" } }); expect(f.sent).toHaveLength(0);
+  expect(response.status).toBe(200); await response.text();
+  expect(f.sent).toHaveLength(1); expect(f.sent[0].headers.get("chatgpt-account-id")).toBe("b");
+}));
+
+test("automatic recovery cannot bypass the chosen account quota", () => fixture(async f => {
+  await f.select();
+  f.accounts[1].row.windows[0].remainingPercent = 0; f.publish();
+  const response = await f.request({ model, input: [...f.history.slice(0, 1), { role: "user", content: "[QuotaPie quota recovery:test]\nContinue" }], stream: true });
+  expect(response.status).toBeGreaterThanOrEqual(400); await response.text();
+  expect(f.sent).toHaveLength(0);
 }));
 
 test("policy disabled during asynchronous pool selection cannot turn a selected target into source pass-through", () => fixture(async f => {

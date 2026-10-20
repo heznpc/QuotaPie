@@ -1530,3 +1530,5 @@
 "sessionAccount.unverified" = "처리 계정 확인 중";
 "sessionAccount.processing" = "처리 중 · %@";
 "sessionAccount.last" = "최근 처리 · %@";
+
+"sessionAccount.other" = "다른 대화";

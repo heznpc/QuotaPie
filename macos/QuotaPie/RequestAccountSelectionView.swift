@@ -5,10 +5,12 @@ struct RequestAccountSelectionView: View {
     @StateObject private var selection: RequestAccountSelectionModel
     @State private var search = ""
     let actions: PopoverActions
+    let didApply: (String) -> Void
 
-    init(account: AccountState, actions: PopoverActions) {
+    init(account: AccountState, actions: PopoverActions, didApply: @escaping (String) -> Void = { _ in }) {
         _selection = StateObject(wrappedValue: RequestAccountSelectionModel(account: account.account, label: account.accountLabel))
         self.actions = actions
+        self.didApply = didApply
     }
 
     var body: some View {
@@ -66,6 +68,11 @@ struct RequestAccountSelectionView: View {
         .padding(20).frame(width: 440)
         .interactiveDismissDisabled(selection.applyingThreadID != nil)
         .onAppear { selection.load(using: actions.loadRequestAccounts) }
+        .onChange(of: selection.appliedThreadID) { threadID in
+            guard let threadID else { return }
+            didApply(threadID)
+            dismiss()
+        }
         .accessibilityIdentifier("requestAccount.sheet")
     }
 
