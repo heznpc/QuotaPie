@@ -178,6 +178,7 @@ export class QuotaPieService {
   private consolidationQuiesced = new Set<string>();
   private codexRetries = new Map<string, { failures: number; atMs: number }>();
   private codexNextPollMs = new Map<string, number>();
+  private upgradeActiveCodexPoll: (() => void) | null = null;
   private collectionStartedAtMs: number | null = null;
   private collectionFinishedAtMs: number | null = null;
   private collectionRequestedAtMs: number | null = null;
@@ -1135,14 +1136,19 @@ export class QuotaPieService {
     if (!this.config.collection.codexEnabled) return [];
     const profiles = this.config.accounts.codex.filter((profile) => profile.enabled);
     if (!profiles.length) return [];
-    const requireFileCredentials = profiles.length > 1;
-    const outcomes = await Promise.all(profiles.map(async (profile) => {
+    const deferred = new Map<number, CodexAccountConfig>();
+    const read = async (profile: CodexAccountConfig, index: number, respectInterval: boolean) => {
+      if (this.closing || !this.config.collection.codexEnabled ||
+          !this.config.accounts.codex.some(current => current === profile && current.enabled))
+        return { ok: false as const, skipped: true, events: [] as QuotaEvent[], message: "collection disabled" };
       if(this.consolidationQuiesced.has(profile.id))
         return {ok:false as const,skipped:true,events:[] as QuotaEvent[],message:"session consolidation pending"};
       const nextAttemptMs = this.codexRetries.get(profile.id)?.atMs ?? this.codexNextPollMs.get(profile.id) ?? 0;
-      if (respectRetry && nextAttemptMs > Date.now()) {
+      if (respectInterval && nextAttemptMs > Date.now()) {
+        deferred.set(index, profile);
         return { ok: false as const, skipped: true, events: [] as QuotaEvent[], message: "collection pending" };
       }
+      const requireFileCredentials = this.config.accounts.codex.filter(current => current.enabled).length > 1;
       if (requireFileCredentials && !codexUsesFileCredentials(profile)) {
         this.codexRetries.delete(profile.id);
         // An isolation configuration error needs a regular recheck, not the
@@ -1180,14 +1186,33 @@ export class QuotaPieService {
         console.error(`[quotapie] Codex account ${profile.id} refresh failed: ${message}`);
         return { ok: false as const, events: [] as QuotaEvent[], message };
       }
-    }));
-    if (outcomes.every(outcome => "skipped" in outcome)) return [];
-    if (!outcomes.some((outcome) => outcome.ok)) {
-      const attempted = profiles.filter((_, index) => !("skipped" in outcomes[index]!));
-      const scope = attempted.length === profiles.length ? "configured" : "attempted";
-      throw new Error(`all ${scope} Codex accounts failed (${attempted.map((profile) => profile.id).join(", ")})`);
+    };
+    const pending = profiles.map((profile, index) => read(profile, index, respectRetry));
+    const upgrade = () => {
+      // A wake can arrive after the natural poll skipped a healthy account.
+      // Start that account now, without rereading accounts already in this batch.
+      for (const [index, profile] of deferred) {
+        deferred.delete(index);
+        pending[index] = read(profile, index, false);
+      }
+    };
+    this.upgradeActiveCodexPoll = upgrade;
+    try {
+      let snapshot, outcomes;
+      do {
+        snapshot = [...pending];
+        outcomes = await Promise.all(snapshot);
+      } while (snapshot.some((task, index) => task !== pending[index]));
+      if (outcomes.every(outcome => "skipped" in outcome)) return [];
+      if (!outcomes.some((outcome) => outcome.ok)) {
+        const attempted = profiles.filter((_, index) => !("skipped" in outcomes[index]!));
+        const scope = attempted.length === profiles.length ? "configured" : "attempted";
+        throw new Error(`all ${scope} Codex accounts failed (${attempted.map((profile) => profile.id).join(", ")})`);
+      }
+      return outcomes.flatMap((outcome) => outcome.events);
+    } finally {
+      if (this.upgradeActiveCodexPoll === upgrade) this.upgradeActiveCodexPoll = null;
     }
-    return outcomes.flatMap((outcome) => outcome.events);
   }
 
   // force exists for doctor: a diagnostic has to see the state now rather
@@ -2794,6 +2819,7 @@ export class QuotaPieService {
     // Coalesce wake/network/manual bursts, including one request arriving
     // while an older read is still in flight. Never start a second poll loop.
     this.forceNextCollection ||= force;
+    if (force) this.upgradeActiveCodexPoll?.();
     if (this.refreshRequested) return;
     this.collectionRequestedAtMs = nowMs;
     this.refreshRequested = true;
