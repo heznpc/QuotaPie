@@ -122,3 +122,17 @@ test("account list exposes the actual quota reason and credit consent stays inde
  } finally {rmSync(root,{recursive:true,force:true});}
 });
 import { savePoolPolicy, readPoolPolicy, configurePoolPolicy } from "../src/account-pool";
+
+for (const phase of ["started", "failed"]) test(`a ${phase} request preserves prior confirmed account as history`, () => {
+ const prior = { ...route, requestId: "prior", active: false, observedAtMs: 10 };
+ const pending = { ...route, requestId: "new", phase, account: "other", upstreamResponseObserved: false, observedAtMs: 20 };
+ const result = api().read({ ...routing, active: [pending], recent: [prior] }, labels).conversations[0];
+ expect(result).toMatchObject({ currentAccount: "main", active: false });
+});
+test("conversation history survives eviction from the recent activity list", () => {
+ const result = api().read({ ...routing, active: [], recent: [], history: [{...route, active: false}] }, labels).conversations[0];
+ expect(result).toMatchObject({ currentAccount: "main", active: false });
+});
+test("unknown attribution cannot be promoted to a confirmed account", () => {
+ expect(api().read({ ...routing, active: [{ ...route, attribution: "unknown" }] }, labels).conversations[0]?.currentAccount).toBeNull();
+});

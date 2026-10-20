@@ -63,11 +63,12 @@ export class RequestAccountAPI {
   private candidates(routing: RoutingSummary) {
     const targets = this.options.targets?.() ?? manualTargets(this.options.databasePath);
     const observed = [...routing.active, ...routing.recent];
+    const history = routing.history ?? [];
     const threads = this.options.threads?.() ?? requestAccountThreads(this.config);
     // The relay identifies the credential source. A consolidated physical store
     // supplies display metadata only; its owner is not the request account.
     const grouped = new Map<string, Set<string>>();
-    for (const row of observed) if (row.threadId && row.sourceAccount) {
+    for (const row of [...observed, ...history]) if (row.threadId && row.sourceAccount) {
       const sources = grouped.get(row.threadId) ?? new Set<string>();
       sources.add(row.sourceAccount); grouped.set(row.threadId, sources);
     }
@@ -85,13 +86,18 @@ export class RequestAccountAPI {
       const metadata = threads.find(t => t.threadId === threadId);
       if (!metadata) return [];
       const route = observed.find(r => r.threadId === threadId && r.sourceAccount === sourceAccount && r.kind === "response");
+      // A pending or locally blocked request must not erase the last provider-confirmed account.
+      // Keep execution/continuation decisions on the latest route, independently of display history.
+      const confirmed = [...observed, ...history].filter(r => r.threadId === threadId && r.sourceAccount === sourceAccount &&
+        r.kind === "response" && r.upstreamResponseObserved && r.account && r.attribution !== "unknown")
+        .sort((a, b) => b.observedAtMs - a.observedAtMs)[0];
       const target = targets.find(t => t.threadId === threadId && t.sourceAccount === sourceAccount);
       return [{ threadId, sourceAccount, title: metadata.title, model: route?.model || metadata.model || target?.model,
         pendingTurnId: route?.upstreamResponseObserved && route.account === sourceAccount &&
           route.attribution !== "unknown" ? route.turnId : null,
-        currentAccount: route?.upstreamResponseObserved ? route.account : null,
+        currentAccount: confirmed?.account ?? null,
         targetAccount: target?.account ?? null,
-        active: routing.active.some(r => r.threadId === threadId && r.sourceAccount === sourceAccount) }];
+        active: !!confirmed && routing.active.includes(confirmed) && route === confirmed }];
     }).sort((a,b) => Number(b.active)-Number(a.active));
   }
 

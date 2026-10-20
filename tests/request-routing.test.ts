@@ -87,3 +87,20 @@ test("persisted outgoing credential proof survives ring eviction without inventi
     accountRouting: { sourceAccount: "main", account: "other", reason: "manual" } });
   expect(summarizeRouting([generation([conflict])], now).active[0]?.account).toBeNull();
 });
+
+test("last confirmed account survives unrelated requests leaving the recent ring", () => {
+  const older = event({ phase: "completed", status: 200, processingAccount: { account: "main", evidence: "validated-outgoing-credentials" } });
+  const first = summarizeRouting([generation([older])], now);
+  const newer = Array.from({ length: 60 }, (_, index) => event({
+    requestId: `20000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+    threadId: "20000000-0000-4000-8000-000000000000", phase: "completed", status: 200,
+    at: new Date(now + 1000 + index).toISOString(),
+    processingAccount: { account: "other", evidence: "validated-outgoing-credentials" },
+  }));
+  const next = summarizeRouting([generation(newer, "other")], now + 2000, [...first.history!, ...first.recent]);
+  expect(next.recent).toHaveLength(50);
+  expect(next.recent.some(row => row.threadId === id)).toBe(false);
+  expect(next.history?.find(row => row.threadId === id)).toMatchObject({ account: "main", active: false });
+  const quiet = summarizeRouting([], now + 3000, [...next.history!, ...next.recent]);
+  expect(quiet.history?.find(row => row.threadId === id)).toMatchObject({ account: "main", active: false });
+});

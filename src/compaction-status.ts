@@ -185,7 +185,7 @@ export class CompactionStatusReader {
     }));
     const installed = generations.filter(g => g !== null);
     const routing = summarizeRouting(installed, nowMs, this.routingEvidence);
-    this.routingEvidence = [...routing.active, ...routing.recent];
+    this.routingEvidence = [...(routing.history ?? []), ...routing.active, ...routing.recent];
     const merged = new Map(this.evidence);
     for (const item of installed.flatMap(g => g.records)) {
       const previous = merged.get(item.requestId);

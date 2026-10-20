@@ -17,6 +17,7 @@ export interface RoutingSummary {
   checkedAtMs: number; freshness: "fresh" | "stale" | "unknown";
   activityUncertain: boolean;
   active: RequestRoute[]; recent: RequestRoute[];
+  history?: RequestRoute[];
 }
 interface Generation {
   reachable: boolean; records: CompactionRequestEvent[]; health: any;
@@ -69,8 +70,14 @@ export function summarizeRouting(generations: Generation[], nowMs: number, previ
   }
   const rows = [...retained.values()].sort((a, b) => b.observedAtMs - a.observedAtMs);
   const uncertain = rows.filter(row => !row.active && row.activityUncertain);
+  const history = new Map<string, RequestRoute>();
+  for (const row of rows) {
+    if (!row.threadId || !row.sourceAccount || !row.account || !row.upstreamResponseObserved || row.attribution === "unknown") continue;
+    const key = row.threadId + ":" + row.sourceAccount;
+    if (!history.has(key) && history.size < 1000) history.set(key, { ...row, active: false });
+  }
   return { checkedAtMs: nowMs, freshness: generations.some(g => g.reachable) ? "fresh" : rows.length ? "stale" : "unknown",
-    activityUncertain: uncertain.length > 0,
+    activityUncertain: uncertain.length > 0, history: [...history.values()],
     // Do not age out an unconfirmed live request merely because newer completed
     // requests arrived. A terminal observation or live reobservation resolves it.
     active: rows.filter(row => row.active).slice(0, 100),

@@ -14,13 +14,27 @@ final class FocusedConversationTests: XCTestCase {
         XCTAssertEqual(model.displayedConversation?.currentAccount, "actual")
         // A saved next-account choice is not proof of the current request.
         XCTAssertNotEqual(model.displayedConversation?.currentAccount, "future")
-        XCTAssertEqual(model.conversationAccountText, Strings.t("sessionAccount.unverified"))
+        XCTAssertEqual(model.conversationAccountText, Strings.t("sessionAccount.last", Strings.t("requestAccount.unknownAccount")))
         model.focusedConversationTitle = "Unknown window"
         XCTAssertNil(model.displayedConversation)
         model.inspectedConversationID = "a"
         XCTAssertEqual(model.displayedConversation?.threadId, "a")
         model.requestAccountCatalog = nil
         XCTAssertNil(model.displayedConversation)
+    }
+
+    func testStaleOrFailedRefreshRetainsHistoryWithoutClaimingLiveProcessing() {
+        let model = PopoverModel()
+        model.inspectedConversationID = "a"
+        model.requestAccountCatalog = .init(conversations: [.init(threadId: "a", title: "Work",
+            sourceAccount: "source", currentAccount: "actual", targetAccount: "future", active: true)],
+            accounts: [.init(account: "actual", label: "Actual", available: true, reason: nil)])
+        XCTAssertEqual(model.conversationAccountText, Strings.t("sessionAccount.last", "Actual"))
+        model.requestAccountCatalogError = "Temporary network failure"
+        XCTAssertEqual(model.conversationAccountText, Strings.t("sessionAccount.last", "Actual"))
+        model.requestAccountCatalog?.conversations = [.init(threadId: "a", title: "Work",
+            sourceAccount: "source", currentAccount: nil, targetAccount: "future", active: false)]
+        XCTAssertEqual(model.conversationAccountText, Strings.t("sessionAccount.unverified"))
     }
 
     func testDuplicateTitlesNeverPickAnArbitraryAccount() {

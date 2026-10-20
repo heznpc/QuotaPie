@@ -88,10 +88,11 @@ final class PopoverModel: ObservableObject {
 
     var conversationAccountText: String {
         guard let conversation = displayedConversation,
-              let account = conversation.currentAccount, requestAccountCatalogError == nil,
-              payload?.routing?.isCurrent() == true else { return Strings.t("sessionAccount.unverified") }
+              let account = conversation.currentAccount else { return Strings.t("sessionAccount.unverified") }
         let label = requestAccountCatalog?.label(for: account) ?? account
-        return Strings.t(conversation.active ? "sessionAccount.processing" : "sessionAccount.last", label)
+        let live = conversation.active && requestAccountCatalogError == nil && lastError == nil &&
+            !showingStartupCache && payload?.routing?.isCurrent() == true
+        return Strings.t(live ? "sessionAccount.processing" : "sessionAccount.last", label)
     }
 
     @Published var requestAccountApplying = false

@@ -332,7 +332,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             popoverModel.requestAccountCatalog = catalog
             popoverModel.requestAccountCatalogError = nil
         case .failure(let error):
-            popoverModel.requestAccountCatalog = nil
+            // Preserve verified historical attribution across a transient refresh failure.
             popoverModel.requestAccountCatalogError = error.localizedDescription
         }
         render()
@@ -845,9 +845,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         guard let button = statusItem.button else { return }
         let scopedConversation = popoverModel.displayedConversation
         let selected = scopedConversation == nil ? popoverModel.menuAccount :
-            (popoverModel.payload?.routing?.isCurrent() == true ? popoverModel.payload?.accounts.first {
+            popoverModel.payload?.accounts.first {
                 $0.provider == "codex" && $0.account == scopedConversation?.currentAccount
-            } : nil)
+            }
         let headline = selected.map(Headline.init(account:)) ?? popoverModel.selectedHeadline
         let accountAttention = selected.flatMap(MenuBarAccountStatus.title(for:))
         let sessionTitle = scopedConversation != nil ? popoverModel.conversationAccountText : nil
