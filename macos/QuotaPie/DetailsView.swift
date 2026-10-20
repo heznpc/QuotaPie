@@ -121,6 +121,8 @@ struct DetailsView: View {
                               activities: model.recentWorkActivities,
                               onOpen: actions.openRecentWork)
         case .activity:
+            RoutingActivityView(model: model)
+            Divider()
             if let savings = model.payload?.compaction?.savings {
                 VStack(alignment: .leading, spacing: 10) {
                     if !savings.active.isEmpty {

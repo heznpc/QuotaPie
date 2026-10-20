@@ -752,15 +752,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func render() {
         guard let button = statusItem.button else { return }
-        let headline = popoverModel.selectedHeadline
-        let selected = popoverModel.selectedAccount
+        let selected = popoverModel.menuAccount
+        let headline = selected.map(Headline.init(account:)) ?? popoverModel.selectedHeadline
         let accountAttention = selected.flatMap(MenuBarAccountStatus.title(for:))
+        let routingTitle = popoverModel.concurrentRoutingTitle
+        let creditTitle = selected?.creditMenuTitle
         let badge = selected.map { AccountBadge(accountID: $0.id, name: $0.accountLabel) }
         let readyTasks = popoverModel.canActOnTasks
             ? (popoverModel.payload?.resumeTasks.filter(\.isReady) ?? [])
             : []
         if readyTasks.isEmpty, !popoverModel.showingStartupCache, popoverModel.lastError == nil,
-           accountAttention == nil,
+           accountAttention == nil, routingTitle == nil, creditTitle == nil,
            let headline, ["normal", "pace-risk"].contains(headline.kind),
            let provider = headline.provider,
            let remaining = headline.remainingPercent, remaining.isFinite {
@@ -784,7 +786,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             button.imagePosition = .imageOnly
             button.imageScaling = .scaleNone
             button.setAccessibilityLabel([headline.accountLabel, headline.localizedTitle].compactMap { $0 }.joined(separator: " · "))
-            button.toolTip = [selected.map { $0.providerTitle + " · " + $0.accountLabel }, headline.localizedTitle, headline.localizedDetail].compactMap { $0 }.joined(separator: "\n")
+            button.toolTip = [selected.map { $0.providerTitle + " · " + $0.accountLabel }, headline.localizedTitle, headline.localizedDetail, popoverModel.routingTooltip].compactMap { $0 }.joined(separator: "\n")
             if renderedAccountID != popoverModel.selectedAccount?.id {
                 renderedAccountID = popoverModel.selectedAccount?.id
                 let index = popoverModel.payload?.accounts.firstIndex { $0.id == renderedAccountID } ?? -1
@@ -822,6 +824,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 ?? popoverModel.statusFailure?.shortText ?? Strings.t("headline.disconnected")
             color = .systemOrange
             toolTip = popoverModel.lastError ?? Strings.t("status.tooltip")
+        } else if let routingTitle {
+            title = routingTitle
+            color = .labelColor
+            toolTip = popoverModel.routingTooltip ?? routingTitle
+        } else if let creditTitle, let credits = selected?.credits {
+            title = creditTitle
+            color = .labelColor
+            toolTip = [Strings.t("credits.subscriptionExhausted"), Strings.t("credits.observedDecrease", credits.decreaseText),
+                       Strings.t("credits.balance", CreditUsage.number(credits.balance ?? 0) + " cr"),
+                       Strings.t("credits.scope")].joined(separator: "\n")
         } else if let accountAttention {
             title = accountAttention
             color = .secondaryLabelColor
@@ -845,7 +857,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         )
         let accountTitle = displayedAccount.map { $0.providerTitle + " · " + $0.accountLabel }
         button.setAccessibilityLabel([accountTitle, title].compactMap { $0 }.joined(separator: " · "))
-        button.toolTip = [accountTitle, toolTip].compactMap { $0 }.joined(separator: "\n")
+        button.toolTip = [accountTitle, toolTip, popoverModel.routingTooltip].compactMap { $0 }.joined(separator: "\n")
     }
 
     private func openRecentWork(_ item: RecentWork) {

@@ -20,6 +20,7 @@ struct StatusPayload: Decodable {
     let resetTracking: ResetTracking?
     var compaction: CompactionPayload?
     var accountPool: AccountPoolPayload? = nil
+    var routing: RoutingActivity? = nil
     var notificationPreferences: NotificationPreferences?
 
     init(from decoder: Decoder) throws {
@@ -41,11 +42,12 @@ struct StatusPayload: Decodable {
         resetTracking = try values.decodeIfPresent(ResetTracking.self, forKey: .resetTracking)
         compaction = try values.decodeIfPresent(CompactionPayload.self, forKey: .compaction)
         accountPool = try values.decodeIfPresent(AccountPoolPayload.self, forKey: .accountPool)
+        routing = try values.decodeIfPresent(RoutingActivity.self, forKey: .routing)
         notificationPreferences = try values.decodeIfPresent(NotificationPreferences.self, forKey: .notificationPreferences)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case nowMs, headline, accounts, collection, events, actionToken, resumeTasks, jobs, recentWork, recentWorkState, hostGoals, autoResume, resetSignals, resetTracking, compaction, notificationPreferences, accountPool
+        case nowMs, headline, accounts, collection, events, actionToken, resumeTasks, jobs, recentWork, recentWorkState, hostGoals, autoResume, resetSignals, resetTracking, compaction, notificationPreferences, accountPool, routing
     }
 }
 
@@ -685,6 +687,7 @@ struct AccountState: Codable, Identifiable {
     var nickname: String? = nil
     var connection: String? = nil
     var plan: AccountPlan? = nil
+    var credits: CreditUsage? = nil
     let provider: String
     let account: String
     let accountLabel: String

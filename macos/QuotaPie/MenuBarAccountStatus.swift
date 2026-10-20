@@ -18,7 +18,7 @@ enum MenuBarAccountStatus {
         } else if account.windows.contains(where: \.isResetTicketPending) {
             message = Strings.t("accounts.list.resetTicketPending")
         } else if account.windows.contains(where: \.isUsageBlocked) {
-            message = Strings.t("accounts.list.limitBlocked")
+            message = account.usageRestrictionText ?? Strings.t("accounts.list.limitBlocked")
         } else if account.windows.contains(where: \.isUsagePermissionUnknown) {
             message = Strings.t("accounts.list.permissionUnknown")
         } else if account.windows.contains(where: { $0.freshness != "fresh" }) {

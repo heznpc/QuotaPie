@@ -4,6 +4,7 @@ import SwiftUI
 struct PopoverView: View {
     @ObservedObject var model: PopoverModel
     @ObservedObject private var awake = AwakeController.shared
+    @ObservedObject private var profiles = CodexProfilesModel.shared
     @State private var overviewSupplementaryExpanded = false
     let actions: PopoverActions
 
@@ -64,6 +65,10 @@ struct PopoverView: View {
 
     private var accountListContent: some View {
         VStack(spacing: 0) {
+            if model.enabledAccounts.contains(where: { $0.provider == "codex" }) {
+                RoutingSummaryButton(model: model) { showDetails(.activity) }
+                Divider().padding(.horizontal, 16)
+            }
             if model.lastError != nil {
                 Label(model.statusFailureText + (model.enabledAccounts.contains(where: { !$0.windows.isEmpty }) ?
                     " · " + Strings.t("accounts.list.previous") : ""), systemImage: "exclamationmark.circle")
@@ -284,12 +289,15 @@ struct PopoverView: View {
                 accountIdentity
                 Spacer(minLength: 4)
                 if let account = model.displayedAccount, account.provider == "codex" || account.provider == "claude" {
+                    let appAction = codexAppAction(account)
                     Button { actions.openAccount(account) } label: {
-                        Image(systemName: "arrow.up.forward.app").frame(width: 24, height: 24)
+                        Label(account.provider == "claude" ? Strings.t("collection.openClaude") : appAction.title,
+                              systemImage: "arrow.up.forward.app").font(.caption)
                     }
-                    .buttonStyle(.borderless).disabled(model.openingAccount)
-                    .help(account.provider == "claude" ? Strings.t("collection.openClaude") : Strings.t("profiles.openAccount", account.accountLabel))
-                    .accessibilityLabel(account.provider == "claude" ? Strings.t("collection.openClaude") : Strings.t("profiles.openAccount", account.accountLabel))
+                    .buttonStyle(.borderless).disabled(model.openingAccount || account.provider == "codex" && !appAction.isEnabled)
+                    .help(account.provider == "claude" ? Strings.t("collection.openClaude") : appAction.help)
+                    .accessibilityLabel(account.provider == "claude" ? Strings.t("collection.openClaude") : appAction.title)
+                    .accessibilityIdentifier("account.openApp")
                 }
             }
             HStack {
@@ -304,6 +312,9 @@ struct PopoverView: View {
                 } else {
                     AccountOverviewQuota(account: account,
                         current: !model.showingStartupCache && model.lastError == nil && account.collection.isHealthy)
+                }
+                if let credits = account.credits, credits.subscriptionExhausted || credits.spendingObserved {
+                    CreditUsageView(credits: credits, current: !model.showingStartupCache && model.lastError == nil)
                 }
                 if account.collectionExplanation == nil {
                     if model.showingStartupCache {
@@ -347,6 +358,12 @@ struct PopoverView: View {
                     .font(.callout).foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func codexAppAction(_ account: AccountState) -> CodexAccountAction {
+        let profile = CodexDesktopProfile.forAccount(account.id, in: profiles.profiles)
+        return CodexAccountAction(profile: profile, consolidation: profiles.consolidation,
+            requiresVerification: profile.map { profiles.requiresConsolidationVerification($0) } ?? false)
     }
 
     private var accountIdentity: some View {

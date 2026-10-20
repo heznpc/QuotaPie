@@ -8,6 +8,9 @@ struct AccountListRow: View {
     @State private var hovering = false
 
     private var presentation: AccountListPresentation { AccountListPresentation(account: account) }
+    private var creditsAreCurrent: Bool {
+        !showingStartupCache && !transportUnavailable && account.collection.isHealthy && account.credits?.isCurrent() == true
+    }
 
     var body: some View {
         Button(action: select) {
@@ -34,6 +37,13 @@ struct AccountListRow: View {
                     ForEach(presentation.visibleWindows) { window in
                         quotaSummary(window)
                     }
+                }
+                if let credits = account.credits, credits.subscriptionExhausted || credits.spendingObserved {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(Strings.t(creditsAreCurrent ? "credits.title" : "credits.previous")).foregroundStyle(.secondary)
+                        Spacer(minLength: 4)
+                        Text(creditsAreCurrent ? credits.decreaseText : "—").monospacedDigit()
+                    }.font(.caption).accessibilityIdentifier("credits.row." + account.id)
                 }
                 if let warning = warningText {
                     Label(warning, systemImage: account.isClaudeDesktopWithoutQuota ? "info.circle" : "exclamationmark.circle")
@@ -65,7 +75,7 @@ struct AccountListRow: View {
         if account.windows.contains(where: \.isResetTicketPending) {
             warnings.append(Strings.t("accounts.list.resetTicketPending"))
         } else if account.windows.contains(where: \.isUsageBlocked) {
-            warnings.append(Strings.t("accounts.list.usageBlocked"))
+            warnings.append(account.usageRestrictionText ?? Strings.t("accounts.list.usageBlocked"))
         } else if account.windows.contains(where: \.isUsagePermissionUnknown) {
             warnings.append(Strings.t("accounts.list.permissionUnknown"))
         }
@@ -132,6 +142,9 @@ struct AccountListRow: View {
             }
         }
         if let warning = warningText { values.append(warning) }
+        if let credits = account.credits, credits.subscriptionExhausted || credits.spendingObserved {
+            values.append(creditsAreCurrent ? Strings.t("credits.observedDecrease", credits.decreaseText) : Strings.t("credits.previous"))
+        }
         if !account.hasUnavailableQuotaAccess,
            let measured = account.collection.lastSuccessAtMs, measured.isFinite, measured > 0 {
             values.append(Strings.t("collection.measuredAt", Date(timeIntervalSince1970: measured / 1_000)
