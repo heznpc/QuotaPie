@@ -114,12 +114,12 @@ export class CompactionStatusReader {
   }
   snapshot(nowMs = Date.now()) {
     const cached = this.cached;
-    if (!cached) return { checkedAtMs: 0, generations: 0, reachable: 0, policy: null,
+    if (!cached) return { checkedAtMs: 0, generations: 0, reachable: 0, policy: null, manualRoutingSources: [] as string[],
       subscriptionProtection: subscriptionProtection([], nowMs), routing: { ...summarizeRouting([], nowMs), checkedAtMs: 0 }, active: [], recent: [] };
     if (nowMs - cached.checkedAtMs <= 10_000) return cached;
     // A stale observer cannot assert that an old request is still running or
     // that a previously acknowledged policy is still live.
-    return { ...cached, reachable: 0,
+    return { ...cached, reachable: 0, manualRoutingSources: [] as string[],
       routing: staleRouting(cached.routing),
       subscriptionProtection: { ...cached.subscriptionProtection, reachable: 0, outOfDate: 0, revisionMismatch: false, activeRequests: 0,
         relays: cached.subscriptionProtection.relays.map(r => ({ ...r, reachable: false, ready: null, reason: "observer-state-stale",
@@ -212,10 +212,21 @@ export class CompactionStatusReader {
     }
     const healthByPath = new Map(installed.map(g => [g.path, g.health]));
     return { checkedAtMs: nowMs, generations: installed.length, reachable: installed.filter(g => g.reachable).length,
+      manualRoutingSources: supportedManualRoutingSources(installed),
       routing,
       subscriptionProtection: subscriptionProtection(installed, nowMs),
       policy: validatedEntries ? await this.policy.status(healthByPath, validatedEntries) : null,
       savings: {insights, policy: validatedEntries ? await this.savingsPolicy.status(healthByPath, validatedEntries) : null, active: savingsRecords.filter(r=>r.active), recent: savingsRecords.filter(r=>!r.active)},
       active: records.filter(r => r.active), recent: records.filter(r => !r.active) };
   }
+}
+
+/** Every live listener for a credential source must understand explicit choices. */
+export function supportedManualRoutingSources(generations: {reachable:boolean;health:any}[]): string[] {
+  const live = generations.filter(g => g.reachable);
+  if (live.some(g => g.health?.subscriptionGuardVersion !== 1 || typeof g.health?.subscriptionGuard?.account !== "string")) return [];
+  const sources = new Set(live.flatMap(g => g.health?.subscriptionGuardVersion === 1 &&
+    typeof g.health?.subscriptionGuard?.account === "string" ? [g.health.subscriptionGuard.account as string] : []));
+  return [...sources].filter(source => live.filter(g => g.health?.subscriptionGuard?.account === source)
+    .every(g => g.health?.subscriptionGuardVersion === 1 && g.health?.manualAccountRoutingVersion === 1));
 }

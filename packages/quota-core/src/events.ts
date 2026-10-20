@@ -33,7 +33,7 @@ export interface CompactionRequestEvent {
   responseModel?: string | null;
   usage?: { input: number; cachedInput: number; output: number } | null;
   accountRouting?: { sourceAccount: string; account: string; accountLabel: string;
-    reason: "new" | "pinned" | "existing" | "source_fallback" | "recovered" | "reserve" };
+    reason: "new" | "pinned" | "existing" | "source_fallback" | "recovered" | "reserve" | "manual" };
   accountRoutingUnverified?: boolean;
 }
 
@@ -42,7 +42,7 @@ const phases = new Set(["started", "response_headers", "completed", "failed", "c
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const label = /^[a-z0-9_.-]{1,80}$/i;
 const account = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
-const routeReasons = new Set(["new", "pinned", "existing", "source_fallback", "recovered", "reserve"]);
+const routeReasons = new Set(["new", "pinned", "existing", "source_fallback", "recovered", "reserve", "manual"]);
 
 function accountRoute(value: any): CompactionRequestEvent["accountRouting"] {
   if (!value || typeof value.sourceAccount !== "string" || !account.test(value.sourceAccount) ||

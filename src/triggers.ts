@@ -160,6 +160,7 @@ export function planTriggers(
       : creditEvent ? "alert.event.title.payment"
       : event.kind === "account_changed" ? "alert.event.title.account"
       : event.kind === "plan_changed" ? "alert.event.title.plan"
+      : event.kind === "external_relief" ? "alert.event.title.recovered"
       : event.kind === "window_changed"
         ? "alert.event.title.window"
         : "alert.event.title.resync";

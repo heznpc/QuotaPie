@@ -7,6 +7,16 @@ const classify = (text: string, author = "thsottiaux") => classifyPost({
   conversationId: "2109045392684032299", references: [],
 }, new Map());
 
+test("delayed reset news displays publication and detection ahead of current balances", () => {
+  const signal = {...classify("Put the reset in the bag. All propagated.")!,
+    publishedAtMs: Date.parse("2026-10-20T06:33:48Z"), detectedAtMs: Date.parse("2026-10-20T07:07:04Z")};
+  const notice = signalDecision(signal, "ko", "Asia/Seoul", ["Current balance"]);
+  expect(notice.message).toContain("15:33");
+  expect(notice.message).toContain("16:07");
+  expect(notice.message).toContain("새 리셋권 지급 여부는 별도");
+  expect(notice.message.indexOf("15:33")).toBeLessThan(notice.message.indexOf("Current balance"));
+});
+
 test("October 11 EOD announcement is actionable without inventing a reset instant", () => {
   const signal = classify("Global reset by EOD. May the tokens do good things for you.")!;
   expect(signal?.state).toBe("announced");

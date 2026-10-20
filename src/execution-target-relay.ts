@@ -20,6 +20,7 @@ export interface ExecutionTargetRelayMemory {
   routes: Map<string, ExecutionTargetRouteProof>;
   guards: Map<string, SubscriptionGuard>;
   store?: ExecutionTargetLeaseStore;
+  retiredStores?: ExecutionTargetLeaseStore[];
   sourceRecoveryTurns?: Set<string>;
 }
 export const executionTargetRelayMemory = (): ExecutionTargetRelayMemory => ({ instanceId: randomUUID(), routes: new Map(), guards: new Map() });
@@ -45,17 +46,28 @@ export function createExecutionTargetRelay(options: {
   readLiveSnapshot?: () => Promise<any>;
 }) {
   const { memory } = options, now = options.now ?? Date.now;
+  // Methods captured by a previous bundle must not survive a hot reload.
+  const guards = memory.guards = new Map<string, SubscriptionGuard>();
   memory.sourceRecoveryTurns ??= new Set();
   const profileKey = profileReference(options.codexHome), path = options.leasePath ?? executionTargetLeasePath();
+  let localStore: ExecutionTargetLeaseStore | undefined;
   const store = () => {
-    if(memory.store && memory.store.runtimeApiVersion!==ExecutionTargetLeaseStore.RUNTIME_API_VERSION) {
+    if (localStore?.runtimeApiVersion === ExecutionTargetLeaseStore.RUNTIME_API_VERSION) return localStore;
+    if(memory.store && (!(memory.store instanceof ExecutionTargetLeaseStore) ||
+        memory.store.runtimeApiVersion!==ExecutionTargetLeaseStore.RUNTIME_API_VERSION)) {
       // Hot reload preserves listener identity and in-flight work. Replace only
       // an obsolete synchronous DB adapter, keeping its durable rows intact.
       const previous=memory.store;
       memory.store=new ExecutionTargetLeaseStore(path);
-      try { previous.close(); } catch { /* The new handle owns future operations. */ }
+      if (previous.runtimeApiVersion !== ExecutionTargetLeaseStore.RUNTIME_API_VERSION) {
+        try { previous.close(); } catch { /* Explicitly obsolete adapter. */ }
+      } else {
+        // Old async handlers may still finish an operation through their own
+        // adapter. Keep it alive until listener disposal.
+        (memory.retiredStores ??= []).push(previous);
+      }
     }
-    return memory.store ??= new ExecutionTargetLeaseStore(path);
+    return localStore = memory.store ??= new ExecutionTargetLeaseStore(path);
   };
   function sourceReady(lease: ExecutionTargetLease) {
     const source = options.sourceGuard.checkIdentity();
@@ -72,11 +84,11 @@ export function createExecutionTargetRelay(options: {
           owner.account!==lease.source.account || owner.profileKey!==lease.source.profileKey || owner.accountKey!==lease.source.accountKey || owner.identity!==lease.source.identity)
         failure("source_changed");
       const consentGuardKey="consent:"+lease.digest;
-      let consentGuard=memory.guards.get(consentGuardKey);
+      let consentGuard=guards.get(consentGuardKey);
       if(!consentGuard) {
         consentGuard=createSubscriptionGuard({codexHome:location!.credentialRoot,sourceAccount:consent!.account,config:options.config,
           executionMode:"interactive",quotaObservationMode:"advisory"});
-        memory.guards.set(consentGuardKey,consentGuard);
+        guards.set(consentGuardKey,consentGuard);
       }
       const consentState=consentGuard.checkIdentity();
       if(!consentState.ready || consentState.account!==consent!.account || consentState.sourceIdentity!==consent!.identity ||
@@ -110,7 +122,7 @@ export function createExecutionTargetRelay(options: {
   }
   function guardFor(lease: ExecutionTargetLease, model: string): SubscriptionGuard {
     const key = lease.digest + ":" + model;
-    let guard = memory.guards.get(key);
+    let guard = guards.get(key);
     if (!guard) {
       const profile = options.config().accounts.codex.find(p => p.enabled && p.id === lease.target.account);
       if (!profile) failure("target_changed");
@@ -131,8 +143,8 @@ export function createExecutionTargetRelay(options: {
         } catch { return { ...inner.checkIdentity(), ready: false, reason: "execution-target-unavailable" }; }
       };
       guard = { intervalMs: inner.intervalMs, check, checkIdentity: inner.checkIdentity, observeResponse: inner.observeResponse };
-      memory.guards.set(key, guard);
-      while (memory.guards.size > 128) memory.guards.delete(memory.guards.keys().next().value!);
+      guards.set(key, guard);
+      while (guards.size > 128) guards.delete(guards.keys().next().value!);
     }
     return guard;
   }

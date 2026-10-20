@@ -323,6 +323,10 @@ const CATALOG = {
   },
   "alert.event.title.account": { en: p => `Codex ${p.account} · login changed`, ko: p => `Codex ${p.account} · 로그인 계정 변경` },
   "alert.event.title.plan": { en: p => `Codex ${p.account} · plan changed`, ko: p => `Codex ${p.account} · 플랜 변경` },
+  "alert.event.title.recovered": {
+    en: p => `${p.provider} · ${p.account} allowance recovered`,
+    ko: p => `${p.provider} · ${p.account} 한도 회복 확인`,
+  },
   "alert.event.title.resync": {
     en: (p) => `${p.provider} · ${p.account} timer resynchronised`,
     ko: (p) => `${p.provider} · ${p.account} 타이머 재동기화`,

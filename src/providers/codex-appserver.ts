@@ -374,6 +374,12 @@ export class CodexAppServerClient {
     });
   }
 
+  /** Metadata catalogue for an explicitly selected profile, bracketed by the
+   * same credential/account checks as queue operations. No transcript items. */
+  async listVerifiedThreads(params: CodexThreadListParams = {}): Promise<CodexThreadListPage> {
+    return this.queueOperation(() => this.readThreadPage(params));
+  }
+
   /** Queue IDs correlate delivery; clientUserMessageId is NOT a deduplication key. */
   async listThreadQueue(threadId: string, params: CodexThreadQueueListParams = {}): Promise<CodexThreadQueuePage> {
     this.validateQueueThread(threadId);

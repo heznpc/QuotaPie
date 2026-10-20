@@ -68,6 +68,7 @@ test("actual runtime moves an existing complete session to a fresh account and k
   expect(input.some((x: any) => x.type === "reasoning")).toBe(false);
   expect(input.filter((x: any) => x.call_id).map((x: any) => x.call_id)).toEqual(["same-call", "same-call"]);
   expect(f.runtime.snapshot().recent.at(-1).accountRouting).toMatchObject({ sourceAccount: "a", account: "b", reason: "recovered" });
+  expect(f.runtime.snapshot().recent.at(-1).processingAccount).toEqual({ account: "b", evidence: "validated-outgoing-credentials" });
 }));
 
 for (const variant of ["model-zero", "alias-zero", "denied", "spend-denied", "unknown-permission", "unknown-scope", "heuristic", "stale"]) test(`target does not borrow general capacity when ${variant}`, () => fixture(async f => {
@@ -134,16 +135,16 @@ test("ephemeral portable helpers retain native source behavior when lineage cann
   const response = await f.request(undefined, { session_id: randomUUID() });
   expect(response.status).toBe(200); await response.text(); expect(f.sent).toHaveLength(1);
   expect(f.sent[0].headers.get("chatgpt-account-id")).toBe("a");
-  expect(f.runtime.snapshot().recent.at(-1).accountRouting).toBeUndefined();
+  expect(f.runtime.snapshot().recent.at(-1).accountRouting).toMatchObject({ sourceAccount: "a", account: "a", reason: "existing" });
 }));
 
 
 for (const failAt of [1, 3]) test(`unsent target guard denial ${failAt} restores prior ownership`, () => fixture(async f => {
   const identity = createHash("sha256").update(JSON.stringify([realpathSync(f.accounts[1].home), "b", "b"])).digest("hex");
   let checks = 0;
-  f.memory.poolGuards = new Map([["b:" + identity, { intervalMs: 500,
+  f.memory.poolGuards.set("b:" + identity, { intervalMs: 500,
     check: () => ({ ready: ++checks < failAt, reason: "quota-exhausted", sourceIdentity: identity }),
-    checkIdentity: () => ({ ready: true, sourceIdentity: identity }) }]]);
+    checkIdentity: () => ({ ready: true, sourceIdentity: identity }) });
   const denied = await f.request(); expect(denied.status).toBeGreaterThanOrEqual(400); await denied.text(); expect(f.sent).toHaveLength(0);
   const db = new Database(join(f.data, "account-pool.sqlite3"), { readonly: true });
   expect(db.query("SELECT count(*) AS n FROM bindings").get()).toMatchObject({ n: 0 }); db.close();
@@ -177,4 +178,21 @@ test("disabled pool never forwards a proven foreign opaque binding back to the s
 test("disabled pool leaves source interactive quota uncertainty advisory", () => fixture(async f => {
   f.policy.enabled = false; f.accounts[0].row.windows[0].metadata = { ordinaryUsageAllowed: null }; f.publish();
   const response = await f.request(); expect(response.status).toBe(200); await response.text(); expect(f.sent[0].headers.get("chatgpt-account-id")).toBe("a");
+}));
+
+test("reload replaces same-version foreign pool implementations without a manual version bump", () => fixture(async f => {
+  await (await f.request()).text();
+  const old = f.memory.interactivePool;
+  f.memory.interactivePool = {runtimeApiVersion: old.runtimeApiVersion,
+    selectAsync: async () => { throw new Error("stale-module-method"); }};
+  const next = createRelayRuntime({port:45001,token:"a".repeat(48),codex_home:f.accounts[0].home,
+    route:{from:model,to:model,effort:"low"},taskSavings:{enabled:false,model:"gpt-5.6-luna",effort:"low"}},f.memory);
+  try {
+    const response = await next.fetch(new Request(`http://127.0.0.1/${"a".repeat(48)}/backend-api/codex/responses`, {
+      method:"POST",headers:{authorization:`Bearer ${f.accounts[0].token}`,"chatgpt-account-id":"a",session_id:f.thread},
+      body:JSON.stringify({model,input:f.history,stream:true})}));
+    expect(response.status).toBe(200);await response.text();
+    expect(f.memory.interactivePool).not.toBe(old);
+    expect(f.memory.interactivePool.constructor).toBe(old.constructor);
+  } finally {next.close();}
 }));

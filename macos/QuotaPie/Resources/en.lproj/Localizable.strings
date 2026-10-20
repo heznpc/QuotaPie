@@ -586,7 +586,7 @@
 "pool.settings.explanation" = "Set the remaining quota to keep for each account. When either its short-term or weekly quota reaches this threshold, the next request switches to another eligible account.";
 "pool.settings.reserve" = "Keep %@%%";
 "pool.settings.accountReserve" = "%@ remaining quota to keep";
-"pool.settings.zero" = "No reserve set";
+"pool.settings.zero" = "Switch when subscription quota reaches 0%";
 "pool.settings.usage" = "Switch after using %@%%";
 "pool.settings.whenBlocked" = "If every eligible account reaches its reserve, requests pause. Lower a reserve or wait for quota to recover.";
 "pool.settings.limits" = "Applies to Codex requests routed through this Mac. Collection delay and requests already in progress can cross the threshold. A protected destination needs up to 5 extra percentage points; account-bound history may prevent a transfer.";
@@ -1409,8 +1409,8 @@
 "collection.account-mismatch" = "Claude account changed";
 "collection.desktop-no-windows" = "Connected · numeric limits not provided";
 
-"credits.menu.decrease" = "Codex 1h −%@";
-"credits.menu.balance" = "Credits %@";
+"credits.menu.decrease" = "Credits used · 1 hour %@";
+"credits.menu.balance" = "Credit balance %@";
 "credits.spendControl" = "Spending limit reached";
 "credits.subscriptionExhausted" = "Included allowance exhausted";
 "credits.observedDecrease" = "Balance decrease in the last hour: %@";
@@ -1450,4 +1450,75 @@
 "routing.responseUnconfirmed" = "Response not observed";
 "routing.requestedModel" = "Requested %@";
 "routing.targetOnly" = "Selected target · response not yet confirmed";
+
+"credits.amount" = "%@ credits";
+"requestAccount.use" = "Use this account";
+"requestAccount.useHelp" = "Choose a conversation whose next requests should use this account.";
+"requestAccount.inspectionOnly" = "Viewing limits does not change the processing account.";
+"requestAccount.title" = "Use %@ for a conversation";
+"requestAccount.close" = "Close";
+"requestAccount.explanation" = "Choose a conversation to use this account from its next request. Responses already in progress continue unchanged.";
+"requestAccount.loading" = "Loading current and recent conversations…";
+"requestAccount.empty" = "No conversations are available. Refresh after a request has been processed in ChatGPT.";
+"requestAccount.active" = "Processing";
+"requestAccount.current" = "Current processing account: %@";
+"requestAccount.last" = "Last processing account: %@";
+"requestAccount.next" = "Next request account: %@";
+"requestAccount.unknownAccount" = "Not confirmed";
+"requestAccount.untitled" = "Untitled conversation";
+"requestAccount.apply" = "Use for this conversation";
+"requestAccount.selected" = "Selected";
+"requestAccount.applied" = "Next requests use %@ · responses in progress continue unchanged";
+"requestAccount.noFallback" = "Requests stop if the selected account becomes unavailable.";
+"requestAccount.error.unknownThread" = "This conversation is no longer available. Refresh and choose it again.";
+"requestAccount.error.observerUnavailable" = "The conversation connection could not be verified. Check the connection and refresh.";
+"requestAccount.error.invalidRequest" = "Choose the conversation and account again.";
+"requestAccount.error.failed" = "Could not change the processing account. The previous setting is kept. Refresh and try again.";
+"requestAccount.error.unavailable" = "This account is currently unavailable. Choose another account or refresh its status.";
+"requestAccount.error.quota" = "Subscription quota exhausted · paid credits are not allowed";
+"requestAccount.error.model" = "This account cannot use the conversation’s requested model. Change the model or account.";
+"requestAccount.error.identity" = "This account’s sign-in could not be verified. Check the account connection.";
 "routing.activityUnconfirmed" = "Activity not confirmed";
+
+"requestAccount.credits.allowed" = "Credits allowed after subscription limits";
+"requestAccount.credits.continue" = "Continue with credits";
+"requestAccount.credits.stop" = "Block credit spending";
+"requestAccount.credits.explanation" = "Allow paid credits for conversations assigned to this account. Automatic switching stays unchanged.";
+"requestAccount.ready" = "Subscription quota available";
+"requestAccount.error.enrollment" = "This account is not enrolled for account selection.";
+"requestAccount.error.quotaUnknown" = "Subscription quota is unknown. Refresh or explicitly allow paid credits.";
+"connectionRecovery.restore" = "Restore original connection";
+"connectionRecovery.explanation" = "Back up settings and disconnect QuotaPie. Reopen Codex after your work finishes to apply.";
+"connectionRecovery.done" = "Settings backed up and original connection restored. Running work is preserved. Reopen Codex after it finishes.";
+"connectionRecovery.backup" = "Open recovery backup";
+"connectionRecovery.missing" = "Recovery tool unavailable. Check the app’s bundled recovery files and Python installation.";
+"connectionRecovery.failed" = "Recovery failed. Check the current settings and backups.";
+
+"requestAccount.credits.provider" = "Subscription exhausted · allow credits for manual routing";
+"connectionRecovery.short" = "Recovery";
+
+"conversations.browse" = "Browse conversations and send a message";
+"conversations.title" = "%@ · Existing conversations";
+"conversations.close" = "Close";
+"conversations.explanation" = "Send to a preserved conversation using its configured account routing. The response appears in that same conversation in the unified app.";
+"conversations.active" = "Running";
+"conversations.empty" = "No conversations on this page. Use Load more, if available, to check the next records.";
+"conversations.accountUnavailable" = "The account and conversation binding changed or could not be verified. Check the connection.";
+"conversations.more" = "Load more";
+"conversations.message" = "Message for the selected conversation";
+"conversations.open" = "Open conversation in app";
+"conversations.send" = "Send message";
+"conversations.recheck" = "Recheck same submission";
+"conversations.busy" = "This conversation has active work or a queued message. Check again after it finishes.";
+"conversations.quotaUnavailable" = "Available quota for a connected account could not be verified.";
+"conversations.hostUnavailable" = "The unified app connection could not be verified. Open this conversation in the app.";
+"conversations.unavailable" = "The conversation connection could not be verified. Refresh to check again.";
+"conversations.deliveryUnknown" = "Checking the existing submission. No duplicate message will be sent.";
+"conversations.state.queued" = "Message accepted · Waiting for the existing host";
+"conversations.state.running" = "Responding in the same conversation";
+"conversations.state.completed" = "Response completed · Open the conversation to see the result";
+"conversations.state.failed" = "Sending or responding failed · Check the conversation in the app";
+"conversations.state.uncertain" = "Checking execution · Duplicate sending prevented";
+
+"requestAccount.search" = "Search conversation title or ID";
+"alert.event.title.recovered" = "%@ · %@ allowance recovered";

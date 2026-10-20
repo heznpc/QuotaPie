@@ -9,6 +9,7 @@ struct CodexProfilesView: View {
     @State private var name = ""
     @State private var home: String?
     @State private var data: String?
+    @State private var conversationProfile: CodexDesktopProfile?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -29,6 +30,10 @@ struct CodexProfilesView: View {
                 let appAction = CodexAccountAction(profile: profile, consolidation: profiles.consolidation,
                     requiresVerification: profiles.requiresConsolidationVerification(profile))
                 VStack(alignment: .leading, spacing: 5) {
+                    if profile.collectionAccount != nil {
+                        Button(Strings.t("conversations.browse")) { conversationProfile = profile }
+                            .disabled(!status.canActOnTasks || profiles.requiresConsolidationVerification(profile))
+                    }
                     HStack {
                         Text(profile.name).fontWeight(.medium)
                         Spacer()
@@ -100,6 +105,11 @@ struct CodexProfilesView: View {
         }
         .onAppear { profiles.refreshConsolidation() }
         .disabled(profiles.busy)
+        .sheet(item: $conversationProfile) { profile in
+            if let account = profile.collectionAccount, let token = status.payload?.actionToken {
+                CodexConversationsView(account: account, label: profile.name, token: token)
+            }
+        }
         .sheet(isPresented: $adding) {
             VStack(alignment: .leading, spacing: 14) {
                 Text(Strings.t("profiles.add")).font(.headline)

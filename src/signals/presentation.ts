@@ -53,7 +53,15 @@ export function signalDecision(signal: ResetSignal, locale: Locale, timeZone = I
     ? "시각 미정: 예고 없이 시행될 수 있습니다. 리셋 전에 쓸 작업을 확인하세요."
     : "Timing unknown: a reset may happen without further notice. Review work you want to finish before it.") : null;
   const compact = endOfDay && !!localTime;
-  const detail = compact ? localTime! : [localTime, guidance, ...remaining, benefit !== "reset" ? state : null, change, evidence.slice(0, 240)].filter(Boolean).join(" · ");
+  const stamp = (at: number) => new Intl.DateTimeFormat(locale === "ko" ? "ko-KR" : "en-GB",
+    { timeZone, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(at);
+  const publication = `${locale === "ko" ? "원문 게시" : "Published"} ${stamp(signal.publishedAtMs)}`;
+  const detection = signal.detectedAtMs
+    ? `${locale === "ko" ? "확인" : "Observed"} ${stamp(signal.detectedAtMs)}` : null;
+  const reported = benefit === "reset" && signal.state === "reported"
+    ? (locale === "ko" ? "시행 소식이며 새 리셋권 지급 여부는 별도입니다." : "Reset report; a new banked reset is not confirmed.") : null;
+  const detail = [publication, detection, compact ? localTime : [localTime, guidance, reported,
+    benefit !== "reset" ? state : null, change, evidence.slice(0, 240), ...remaining].filter(Boolean).join(" · ")].filter(Boolean).join(" · ");
   const params = { source: `@${signal.author}`, detail: detail + (signal.timeHint && !localTime ? (locale === "ko" ? " (확정 시각 미확인)" : " (exact deadline unverified)") : ""), url: compact ? "" : signal.sourceUrl };
   const messageKey: MessageKey = signal.observedVia !== "x-api" ? "signal.message.relay" : "signal.message.direct";
   return { key: `signal:${signal.fingerprint}`, title: t(titleKey, titleParams, locale),

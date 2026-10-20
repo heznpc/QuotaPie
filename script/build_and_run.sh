@@ -52,6 +52,7 @@ build_bundle() {
   cp "$(dirname "$build_binary")/QuotaPiePowerHelper" "$APP_CONTENTS/Helpers/QuotaPiePowerHelper"
   cp "$(dirname "$build_binary")/QuotaPieClaudeSessionHelper" "$APP_CONTENTS/Helpers/QuotaPieClaudeSessionHelper"
   cp "$ROOT_DIR/script/install_power_helper.sh" "$APP_CONTENTS/Resources/"
+  cp "$ROOT_DIR/scripts/restore-original-connection.py" "$ROOT_DIR/scripts/codex-compaction-local.py" "$APP_CONTENTS/Resources/"
   bun "$ROOT_DIR/script/macos-source-identity.ts" "$APP_CONTENTS/Resources/source-identity.json" "$source_hash"
   chmod +x "$APP_BINARY"
 }

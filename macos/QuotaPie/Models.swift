@@ -420,7 +420,7 @@ struct LocalizedMessagePayload: Decodable {
              "alert.rapid.title",
              "alert.event.title.payment",
              "alert.event.title.creditAdded", "alert.event.title.resetCredits",
-             "alert.event.title.resync", "alert.pace.title.measured",
+             "alert.event.title.resync", "alert.event.title.recovered", "alert.pace.title.measured",
              "alert.pace.title.projected", "alert.resume.ready.title", "alert.resume.auto.title":
             return required("provider", "account")
         case "alert.remaining.message":

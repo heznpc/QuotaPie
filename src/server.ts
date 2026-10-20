@@ -2,7 +2,7 @@ import { resetTimingPresentation } from "./signals/timing-presentation";
 import { profileDockIcon } from "./profile-dock-icon";
 import { localAnnouncementTime } from "./signals/time";
 import { benefitChangeText, signalDecision } from "./signals/presentation";
-import { connectProfileRelay } from "./profile-relay";
+import { connectAccountSessionRelay } from "./profile-relay";
 import { saveAccountNickname } from "./account-nickname";
 import { connectCodexProfile } from "./profile-connection";
 import { ModelNotifications } from "./model-notifications";
@@ -12,6 +12,8 @@ import { buildHeadline } from "./analytics";
 import { captureRuntimeIdentity } from "./runtime-identity";
 import { CompactionStatusReader } from "./compaction-status";
 import { CreditUsageReader } from "./credit-usage";
+import { RequestAccountAPI, RequestAccountError } from "./request-account-api";
+import { ProfileConversations, ProfileConversationError } from "./profile-conversations";
 import type { AppNotificationDisposition, Headline, QuotaEvent } from "./types";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { ResumeTargetError } from "./service";
@@ -51,10 +53,12 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
-export function startDashboard(service: QuotaPieService, config: AppConfig, options: { compactionRoot?: string; preferencesPath?: string; poolPolicyPath?: string; poolDatabasePath?: string } = {}) {
+export function startDashboard(service: QuotaPieService, config: AppConfig, options: { compactionRoot?: string; preferencesPath?: string; poolPolicyPath?: string; poolDatabasePath?: string; requestAccountDatabasePath?: string } = {}) {
   const runtime = captureRuntimeIdentity();
   const compaction = new CompactionStatusReader(options.compactionRoot);
   const credits = new CreditUsageReader(service.db);
+  const requestAccounts = new RequestAccountAPI(config, {databasePath:options.requestAccountDatabasePath,policyPath:options.poolPolicyPath});
+  const profileConversations = new ProfileConversations(config);
   const creditAccounts = (accounts: ReturnType<QuotaPieService["quotaAccounts"]>, nowMs: number) =>
     credits.accounts(accounts, nowMs, config.collection.staleAfterSeconds * 1_000,
       Math.min(config.collection.staleAfterSeconds * 1_000, Math.max(30_000, config.collection.pollSeconds * 3_000)));
@@ -81,6 +85,53 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
       const allowedHosts = new Set(["127.0.0.1", "localhost", "::1", config.dashboard.host.toLowerCase()]);
       if (!hostname || !allowedHosts.has(hostname)) return json({ error: "invalid_host" }, 403);
       const url = new URL(request.url);
+      if (["/api/request-accounts", "/api/request-accounts/credits"].includes(url.pathname)) {
+        if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token")))
+          return json({error:"forbidden"},403);
+        if (!["GET","POST"].includes(request.method)) return json({error:"method_not_allowed"},405);
+        try {
+          const snapshot = compaction.snapshot();
+          const labels = new Map(service.quotaAccounts().filter(a=>a.provider==="codex").map(a=>[a.account,a.accountLabel]));
+          if (request.method === "GET") {
+            if (url.pathname.endsWith("/credits")) return json({error:"method_not_allowed"},405);
+            return json(requestAccounts.read(snapshot.routing, labels));
+          }
+          const body = await request.text();
+          if (body.length > 2048) return json({error:"request_account_invalid_request"},400);
+          if (url.pathname.endsWith("/credits")) {
+            requestAccounts.configureCredits(JSON.parse(body));
+            return json(requestAccounts.read(snapshot.routing, labels));
+          }
+          return json(await requestAccounts.choose(JSON.parse(body),snapshot.routing,snapshot.manualRoutingSources,labels));
+        } catch(error) {
+          const known = error instanceof PoolError || error instanceof RequestAccountError;
+          return json({error:known?error.code:"request_account_update_failed"},known?error.status:400);
+        }
+      }
+
+      if (["/api/profiles/conversations", "/api/profiles/message"].includes(url.pathname)) {
+        if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token")))
+          return json({ error: "forbidden" }, 403);
+        try {
+          const account = url.searchParams.get("account") ?? "";
+          if (url.pathname === "/api/profiles/conversations" && request.method === "GET")
+            return json(await profileConversations.catalogue(account, url.searchParams.get("cursor")));
+          if (url.pathname === "/api/profiles/message" && request.method === "GET")
+            return json(await profileConversations.receipt(account, url.searchParams.get("submissionId") ?? ""));
+          if (url.pathname === "/api/profiles/message" && request.method === "POST") {
+            const body = await request.text();
+            if (Buffer.byteLength(body, "utf8") > 200_000) return json({ error: "profile_message_invalid", accepted: false }, 400);
+            let parsed: unknown;
+            try { parsed = JSON.parse(body); } catch { return json({ error: "profile_message_invalid", accepted: false }, 400); }
+            return json(await profileConversations.submit(parsed));
+          }
+          return json({ error: "method_not_allowed" }, 405);
+        } catch (error) {
+          return json({ error: error instanceof ProfileConversationError ? error.code : "profile_conversation_unavailable",
+            ...(error instanceof ProfileConversationError && error.accepted === false ? { accepted: false } : {}) },
+            error instanceof ProfileConversationError ? error.status : 503);
+        }
+      }
       if (url.pathname === "/api/session-consolidation") {
         if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token")))
           return json({ error: "forbidden" }, 403);
@@ -294,12 +345,11 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           if (body.length > 8192) return json({ error: "invalid_profile" }, 400);
           const connection = connectCodexProfile(config, JSON.parse(body), options.preferencesPath);
           service.requestCollection();
-          const profile = config.accounts.codex.find(profile => profile.id === connection.account)!;
-          const relayConnected = await connectProfileRelay(codexProfileRoot(profile), options.compactionRoot);
-          return json({ ...connection, relayConnected });
+          const relay = await connectAccountSessionRelay(config, connection.account, { root: options.compactionRoot });
+          return json({ ...connection, ...relay });
         } catch (error) {
           const code = error instanceof Error ? error.message : "connection_failed";
-          return json({ error: ["invalid_profile", "settings_changed", "account_disabled", "isolation_required", "profile_overlap", "profile_relay_failed"].includes(code) ? code : "connection_failed" }, 409);
+          return json({ error: ["invalid_profile", "settings_changed", "account_disabled", "isolation_required", "profile_overlap", "profile_relay_failed", "session_location_unavailable"].includes(code) ? code : "connection_failed" }, 409);
         }
       }
       if (url.pathname === "/api/task-savings/policy") {
@@ -576,6 +626,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
   const stopObserving = startSerialObserver(observeModels);
   const stop = server.stop.bind(server);
   server.stop = ((closeActiveConnections?: boolean) => {
+    void profileConversations.close();
     stopObserving();
     return stop(closeActiveConnections);
   }) as typeof server.stop;

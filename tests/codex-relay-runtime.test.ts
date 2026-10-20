@@ -34,7 +34,7 @@ test("a disabled historical profile cannot shadow the enabled profile sharing it
     const sent: { url: string; body: string }[] = [];
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       sent.push({ url: String(url), body: await new Response(init?.body).text() });
-      return Response.json({ native: true });
+      return Response.json({ native: true }, { headers: { "x-codex-primary-used-percent": "13", "x-codex-secondary-used-percent": "bad" } });
     }) as typeof fetch;
     runtime = createRelayRuntime({ port: 45000, token: "a".repeat(48), codex_home: home,
       route: { from: "gpt-6-astra", to: "gpt-6-astra", effort: "low" },
@@ -52,6 +52,11 @@ test("a disabled historical profile cannot shadow the enabled profile sharing it
     const response = await runtime.fetch(new Request(`http://127.0.0.1/${"a".repeat(48)}/backend-api/codex/responses`, { method: "POST", headers, body }));
     expect(response.status).toBe(200); await response.text();
     expect(sent).toEqual([{ url: "https://chatgpt.com/backend-api/codex/responses", body }]);
+    const evidence = (runtime.snapshot!() as any).recent.at(-1);
+    expect(evidence.processingAccount).toEqual({ account: "current", evidence: "validated-outgoing-credentials" });
+    expect(evidence.accountRouting).toMatchObject({ sourceAccount: "current", account: "current", reason: "existing" });
+    expect(evidence.providerQuota).toEqual({ "x-codex-primary-used-percent": 13 });
+    expect(JSON.stringify(evidence)).not.toContain(token);
     // Reload must preserve an old handler's resources without invoking its old,
     // stricter continuation checker for new interactive requests.
     const oldPool = { assertSourceContinuationAsync() { throw new Error("legacy check invoked"); }, close() {} } as any;

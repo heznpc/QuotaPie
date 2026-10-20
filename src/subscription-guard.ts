@@ -1,3 +1,4 @@
+import { creditConsent } from "./account-pool";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -67,6 +68,9 @@ export function createSubscriptionGuard(options: {
   config: () => AppConfig;
   boundaryPath?: string;
   poolPolicy?: () => PoolPolicy;
+  // Only human interactive requests use this policy. Managed continuation budgets never do.
+  interactiveCreditPolicy?: boolean;
+  ignorePoolReserve?: boolean;
   now?: () => number;
   intervalMs?: number;
   quotaObservationMode?: "required" | "advisory";
@@ -145,8 +149,13 @@ export function createSubscriptionGuard(options: {
       if (!interactive && request.model !== undefined && !SUBSCRIPTION_MODELS.has(request.model))
         return hold("model-unverified");
       let poolReserve: number;
+      let creditChoice: boolean | undefined;
       try {
-        poolReserve = explicitAccountReserve(options.sourceAccount, (options.poolPolicy ?? readPoolPolicy)());
+        const policy = (options.poolPolicy ?? readPoolPolicy)();
+        creditChoice = options.interactiveCreditPolicy && !hasBudget
+          ? creditConsent(policy, { id: options.sourceAccount, identity }) : undefined;
+        if (creditChoice === true) return { ...state, ready: true, reason: "ready" };
+        poolReserve = options.ignorePoolReserve ? 0 : explicitAccountReserve(options.sourceAccount, policy);
         memory.explicitReserve = poolReserve;
       } catch (error) {
         if (!interactive) throw error;
@@ -158,7 +167,7 @@ export function createSubscriptionGuard(options: {
       // Interactive work is not enrolled in quota enforcement merely by using
       // the relay. Native entitlement, expiry and quota errors belong to the
       // provider unless the user enabled a reserve or a reviewed work budget.
-      if (interactive && !hasBudget && poolReserve === 0)
+      if (interactive && !hasBudget && poolReserve === 0 && creditChoice !== false)
         return { ...state, ready: true, reason: "ready" };
       state.enforcement = hasBudget ? "managed-budget" : "explicit-reserve";
       // A collector outage cannot revoke an interactive user's valid login.
@@ -167,7 +176,7 @@ export function createSubscriptionGuard(options: {
       let knownExhaustion = false;
       const observationHold = (reason: string): SubscriptionGuardState =>
         knownExhaustion ? hold("quota-exhausted") : !interactive && memory.deniedAtMs != null ? hold("upstream-quota-hold") :
-        options.quotaObservationMode === "advisory" && !hasBudget && poolReserve === 0
+        options.quotaObservationMode === "advisory" && !hasBudget && poolReserve === 0 && creditChoice !== false
           ? { ...state, ready: true, reason: "ready", quotaObservationReason: reason }
           : hold(reason);
       let boundary: any;

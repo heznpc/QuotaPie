@@ -7,7 +7,9 @@ final class RoutingCreditPresentationTests: XCTestCase {
 
     func testCreditsUseAbsoluteDecreaseAndNeverInventAStartingBalance() throws {
         let credits = try credit()
-        XCTAssertTrue(credits.menuTitle(at: Date(timeIntervalSince1970: now / 1000))?.contains("cr") == true)
+        XCTAssertEqual(credits.menuTitle(at: Date(timeIntervalSince1970: now / 1000)),
+                       Strings.t("credits.menu.decrease", CreditUsage.number(12.5)))
+        XCTAssertFalse(try credit(coverage: "partial").menuTitle()!.contains("*"))
         XCTAssertFalse(credits.decreaseText.contains("%"))
         XCTAssertTrue(try credit(coverage: "partial").decreaseText.hasSuffix("*"))
         XCTAssertEqual(try credit(decrease: nil, coverage: "unknown").decreaseText, "—")
@@ -35,6 +37,22 @@ final class RoutingCreditPresentationTests: XCTestCase {
         model.selectAccount(try account("A"))
         XCTAssertEqual(model.selectedAccount?.account, "A")
         XCTAssertEqual(model.menuAccount?.account, "B")
+    }
+
+    func testManualSelectionChangesIdleMeterButPreservesActiveRouteAndInspection() throws {
+        let model = PopoverModel()
+        let first = try account("A"), second = try account("B")
+        model.applyQuota(try payload(accounts: [first, second], routes: [route("A")]))
+        model.showAccount(first)
+        model.followRequestAccountSelection("B")
+        XCTAssertEqual(model.selectedAccount?.account, "B")
+        XCTAssertEqual(model.displayedAccount?.account, "A")
+        XCTAssertEqual(model.menuAccount?.account, "A")
+        var idle = try payload(accounts: [first, second], routes: [])
+        idle.nowMs = now + 1
+        model.applyQuota(idle)
+        XCTAssertEqual(model.menuAccount?.account, "B")
+        XCTAssertEqual(model.displayedAccount?.account, "A")
     }
 
     func testMissingOrDisabledRoutedAccountNeverBecomesOneActiveAccount() throws {
