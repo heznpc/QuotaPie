@@ -1522,3 +1522,11 @@
 
 "requestAccount.search" = "Search conversation title or ID";
 "alert.event.title.recovered" = "%@ · %@ allowance recovered";
+
+"sessionAccount.title" = "Account for this conversation";
+"sessionAccount.follow" = "Follow the current window";
+"sessionAccount.choose" = "Choose conversation";
+"sessionAccount.unmatched" = "Current conversation unavailable. Choose a conversation to see its processing account.";
+"sessionAccount.unverified" = "Verifying processing account";
+"sessionAccount.processing" = "Processing · %@";
+"sessionAccount.last" = "Last processed · %@";

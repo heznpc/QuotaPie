@@ -22,6 +22,7 @@ import type { ExecutionTargetRelay, FrozenTargetSelection } from "./execution-ta
 import { manualNativeToolPayload, type ManualAccountRouting, type ManualRequestTarget } from "./manual-account-routing";
 import { interactiveRelayPolicy } from "./interactive-relay-policy";
 import { createRelayDiagnostics } from "./relay-diagnostics";
+import { requestContext } from "./request-context";
 export { DEFAULT_COMPACTION_ROUTE, routeCompaction, validateCompactionRoute, type CompactionRoute } from "./codex-compaction-policy";
 
 import type { CompactionRequestEvent as CoreRequestEvent } from "../packages/quota-core/src/events.js";
@@ -449,6 +450,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
               event = {
                 requestId: nativeRequestId, ...requestIdentity(headers),
                 kind: isCompaction(path, input) ? "compaction" : "response",
+                requestContext: requestContext(outgoing),
                 from: input.model, to: typeof outgoing.model === "string" ? outgoing.model : input.model,
                 ...(savings ? { savingsReason: savings.reason } : {}),
                 inlineImageCount: Array.isArray(input.input) ? input.input.reduce((count: number, item: any) => count +
@@ -734,10 +736,6 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
             const actual = (selectedGuard ?? options.subscriptionGuard).checkIdentity({ headers: new Headers(init?.headers) });
             if (actual.ready && actual.account) {
               event.processingAccount = { account: actual.account, evidence: "validated-outgoing-credentials" };
-              if (!event.accountRouting && !poolSelection && !frozenTarget && !manualTarget) {
-                event.accountRouting = { sourceAccount: actual.account, account: actual.account,
-                  accountLabel: actual.account, reason: "existing" };
-              }
             }
           }
           upstreamAttempted = true;

@@ -75,3 +75,15 @@ test("newer completed requests cannot silently discard an earlier unconfirmed ac
   expect(lost.recent.find(row => row.requestId === id)?.activityUncertain).toBe(true);
   expect(summarizeRouting([generation(completions)], now + 3000, [...lost.active, ...lost.recent]).activityUncertain).toBe(true);
 });
+
+
+test("persisted outgoing credential proof survives ring eviction without inventing a pool switch", () => {
+  const record = event({ phase: "completed", status: 200,
+    processingAccount: { account: "main", evidence: "validated-outgoing-credentials", token: "never-store" } });
+  const result = summarizeRouting([{ ...generation([record]), reachable: false, healthRequestIds: new Set<string>() }], now);
+  expect(result.recent[0]).toMatchObject({ account: "main", sourceAccount: "main", attribution: "relay-source", switched: false });
+  expect(JSON.stringify(record)).not.toContain("never-store");
+  const conflict = event({ processingAccount: { account: "main", evidence: "validated-outgoing-credentials" },
+    accountRouting: { sourceAccount: "main", account: "other", reason: "manual" } });
+  expect(summarizeRouting([generation([conflict])], now).active[0]?.account).toBeNull();
+});

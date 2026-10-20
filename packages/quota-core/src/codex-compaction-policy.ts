@@ -9,9 +9,10 @@ export const DEFAULT_COMPACTION_ROUTE: CompactionRoute = {
   from: "gpt-6-astra", to: "gpt-5.6-sol", effort: "low",
 };
 
-// Native v2 compaction was exercised with these targets at Low. A model's
+// The original model is a native passthrough. Substitution was exercised
+// with the other targets at Low. A model's
 // presence in the ordinary model picker does not establish this capability.
-export const COMPACTION_MODELS = ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra"];
+export const COMPACTION_MODELS = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra"];
 const TESTED_TARGETS = new Set(COMPACTION_MODELS);
 
 export function validateCompactionRoute(value: unknown): CompactionRoute {

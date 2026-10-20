@@ -31,6 +31,8 @@ export interface CompactionRequestEvent {
   relayQueuedBytes?: number;
   savingsReason?: SavingsReason;
   responseModel?: string | null;
+  processingAccount?: { account: string; evidence: "validated-outgoing-credentials" };
+  requestContext?: { bytes: number; instructionsBytes: number; toolsBytes: number; historyBytes: number; toolResultsBytes: number; imageBytes: number; items: number; duplicateInstructionBytes: number };
   usage?: { input: number; cachedInput: number; output: number } | null;
   accountRouting?: { sourceAccount: string; account: string; accountLabel: string;
     reason: "new" | "pinned" | "existing" | "source_fallback" | "recovered" | "reserve" | "manual" };
@@ -69,8 +71,10 @@ function project(value: any): CompactionRequestEvent | null {
     requestedEffort: safeEffort(value.requestedEffort),
     reasoningEffort: safeEffort(value.reasoningEffort),
     at: value.at, durationMs: value.durationMs,
+    ...(value.processingAccount?.evidence === "validated-outgoing-credentials" && typeof value.processingAccount.account === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(value.processingAccount.account)
+      ? { processingAccount: { account: value.processingAccount.account, evidence: "validated-outgoing-credentials" as const } } : {}),
     ...(accountRoute(value.accountRouting) ? { accountRouting: accountRoute(value.accountRouting) } : {}),
-    ...(value.accountRoutingUnverified === true || value.accountRouting != null && !accountRoute(value.accountRouting)
+    ...(value.accountRoutingUnverified === true || value.accountRouting != null && !accountRoute(value.accountRouting) || value.processingAccount != null && !(value.processingAccount.evidence === "validated-outgoing-credentials" && typeof value.processingAccount.account === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(value.processingAccount.account))
       ? { accountRoutingUnverified: true } : {}),
     ...(Number.isInteger(value.retryCount) && value.retryCount >= 0 && value.retryCount <= 2 ? { retryCount: value.retryCount } : {}),
     ...(typeof value.upstreamBodyPresent === "boolean" ? { upstreamBodyPresent: value.upstreamBodyPresent } : {}),
@@ -80,6 +84,8 @@ function project(value: any): CompactionRequestEvent | null {
     ...(Number.isSafeInteger(value.relayQueuedBytes) && value.relayQueuedBytes >= 0 ? { relayQueuedBytes: value.relayQueuedBytes } : {}),
     ...(transportFailure({code: value.transportCode}).transportCode ? { transportCode: value.transportCode } : {}),
     ...(savingsReasons.has(value.savingsReason) ? { savingsReason: value.savingsReason } : {}),
+    ...(value.requestContext && ["bytes", "instructionsBytes", "toolsBytes", "historyBytes", "toolResultsBytes", "imageBytes", "items", "duplicateInstructionBytes"].every(key => Number.isSafeInteger(value.requestContext[key]) && value.requestContext[key] >= 0)
+      ? { requestContext: Object.fromEntries(["bytes", "instructionsBytes", "toolsBytes", "historyBytes", "toolResultsBytes", "imageBytes", "items", "duplicateInstructionBytes"].map(key => [key, value.requestContext[key]])) as NonNullable<CompactionRequestEvent["requestContext"]> } : {}),
     responseModel: typeof value.responseModel === "string" && label.test(value.responseModel) ? value.responseModel : null,
     usage: value.usage && [value.usage.input,value.usage.cachedInput,value.usage.output].every(n=>Number.isSafeInteger(n) && n>=0) && value.usage.cachedInput <= value.usage.input
       ? {input:value.usage.input,cachedInput:value.usage.cachedInput,output:value.usage.output} : null,

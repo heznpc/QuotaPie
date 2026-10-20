@@ -54,7 +54,7 @@ test("a disabled historical profile cannot shadow the enabled profile sharing it
     expect(sent).toEqual([{ url: "https://chatgpt.com/backend-api/codex/responses", body }]);
     const evidence = (runtime.snapshot!() as any).recent.at(-1);
     expect(evidence.processingAccount).toEqual({ account: "current", evidence: "validated-outgoing-credentials" });
-    expect(evidence.accountRouting).toMatchObject({ sourceAccount: "current", account: "current", reason: "existing" });
+    expect(evidence.accountRouting).toBeUndefined();
     expect(evidence.providerQuota).toEqual({ "x-codex-primary-used-percent": 13 });
     expect(JSON.stringify(evidence)).not.toContain(token);
     // Reload must preserve an old handler's resources without invoking its old,

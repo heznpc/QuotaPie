@@ -84,6 +84,8 @@ struct PopoverView: View {
 
     private var accountListContent: some View {
         VStack(spacing: 0) {
+            SessionAccountView(model: model)
+            Divider().padding(.horizontal, 16)
             if model.enabledAccounts.contains(where: { $0.provider == "codex" }),
                let routing = model.payload?.routing, !routing.active.isEmpty || !routing.recent.isEmpty {
                 RoutingSummaryButton(model: model) { showDetails(.activity) }
@@ -206,6 +208,8 @@ struct PopoverView: View {
 
     private var overviewContent: some View {
         VStack(alignment: .leading, spacing: 16) {
+            SessionAccountView(model: model)
+            Divider().padding(.horizontal, 16)
             quotaOverview
             if let error = model.accountOpenError {
                 Text(error).font(.caption).foregroundStyle(.orange)

@@ -39,9 +39,11 @@ export function summarizeRouting(generations: Generation[], nowMs: number, previ
       // Only an event present in this exact live health response can inherit its
       // source. A log file's location or a missing pool route cannot name a login.
       const source = generation.healthRequestIds.has(event.requestId) && accountID(guard?.account) ? guard.account as string : null;
-      const sourceAccount = event.accountRoutingUnverified ? null : selected?.sourceAccount ?? saved?.sourceAccount ?? source;
-      const account = event.accountRoutingUnverified ? null : selected?.account ?? saved?.account ?? source;
-      const attribution = event.accountRoutingUnverified ? "unknown" : selected ? "pool-selection" : saved?.account ? saved.attribution : source ? "relay-source" : "unknown";
+      const verified = event.processingAccount?.evidence === "validated-outgoing-credentials" && accountID(event.processingAccount.account) ? event.processingAccount.account : null;
+      const invalid = event.accountRoutingUnverified || !!(verified && selected && verified !== selected.account);
+      const sourceAccount = invalid ? null : selected?.sourceAccount ?? verified ?? saved?.sourceAccount ?? source;
+      const account = invalid ? null : verified ?? selected?.account ?? saved?.account ?? source;
+      const attribution = invalid ? "unknown" : selected ? "pool-selection" : verified ? "relay-source" : saved?.account ? saved.attribution : source ? "relay-source" : "unknown";
       const active = generation.reachable && generation.activeIds.has(event.requestId) && ongoing(event.phase);
       const row: RequestRoute = { requestId: event.requestId, threadId: event.threadId, turnId: event.turnId,
         kind: event.kind, model: event.to, phase: ongoing(event.phase) && !active ? "unverified" : event.phase,

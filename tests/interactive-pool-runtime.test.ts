@@ -135,7 +135,7 @@ test("ephemeral portable helpers retain native source behavior when lineage cann
   const response = await f.request(undefined, { session_id: randomUUID() });
   expect(response.status).toBe(200); await response.text(); expect(f.sent).toHaveLength(1);
   expect(f.sent[0].headers.get("chatgpt-account-id")).toBe("a");
-  expect(f.runtime.snapshot().recent.at(-1).accountRouting).toMatchObject({ sourceAccount: "a", account: "a", reason: "existing" });
+  expect(f.runtime.snapshot().recent.at(-1).accountRouting).toBeUndefined();
 }));
 
 

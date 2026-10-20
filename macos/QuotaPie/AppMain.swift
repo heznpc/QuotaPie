@@ -264,6 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             popoverModel.focusedConversationTitle = FocusedConversation.title()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
         }
+        loadRequestAccounts { [weak self] _ in self?.render() }
         // Read again immediately so the values are not already ageing by the
         // time the popover finishes opening.
         if usesFastQuota, !isFixturePreview { requestFreshCollection(reason: "visible") }
@@ -334,6 +335,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             popoverModel.requestAccountCatalog = nil
             popoverModel.requestAccountCatalogError = error.localizedDescription
         }
+        render()
     }
 
     private func configureCredits(account: String, allow: Bool) {
@@ -837,11 +839,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }()
 
     private func render() {
+        if !isFixturePreview, let title = FocusedConversation.title(), popoverModel.focusedConversationTitle != title {
+            popoverModel.focusedConversationTitle = title
+        }
         guard let button = statusItem.button else { return }
-        let selected = popoverModel.menuAccount
+        let scopedConversation = popoverModel.displayedConversation
+        let selected = scopedConversation == nil ? popoverModel.menuAccount :
+            (popoverModel.payload?.routing?.isCurrent() == true ? popoverModel.payload?.accounts.first {
+                $0.provider == "codex" && $0.account == scopedConversation?.currentAccount
+            } : nil)
         let headline = selected.map(Headline.init(account:)) ?? popoverModel.selectedHeadline
         let accountAttention = selected.flatMap(MenuBarAccountStatus.title(for:))
-        let routingTitle = popoverModel.concurrentRoutingTitle
+        let sessionTitle = scopedConversation != nil ? popoverModel.conversationAccountText : nil
+        let routingTitle = sessionTitle ?? popoverModel.concurrentRoutingTitle
         let creditTitle = selected?.creditMenuTitle
         let badge = selected.map { AccountBadge(accountID: $0.id, name: $0.accountLabel) }
         let readyTasks = popoverModel.canActOnTasks
@@ -913,7 +923,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         } else if let routingTitle {
             title = routingTitle
             color = .labelColor
-            toolTip = popoverModel.routingTooltip ?? routingTitle
+            toolTip = scopedConversation.map { $0.displayTitle + "\n" + popoverModel.conversationAccountText } ?? popoverModel.routingTooltip ?? routingTitle
         } else if let creditTitle, let credits = selected?.credits {
             title = creditTitle
             color = .labelColor

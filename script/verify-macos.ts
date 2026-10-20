@@ -22,6 +22,8 @@ interface Observation {
   scrollRegions?: Array<{viewportHeight:number;documentHeight:number}>;
   detailSection?: string;
   focusedResumeTaskID?: string | null;
+  conversationAccountText?: string;
+  displayedConversationID?: string | null;
   activeTaskIDs?: string[];
   managedJobIDs?: string[];
   hostGoalIDs?: string[];
@@ -125,6 +127,7 @@ async function run() {
   let fastQuotaScenario = false;
   const settingsRequests: Array<{path:string;method:string}> = [];
   let settingsScenario = false;
+  let sessionAccountScenario = false;
   const fastQuotaRequests: Array<{path:string;method:string;token:string|null;reason?:string}> = [];
   const account = (id: string, label: string, remaining: number) => ({ provider: "codex", account: id, accountLabel: label, enabled: true,
     windows: [{ provider: "codex", account: id, bucket: "codex:primary", label: "5h", windowSeconds: 18_000,
@@ -218,7 +221,7 @@ async function run() {
         if (value.account !== "default" || value.allow !== true) return new Response("Unexpected choice", {status:400});
         creditAllowed = true;
       }
-      return Response.json({conversations:[],accounts:payload.accounts.filter(a=>a.provider==="codex").map(a=>({
+      return Response.json({conversations:sessionAccountScenario ? [{threadId:"10000000-0000-4000-8000-000000000099", title:"Current conversation",sourceAccount:"default",currentAccount:"second",targetAccount:"default",active:false}] : [],accounts:payload.accounts.filter(a=>a.provider==="codex").map(a=>({
         account:a.account,label:a.accountLabel,available:!creditScenario || a.account==="default" && creditAllowed,
         reason:creditScenario && !(a.account==="default" && creditAllowed) ? "pool_manual_quota_exhausted" : null,
         creditAllowed:a.account==="default" && creditAllowed,creditPolicy:creditAllowed?"allow":"block",
@@ -271,6 +274,7 @@ async function run() {
     await exec(["codesign", "--force", "--sign", "-", "--timestamp=none", app]);
     await exec(["/usr/bin/defaults", "write", bundleID, "local.quotapie.codex-desktop-profiles.v1", "-data", Buffer.from(JSON.stringify(profiles)).toString("hex")]);
     for (const scenario of [
+      {name:"session-account",running:["main"],frontmost:null,expected:{account:"codex/default",remaining:18,label:"Second"}},
       { name: "fast-quota-delayed-details", running: ["main"], frontmost: null, fastQuota: true, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "main-only", running: ["main"], frontmost: null, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "second-only", running: ["second"], frontmost: null, expected: { account: "codex/second", remaining: 100, label: "Second" } },
@@ -314,6 +318,8 @@ async function run() {
     ]) {
       const requestedScenarios = process.env.QUOTAPIE_VERIFY_SCENARIOS?.split(",");
       if (requestedScenarios && !requestedScenarios.includes(scenario.name)) continue;
+      sessionAccountScenario = scenario.name === "session-account";
+      (payload as any).routing = sessionAccountScenario ? {checkedAtMs:Date.now(),freshness:"fresh",active:[],recent:[]} : undefined;
       creditScenario = "credit" in scenario;
       creditAllowed = false; creditRequests.length = 0;
       settingsScenario = "initialSection" in scenario && scenario.initialSection === "settings";
@@ -346,6 +352,7 @@ async function run() {
         appearance: "appearance" in scenario ? scenario.appearance : undefined,
         inspectAutoResume: scenario.name === "auto-resume",
         fastQuota: fastQuotaScenario, quotaCachePath,
+        focusedConversationTitle: sessionAccountScenario ? "Current conversation" : undefined,
         focusedResumeTaskID: "focusedResumeTaskID" in scenario ? scenario.focusedResumeTaskID : undefined,
         initialSection: "initialSection" in scenario ? scenario.initialSection : undefined,
         settingsCategory: "settingsCategory" in scenario ? scenario.settingsCategory : undefined,
@@ -408,6 +415,8 @@ async function run() {
           failures.push("many_accounts_not_bounded");
         if (!(observed.scrollRegions ?? []).some(region=>region.documentHeight > region.viewportHeight + 100)) failures.push("many_accounts_cannot_scroll");
       }
+      if (sessionAccountScenario && (observed.displayedConversationID !== "10000000-0000-4000-8000-000000000099" ||
+          !observed.conversationAccountText?.includes("Second") || !observed.menuText?.includes("Second"))) failures.push("focused_session_account_missing");
       if (scenario.name === "account-list-existing-limits") {
         const text = observed.renderedText ?? [];
         const normalized = (value:string) => value.replace(/\s/g, "");

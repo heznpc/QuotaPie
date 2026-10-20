@@ -1522,3 +1522,11 @@
 
 "requestAccount.search" = "대화 제목 또는 ID 검색";
 "alert.event.title.recovered" = "%@ · %@ 한도 회복 확인";
+
+"sessionAccount.title" = "이 세션 처리 계정";
+"sessionAccount.follow" = "현재 창 따라가기";
+"sessionAccount.choose" = "세션 선택";
+"sessionAccount.unmatched" = "현재 세션을 확인할 수 없습니다. 세션을 선택해 처리 계정을 확인하세요.";
+"sessionAccount.unverified" = "처리 계정 확인 중";
+"sessionAccount.processing" = "처리 중 · %@";
+"sessionAccount.last" = "최근 처리 · %@";

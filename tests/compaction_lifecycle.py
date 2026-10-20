@@ -665,6 +665,25 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.listener_marker.read_text(), "[]")
         self.assertTrue(self.pending.exists())
 
+    def test_policy_change_can_advance_pending_listener_without_restart(self):
+        self.prepare_listener_pending()
+        self.settings[1]["taskSavings"]["enabled"] = False
+        self.paths[1].write_text(json.dumps(self.settings[1]))
+        result = self.stage()
+        self.assertTrue(result["applied"][0]["handlerApplied"])
+        self.assertFalse(result["applied"][0]["listenerApplied"])
+        after = json.loads(self.listener_marker.read_text())
+        self.assertEqual(after["settingsHash"], manager.digest(self.paths[1]))
+
+    def test_endpoint_change_cannot_rebind_pending_listener(self):
+        self.prepare_listener_pending()
+        before = self.listener_marker.read_bytes()
+        self.settings[1]["token"] = "changed-token"
+        self.paths[1].write_text(json.dumps(self.settings[1]))
+        result = self.stage()
+        self.assertEqual(result["applied"], [])
+        self.assertEqual(self.listener_marker.read_bytes(), before)
+
     def test_failed_reload_acknowledgement_records_uncertainty_without_live_rollback(self):
         self.prepare_upgrade(modern=True)
         with patch.object(manager.subprocess, "run", side_effect=self.upgrade_command), self.drain({"runtimeSourceHash": "wrong"}):

@@ -77,6 +77,23 @@ final class PopoverModel: ObservableObject {
     @Published var requestAccountCatalog: RequestAccountCatalog?
     @Published var requestAccountCatalogError: String?
     @Published var focusedConversationTitle: String?
+    @Published var inspectedConversationID: String?
+
+    var displayedConversation: RequestAccountConversation? {
+        if let id = inspectedConversationID {
+            return requestAccountCatalog?.conversations.first { $0.threadId == id }
+        }
+        return FocusedConversation.match(title: focusedConversationTitle, catalog: requestAccountCatalog)
+    }
+
+    var conversationAccountText: String {
+        guard let conversation = displayedConversation,
+              let account = conversation.currentAccount, requestAccountCatalogError == nil,
+              payload?.routing?.isCurrent() == true else { return Strings.t("sessionAccount.unverified") }
+        let label = requestAccountCatalog?.label(for: account) ?? account
+        return Strings.t(conversation.active ? "sessionAccount.processing" : "sessionAccount.last", label)
+    }
+
     @Published var requestAccountApplying = false
     @Published var requestAccountResult: String?
     @Published var creditSaving = false

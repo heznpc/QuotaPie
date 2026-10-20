@@ -670,6 +670,12 @@ class LocalRelay:
         """
         marker = path.parent / "listener-upgrade-pending.json"
         binding = self.listener_upgrade_binding(path, settings)
+        # These two policies hot-reload independently of listener ownership.
+        # Preserve every other setting in the identity, including endpoint,
+        # credentials location and executable. Legacy markers remain strict.
+        identity_hash = hashlib.sha256(json.dumps(
+            {key: value for key, value in settings.items() if key not in {"route", "taskSavings"}},
+            sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         if binding["settingsHash"] != pending["settingsHash"]:
             raise RuntimeError("Staged listener settings changed")
         binary = path.parent / "relay.js"
@@ -689,7 +695,9 @@ class LocalRelay:
             prior = json.loads(existing)
             if (not isinstance(prior, dict) or prior.get("schemaVersion") != 1
                     or prior.get("listenerPolicyVersion") != LISTENER_POLICY_VERSION
-                    or any(prior.get(key) != value for key, value in binding.items())
+                    or any(prior.get(key) != value for key, value in binding.items() if key != "settingsHash")
+                    or (prior.get("settingsHash") != binding["settingsHash"]
+                        and prior.get("settingsIdentityHash") != identity_hash)
                     or any(not isinstance(prior.get(key), str) or not re.fullmatch(r"[a-f0-9]{64}", prior[key])
                            for key in ("sourceHash", "bootstrapSourceHash"))
                     or previous_hash not in {prior.get("bootstrapSourceHash"), prior.get("previousBootstrapSourceHash")}
@@ -699,6 +707,7 @@ class LocalRelay:
             if prior_runtime.is_symlink() or digest(prior_runtime) != prior["sourceHash"]:
                 raise RuntimeError("Pending listener runtime changed")
         record = {"schemaVersion": 1, "listenerPolicyVersion": LISTENER_POLICY_VERSION,
+                  "settingsIdentityHash": identity_hash,
                   "sourceHash": pending["sourceHash"], "bootstrapSourceHash": pending["bootstrapSourceHash"],
                   "previousBootstrapSourceHash": previous_hash, **binding, "account": account,
                   "observedPid": health.get("pid") if type(health.get("pid")) is int else None,

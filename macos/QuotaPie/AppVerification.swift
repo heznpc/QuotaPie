@@ -14,6 +14,7 @@ struct AppVerification: Decodable {
     let initialAccountID: String?
     let navigationClicks: [NavigationClick]?
     struct NavigationClick: Decodable { let x: Double; let y: Double }
+    let focusedConversationTitle: String?
     let focusedResumeTaskID: String?
     let contentHeight: Double?
     let appearance: String?
@@ -50,6 +51,7 @@ struct AppVerification: Decodable {
     }
 
     func selectInitialAccount(in model: PopoverModel) {
+        model.focusedConversationTitle = focusedConversationTitle
         if let appearance { NSApp.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua) }
         model.selectInitialCodexAccount(frontmost: frontmostProfileID.flatMap(identity),
                                         running: runningProfileIDs.compactMap(identity), profiles: profiles)
@@ -203,6 +205,8 @@ struct AppVerification: Decodable {
             "inspectedAccount": model.inspectedAccountID as Any? ?? NSNull(),
             "displayedAccount": model.displayedAccount?.id as Any? ?? NSNull(),
             "enabledAccountIDs": model.enabledAccounts.map(\.id),
+            "conversationAccountText": model.conversationAccountText,
+            "displayedConversationID": model.displayedConversation?.threadId as Any? ?? NSNull(),
             "focusedResumeTaskID": model.focusedResumeTaskID as Any? ?? NSNull(),
             "activeTaskIDs": model.activeTasks.map(\.id),
             "managedJobIDs": model.payload?.jobs.map(\.id) ?? [],

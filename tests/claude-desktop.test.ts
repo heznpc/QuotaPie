@@ -244,7 +244,9 @@ describe("Claude desktop binding and collection", () => {
 
   test("retained desktop history cannot feed forecasts or alerts after empty data or a changed binding", async () => {
     let response: unknown = success({ five_hour: { utilization: 99, resets_at: "2030-01-01T00:00:00Z" } });
-    const f = fixture(async () => response);
+    // Production polls are minutes apart. Give each fixture reading a distinct
+    // observation timestamp rather than colliding with the full-snapshot watermark.
+    const f = fixture(async () => { await Bun.sleep(2); return response; });
     try {
       f.config.alerts.enabled = true;
       const account = (await f.service.connectClaudeDesktop(f.path)).account.account;

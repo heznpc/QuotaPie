@@ -18,7 +18,14 @@ enum FocusedConversation {
 
     static func match(title: String?, catalog: RequestAccountCatalog?) -> RequestAccountConversation? {
         guard let title, !title.isEmpty, let catalog else { return nil }
-        let matches = catalog.conversations.filter { $0.title == title }
+        func normalized(_ value: String) -> String {
+            var result = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            for suffix in [" — Codex", " - Codex", " — ChatGPT", " - ChatGPT"] where result.hasSuffix(suffix) {
+                result = String(result.dropLast(suffix.count))
+            }
+            return result
+        }
+        let matches = catalog.conversations.filter { normalized($0.title) == normalized(title) }
         return matches.count == 1 ? matches[0] : nil
     }
 }
