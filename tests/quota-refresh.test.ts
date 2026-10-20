@@ -184,6 +184,79 @@ test("background recovery cadence polls only the blocked account and stops after
   } finally { clock.mockRestore(); factory.mockRestore(); await f.close(); }
 });
 
+test("a force joins skipped accounts immediately, awaits them once, and retains the fresh follow-up", async () => {
+  const f = fixture(); let now = 2_000_000_000_000;
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  let releaseA!: () => void, releaseB!: () => void;
+  const waitingA = new Promise<void>(resolve => { releaseA = resolve; });
+  const waitingB = new Promise<void>(resolve => { releaseB = resolve; });
+  const calls = { a: 0, b: 0 };
+  const factory = spyOn(f.service as any, "createCodexClient").mockImplementation((profile: any) => ({
+    readRateLimits: async () => {
+      calls[profile.id as "a" | "b"]++;
+      await (profile.id === "a" ? waitingA : waitingB);
+      return [sample(profile.id, now)];
+    }, close: async () => {},
+  }));
+  const record = spyOn(f.service as any, "recordCodexRead");
+  (f.service as any).codexNextPollMs.set("b", now + 60_000);
+  let finished = false;
+  const polling = f.service.pollCodex(true).then(result => { finished = true; return result; });
+  try {
+    expect(calls).toEqual({ a: 1, b: 0 });
+    now += 1_000; f.service.requestCollection(true);
+    expect(calls).toEqual({ a: 1, b: 1 }); // A is still unresolved.
+    f.service.requestCollection(true);
+    now += QuotaPieService.FORCED_COLLECTION_MIN_INTERVAL_MS;
+    f.service.requestCollection(true); // An accepted second force also shares this batch.
+    expect(calls).toEqual({ a: 1, b: 1 });
+    releaseA(); await Bun.sleep(0);
+    expect(finished).toBe(false); // The upgraded B was not in the original Promise.all.
+    expect(record.mock.calls.map(call => call[0])).toEqual(["a"]);
+    releaseB(); await polling;
+    expect(record.mock.calls.map(call => call[0])).toEqual(["a", "b"]);
+    expect(f.service.collectionStatus().refreshing).toBe(true);
+    // A may have begun before sleep. A successful completion does not consume
+    // the forced follow-up or turn its completion time into proof of freshness.
+    await f.service.tick();
+    expect(calls).toEqual({ a: 2, b: 2 });
+  } finally {
+    releaseA(); releaseB(); await polling;
+    clock.mockRestore(); factory.mockRestore(); record.mockRestore(); await f.close();
+  }
+});
+
+for (const gate of ["account-disabled", "provider-disabled", "quiesced", "isolation-unsafe"] as const) {
+  test(`upgrading an active batch preserves the ${gate} gate`, async () => {
+    const f = fixture(); const calls = { a: 0, b: 0 };
+    let release!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const factory = spyOn(f.service as any, "createCodexClient").mockImplementation((profile: any) => ({
+      readRateLimits: async () => {
+        calls[profile.id as "a" | "b"]++;
+        await waiting;
+        return [sample(profile.id, Date.now())];
+      }, close: async () => {},
+    }));
+    (f.service as any).codexNextPollMs.set("b", Date.now() + 60_000);
+    const polling = f.service.pollCodex(true);
+    try {
+      expect(calls).toEqual({ a: 1, b: 0 });
+      if (gate === "account-disabled") f.config.accounts.codex[1]!.enabled = false;
+      if (gate === "provider-disabled") f.config.collection.codexEnabled = false;
+      if (gate === "quiesced") (f.service as any).consolidationQuiesced.add("b");
+      if (gate === "isolation-unsafe")
+        writeFileSync(join(f.config.accounts.codex[1]!.codexHome!, "config.toml"), 'cli_auth_credentials_store = "keyring"\n');
+      f.service.requestCollection(true);
+      expect(calls).toEqual({ a: 1, b: 0 });
+      release(); await polling;
+      expect(calls).toEqual({ a: 1, b: 0 });
+      if (gate === "isolation-unsafe")
+        expect(f.service.codexPollResults().find(result => result.account === "b")?.error).toContain("multi-account Codex requires");
+    } finally { release(); await polling; factory.mockRestore(); await f.close(); }
+  });
+}
+
 test("wake merges into a coalesced request and in-flight collection reports its lifecycle", async () => {
   const f = fixture(); let release!: () => void;
   const wait = new Promise<void>(resolve => { release = resolve; });
