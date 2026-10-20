@@ -9,6 +9,7 @@ import type { CompactionRequestEvent } from "./codex-compaction";
 import { CompactionPolicySettings, relayHealth } from "./compaction-policy-settings";
 import { TaskSavingsSettings } from "./task-savings-settings";
 import { inspectRelaySettings, type RelaySettingsEntry } from "./relay-settings";
+import { summarizeRouting, staleRouting, type RequestRoute } from "./request-routing";
 
 import { parseCompactionRequestEvent as event } from "../packages/quota-core/src/events.js";
 import { summarizeRequestEvents } from "../packages/quota-core/src/observations.js";
@@ -99,6 +100,7 @@ export class CompactionStatusReader {
   notificationEvents() { return this.notificationEvidence; }
   private evidenceLoaded = false;
   private savedEvidence = "";
+  private routingEvidence: RequestRoute[] = [];
   readonly policy: CompactionPolicySettings;
   readonly savingsPolicy: TaskSavingsSettings;
   constructor(private root = join(homedir(), ".local/lib/quotapie-compaction"), private fetcher: typeof fetch = fetch) {
@@ -113,11 +115,12 @@ export class CompactionStatusReader {
   snapshot(nowMs = Date.now()) {
     const cached = this.cached;
     if (!cached) return { checkedAtMs: 0, generations: 0, reachable: 0, policy: null,
-      subscriptionProtection: subscriptionProtection([], nowMs), active: [], recent: [] };
+      subscriptionProtection: subscriptionProtection([], nowMs), routing: { ...summarizeRouting([], nowMs), checkedAtMs: 0 }, active: [], recent: [] };
     if (nowMs - cached.checkedAtMs <= 10_000) return cached;
     // A stale observer cannot assert that an old request is still running or
     // that a previously acknowledged policy is still live.
     return { ...cached, reachable: 0,
+      routing: staleRouting(cached.routing),
       subscriptionProtection: { ...cached.subscriptionProtection, reachable: 0, outOfDate: 0, revisionMismatch: false, activeRequests: 0,
         relays: cached.subscriptionProtection.relays.map(r => ({ ...r, reachable: false, ready: null, reason: "observer-state-stale",
           outOfDate: false, activeRequests: 0 })) },
@@ -161,12 +164,14 @@ export class CompactionStatusReader {
       let reachable = false;
       let health: any = null;
       const activeIds = new Set<string>();
+      const healthRequestIds = new Set<string>();
       try {
         health = await relayHealth(settings, this.fetcher);
         if (!(health.schemaVersion >= 2)) throw new Error();
         reachable = true;
         for (const raw of [...(health.recent ?? []), ...(health.active ?? [])]) {
           const item = event(raw); if (!item) continue;
+          healthRequestIds.add(item.requestId);
           records.set(item.requestId, item);
           if (ongoing(item.phase)) activeIds.add(item.requestId);
         }
@@ -176,9 +181,11 @@ export class CompactionStatusReader {
       const scope = typeof settings.codex_home === "string" && settings.codex_home.startsWith("/")
         ? settings.codex_home : directory;
       const notificationScope = createHash("sha256").update(`quotapie:relay-profile:${scope}`).digest("hex");
-      return { reachable, records: [...records.values()], activeIds, health, notificationScope, path: join(directory, "settings.json") };
+      return { reachable, records: [...records.values()], activeIds, healthRequestIds, health, notificationScope, path: join(directory, "settings.json") };
     }));
     const installed = generations.filter(g => g !== null);
+    const routing = summarizeRouting(installed, nowMs, this.routingEvidence);
+    this.routingEvidence = [...routing.active, ...routing.recent];
     const merged = new Map(this.evidence);
     for (const item of installed.flatMap(g => g.records)) {
       const previous = merged.get(item.requestId);
@@ -205,6 +212,7 @@ export class CompactionStatusReader {
     }
     const healthByPath = new Map(installed.map(g => [g.path, g.health]));
     return { checkedAtMs: nowMs, generations: installed.length, reachable: installed.filter(g => g.reachable).length,
+      routing,
       subscriptionProtection: subscriptionProtection(installed, nowMs),
       policy: validatedEntries ? await this.policy.status(healthByPath, validatedEntries) : null,
       savings: {insights, policy: validatedEntries ? await this.savingsPolicy.status(healthByPath, validatedEntries) : null, active: savingsRecords.filter(r=>r.active), recent: savingsRecords.filter(r=>!r.active)},

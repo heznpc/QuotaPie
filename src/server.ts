@@ -11,6 +11,7 @@ import { poolStatus, configurePoolPolicy, PoolError } from "./account-pool";
 import { buildHeadline } from "./analytics";
 import { captureRuntimeIdentity } from "./runtime-identity";
 import { CompactionStatusReader } from "./compaction-status";
+import { CreditUsageReader } from "./credit-usage";
 import type { AppNotificationDisposition, Headline, QuotaEvent } from "./types";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { ResumeTargetError } from "./service";
@@ -53,6 +54,10 @@ function json(value: unknown, status = 200): Response {
 export function startDashboard(service: QuotaPieService, config: AppConfig, options: { compactionRoot?: string; preferencesPath?: string; poolPolicyPath?: string; poolDatabasePath?: string } = {}) {
   const runtime = captureRuntimeIdentity();
   const compaction = new CompactionStatusReader(options.compactionRoot);
+  const credits = new CreditUsageReader(service.db);
+  const creditAccounts = (accounts: ReturnType<QuotaPieService["quotaAccounts"]>, nowMs: number) =>
+    credits.accounts(accounts, nowMs, config.collection.staleAfterSeconds * 1_000,
+      Math.min(config.collection.staleAfterSeconds * 1_000, Math.max(30_000, config.collection.pollSeconds * 3_000)));
   const dots = new DotsConnection({ config: () => config });
   const usageReports = new UsageReportAPI(config, service.db.db, options.compactionRoot);
   const officialUsage = new OfficialUsageAPI(config, fetch, undefined, (account, query, now) =>
@@ -109,10 +114,10 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
         const nowMs = Date.now();
         const locale = request.headers.get("x-quotapie-locale") === "ko" ? "ko"
           : request.headers.get("x-quotapie-locale") === "en" ? "en" : service.locale;
-        const accounts = service.quotaAccounts(nowMs);
+        const accounts = creditAccounts(service.quotaAccounts(nowMs), nowMs);
         return json({ nowMs, actionToken, accounts, collection: service.collectionStatus(),
           resumeTasks: service.resumeTaskSummaries(100, nowMs, accounts.flatMap(account => account.windows)),
-          autoResume: service.autoResume.status(), compaction: compaction.snapshot(nowMs),
+          autoResume: service.autoResume.status(), compaction: compaction.snapshot(nowMs), routing: compaction.snapshot(nowMs).routing,
           headline: headlineJson(buildHeadline(accounts, nowMs, locale)) });
       }
       if (url.pathname === "/api/collection/refresh") {
@@ -455,7 +460,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
         const nowMs = Date.now();
         const displayLocale = request.headers.get("x-quotapie-locale") === "ko" ? "ko" : request.headers.get("x-quotapie-locale") === "en" ? "en" : service.locale;
         const analysed = service.analyses(nowMs);
-        const accounts = service.accountStates(nowMs, analysed);
+        const accounts = creditAccounts(service.accountStates(nowMs, analysed), nowMs);
         const resetPlans = service.resetPlanning(accounts, nowMs);
         const timingStatus = service.resetTimingStatus();
         return json({
@@ -511,7 +516,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           resetOpportunities: resetPlans.flatMap(plan => plan.opportunities.map(opportunity => ({ ...opportunity, account: plan.account }))),
           resetTiming: timingStatus,
           resetTracking: service.resetTracking(nowMs, accounts),
-          compaction: compaction.snapshot(nowMs),
+          compaction: compaction.snapshot(nowMs), routing: compaction.snapshot(nowMs).routing,
           accountPool: (() => { try {
             const pool = poolStatus(options.poolDatabasePath, options.poolPolicyPath);
             return { ...pool, recent: pool.recent.map(item => {

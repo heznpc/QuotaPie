@@ -26,12 +26,15 @@ struct CodexProfilesView: View {
                 Text(Strings.t("profiles.consolidationFailed")).font(.callout).foregroundStyle(.orange)
             }
             ForEach(profiles.profiles) { profile in
+                let appAction = CodexAccountAction(profile: profile, consolidation: profiles.consolidation,
+                    requiresVerification: profiles.requiresConsolidationVerification(profile))
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
                         Text(profile.name).fontWeight(.medium)
                         Spacer()
-                        Button(Strings.t("profiles.open")) { profiles.open(profile) }
-                            .disabled(profiles.requiresConsolidationVerification(profile) ||
+                        Button(appAction.title) { profiles.open(profile) }
+                            .help(appAction.help)
+                            .disabled(!appAction.isEnabled ||
                                 (profiles.isConsolidationRunning(profile) && profile.credentialOnly != true))
                         if profile.id != "primary" {
                             Button(Strings.t("profiles.accountLogin")) { profiles.open(profile, intent: .accountLogin) }

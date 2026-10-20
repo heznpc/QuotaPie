@@ -249,6 +249,18 @@ export class QuotaDatabase {
     return rows.map(snapshotFromRow);
   }
 
+  /** Indexed, bounded raw observations for balance accounting. Include missing
+   * balance rows so an unavailable reading cannot be bridged as continuous use. */
+  creditHistory(account: string, sinceMs: number, limit = 20_000): QuotaObservation[] {
+    const rows = this.db.query<SnapshotRow, [string, number, number]>(`
+      SELECT s.* FROM bucket_state b CROSS JOIN snapshots s INDEXED BY snapshots_lookup
+        ON s.provider=b.provider AND s.account=b.account AND s.bucket=b.bucket
+      WHERE b.provider='codex' AND b.account=? AND s.observed_at_ms>=?
+      ORDER BY s.observed_at_ms DESC,s.id DESC LIMIT ?
+    `).all(account, sinceMs, limit);
+    return rows.reverse().map(snapshotFromRow);
+  }
+
   analysisHistory(
     provider: Provider,
     account: string,

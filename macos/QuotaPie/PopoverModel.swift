@@ -170,6 +170,7 @@ final class PopoverModel: ObservableObject {
             current.accounts = status.accounts.map { account in
                 account.preservingDetails(from: current.accounts.first { $0.id == account.id })
             }
+            current.routing = status.routing
             current.actionToken = status.actionToken
             if let collection = status.collection, collection.supersedes(current.collection) {
                 current.collection = collection
@@ -264,6 +265,7 @@ final class PopoverModel: ObservableObject {
             next.accounts = current.accounts.map { account in
                 account.preservingDetails(from: status.accounts.first { $0.id == account.id })
             }
+            next.routing = current.routing
             next.actionToken = current.actionToken
             next.collection = current.collection
             next.resumeTasks = current.resumeTasks

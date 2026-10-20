@@ -32,12 +32,25 @@ export interface CompactionRequestEvent {
   savingsReason?: SavingsReason;
   responseModel?: string | null;
   usage?: { input: number; cachedInput: number; output: number } | null;
+  accountRouting?: { sourceAccount: string; account: string; accountLabel: string;
+    reason: "new" | "pinned" | "existing" | "source_fallback" | "recovered" | "reserve" };
+  accountRoutingUnverified?: boolean;
 }
 
 const savingsReasons = new Set(["disabled", "simple_text_edit", "test_only", "uncertain_task", "keep_setting", "manual_change", "extended_work", "failure_fallback", "unsupported_model", "unidentified_task", "task_disabled"]);
 const phases = new Set(["started", "response_headers", "completed", "failed", "cancelled", "unverified"]);
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const label = /^[a-z0-9_.-]{1,80}$/i;
+const account = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
+const routeReasons = new Set(["new", "pinned", "existing", "source_fallback", "recovered", "reserve"]);
+
+function accountRoute(value: any): CompactionRequestEvent["accountRouting"] {
+  if (!value || typeof value.sourceAccount !== "string" || !account.test(value.sourceAccount) ||
+      typeof value.account !== "string" || !account.test(value.account) || !routeReasons.has(value.reason)) return undefined;
+  // Resolve display labels from the current local account list. Arbitrary labels,
+  // login information and extra fields from a retained event are not exported.
+  return { sourceAccount: value.sourceAccount, account: value.account, accountLabel: "", reason: value.reason };
+}
 
 // Explicit metadata projection: credentials, URLs and request bodies never leave this reader.
 export function parseCompactionRequestEvent(value: unknown): CompactionRequestEvent | null {
@@ -56,6 +69,9 @@ function project(value: any): CompactionRequestEvent | null {
     requestedEffort: safeEffort(value.requestedEffort),
     reasoningEffort: safeEffort(value.reasoningEffort),
     at: value.at, durationMs: value.durationMs,
+    ...(accountRoute(value.accountRouting) ? { accountRouting: accountRoute(value.accountRouting) } : {}),
+    ...(value.accountRoutingUnverified === true || value.accountRouting != null && !accountRoute(value.accountRouting)
+      ? { accountRoutingUnverified: true } : {}),
     ...(Number.isInteger(value.retryCount) && value.retryCount >= 0 && value.retryCount <= 2 ? { retryCount: value.retryCount } : {}),
     ...(typeof value.upstreamBodyPresent === "boolean" ? { upstreamBodyPresent: value.upstreamBodyPresent } : {}),
     ...(value.upstreamContentLength === null || Number.isSafeInteger(value.upstreamContentLength) && value.upstreamContentLength >= 0

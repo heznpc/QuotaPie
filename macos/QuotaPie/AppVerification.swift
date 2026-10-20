@@ -179,6 +179,8 @@ struct AppVerification: Decodable {
             "pid": ProcessInfo.processInfo.processIdentifier,
             "connected": model.lastError == nil && model.lastSuccessAt != nil,
             "selectedAccount": model.selectedAccount?.id as Any? ?? NSNull(),
+            "menuAccount": model.menuAccount?.id as Any? ?? NSNull(),
+            "activeRoutingAccounts": model.activeRoutingAccountIDs.sorted(),
             "remainingPercent": model.selectedHeadline?.remainingPercent as Any? ?? NSNull(),
             "routedAccount": model.latestRoutedAccount?.id as Any? ?? NSNull(),
             "routedRemainingPercent": model.latestRoutedHeadline?.remainingPercent as Any? ?? NSNull(),
