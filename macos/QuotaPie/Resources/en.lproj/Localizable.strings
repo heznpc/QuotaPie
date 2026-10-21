@@ -1532,3 +1532,9 @@
 "sessionAccount.last" = "Last processed · %@";
 
 "sessionAccount.other" = "Other conversation";
+
+"sessionAccount.modore" = "Manage session and workspace in Modore";
+
+"sessionAccount.notFound" = "This conversation is not in the current account catalog. Refresh or choose another conversation.";
+
+"sessionAccount.noMatches" = "No matching conversations";

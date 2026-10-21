@@ -1532,3 +1532,9 @@
 "sessionAccount.last" = "최근 처리 · %@";
 
 "sessionAccount.other" = "다른 대화";
+
+"sessionAccount.modore" = "Modore에서 세션·작업 폴더 보기";
+
+"sessionAccount.notFound" = "현재 계정 목록에서 이 대화를 확인하지 못했습니다. 새로고침하거나 다른 대화를 선택하세요.";
+
+"sessionAccount.noMatches" = "일치하는 대화가 없습니다";

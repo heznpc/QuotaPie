@@ -217,6 +217,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             popoverModel.showAccountList()
             popoverModel.showDetails(.work, taskID: id)
             showPopover()
+        } else if case .session(let id) = route {
+            popoverModel.showAccountList()
+            popoverModel.inspectedConversationID = id
+            showPopover()
         }
     }
 
