@@ -30,3 +30,41 @@ assert "# preserve comment" in path.read_text()
     expect({ exit, error }).toEqual({ exit: 0, error: "" });
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
+
+test("coordination rules cover existing profiles once, preserve symlinks and unrelated instructions", async () => {
+  const home = mkdtempSync(join(tmpdir(), "qp-agent-budget-"));
+  try {
+    const code = `
+import importlib.util,pathlib,sys
+spec=importlib.util.spec_from_file_location("budget","scripts/configure-context-budget.py")
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+root=pathlib.Path(sys.argv[1]).resolve();home=root/"native";home.mkdir()
+shared=root/"shared.md";original=b"# Existing rules\\nKeep model and reasoning unchanged.\\n";shared.write_bytes(original)
+(home/"AGENTS.md").symlink_to(shared)
+profiles=root/"profiles";profile=profiles/"one"/"home";profile.mkdir(parents=True)
+(profile/"config.toml").write_text('model = "gpt-6-astra"\\n')
+(profiles/"retired").mkdir()
+alias=root/"alias";alias.symlink_to(home,target_is_directory=True)
+assert m.target_homes([home,alias],profiles)==sorted([home,profile])
+for target in m.target_homes([home],profiles):
+    result=m.configure_agent_policy(target)
+    assert result["changed"]
+    assert m.configure_agent_policy(target)["changed"] is False
+    content=(target/"AGENTS.md").read_text()
+    assert content.count(m.POLICY_START)==1
+    assert 'followup_task' in content and 'wait_agent' in content
+    if target==home: assert pathlib.Path(result["backup"]).read_bytes()==original
+assert (home/"AGENTS.md").is_symlink()
+assert shared.read_bytes().startswith(original)
+assert not (profiles/"retired"/"home").exists()
+broken=profile/"AGENTS.md";broken.write_text(m.POLICY_START)
+try:m.configure_agent_policy(profile)
+except ValueError:pass
+else:raise AssertionError("malformed block overwritten")
+assert broken.read_text()==m.POLICY_START
+`;
+    const process = Bun.spawn(["python3", "-B", "-c", code, home], { stdout: "pipe", stderr: "pipe" });
+    const [exit, error] = await Promise.all([process.exited, new Response(process.stderr).text()]);
+    expect({ exit, error }).toEqual({ exit: 0, error: "" });
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
