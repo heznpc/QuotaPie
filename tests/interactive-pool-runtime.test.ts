@@ -141,9 +141,9 @@ test("ephemeral portable helpers retain native source behavior when lineage cann
 for (const failAt of [1, 3]) test(`unsent target guard denial ${failAt} restores prior ownership`, () => fixture(async f => {
   const identity = createHash("sha256").update(JSON.stringify([realpathSync(f.accounts[1].home), "b", "b"])).digest("hex");
   let checks = 0;
-  f.memory.poolGuards = new Map([["b:" + identity, { intervalMs: 500,
+  f.memory.poolGuards.set("b:" + identity, { intervalMs: 500,
     check: () => ({ ready: ++checks < failAt, reason: "quota-exhausted", sourceIdentity: identity }),
-    checkIdentity: () => ({ ready: true, sourceIdentity: identity }) }]]);
+    checkIdentity: () => ({ ready: true, sourceIdentity: identity }) });
   const denied = await f.request(); expect(denied.status).toBeGreaterThanOrEqual(400); await denied.text(); expect(f.sent).toHaveLength(0);
   const db = new Database(join(f.data, "account-pool.sqlite3"), { readonly: true });
   expect(db.query("SELECT count(*) AS n FROM bindings").get()).toMatchObject({ n: 0 }); db.close();

@@ -586,7 +586,7 @@
 "pool.settings.explanation" = "계정별로 남겨둘 잔여량을 설정합니다. 단기·주간 한도 중 하나라도 기준에 도달하면 다음 요청부터 사용 가능한 다른 계정으로 전환합니다.";
 "pool.settings.reserve" = "%@%% 남기기";
 "pool.settings.accountReserve" = "%@ 계정에 남겨둘 잔여량";
-"pool.settings.zero" = "잔여량 기준을 설정하지 않음";
+"pool.settings.zero" = "구독 잔여량 0%에 도달하면 전환";
 "pool.settings.usage" = "%@%% 사용하면 전환";
 "pool.settings.whenBlocked" = "전환할 계정이 없으면 요청을 멈춥니다. 설정을 낮추거나 한도가 회복되면 다시 진행할 수 있습니다.";
 "pool.settings.limits" = "이 Mac의 QuotaPie를 거치는 Codex 요청에 적용됩니다. 수집 지연·진행 중인 요청 때문에 기준을 넘을 수 있습니다. 전환 대상에는 최대 5퍼센트포인트의 추가 여유가 필요하며, 계정에 종속된 기록은 전환이 제한될 수 있습니다.";
@@ -1409,7 +1409,7 @@
 "collection.account-mismatch" = "Claude 앱 계정이 변경됨";
 "collection.desktop-no-windows" = "연결됨 · 한도 수치 미제공";
 
-"credits.menu.decrease" = "Codex 1h −%@";
+"credits.menu.decrease" = "크레딧 사용 · 1시간 %@";
 "credits.menu.balance" = "크레딧 잔액 %@";
 "credits.spendControl" = "지출 한도 도달";
 "credits.subscriptionExhausted" = "구독 한도 소진";
@@ -1450,4 +1450,49 @@
 "routing.responseUnconfirmed" = "응답 확인 안 됨";
 "routing.requestedModel" = "요청 모델 %@";
 "routing.targetOnly" = "배정된 대상 · 실제 응답은 아직 확인 안 됨";
+
+"credits.amount" = "%@ 크레딧";
+"requestAccount.use" = "이 계정 사용";
+"requestAccount.useHelp" = "대화를 선택해 다음 요청에서 사용할 계정을 지정합니다.";
+"requestAccount.inspectionOnly" = "한도 조회와 처리 계정 선택은 별개입니다.";
+"requestAccount.title" = "%@ 계정을 사용할 대화";
+"requestAccount.close" = "닫기";
+"requestAccount.explanation" = "대화를 고르면 다음 요청부터 이 계정을 사용합니다. 진행 중인 응답은 유지됩니다.";
+"requestAccount.loading" = "현재·최근 대화를 불러오는 중…";
+"requestAccount.empty" = "선택할 대화가 없습니다. ChatGPT에서 요청이 처리된 뒤 새로고침하세요.";
+"requestAccount.active" = "처리 중";
+"requestAccount.current" = "현재 처리 계정: %@";
+"requestAccount.last" = "마지막 처리 계정: %@";
+"requestAccount.next" = "다음 요청 계정: %@";
+"requestAccount.unknownAccount" = "확인 안 됨";
+"requestAccount.untitled" = "제목 없는 대화";
+"requestAccount.apply" = "이 대화에 사용";
+"requestAccount.selected" = "선택됨";
+"requestAccount.applied" = "다음 요청부터 %@ 사용 · 진행 중인 응답은 유지";
+"requestAccount.noFallback" = "선택한 계정이 사용 불가하면 요청을 중단합니다.";
+"requestAccount.error.unknownThread" = "이 대화를 더 이상 선택할 수 없습니다. 새로고침한 뒤 다시 선택하세요.";
+"requestAccount.error.observerUnavailable" = "대화의 연결 상태를 확인할 수 없습니다. 연결을 확인한 뒤 새로고침하세요.";
+"requestAccount.error.invalidRequest" = "대화와 계정을 다시 선택해 주세요.";
+"requestAccount.error.failed" = "처리 계정을 바꾸지 못했습니다. 기존 설정을 유지합니다. 새로고침 후 다시 시도하세요.";
+"requestAccount.error.unavailable" = "이 계정을 현재 사용할 수 없습니다. 다른 계정을 선택하거나 상태를 새로고침하세요.";
+"requestAccount.error.quota" = "구독 잔여량 소진 · 크레딧 사용이 허용되지 않아 차단됨";
+"requestAccount.error.model" = "이 계정은 대화에서 요청한 모델을 사용할 수 없습니다. 모델 또는 계정을 바꿔 주세요.";
+"requestAccount.error.identity" = "이 계정의 로그인을 확인할 수 없습니다. 계정 연결을 확인해 주세요.";
 "routing.activityUnconfirmed" = "진행 여부 미확인";
+
+"requestAccount.credits.allowed" = "구독 소진 후 크레딧 사용 허용";
+"requestAccount.credits.continue" = "크레딧으로 계속 쓰기";
+"requestAccount.credits.stop" = "크레딧 사용 차단";
+"requestAccount.credits.explanation" = "이 계정으로 지정된 대화에 유료 크레딧 사용을 허용합니다. 자동 전환 설정은 유지됩니다.";
+"requestAccount.ready" = "구독 한도 사용 가능";
+"requestAccount.error.enrollment" = "계정 전환 대상에 등록되지 않았습니다.";
+"requestAccount.error.quotaUnknown" = "구독 잔여량 확인 필요 · 새로고침하거나 크레딧 사용을 허용하세요.";
+"connectionRecovery.restore" = "원래 연결로 복구";
+"connectionRecovery.explanation" = "설정을 백업하고 QuotaPie 연결을 해제합니다. 작업을 마친 뒤 Codex를 다시 열면 적용됩니다.";
+"connectionRecovery.done" = "설정을 백업하고 원래 연결을 복구했습니다. 진행 중인 작업은 유지됩니다. 작업을 마친 뒤 Codex를 다시 여세요.";
+"connectionRecovery.backup" = "복구 백업 폴더 열기";
+"connectionRecovery.missing" = "복구 도구를 찾을 수 없습니다. 앱의 복구 파일과 Python 설치를 확인하세요.";
+"connectionRecovery.failed" = "복구에 실패했습니다. 기존 설정과 백업을 확인하세요.";
+
+"requestAccount.credits.provider" = "구독 소진 · 원래 연결의 크레딧 정책 유지";
+"connectionRecovery.short" = "연결 복구";

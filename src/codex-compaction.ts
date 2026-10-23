@@ -19,6 +19,7 @@ import { createSourceHistoryGuard, type SourceHistoryGuard } from "./source-hist
 import { inspectNativeBody, nativeRequestPathAllowed } from "./native-request";
 import { BodyDecodeError, decodeRequestBody, requestEncoding, type BodyDecodeFailure, type RequestEncoding } from "./request-body-decoder";
 import type { ExecutionTargetRelay, FrozenTargetSelection } from "./execution-target-relay";
+import { manualNativeToolPayload, type ManualAccountRouting, type ManualRequestTarget } from "./manual-account-routing";
 import { interactiveRelayPolicy } from "./interactive-relay-policy";
 import { createRelayDiagnostics } from "./relay-diagnostics";
 export { DEFAULT_COMPACTION_ROUTE, routeCompaction, validateCompactionRoute, type CompactionRoute } from "./codex-compaction-policy";
@@ -160,8 +161,9 @@ export interface CompactionProxyOptions {
   fetchUpstream?: (url: string, init: RequestInit) => Promise<Response>;
   accountPool?: AccountPool;
   resolveAccountPool?: () => AccountPool | undefined;
-  poolSubscriptionGuard?: (account: string, identity: string) => SubscriptionGuard;
+  poolSubscriptionGuard?: (account: string, identity: string, manual?: boolean) => SubscriptionGuard;
   executionTargetRelay?: ExecutionTargetRelay;
+  manualAccountRouting?: ManualAccountRouting;
   subscriptionGuard?: SubscriptionGuard;
   executionMode?: "interactive" | "managed";
   sourceHistoryGuard?: SourceHistoryGuard;
@@ -227,6 +229,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
           nativeRequestPolicy: interactive ? "source-origin" : "managed-allowlist",
           accountPoolOptInVersion: options.resolveAccountPool ? 1 : 0,
           executionTargetVersion: options.executionTargetRelay?.version ?? 0,
+          manualAccountRoutingVersion: options.manualAccountRouting?.version ?? 0,
           executionTargetRelayInstanceId: options.executionTargetRelay?.instanceId ?? null,
           recentNativeRequests,
           executionMode: interactive ? "interactive" : "managed",
@@ -320,6 +323,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
       let sourceHeaders = new Headers(headers);
       let selectedGuard: SubscriptionGuard | undefined;
       let frozenTarget: FrozenTargetSelection | null = null;
+      let manualTarget: ManualRequestTarget | null = null;
       // Bun fetch decompresses upstream responses; request identity to keep streaming simple.
       headers.set("accept-encoding", "identity");
       let body: BodyInit | undefined;
@@ -332,10 +336,10 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
       let selectingAccount = false;
       let guardModel: string | undefined;
       const bindSelectedGuard = (selection: NonNullable<typeof poolSelection>) => {
-        if (!interactive || selection.route.account === selection.route.sourceAccount && !frozenTarget) return undefined;
+        if (!interactive || selection.route.account === selection.route.sourceAccount && !frozenTarget && !manualTarget) return undefined;
         if (frozenTarget && (selection.route.account !== frozenTarget.lease.target.account || selection.identity !== frozenTarget.lease.target.identity))
           throw new PoolError("pool_execution_target_mismatch", 409);
-        const guard = frozenTarget?.guard ?? options.poolSubscriptionGuard?.(selection.route.account, selection.identity);
+        const guard = frozenTarget?.guard ?? options.poolSubscriptionGuard?.(selection.route.account, selection.identity, manualTarget != null);
         if (!guard) throw new PoolError("pool_target_quota_unavailable", 409);
         const state = guard.check({ headers: selection.headers, model: guardModel });
         if (!state.ready || state.sourceIdentity !== selection.identity)
@@ -474,15 +478,26 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
                 try { accountPool = options.resolveAccountPool(); } catch { accountPool = undefined; }
               }
               const sourceRecoveryOnly = interactive && !frozenTarget && options.executionTargetRelay?.sourceRecoveryOnly({ threadId: event.threadId, turnId: event.turnId, body: outgoing });
-              const interactivePool = interactive && !sourceRecoveryOnly && accountPool && await accountPool.canSelectInteractiveAsync({
+              if (interactive && (frozenTarget || sourceRecoveryOnly)) options.manualAccountRouting?.assertCompatible({ threadId: event.threadId,
+                ...(frozenTarget ? { target: frozenTarget.lease.target } : { sourceRecoveryOnly: true }) });
+              if (interactive && !frozenTarget && !sourceRecoveryOnly && options.manualAccountRouting) {
+                manualTarget = options.manualAccountRouting.response({ threadId: event.threadId, turnId: event.turnId,
+                  model: event.to, body: outgoing, identityConflict: codexRequestIdentity(sourceHeaders).fork.status === "invalid" });
+                if (manualTarget && !accountPool) throw new PoolError("pool_manual_policy_changed", 409);
+              }
+              const interactivePool = interactive && !sourceRecoveryOnly && !manualTarget && accountPool && await accountPool.canSelectInteractiveAsync({
                 threadId: event.threadId, requestId: event.requestId, headers, body: outgoing, model: event.to }, request.signal);
               if (frozenTarget && !accountPool) throw new SubscriptionRequestError("execution-target-unavailable");
-              if (accountPool && (!options.subscriptionGuard || interactivePool || frozenTarget)) {
+              if (accountPool && (!options.subscriptionGuard || interactivePool || frozenTarget || manualTarget)) {
                 selectingAccount = true;
                 poolSelection = await accountPool.selectAsync({ threadId: event.threadId, requestId: event.requestId,
                   body: outgoing, model: event.to, headers, verifiedSource,
-                  ...(frozenTarget ? { fixedTarget: { account: frozenTarget.lease.target.account, identity: frozenTarget.lease.target.identity, preserveNativeHistory: true } } : {}) }, request.signal);
+                  ...(frozenTarget ? { fixedTarget: { account: frozenTarget.lease.target.account, identity: frozenTarget.lease.target.identity, preserveNativeHistory: true } }
+                    : manualTarget ? { fixedTarget: { account: manualTarget.account.id, identity: manualTarget.account.identity, preserveNativeHistory: true, manual: true } } : {}) }, request.signal);
                 request.signal.throwIfAborted();
+                if (manualTarget && (!poolSelection || poolSelection.route.account !== manualTarget.account.id || poolSelection.identity !== manualTarget.account.identity))
+                  throw new PoolError("pool_manual_target_changed", 409);
+                if (frozenTarget && !poolSelection) throw new PoolError("pool_execution_target_unavailable", 409);
                 poolInput = { body: outgoing, headers: new Headers(headers), verifiedSource };
                 if (poolSelection) {
                   selectedGuard = bindSelectedGuard(poolSelection);
@@ -508,6 +523,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
           try { frozenTarget = await options.executionTargetRelay.resolve({ threadId: identity.threadId, turnId: identity.turnId, body: null, identityConflict: identity.conflict || identity.fork.status === "invalid" }); }
           catch (error) { throw new SubscriptionRequestError(error instanceof PoolError ? error.code : "execution-target-unavailable"); }
           if (frozenTarget) {
+            options.manualAccountRouting?.assertCompatible({ threadId: identity.threadId, target: frozenTarget.lease.target });
             if (!nativeToolRequest) throw new SubscriptionRequestError("execution-target-request-unverified");
             accountPool = options.resolveAccountPool?.();
             if (!accountPool || !identity.threadId) throw new SubscriptionRequestError("execution-target-unavailable");
@@ -518,7 +534,33 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
             selectedGuard = frozenTarget.guard; guardModel = frozenTarget.lease.model;
           }
         }
-        if (interactive && !poolSelection && !frozenTarget && options.sourceHistoryGuard) {
+        if (interactive && !frozenTarget && !event && !metadataRequest && options.manualAccountRouting) {
+          const identity = codexRequestIdentity(sourceHeaders);
+          manualTarget = options.manualAccountRouting.native({ threadId: identity.threadId, turnId: identity.turnId,
+            identityConflict: identity.conflict || identity.fork.status === "invalid" });
+          if (manualTarget) {
+            if (!nativeToolRequest) throw new PoolError("pool_manual_request_unverified", 409);
+            // An already-admitted source turn keeps its original credentials,
+            // bytes and guard. A later choice cannot redirect its native tools.
+            if (!manualTarget.sourceContinuation) {
+              if (headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() !== "application/json")
+                throw new PoolError("pool_manual_request_unverified", 409);
+              const inspected = await inspectNativeBody(request, MAX_BODY_BYTES);
+              if (!inspected.bytes) { if (inspected.body instanceof ReadableStream) await inspected.body.cancel().catch(() => {}); throw new PoolError("pool_manual_payload_unverified", 409); }
+              try {
+                const decoded = await decodeRequestBody(inspected.bytes, encoding, MAX_BODY_BYTES, request.signal);
+                if (!manualNativeToolPayload(JSON.parse(new TextDecoder().decode(decoded)))) throw new Error("unverified");
+              } catch { throw new PoolError("pool_manual_payload_unverified", 409); }
+              body = inspected.bytes;
+              headers.set("authorization", `Bearer ${manualTarget.account.accessToken}`);
+              headers.set("chatgpt-account-id", manualTarget.account.upstreamAccount);
+              selectedGuard = options.poolSubscriptionGuard?.(manualTarget.account.id, manualTarget.account.identity, true);
+              if (!selectedGuard) throw new PoolError("pool_manual_quota_unavailable", 409);
+            }
+            guardModel = manualTarget.choice.model;
+          }
+        }
+        if (interactive && !poolSelection && !frozenTarget && !manualTarget && options.sourceHistoryGuard) {
           const source = options.subscriptionGuard!.checkIdentity({ headers: sourceHeaders });
           if (source.account && source.sourceIdentity) try {
             await options.sourceHistoryGuard({ account: source.account, identity: source.sourceIdentity, headers: sourceHeaders, signal: request.signal });
@@ -546,13 +588,13 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
             at: new Date().toISOString(), durationMs: Math.round(performance.now() - started), retryCount: 0 });
           return rejectGuard(error.reason);
         }
-        if (selectingAccount) {
+        if (selectingAccount || error instanceof PoolError) {
           const code = error instanceof PoolError ? error.code : "pool_request_rejected";
           const status = error instanceof PoolError ? error.status : 503;
           rejectedRequests++;
           if (event) record({ ...event, phase: "failed", status, errorCode: code, failureOrigin: "relay", at: new Date().toISOString(),
             durationMs: Math.round(performance.now() - started), retryCount: 0 });
-          void accountPool!.rejectAsync(code, event ? { requestId: event.requestId, threadId: event.threadId, status } : undefined).catch(() => {});
+          void accountPool?.rejectAsync(code, event ? { requestId: event.requestId, threadId: event.threadId, status } : undefined).catch(() => {});
           const responseHeaders = new Headers();
           if (error instanceof PoolError && error.retryAfterSeconds != null)
             responseHeaders.set("retry-after", String(error.retryAfterSeconds));
@@ -615,6 +657,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
           if (phase === "unverified") unverifiedCompactions++;
         }
         if (frozenTarget && event) options.executionTargetRelay?.finishRequest(frozenTarget, event.requestId, phase, status, errorCode);
+        if (event?.kind === "response") options.manualAccountRouting?.finish(event.threadId, event.requestId, event.turnId, phase, status);
         emit(phase, errorCode);
         if (poolSelection && event) {
           const requestId = event.requestId;
@@ -676,13 +719,20 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
             const fingerprint = createHash("sha256").update(path).update(body instanceof Uint8Array ? body : String(body)).digest("hex");
             options.executionTargetRelay?.beginRequest(frozenTarget, event.requestId, fingerprint);
           }
+          if (manualTarget && event?.kind === "response") options.manualAccountRouting?.begin(manualTarget, event.requestId, event.turnId);
+          else if (event?.kind === "response" && verifiedSource) {
+            try { options.manualAccountRouting?.observe({ threadId: event.threadId, turnId: event.turnId, requestId: event.requestId,
+              model: event.to, sourceIdentity: verifiedSource.identity,
+              ...(poolSelection ? { target: { account: poolSelection.route.account, identity: poolSelection.identity } } : {}),
+              sourceContinuation: !poolSelection && !frozenTarget }); } catch { /* Observation cannot interrupt an unchanged source request. */ }
+          }
           upstreamAttempted = true;
           return upstreamFetch(target, init);
         };
         const target = `${UPSTREAM}${path}${url.search}`;
         const init: RequestInit = { method: request.method, headers, body, redirect: "manual", signal: cancellation.signal };
         // Streaming uploads and unknown native mutations must not be replayed.
-        let response = interactive && (frozenTarget || !event || body instanceof ReadableStream)
+        let response = interactive && (frozenTarget || manualTarget || !event || body instanceof ReadableStream)
           ? await guardedFetch(target, init)
           : await fetchCodexUpstream(guardedFetch, target, init, code => { retryCount++; transportCode = code; });
         receivedResponse = true;
@@ -695,7 +745,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
         const cooldownRecorded = await recordPoolResponse(response);
         // A rejected HTTP request has produced no model output. Retry once with
         // complete portable history; never retry a 200 stream or partial output.
-        if (!frozenTarget && (!options.subscriptionGuard || interactive && poolSelection) && status === 429 && cooldownRecorded && poolSelection && poolInput && event && !finished && !cancellation.signal.aborted) {
+        if (!frozenTarget && !manualTarget && (!options.subscriptionGuard || interactive && poolSelection) && status === 429 && cooldownRecorded && poolSelection && poolInput && event && !finished && !cancellation.signal.aborted) {
           let replacement: ReturnType<AccountPool["select"]> = null;
           const nextId = randomUUID();
           try {

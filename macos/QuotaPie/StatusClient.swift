@@ -185,6 +185,46 @@ final class StatusClient {
         } catch { completion(.failure(error)) }
     }
 
+    func requestAccounts(actionToken: String, completion: @escaping RequestAccountCatalogCompletion) {
+        requestAccountRequest(actionToken: actionToken, completion: completion)
+    }
+
+    func useRequestAccount(threadID: String, account: String, actionToken: String,
+                           completion: @escaping RequestAccountAssignmentCompletion) {
+        guard UUID(uuidString: threadID) != nil, !account.isEmpty else {
+            completion(.failure(RequestAccountError(code: "request_account_invalid_request"))); return
+        }
+        requestAccountRequest(body: ["threadId": threadID, "account": account], actionToken: actionToken, completion: completion)
+    }
+
+    func configureCredits(account: String, allow: Bool, actionToken: String,
+                          completion: @escaping RequestAccountCatalogCompletion) {
+        requestAccountRequest(body: ["account": account, "allow": allow], suffix: ["credits"], actionToken: actionToken, completion: completion)
+    }
+
+    private func requestAccountRequest<T: Decodable>(body: [String: Any]? = nil, suffix: [String] = [], actionToken: String,
+                                                    completion: @escaping (Result<T, Error>) -> Void) {
+        do {
+            var request = try authenticatedPOST(pathComponents: ["api", "request-accounts"] + suffix, actionToken: actionToken)
+            request.setValue(nil, forHTTPHeaderField: "content-length")
+            request.setValue(Strings.language.rawValue, forHTTPHeaderField: "x-quotapie-locale")
+            if let body {
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            } else { request.httpMethod = "GET" }
+            session.dataTask(with: request) { data, response, error in
+                if let error { completion(.failure(error)); return }
+                guard let http = response as? HTTPURLResponse, let data else {
+                    completion(.failure(StatusClientError.invalidResponse)); return
+                }
+                guard (200..<300).contains(http.statusCode) else {
+                    completion(.failure(RequestAccountError(data: data, status: http.statusCode))); return
+                }
+                completion(Result { try JSONDecoder().decode(T.self, from: data) })
+            }.resume()
+        } catch { completion(.failure(error)) }
+    }
+
     func connectClaudeDesktop(actionToken: String,
                               completion: @escaping (Result<ClaudeDesktopConnectionReply, Error>) -> Void) {
         do {

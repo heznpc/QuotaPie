@@ -204,9 +204,26 @@ async function run() {
     budgetByBucket: {five_hour: {reservePercent: 0, maxUsagePercent: 20, targetUsagePercent: 10}},
     maxTurns: 3, maxDurationSeconds: 60, maxTotalDurationSeconds: 120, expiresAtMs: Date.now()+3600000, priority: 0, onReset: "stop", revision: 2,
     state: {spentByBucket: {five_hour: 4}, turns: 1, totalDurationSeconds: 12, status: "turn-finished", activeExecutionId: null} };
+  let creditScenario = false;
+  let creditAllowed = false;
+  let creditClick: {x:number;y:number} | undefined;
+  const creditRequests: any[] = [];
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async request => {
     const requestPath = new URL(request.url).pathname;
     if (settingsScenario) settingsRequests.push({path:requestPath,method:request.method});
+    if (requestPath === "/api/request-accounts" || requestPath === "/api/request-accounts/credits") {
+      if (request.headers.get("x-quotapie-action-token") !== "isolated-fixture") return new Response("Unauthorized", {status:403});
+      if (request.method === "POST" && requestPath.endsWith("/credits")) {
+        const value = await request.json() as any; creditRequests.push(value);
+        if (value.account !== "default" || value.allow !== true) return new Response("Unexpected choice", {status:400});
+        creditAllowed = true;
+      }
+      return Response.json({conversations:[],accounts:payload.accounts.filter(a=>a.provider==="codex").map(a=>({
+        account:a.account,label:a.accountLabel,available:!creditScenario || a.account==="default" && creditAllowed,
+        reason:creditScenario && !(a.account==="default" && creditAllowed) ? "pool_manual_quota_exhausted" : null,
+        creditAllowed:a.account==="default" && creditAllowed,creditPolicy:creditAllowed?"allow":"block",
+        canAllowCredits:creditScenario,autoSwitchEnabled:true,remaining:creditScenario?0:18}))});
+    }
     if (request.method === "GET" && requestPath === "/api/dots/connection") {
       return Response.json({state:"ready",toolAvailable:true,configured:true,processRunning:true,healthy:true,ready:true,discoveryObserved:true,activeSubscriptions:0,enabledTargets:0,nextURL:null,canConnect:false,canDisconnect:true});
     }
@@ -259,6 +276,8 @@ async function run() {
       { name: "second-only", running: ["second"], frontmost: null, expected: { account: "codex/second", remaining: 100, label: "Second" } },
       { name: "both-main-frontmost", running: ["second", "main"], frontmost: "main", expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "no-running-account", running: [], frontmost: null, expected: { account: "codex/default", remaining: 18, label: "Main" } },
+      { name: "credit-recovery-blocked", running:["main"], frontmost:null, credit:true, expected:{account:"codex/default",remaining:0,label:"Main"} },
+      { name: "credit-recovery-allow", running:["main"], frontmost:null, credit:true, expected:{account:"codex/default",remaining:0,label:"Main"} },
       { name: "account-list-mixed", running: ["main"], frontmost: null, mixedAccounts: true, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "account-list-single", running: ["main"], frontmost: null, singleAccount: true, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "account-list-light", running: ["main"], frontmost: null, mixedAccounts: true, appearance:"light", expected: { account: "codex/default", remaining: 18, label: "Main" } },
@@ -293,12 +312,17 @@ async function run() {
       { name: "host-goals-account-change", running: ["main"], frontmost: null, withTasks: true, goalState: "account_changed", initialSection: "work", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "host-goals-absent", running: ["main"], frontmost: null, withTasks: true, goalState: "no_goal", initialSection: "work", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
     ]) {
+      const requestedScenarios = process.env.QUOTAPIE_VERIFY_SCENARIOS?.split(",");
+      if (requestedScenarios && !requestedScenarios.includes(scenario.name)) continue;
+      creditScenario = "credit" in scenario;
+      creditAllowed = false; creditRequests.length = 0;
       settingsScenario = "initialSection" in scenario && scenario.initialSection === "settings";
       settingsRequests.length = 0;
       malformed = scenario.expected == null;
       payload.accounts = "mixedAccounts" in scenario ? mixedAccounts : "blockedAccounts" in scenario ? blockedAccounts :
         "singleAccount" in scenario ? [baseAccounts[0]!] : "manyAccounts" in scenario ? manyAccounts :
         "rowAccounts" in scenario ? rowAccounts : baseAccounts;
+      if (creditScenario) payload.accounts = baseAccounts.map(a=>({...a,windows:a.windows.map(w=>({...w,remainingPercent:0,usedPercent:100}))}));
       fastQuotaScenario = "fastQuota" in scenario;
       payload.resumeTasks = "withTasks" in scenario ? pausedTasks : [];
       payload.jobs = "withTasks" in scenario ? managedJobs : [];
@@ -326,13 +350,28 @@ async function run() {
         initialSection: "initialSection" in scenario ? scenario.initialSection : undefined,
         settingsCategory: "settingsCategory" in scenario ? scenario.settingsCategory : undefined,
         initialAccountID: "initialAccountID" in scenario ? scenario.initialAccountID : undefined,
-        navigationClicks: scenario.name === "account-list-navigation" ? [rowClick, backClick] : undefined }));
+        navigationClicks: scenario.name === "credit-recovery-allow" ? [creditClick] : scenario.name === "account-list-navigation" ? [rowClick, backClick] : undefined }));
       await exec(["/usr/bin/open", "-W", "-n", "-g", app, "--args", "--verification", request], 20_000);
       const observed = JSON.parse(await readFile(reportPath, "utf8")) as Observation;
-      if (settingsScenario || scenario.name.startsWith("account-detail-") || ["auto-resume", "account-list-mixed", "account-list-blocked", "account-list-existing-limits"].includes(scenario.name)) {
+      if (creditScenario || settingsScenario || scenario.name.startsWith("account-detail-") || ["auto-resume", "account-list-mixed", "account-list-blocked", "account-list-existing-limits"].includes(scenario.name)) {
         observed.renderedText = await recognizeText(reportPath, scenario.name === "account-list-mixed");
       }
       const failures = smokeFailures(observed, scenario.expected);
+      if (creditScenario) {
+        const text = observed.renderedText ?? [];
+        const all = text.map(x=>x.text).join(" ").replace(/\s/g, "");
+        const ko = observed.locale === "ko";
+        if (!all.includes((ko ? "원래 연결로 복구" : "Restore original connection").replace(/\s/g,""))) failures.push("recovery_not_visible");
+        if (scenario.name === "credit-recovery-blocked") {
+          if (!all.includes((ko ? "크레딧 사용이 허용되지 않아 차단됨" : "paid credits are not allowed").replace(/\s/g,""))) failures.push("quota_reason_not_visible");
+          const button = text.find(row=>row.text.includes(ko ? "크레딧으로 계속" : "Continue with credits"));
+          if (!button) failures.push("credit_action_not_visible");
+          else creditClick = {x:button.left+0.1,y:button.top+0.01};
+        } else {
+          if (creditRequests.length!==1 || creditRequests[0]?.allow!==true || creditRequests[0]?.account!=="default") failures.push("credit_click_did_not_save_exact_account");
+          if (!all.includes((ko ? "크레딧 사용 차단" : "Block credit spending").replace(/\s/g,""))) failures.push("credit_approval_not_rendered");
+        }
+      }
       if (settingsScenario) {
         if (observed.windowIdentifier !== "quotapie.settings") failures.push("settings_not_in_dedicated_window");
         if (observed.viewWidth !== 820 || observed.viewHeight !== 640) failures.push("settings_window_wrong_viewport");
@@ -410,8 +449,8 @@ async function run() {
       }
       if (scenario.name === "account-list-blocked") {
         const allText = (observed.renderedText ?? []).map(row=>row.text).join("").replace(/\s/g,"");
-        const blocked = (observed.locale === "ko" ? "제공자가 사용을 제한한 한도가 있습니다" : "The provider has restricted one or more limits").replace(/\s/g,"");
-        if (allText.split(blocked).length - 1 !== 2) failures.push("positive_quota_hides_provider_denial");
+        const blocked = observed.locale === "ko" ? ["구독 한도 사용 불가", "지출 한도 도달"] : ["Included allowance unavailable", "Spending limit reached"];
+        if (blocked.some(label => !allText.includes(label.replace(/\s/g,"")))) failures.push("positive_quota_hides_provider_denial");
         for (const remaining of ["18%", "100%"])
           if (!allText.includes(remaining)) failures.push("denied_quota_lost_measured_value");
       }

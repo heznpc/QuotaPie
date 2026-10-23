@@ -6,6 +6,7 @@ struct PopoverView: View {
     @ObservedObject private var awake = AwakeController.shared
     @ObservedObject private var profiles = CodexProfilesModel.shared
     @State private var overviewSupplementaryExpanded = false
+    @State private var showingConnectionRecovery = false
     let actions: PopoverActions
 
     var body: some View {
@@ -22,7 +23,19 @@ struct PopoverView: View {
                 overview
             }
         }
+        .onAppear { actions.loadRequestAccounts { _ in } }
+        .onChange(of: model.payload?.actionToken) { _ in actions.loadRequestAccounts { _ in } }
         .onChange(of: model.inspectedAccountID) { _ in overviewSupplementaryExpanded = false }
+        .sheet(isPresented: $showingConnectionRecovery) {
+            VStack(alignment: .leading, spacing: 12) {
+                OriginalConnectionRecoveryView(model: model, actions: actions)
+                Button(Strings.t("requestAccount.close")) { showingConnectionRecovery = false }
+                    .disabled(model.connectionRestoring)
+            }.padding(20).frame(width: 360)
+        }
+        .sheet(item: $model.requestAccountTarget) { account in
+            RequestAccountSelectionView(account: account, actions: actions)
+        }
     }
 
     private var accountList: some View {
@@ -65,7 +78,8 @@ struct PopoverView: View {
 
     private var accountListContent: some View {
         VStack(spacing: 0) {
-            if model.enabledAccounts.contains(where: { $0.provider == "codex" }) {
+            if model.enabledAccounts.contains(where: { $0.provider == "codex" }),
+               let routing = model.payload?.routing, !routing.active.isEmpty || !routing.recent.isEmpty {
                 RoutingSummaryButton(model: model) { showDetails(.activity) }
                 Divider().padding(.horizontal, 16)
             }
@@ -90,10 +104,20 @@ struct PopoverView: View {
                 ForEach(model.enabledAccounts) { account in
                     AccountListRow(account: account, showingStartupCache: model.showingStartupCache,
                                    transportUnavailable: model.lastError != nil,
-                                   select: { model.showAccount(account) })
+                                   select: { model.showAccount(account) },
+                                   useAccount: account.provider == "codex" ? { model.chooseRequestAccount(account) } : nil,
+                                   canUseAccount: model.canActOnTasks,
+                                   routingOption: model.requestAccountCatalog?.option(provider: account.provider, account: account.account),
+                                   configureCredits: account.provider == "codex" ? { actions.configureCredits(account.account, $0) } : nil,
+                                   creditSaving: model.creditSaving)
                     if account.id != model.enabledAccounts.last?.id { Divider().padding(.horizontal, 16) }
                 }
             }
+            if let message = model.requestAccountCatalogError {
+                Text(message).font(.caption).foregroundStyle(.orange).padding(.horizontal, 16)
+            }
+            OriginalConnectionRecoveryView(model: model, actions: actions)
+                .padding(.horizontal, 16).padding(.vertical, 10)
             if let message = model.collectionRequestError, model.lastError == nil {
                 Text(message).font(.caption).foregroundStyle(.orange)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.bottom, 12)
@@ -307,6 +331,13 @@ struct PopoverView: View {
                 detailButton("overview.quotaDetail", section: .quota)
             }
             if let account = model.displayedAccount {
+                if account.provider == "codex" {
+                    VStack(alignment: .leading, spacing: 5) {
+                        RequestAccountButton(enabled: model.canActOnTasks) { model.chooseRequestAccount(account) }
+                            .accessibilityIdentifier("account.use." + account.id)
+                        Text(Strings.t("requestAccount.inspectionOnly")).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
                 if account.collectionExplanation != nil {
                     CollectionAccessNotice(account: account)
                 } else {
@@ -430,7 +461,7 @@ struct PopoverView: View {
 
     private var footer: some View {
         HStack(spacing: 12) {
-            Button(action: actions.refresh) {
+            Button(action: { actions.refresh(); actions.loadRequestAccounts { _ in } }) {
                 Image(systemName: "arrow.clockwise").frame(width: 24, height: 24)
             }
             .accessibilityLabel(Strings.t("action.refresh"))
@@ -441,6 +472,8 @@ struct PopoverView: View {
             Button(Strings.t("detail.usage"), action: actions.openUsageReport)
                 .accessibilityIdentifier("footer.usage")
             Spacer(minLength: 0)
+            Button(Strings.t("connectionRecovery.short")) { showingConnectionRecovery = true }
+                .accessibilityIdentifier("footer.recovery")
             Menu(Strings.t("action.more")) {
                 Button(Strings.t("overview.activityDetail")) { showDetails(.activity) }
                 Button(Strings.t("detail.resets")) { showDetails(.resets) }

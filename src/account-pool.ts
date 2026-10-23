@@ -8,13 +8,19 @@ import { codexRequestIdentity } from "./codex-request-identity";
 import { defaultWorkBoundaryPath, profileReference } from "./work-boundary";
 import { nativeExecutionHistory, portableReplay, filterForeignReasoning } from "./account-replay";
 
-export interface PoolPolicy { enabled: boolean; accounts: string[]; reservePercent?: Record<string, number> }
+export interface PoolPolicy { enabled: boolean; accounts: string[]; reservePercent?: Record<string, number>;
+  creditConsent?: Record<string, { identity: string; allow: boolean }> }
+/** Consent follows the verified login, never just a reusable profile name. */
+export function creditConsent(policy: PoolPolicy, account: Pick<PoolAccount, "id" | "identity">): boolean | undefined {
+  const choice = policy.creditConsent?.[account.id];
+  return choice?.identity === account.identity ? choice.allow : undefined;
+}
 export interface PoolAccount {
   id: string; label: string; identity: string; accessToken: string; upstreamAccount: string;
   tokenExpiresAt: number; models: string[]; remaining: number | null; validUntil: number; observedAtMs?: number;
   modelQuota?: Record<string, { remaining: number | null; validUntil: number; observedAtMs?: number }>;
 }
-export interface PoolRoute { sourceAccount: string; account: string; accountLabel: string; reason: "new" | "pinned" | "existing" | "source_fallback" | "recovered" | "reserve"; previousAccountLabel?: string }
+export interface PoolRoute { sourceAccount: string; account: string; accountLabel: string; reason: "new" | "pinned" | "existing" | "source_fallback" | "recovered" | "reserve" | "manual"; previousAccountLabel?: string }
 const POOL_ERROR_BRAND = Symbol.for("quotapie.pool-error.v1");
 export class PoolError extends Error {
   readonly [POOL_ERROR_BRAND] = true;
@@ -57,7 +63,14 @@ export function validatePoolPolicy(value: any): PoolPolicy {
       Object.entries(reserves).some(([id, percent]) => !value.accounts.includes(id) ||
         !Number.isInteger(percent) || (percent as number) < 0 || (percent as number) > 100)))
     throw new PoolError("pool_invalid_reserve", 400);
+  const consent = value.creditConsent;
+  if (consent != null && (typeof consent !== "object" || Array.isArray(consent) ||
+      Object.entries(consent).some(([id, item]: [string, any]) => !value.accounts.includes(id) || !item ||
+        Object.keys(item).sort().join(",") !== "allow,identity" || typeof item.allow !== "boolean" ||
+        typeof item.identity !== "string" || !/^[a-f0-9]{64}$/.test(item.identity))))
+    throw new PoolError("pool_invalid_credit_consent", 400);
   return { enabled: value.enabled, accounts: value.accounts,
+    ...(consent != null ? { creditConsent: structuredClone(consent) } : {}),
     ...(reserves != null ? { reservePercent: { ...reserves } } : {}) };
 }
 export function savePoolPolicy(policy: PoolPolicy, path = poolPolicyPath()): void {
@@ -178,7 +191,7 @@ type Binding = { account: string; identity: string; source_identity: string; lab
 type PoolSelectInput = { threadId: string | null; requestId: string; body: unknown; model: string; headers: Headers;
   /** Internal proof from the source guard; never read from request content. */
   verifiedSource?: { identity: string; credentialDigest: string };
-  fixedTarget?: { account: string; identity: string; preserveNativeHistory?: true } };
+  fixedTarget?: { account: string; identity: string; preserveNativeHistory?: true; manual?: true } };
 export type SourceHistoryPolicy = "strict" | "authenticated-source";
 export type SourceContinuationInput = {
   threadId: string | null; body: unknown; headers: Headers;
@@ -187,7 +200,9 @@ export type SourceContinuationInput = {
 };
 type SourceOnlyReplay = { sourceReplay: NonNullable<ReturnType<typeof portableReplay>> };
 export class AccountPool {
-  static readonly RUNTIME_API_VERSION = 3;
+  // Bump when imported routing/validation behavior changes: hot reload retains
+  // pool instances, so their methods otherwise keep the previous module code.
+  static readonly RUNTIME_API_VERSION = 6;
   readonly runtimeApiVersion = AccountPool.RUNTIME_API_VERSION;
   readonly sourceContinuationRevision = 2;
   private db: Database;
@@ -564,7 +579,7 @@ export class AccountPool {
       // A source-only replay has already removed foreign account caches. Keep
       // that validated body and authenticate its source even when new pool
       // assignment is disabled; returning null would forward the original body.
-      if (!saved && !sourceReplay && (!policy.enabled || !policy.accounts.includes(sourceID))) return null;
+      if (!saved && !sourceReplay && !input.fixedTarget?.manual && (!policy.enabled || !policy.accounts.includes(sourceID))) return null;
       if (!source || source.tokenExpiresAt <= now + 30_000) throw new PoolError("pool_source_auth_unavailable", 401);
       // Accept only current or previously observed file credentials for this
       // exact login identity. Do not trust unsigned JWT identity claims from a
@@ -590,14 +605,15 @@ export class AccountPool {
       if (input.fixedTarget) {
         // A source-only replay is the fallback for unverified local ancestry,
         // not a prohibition on a separately verified exact native-turn lease.
-        // That lease may use its chosen account while retaining every original
+        // That lease, or an independently verified local manual choice, may
+        // use its chosen account while retaining every original
         // byte; ordinary pool requests still cannot infer cross-account rights.
-        if (!policy.enabled || !policy.accounts.includes(sourceID) || !policy.accounts.includes(input.fixedTarget.account) || sourceReplay && !preserveNative)
+        if ((!policy.enabled && !input.fixedTarget.manual) || !policy.accounts.includes(sourceID) || !policy.accounts.includes(input.fixedTarget.account) || sourceReplay && !preserveNative)
           throw new PoolError("pool_execution_target_unavailable", 409);
         selected = accounts.find(account => account.id === input.fixedTarget!.account && account.identity === input.fixedTarget!.identity);
         if (!selected || selected.id === sourceID && !preserveNative) throw new PoolError("pool_execution_target_unavailable", 409);
         const sameBinding = saved?.account === selected.id && saved.identity === selected.identity && saved.source_identity === source.identity;
-        reason = sameBinding ? "pinned" : "recovered";
+        reason = input.fixedTarget.manual ? "manual" : sameBinding ? "pinned" : "recovered";
         if (!sameBinding) {
           const replay = preserveNative ? null : portableReplay(input.body);
           if (!preserveNative && !replay) throw new PoolError("pool_recovery_requires_full_history", 409);
@@ -666,9 +682,9 @@ export class AccountPool {
       if (selected.tokenExpiresAt <= now + 30_000) throw new PoolError("pool_target_auth_unavailable", 401);
       // A confirmed exhausted identity must not silently spend paid credits when
       // this request cannot be moved to a registered account with quota.
-      if (policy.enabled && isExhausted(selected))
+      if ((policy.enabled || input.fixedTarget?.manual || creditConsent(policy, selected) === false) && isExhausted(selected) && creditConsent(policy, selected) !== true)
         throw new PoolError(selected.id === sourceID ? "pool_source_quota_exhausted" : "pool_target_quota_exhausted", 409);
-      const reserveBlock = this.reserveBlock(selected, input.model);
+      const reserveBlock = input.fixedTarget?.manual || creditConsent(policy, selected) === true ? null : this.reserveBlock(selected, input.model);
       if (reserveBlock) throw new PoolError(reserveBlock, 409);
       const until = cooldownUntil(selected);
       if (until > now) throw new PoolError("pool_account_cooldown", 429, Math.ceil((until - now) / 1000));

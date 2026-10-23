@@ -5,6 +5,7 @@ import { readCodexForkParent } from "./account-pool-lineage";
 import { AccountPool, poolAccounts, readPoolPolicy } from "./account-pool";
 import { createExecutionTargetRelay, executionTargetRelayMemory, type ExecutionTargetRelayMemory } from "./execution-target-relay";
 import { createSourceHistoryGuard } from "./source-history-guard";
+import { manualTargets, createManualAccountRouting, manualRoutingMemory, type ManualRoutingMemory } from "./manual-account-routing";
 import { interactiveRelayPolicy } from "./interactive-relay-policy";
 import { codexProfileRoot, dataDirectory, loadConfig } from "./config";
 import { createRelayDiagnostics, rotatingRelayLog, type RelayDiagnostics } from "./relay-diagnostics";
@@ -26,6 +27,7 @@ export interface RuntimeMemory {
   interactivePool?: AccountPool;
   poolGuards?: Map<string, ReturnType<typeof createSubscriptionGuard>>;
   executionTarget?: ExecutionTargetRelayMemory;
+  manualRouting?: ManualRoutingMemory;
   executionTargetDisposeAttached?: boolean;
   dispose?: () => void;
   diagnostics?: RelayDiagnostics;
@@ -61,7 +63,8 @@ export const createRelayRuntime: RuntimeFactory = (settings, memory) => {
   // connections remain untouched while their in-flight requests finish.
   const resolveAccountPool = () => {
     const policy = readPoolPolicy();
-    if (!sourceAccount || !policy.enabled || !policy.accounts.includes(sourceAccount)) return undefined;
+    if (!sourceAccount || !policy.accounts.includes(sourceAccount) ||
+        !policy.enabled && !manualTargets().some(choice => choice.sourceAccount === sourceAccount)) return undefined;
     if (!memory.interactivePool || memory.interactivePool.runtimeApiVersion !== AccountPool.RUNTIME_API_VERSION) {
       // New requests use the current routing implementation after a hot reload.
       // Older handles stay in the disposal chain while their streams/telemetry
@@ -73,21 +76,23 @@ export const createRelayRuntime: RuntimeFactory = (settings, memory) => {
     }
     return memory.interactivePool;
   };
-  const poolSubscriptionGuard = (account: string, identity: string) => {
+  // Functions belong to this runtime; retained guard instances keep old code on reload.
+  const poolGuards = memory.poolGuards = new Map<string, ReturnType<typeof createSubscriptionGuard>>();
+  const poolSubscriptionGuard = (account: string, identity: string, manual = false) => {
     const profile = config().accounts.codex.find(p => p.enabled && p.id === account);
     if (!profile) throw new Error("pool-target-unavailable");
-    memory.poolGuards ??= new Map();
-    const key = account + ":" + identity;
-    let guard = memory.poolGuards.get(key);
+    const key = account + ":" + identity + (manual ? ":manual" : "");
+    let guard = poolGuards.get(key);
     if (!guard) {
       guard = createSubscriptionGuard({ codexHome: codexProfileRoot(profile), sourceAccount: account, config,
-        quotaObservationMode: "required", executionMode: "managed", requireKnownModelQuotaScope: true });
-      memory.poolGuards.set(key, guard);
+        quotaObservationMode: "required", executionMode: "managed", requireKnownModelQuotaScope: true,
+        interactiveCreditPolicy: true, ignorePoolReserve: manual });
+      poolGuards.set(key, guard);
     }
     return guard;
   };
   const sourceGuard = createSubscriptionGuard({ codexHome: home, sourceAccount, config, memory: memory.guard,
-    quotaObservationMode: "advisory", executionMode: "interactive" });
+    quotaObservationMode: "advisory", executionMode: "interactive", interactiveCreditPolicy: true });
   memory.executionTarget ??= executionTargetRelayMemory();
   const executionTargetRelay = createExecutionTargetRelay({ sourceAccount, codexHome: home, config, sourceGuard, memory: memory.executionTarget, inheritedSource,
     readLiveSnapshot: async () => {
@@ -105,6 +110,8 @@ export const createRelayRuntime: RuntimeFactory = (settings, memory) => {
   }
   const handler = createCompactionHandler({ ...settings, savingsState: memory.savings,
       executionMode: "interactive", resolveAccountPool, poolSubscriptionGuard, executionTargetRelay,
+      manualAccountRouting: sourceAccount ? createManualAccountRouting({ sourceAccount, config,
+        memory: memory.manualRouting ??= manualRoutingMemory() }) : undefined,
       sourceHistoryGuard: createSourceHistoryGuard({ denyUnavailableDatabase: true, forkParent: thread => readCodexForkParent(home, thread) }),
       sourceHistoryPolicy: "authenticated-source",
       subscriptionGuard: sourceGuard,
@@ -113,6 +120,7 @@ export const createRelayRuntime: RuntimeFactory = (settings, memory) => {
       onProvenance: memory.diagnostics.onProvenance,
       onRequest: event => { executionTargetRelay.recordRoute(event); memory.diagnostics!.onRequest(event); },
   });
-  return { fetch: handler.fetch, snapshot: () => ({ ...handler.snapshot(), relayLogging: memory.diagnostics!.status() }),
+  return { fetch: handler.fetch, snapshot: () => ({ ...handler.snapshot(), relayLogging: memory.diagnostics!.status(),
+    accountPoolRuntimeVersion: memory.interactivePool?.runtimeApiVersion ?? null }),
     get activeRequests() { return handler.activeRequests; }, close: () => {} };
 };

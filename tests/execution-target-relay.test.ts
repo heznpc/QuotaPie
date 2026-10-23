@@ -725,7 +725,7 @@ test("hot reload replaces obsolete pool routing for new requests and retains the
  let stream!:ReadableStreamDefaultController<Uint8Array>;
  f.serve(async()=>new Response(new ReadableStream<Uint8Array>({start(c){stream=c;c.enqueue(new TextEncoder().encode('data: {"type":"response.output_text.delta","delta":"partial"}\n\n'))}}),{headers:{"content-type":"text/event-stream"}}));
  const inflight=await f.request(),old=f.memory.interactivePool;expect(old).toBeDefined();
- Object.defineProperty(old,"runtimeApiVersion",{value:undefined});
+ Object.defineProperty(old,"runtimeApiVersion",{value:4});
  const next=createRelayRuntime({port:45001,token:"a".repeat(48),codex_home:f.accounts[0].home,
    route:{from:"gpt-6-astra",to:"gpt-6-astra",effort:"low"},taskSavings:{enabled:false,model:"gpt-5.6-luna",effort:"low"}},f.memory);
  f.serve(async()=>complete());
@@ -733,7 +733,7 @@ test("hot reload replaces obsolete pool routing for new requests and retains the
   const response=await next.fetch(new Request(`http://127.0.0.1/${"a".repeat(48)}/backend-api/codex/responses`,{method:"POST",
     headers:{authorization:`Bearer ${f.accounts[0].token}`,"chatgpt-account-id":"a",session_id:f.thread},body:JSON.stringify({model,input:f.history,stream:true})}));
   expect(response.status).toBe(200);await response.text();expect(f.memory.interactivePool).not.toBe(old);
-  expect(f.memory.interactivePool.runtimeApiVersion).toBe(3);
+  expect(f.memory.interactivePool.runtimeApiVersion).toBe(6);
   expect(await old.canRecoverAsync("a",model,{model,input:f.history})).toBe(true);
   stream.enqueue(new TextEncoder().encode('data: {"type":"response.completed","response":{"status":"completed"}}\n\n'));stream.close();
   expect(await inflight.text()).toContain("response.completed");expect(f.sent).toHaveLength(2);

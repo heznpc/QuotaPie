@@ -5,6 +5,11 @@ struct AccountListRow: View {
     let showingStartupCache: Bool
     let transportUnavailable: Bool
     let select: () -> Void
+    var useAccount: (() -> Void)? = nil
+    var canUseAccount = true
+    var routingOption: RequestAccountOption? = nil
+    var configureCredits: ((Bool) -> Void)? = nil
+    var creditSaving = false
     @State private var hovering = false
 
     private var presentation: AccountListPresentation { AccountListPresentation(account: account) }
@@ -13,55 +18,93 @@ struct AccountListRow: View {
     }
 
     var body: some View {
-        Button(action: select) {
-            VStack(alignment: .leading, spacing: 9) {
-                HStack(spacing: 8) {
-                    Image(nsImage: AccountBadge(accountID: account.id, name: account.accountLabel).image(size: 20))
-                        .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(account.accountLabel).font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.primary).lineLimit(1).truncationMode(.middle)
-                        HStack(spacing: 6) {
-                            Text(account.providerTitle)
-                            if presentation.additionalLimitCount > 0 {
-                                Text("·")
-                                Text(Strings.t("accounts.list.moreLimits", String(presentation.additionalLimitCount)))
-                            }
-                        }.font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    Spacer(minLength: 4)
-                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.tertiary)
-                }
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(presentation.visibleWindows) { window in
-                        quotaSummary(window)
-                    }
-                }
-                if let credits = account.credits, credits.subscriptionExhausted || credits.spendingObserved {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(Strings.t(creditsAreCurrent ? "credits.title" : "credits.previous")).foregroundStyle(.secondary)
-                        Spacer(minLength: 4)
-                        Text(creditsAreCurrent ? credits.decreaseText : "—").monospacedDigit()
-                    }.font(.caption).accessibilityIdentifier("credits.row." + account.id)
-                }
-                if let warning = warningText {
-                    Label(warning, systemImage: account.isClaudeDesktopWithoutQuota ? "info.circle" : "exclamationmark.circle")
-                        .font(.caption2).foregroundStyle(account.isClaudeDesktopWithoutQuota ? Color.secondary : Color.orange)
-                        .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                headerButton
+                if let useAccount {
+                    RequestAccountButton(enabled: canUseAccount && routingOption?.available == true, action: useAccount)
+                        .font(.caption).controlSize(.small).fixedSize()
+                        .accessibilityIdentifier("account.use." + account.id)
                 }
             }
-            .padding(.horizontal, 16).padding(.vertical, 12)
+            if let option = routingOption {
+                Label(option.statusText, systemImage: option.available ? "checkmark.circle" : "exclamationmark.circle")
+                    .font(.caption).foregroundStyle(option.available ? Color.secondary : Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("account.routingReason." + account.id)
+                if let configureCredits, option.canAllowCredits == true {
+                    Button(Strings.t(option.creditAllowed == true ? "requestAccount.credits.stop" : "requestAccount.credits.continue")) {
+                        configureCredits(option.creditAllowed != true)
+                    }.buttonStyle(.bordered).controlSize(.small)
+                        .disabled(!canUseAccount || creditSaving)
+                        .accessibilityIdentifier("account.credits." + account.id)
+                    if option.creditAllowed != true {
+                        Text(Strings.t("requestAccount.credits.explanation"))
+                            .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            Button(action: select) {
+                quotaContent.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            // The header's accessibility value already includes every reading.
+            .accessibilityHidden(true)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(hovering ? Color.primary.opacity(0.04) : Color.clear)
+        .onHover { hovering = $0 }
+    }
+
+    private var headerButton: some View {
+        Button(action: select) {
+            HStack(spacing: 8) {
+                Image(nsImage: AccountBadge(accountID: account.id, name: account.accountLabel).image(size: 20))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(account.accountLabel).font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.primary).lineLimit(1).truncationMode(.middle)
+                    HStack(spacing: 6) {
+                        Text(account.providerTitle)
+                        if presentation.additionalLimitCount > 0 {
+                            Text("·")
+                            Text(Strings.t("accounts.list.moreLimits", String(presentation.additionalLimitCount)))
+                        }
+                    }.font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right").font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.tertiary)
+            }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .background(hovering ? Color.primary.opacity(0.04) : Color.clear)
         }
         .buttonStyle(.plain)
-        .onHover { hovering = $0 }
         .accessibilityIdentifier("account.row." + account.id)
         .accessibilityLabel("\(account.providerTitle) · \(account.accountLabel)")
         .accessibilityValue(accessibilityValue)
         .help(Strings.t("accounts.list.open", account.accountLabel))
+    }
+
+    private var quotaContent: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(presentation.visibleWindows) { window in quotaSummary(window) }
+            }
+            if let credits = account.credits, credits.subscriptionExhausted || credits.spendingObserved {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(Strings.t(creditsAreCurrent ? "credits.title" : "credits.previous")).foregroundStyle(.secondary)
+                    Spacer(minLength: 4)
+                    Text(creditsAreCurrent ? credits.decreaseText : "—").monospacedDigit()
+                }.font(.caption).accessibilityIdentifier("credits.row." + account.id)
+            }
+            if let warning = warningText {
+                Label(warning, systemImage: account.isClaudeDesktopWithoutQuota ? "info.circle" : "exclamationmark.circle")
+                    .font(.caption2).foregroundStyle(account.isClaudeDesktopWithoutQuota ? Color.secondary : Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     private var warningText: String? {

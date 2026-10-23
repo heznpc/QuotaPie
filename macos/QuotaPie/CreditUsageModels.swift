@@ -40,14 +40,18 @@ struct CreditUsage: Codable {
 
     var decreaseText: String {
         guard let decrease else { return "—" }
-        return Self.number(decrease) + " cr" + (lastHour.coverage == "partial" ? "*" : "")
+        return Self.amount(decrease) + (lastHour.coverage == "partial" ? "*" : "")
     }
 
     func menuTitle(at now: Date = Date()) -> String? {
         guard isCurrent(at: now), subscriptionExhausted else { return nil }
-        if let decrease, decrease > 0 { return Strings.t("credits.menu.decrease", decreaseText) }
-        return Strings.t("credits.menu.balance", Self.number(balance!) + " cr")
+        if let decrease, decrease > 0 {
+            return Strings.t("credits.menu.decrease", Self.number(decrease))
+        }
+        return Strings.t("credits.menu.balance", Self.number(balance!))
     }
+
+    static func amount(_ value: Double) -> String { Strings.t("credits.amount", number(value)) }
 
     static func number(_ value: Double) -> String {
         guard value.isFinite, value >= 0 else { return "—" }

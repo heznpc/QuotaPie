@@ -292,8 +292,86 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             configureNotifications: { [weak self] key, enabled in self?.configureNotifications(key, enabled: enabled) },
             openRecentWork: { [weak self] item in self?.openRecentWork(item) },
             openUsageReport: { [weak self] in self?.openUsageReport() },
-            openSettings: { [weak self] in self?.openSettingsWindow() }
+            openSettings: { [weak self] in self?.openSettingsWindow() },
+            configureCredits: { [weak self] account, allow in self?.configureCredits(account: account, allow: allow) },
+            restoreOriginalConnection: { [weak self] in self?.restoreOriginalConnection() },
+            showRecoveryBackup: { [weak self] in
+                if let url = self?.popoverModel.connectionRecoveryBackup { NSWorkspace.shared.open(url) }
+            },
+            loadRequestAccounts: { [weak self] completion in self?.loadRequestAccounts(completion: completion) },
+            useRequestAccount: { [weak self] thread, account, completion in
+                self?.useRequestAccount(threadID: thread, account: account, completion: completion)
+            }
         )
+    }
+
+    private func loadRequestAccounts(completion: @escaping RequestAccountCatalogCompletion) {
+        guard let client, let token = currentActionToken else {
+            completion(.failure(StatusClientError.missingActionToken)); return
+        }
+        client.requestAccounts(actionToken: token) { [weak self] result in
+            DispatchQueue.main.async {
+                self?.applyRequestAccountCatalog(result)
+                completion(result)
+            }
+        }
+    }
+
+    private func applyRequestAccountCatalog(_ result: Result<RequestAccountCatalog, Error>) {
+        switch result {
+        case .success(let catalog):
+            popoverModel.requestAccountCatalog = catalog
+            popoverModel.requestAccountCatalogError = nil
+        case .failure(let error):
+            popoverModel.requestAccountCatalog = nil
+            popoverModel.requestAccountCatalogError = error.localizedDescription
+        }
+    }
+
+    private func configureCredits(account: String, allow: Bool) {
+        guard !popoverModel.creditSaving, let client, let token = currentActionToken else { return }
+        popoverModel.creditSaving = true
+        client.configureCredits(account: account, allow: allow, actionToken: token) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.popoverModel.creditSaving = false
+                self.applyRequestAccountCatalog(result)
+                self.render()
+            }
+        }
+    }
+
+    private func restoreOriginalConnection() {
+        guard !popoverModel.connectionRestoring else { return }
+        popoverModel.connectionRestoring = true
+        popoverModel.connectionRecoveryMessage = nil
+        OriginalConnectionRecovery.restore { [weak self] result in
+            guard let self else { return }
+            self.popoverModel.connectionRestoring = false
+            switch result {
+            case .success(let backup):
+                self.popoverModel.connectionRecoveryBackup = backup
+                self.popoverModel.connectionRecoveryMessage = Strings.t("connectionRecovery.done")
+            case .failure(let error):
+                self.popoverModel.connectionRecoveryMessage = error.localizedDescription
+            }
+            self.render()
+        }
+    }
+
+    private func useRequestAccount(threadID: String, account: String, completion: @escaping RequestAccountAssignmentCompletion) {
+        guard let client, let token = currentActionToken else {
+            completion(.failure(StatusClientError.missingActionToken)); return
+        }
+        client.useRequestAccount(threadID: threadID, account: account, actionToken: token) { [weak self] result in
+            DispatchQueue.main.async {
+                if case .success(let assignment) = result, assignment.threadId == threadID, assignment.account == account {
+                    self?.popoverModel.followRequestAccountSelection(assignment.account)
+                    self?.render()
+                }
+                completion(result)
+            }
+        }
     }
 
     private func openAccount(_ account: AccountState) {
@@ -832,7 +910,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             title = creditTitle
             color = .labelColor
             toolTip = [Strings.t("credits.subscriptionExhausted"), Strings.t("credits.observedDecrease", credits.decreaseText),
-                       Strings.t("credits.balance", CreditUsage.number(credits.balance ?? 0) + " cr"),
+                       Strings.t("credits.balance", CreditUsage.amount(credits.balance ?? 0)),
                        Strings.t("credits.scope")].joined(separator: "\n")
         } else if let accountAttention {
             title = accountAttention
