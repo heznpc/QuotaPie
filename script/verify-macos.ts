@@ -410,8 +410,8 @@ async function run() {
       }
       if (scenario.name === "account-list-blocked") {
         const allText = (observed.renderedText ?? []).map(row=>row.text).join("").replace(/\s/g,"");
-        const blocked = (observed.locale === "ko" ? "제공자가 사용을 제한한 한도가 있습니다" : "The provider has restricted one or more limits").replace(/\s/g,"");
-        if (allText.split(blocked).length - 1 !== 2) failures.push("positive_quota_hides_provider_denial");
+        const blocked = observed.locale === "ko" ? ["구독 한도 사용 불가", "지출 한도 도달"] : ["Included allowance unavailable", "Spending limit reached"];
+        if (blocked.some(label => !allText.includes(label.replace(/\s/g,"")))) failures.push("positive_quota_hides_provider_denial");
         for (const remaining of ["18%", "100%"])
           if (!allText.includes(remaining)) failures.push("denied_quota_lost_measured_value");
       }

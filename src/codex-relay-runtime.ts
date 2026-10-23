@@ -5,6 +5,7 @@ import { readCodexForkParent } from "./account-pool-lineage";
 import { AccountPool, poolAccounts, readPoolPolicy } from "./account-pool";
 import { createExecutionTargetRelay, executionTargetRelayMemory, type ExecutionTargetRelayMemory } from "./execution-target-relay";
 import { createSourceHistoryGuard } from "./source-history-guard";
+import { createManualAccountRouting, manualRoutingMemory, type ManualRoutingMemory } from "./manual-account-routing";
 import { interactiveRelayPolicy } from "./interactive-relay-policy";
 import { codexProfileRoot, dataDirectory, loadConfig } from "./config";
 import { createRelayDiagnostics, rotatingRelayLog, type RelayDiagnostics } from "./relay-diagnostics";
@@ -26,6 +27,7 @@ export interface RuntimeMemory {
   interactivePool?: AccountPool;
   poolGuards?: Map<string, ReturnType<typeof createSubscriptionGuard>>;
   executionTarget?: ExecutionTargetRelayMemory;
+  manualRouting?: ManualRoutingMemory;
   executionTargetDisposeAttached?: boolean;
   dispose?: () => void;
   diagnostics?: RelayDiagnostics;
@@ -105,6 +107,8 @@ export const createRelayRuntime: RuntimeFactory = (settings, memory) => {
   }
   const handler = createCompactionHandler({ ...settings, savingsState: memory.savings,
       executionMode: "interactive", resolveAccountPool, poolSubscriptionGuard, executionTargetRelay,
+      manualAccountRouting: sourceAccount ? createManualAccountRouting({ sourceAccount, config,
+        memory: memory.manualRouting ??= manualRoutingMemory() }) : undefined,
       sourceHistoryGuard: createSourceHistoryGuard({ denyUnavailableDatabase: true, forkParent: thread => readCodexForkParent(home, thread) }),
       sourceHistoryPolicy: "authenticated-source",
       subscriptionGuard: sourceGuard,

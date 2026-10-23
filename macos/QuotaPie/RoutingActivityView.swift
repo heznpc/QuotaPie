@@ -102,7 +102,7 @@ struct CreditUsageView: View {
             }
             Text(Strings.t("credits.interval")).font(.caption).foregroundStyle(.secondary)
             if let balance = credits.balance, balance.isFinite, balance >= 0 {
-                Text(Strings.t("credits.balance", CreditUsage.number(balance) + " cr")).font(.caption).foregroundStyle(.secondary)
+                Text(Strings.t("credits.balance", CreditUsage.amount(balance))).font(.caption).foregroundStyle(.secondary)
             }
             if !current || !credits.isCurrent() {
                 Text(Strings.t("credits.previous")).font(.caption).foregroundStyle(.secondary)
@@ -112,7 +112,7 @@ struct CreditUsageView: View {
                 Text(Strings.t("credits.waiting")).font(.caption2).foregroundStyle(.secondary)
             }
             if let increase = credits.lastHour.observedIncrease, increase.isFinite, increase > 0 {
-                Text(Strings.t("credits.increase", CreditUsage.number(increase) + " cr")).font(.caption2).foregroundStyle(.secondary)
+                Text(Strings.t("credits.increase", CreditUsage.amount(increase))).font(.caption2).foregroundStyle(.secondary)
             }
             Text(Strings.t("credits.scope")).font(.caption2).foregroundStyle(.secondary)
         }.accessibilityIdentifier("credits.usage")

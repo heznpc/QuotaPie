@@ -1409,8 +1409,8 @@
 "collection.account-mismatch" = "Claude account changed";
 "collection.desktop-no-windows" = "Connected · numeric limits not provided";
 
-"credits.menu.decrease" = "Codex 1h −%@";
-"credits.menu.balance" = "Credits %@";
+"credits.menu.decrease" = "Credits used · 1 hour %@";
+"credits.menu.balance" = "Credit balance %@";
 "credits.spendControl" = "Spending limit reached";
 "credits.subscriptionExhausted" = "Included allowance exhausted";
 "credits.observedDecrease" = "Balance decrease in the last hour: %@";
@@ -1450,4 +1450,32 @@
 "routing.responseUnconfirmed" = "Response not observed";
 "routing.requestedModel" = "Requested %@";
 "routing.targetOnly" = "Selected target · response not yet confirmed";
+
+"credits.amount" = "%@ credits";
+"requestAccount.use" = "Use this account";
+"requestAccount.useHelp" = "Choose a conversation whose next requests should use this account.";
+"requestAccount.inspectionOnly" = "Viewing limits does not change the processing account.";
+"requestAccount.title" = "Use %@ for a conversation";
+"requestAccount.close" = "Close";
+"requestAccount.explanation" = "Choose a conversation to use this account from its next request. Responses already in progress continue unchanged.";
+"requestAccount.loading" = "Loading current and recent conversations…";
+"requestAccount.empty" = "No conversations are available. Refresh after a request has been processed in ChatGPT.";
+"requestAccount.active" = "Processing";
+"requestAccount.current" = "Current processing account: %@";
+"requestAccount.last" = "Last processing account: %@";
+"requestAccount.next" = "Next request account: %@";
+"requestAccount.unknownAccount" = "Not confirmed";
+"requestAccount.untitled" = "Untitled conversation";
+"requestAccount.apply" = "Use for this conversation";
+"requestAccount.selected" = "Selected";
+"requestAccount.applied" = "Next requests use %@ · responses in progress continue unchanged";
+"requestAccount.noFallback" = "Requests stop if the selected account becomes unavailable.";
+"requestAccount.error.unknownThread" = "This conversation is no longer available. Refresh and choose it again.";
+"requestAccount.error.observerUnavailable" = "The conversation connection could not be verified. Check the connection and refresh.";
+"requestAccount.error.invalidRequest" = "Choose the conversation and account again.";
+"requestAccount.error.failed" = "Could not change the processing account. The previous setting is kept. Refresh and try again.";
+"requestAccount.error.unavailable" = "This account is currently unavailable. Choose another account or refresh its status.";
+"requestAccount.error.quota" = "This account has insufficient available allowance. Choose an account with allowance remaining.";
+"requestAccount.error.model" = "This account cannot use the conversation’s requested model. Change the model or account.";
+"requestAccount.error.identity" = "This account’s sign-in could not be verified. Check the account connection.";
 "routing.activityUnconfirmed" = "Activity not confirmed";

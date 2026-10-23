@@ -733,7 +733,7 @@ test("hot reload replaces obsolete pool routing for new requests and retains the
   const response=await next.fetch(new Request(`http://127.0.0.1/${"a".repeat(48)}/backend-api/codex/responses`,{method:"POST",
     headers:{authorization:`Bearer ${f.accounts[0].token}`,"chatgpt-account-id":"a",session_id:f.thread},body:JSON.stringify({model,input:f.history,stream:true})}));
   expect(response.status).toBe(200);await response.text();expect(f.memory.interactivePool).not.toBe(old);
-  expect(f.memory.interactivePool.runtimeApiVersion).toBe(3);
+  expect(f.memory.interactivePool.runtimeApiVersion).toBe(4);
   expect(await old.canRecoverAsync("a",model,{model,input:f.history})).toBe(true);
   stream.enqueue(new TextEncoder().encode('data: {"type":"response.completed","response":{"status":"completed"}}\n\n'));stream.close();
   expect(await inflight.text()).toContain("response.completed");expect(f.sent).toHaveLength(2);

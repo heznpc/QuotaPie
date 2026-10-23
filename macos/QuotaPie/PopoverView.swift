@@ -23,6 +23,9 @@ struct PopoverView: View {
             }
         }
         .onChange(of: model.inspectedAccountID) { _ in overviewSupplementaryExpanded = false }
+        .sheet(item: $model.requestAccountTarget) { account in
+            RequestAccountSelectionView(account: account, actions: actions)
+        }
     }
 
     private var accountList: some View {
@@ -65,7 +68,8 @@ struct PopoverView: View {
 
     private var accountListContent: some View {
         VStack(spacing: 0) {
-            if model.enabledAccounts.contains(where: { $0.provider == "codex" }) {
+            if model.enabledAccounts.contains(where: { $0.provider == "codex" }),
+               let routing = model.payload?.routing, !routing.active.isEmpty || !routing.recent.isEmpty {
                 RoutingSummaryButton(model: model) { showDetails(.activity) }
                 Divider().padding(.horizontal, 16)
             }
@@ -90,7 +94,9 @@ struct PopoverView: View {
                 ForEach(model.enabledAccounts) { account in
                     AccountListRow(account: account, showingStartupCache: model.showingStartupCache,
                                    transportUnavailable: model.lastError != nil,
-                                   select: { model.showAccount(account) })
+                                   select: { model.showAccount(account) },
+                                   useAccount: account.provider == "codex" ? { model.chooseRequestAccount(account) } : nil,
+                                   canUseAccount: model.canActOnTasks)
                     if account.id != model.enabledAccounts.last?.id { Divider().padding(.horizontal, 16) }
                 }
             }
@@ -307,6 +313,13 @@ struct PopoverView: View {
                 detailButton("overview.quotaDetail", section: .quota)
             }
             if let account = model.displayedAccount {
+                if account.provider == "codex" {
+                    VStack(alignment: .leading, spacing: 5) {
+                        RequestAccountButton(enabled: model.canActOnTasks) { model.chooseRequestAccount(account) }
+                            .accessibilityIdentifier("account.use." + account.id)
+                        Text(Strings.t("requestAccount.inspectionOnly")).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
                 if account.collectionExplanation != nil {
                     CollectionAccessNotice(account: account)
                 } else {

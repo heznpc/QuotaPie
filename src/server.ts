@@ -12,6 +12,7 @@ import { buildHeadline } from "./analytics";
 import { captureRuntimeIdentity } from "./runtime-identity";
 import { CompactionStatusReader } from "./compaction-status";
 import { CreditUsageReader } from "./credit-usage";
+import { RequestAccountAPI, RequestAccountError } from "./request-account-api";
 import type { AppNotificationDisposition, Headline, QuotaEvent } from "./types";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { ResumeTargetError } from "./service";
@@ -51,10 +52,11 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
-export function startDashboard(service: QuotaPieService, config: AppConfig, options: { compactionRoot?: string; preferencesPath?: string; poolPolicyPath?: string; poolDatabasePath?: string } = {}) {
+export function startDashboard(service: QuotaPieService, config: AppConfig, options: { compactionRoot?: string; preferencesPath?: string; poolPolicyPath?: string; poolDatabasePath?: string; requestAccountDatabasePath?: string } = {}) {
   const runtime = captureRuntimeIdentity();
   const compaction = new CompactionStatusReader(options.compactionRoot);
   const credits = new CreditUsageReader(service.db);
+  const requestAccounts = new RequestAccountAPI(config, {databasePath:options.requestAccountDatabasePath,policyPath:options.poolPolicyPath});
   const creditAccounts = (accounts: ReturnType<QuotaPieService["quotaAccounts"]>, nowMs: number) =>
     credits.accounts(accounts, nowMs, config.collection.staleAfterSeconds * 1_000,
       Math.min(config.collection.staleAfterSeconds * 1_000, Math.max(30_000, config.collection.pollSeconds * 3_000)));
@@ -81,6 +83,22 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
       const allowedHosts = new Set(["127.0.0.1", "localhost", "::1", config.dashboard.host.toLowerCase()]);
       if (!hostname || !allowedHosts.has(hostname)) return json({ error: "invalid_host" }, 403);
       const url = new URL(request.url);
+      if (url.pathname === "/api/request-accounts") {
+        if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token")))
+          return json({error:"forbidden"},403);
+        if (!["GET","POST"].includes(request.method)) return json({error:"method_not_allowed"},405);
+        try {
+          const snapshot = compaction.snapshot();
+          const labels = new Map(service.quotaAccounts().filter(a=>a.provider==="codex").map(a=>[a.account,a.accountLabel]));
+          if (request.method === "GET") return json(requestAccounts.read(snapshot.routing, labels));
+          const body = await request.text();
+          if (body.length > 2048) return json({error:"request_account_invalid_request"},400);
+          return json(await requestAccounts.choose(JSON.parse(body),snapshot.routing,snapshot.manualRoutingSources,labels));
+        } catch(error) {
+          const known = error instanceof PoolError || error instanceof RequestAccountError;
+          return json({error:known?error.code:"request_account_update_failed"},known?error.status:400);
+        }
+      }
       if (url.pathname === "/api/session-consolidation") {
         if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token")))
           return json({ error: "forbidden" }, 403);

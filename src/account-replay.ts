@@ -49,7 +49,8 @@ export function filterForeignReasoning(body: unknown, fingerprints: string[] | u
   return { ...body, input };
 }
 
-/** Exact native history for a verified one-turn target lease only. The provider
+/** Exact native history for a verified target lease or explicit local per-thread
+ * account choice. The provider
  * accepts the original encrypted compaction across owned subscription accounts;
  * local file/response references still have no transferable ownership proof.
  * This validator never removes IDs, reasoning, compaction, or tool messages. */
@@ -78,7 +79,7 @@ export function nativeExecutionHistory(body: unknown): boolean {
   if (!body.input.some(item => item.type === "compaction")) return portableReplay(body) !== null;
   // The compaction can contain the user messages and call definitions preceding
   // these visible records. Validate native shapes without inventing or dropping
-  // any messages; the exact queued turn was independently verified by the lease.
+  // any messages; the target is independently authorized by a lease or manual choice.
   const contentOK = (value: any) => typeof value === "string" || Array.isArray(value) && value.every(part =>
     record(part) && (["input_text","output_text","text"].includes(part.type) && typeof part.text === "string" ||
       part.type === "input_image" && typeof part.image_url === "string"));

@@ -292,8 +292,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             configureNotifications: { [weak self] key, enabled in self?.configureNotifications(key, enabled: enabled) },
             openRecentWork: { [weak self] item in self?.openRecentWork(item) },
             openUsageReport: { [weak self] in self?.openUsageReport() },
-            openSettings: { [weak self] in self?.openSettingsWindow() }
+            openSettings: { [weak self] in self?.openSettingsWindow() },
+            loadRequestAccounts: { [weak self] completion in self?.loadRequestAccounts(completion: completion) },
+            useRequestAccount: { [weak self] thread, account, completion in
+                self?.useRequestAccount(threadID: thread, account: account, completion: completion)
+            }
         )
+    }
+
+    private func loadRequestAccounts(completion: @escaping RequestAccountCatalogCompletion) {
+        guard let client, let token = currentActionToken else {
+            completion(.failure(StatusClientError.missingActionToken)); return
+        }
+        client.requestAccounts(actionToken: token) { result in
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    private func useRequestAccount(threadID: String, account: String, completion: @escaping RequestAccountAssignmentCompletion) {
+        guard let client, let token = currentActionToken else {
+            completion(.failure(StatusClientError.missingActionToken)); return
+        }
+        client.useRequestAccount(threadID: threadID, account: account, actionToken: token) { [weak self] result in
+            DispatchQueue.main.async {
+                if case .success(let assignment) = result, assignment.threadId == threadID, assignment.account == account {
+                    self?.popoverModel.followRequestAccountSelection(assignment.account)
+                    self?.render()
+                }
+                completion(result)
+            }
+        }
     }
 
     private func openAccount(_ account: AccountState) {
@@ -832,7 +860,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             title = creditTitle
             color = .labelColor
             toolTip = [Strings.t("credits.subscriptionExhausted"), Strings.t("credits.observedDecrease", credits.decreaseText),
-                       Strings.t("credits.balance", CreditUsage.number(credits.balance ?? 0) + " cr"),
+                       Strings.t("credits.balance", CreditUsage.amount(credits.balance ?? 0)),
                        Strings.t("credits.scope")].joined(separator: "\n")
         } else if let accountAttention {
             title = accountAttention

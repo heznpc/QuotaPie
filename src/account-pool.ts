@@ -14,7 +14,7 @@ export interface PoolAccount {
   tokenExpiresAt: number; models: string[]; remaining: number | null; validUntil: number; observedAtMs?: number;
   modelQuota?: Record<string, { remaining: number | null; validUntil: number; observedAtMs?: number }>;
 }
-export interface PoolRoute { sourceAccount: string; account: string; accountLabel: string; reason: "new" | "pinned" | "existing" | "source_fallback" | "recovered" | "reserve"; previousAccountLabel?: string }
+export interface PoolRoute { sourceAccount: string; account: string; accountLabel: string; reason: "new" | "pinned" | "existing" | "source_fallback" | "recovered" | "reserve" | "manual"; previousAccountLabel?: string }
 const POOL_ERROR_BRAND = Symbol.for("quotapie.pool-error.v1");
 export class PoolError extends Error {
   readonly [POOL_ERROR_BRAND] = true;
@@ -178,7 +178,7 @@ type Binding = { account: string; identity: string; source_identity: string; lab
 type PoolSelectInput = { threadId: string | null; requestId: string; body: unknown; model: string; headers: Headers;
   /** Internal proof from the source guard; never read from request content. */
   verifiedSource?: { identity: string; credentialDigest: string };
-  fixedTarget?: { account: string; identity: string; preserveNativeHistory?: true } };
+  fixedTarget?: { account: string; identity: string; preserveNativeHistory?: true; manual?: true } };
 export type SourceHistoryPolicy = "strict" | "authenticated-source";
 export type SourceContinuationInput = {
   threadId: string | null; body: unknown; headers: Headers;
@@ -187,7 +187,7 @@ export type SourceContinuationInput = {
 };
 type SourceOnlyReplay = { sourceReplay: NonNullable<ReturnType<typeof portableReplay>> };
 export class AccountPool {
-  static readonly RUNTIME_API_VERSION = 3;
+  static readonly RUNTIME_API_VERSION = 4;
   readonly runtimeApiVersion = AccountPool.RUNTIME_API_VERSION;
   readonly sourceContinuationRevision = 2;
   private db: Database;
@@ -590,14 +590,15 @@ export class AccountPool {
       if (input.fixedTarget) {
         // A source-only replay is the fallback for unverified local ancestry,
         // not a prohibition on a separately verified exact native-turn lease.
-        // That lease may use its chosen account while retaining every original
+        // That lease, or an independently verified local manual choice, may
+        // use its chosen account while retaining every original
         // byte; ordinary pool requests still cannot infer cross-account rights.
         if (!policy.enabled || !policy.accounts.includes(sourceID) || !policy.accounts.includes(input.fixedTarget.account) || sourceReplay && !preserveNative)
           throw new PoolError("pool_execution_target_unavailable", 409);
         selected = accounts.find(account => account.id === input.fixedTarget!.account && account.identity === input.fixedTarget!.identity);
         if (!selected || selected.id === sourceID && !preserveNative) throw new PoolError("pool_execution_target_unavailable", 409);
         const sameBinding = saved?.account === selected.id && saved.identity === selected.identity && saved.source_identity === source.identity;
-        reason = sameBinding ? "pinned" : "recovered";
+        reason = input.fixedTarget.manual ? "manual" : sameBinding ? "pinned" : "recovered";
         if (!sameBinding) {
           const replay = preserveNative ? null : portableReplay(input.body);
           if (!preserveNative && !replay) throw new PoolError("pool_recovery_requires_full_history", 409);

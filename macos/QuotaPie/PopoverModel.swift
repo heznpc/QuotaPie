@@ -73,6 +73,7 @@ final class PopoverModel: ObservableObject {
     @Published var recentWorkActivities: [String: ResumeTaskActivity] = [:]
     @Published var openingAccount = false
     @Published var accountOpenError: String?
+    @Published var requestAccountTarget: AccountState?
     @Published var selectedAccountID: String?
     // Inspection is independent of the account followed by the menu bar meter.
     // Activating a different host must not replace an account the user is reading.
@@ -101,6 +102,18 @@ final class PopoverModel: ObservableObject {
     func showAccountList() {
         inspectedAccountID = nil
         showOverview()
+    }
+
+    func chooseRequestAccount(_ account: AccountState) {
+        guard account.provider == "codex", account.enabled, canActOnTasks else { return }
+        requestAccountTarget = account
+    }
+
+    func followRequestAccountSelection(_ accountID: String) {
+        guard let account = enabledAccounts.first(where: { $0.provider == "codex" && $0.account == accountID }) else { return }
+        // An observed active request still controls menuAccount. The idle meter
+        // follows this preference without changing the account being inspected.
+        selectAccount(account)
     }
 
     var isShowingAccountList: Bool { detailSection == nil && inspectedAccountID == nil }
@@ -409,6 +422,12 @@ struct PopoverActions {
     var openRecentWork: (RecentWork) -> Void = { _ in }
     var openUsageReport: () -> Void = {}
     var openSettings: () -> Void = {}
+    var loadRequestAccounts: (@escaping RequestAccountCatalogCompletion) -> Void = {
+        $0(.failure(StatusClientError.missingActionToken))
+    }
+    var useRequestAccount: (String, String, @escaping RequestAccountAssignmentCompletion) -> Void = { _, _, completion in
+        completion(.failure(StatusClientError.missingActionToken))
+    }
 }
 
 extension AccountState {

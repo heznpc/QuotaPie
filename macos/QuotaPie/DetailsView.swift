@@ -76,6 +76,14 @@ struct DetailsView: View {
         case .quota:
             if let payload = model.payload, !payload.accounts.isEmpty {
                 ForEach(orderedAccounts) { account in
+                    if account.provider == "codex", account.enabled {
+                        HStack {
+                            Text(account.accountLabel).font(.headline)
+                            Spacer()
+                            RequestAccountButton(enabled: model.canActOnTasks) { model.chooseRequestAccount(account) }
+                                .accessibilityIdentifier("limits.use." + account.id)
+                        }
+                    }
                     AccountSection(
                         account: account,
                         recovery: payload.resetTracking?.accounts.first { $0.provider == account.provider && $0.account == account.account },

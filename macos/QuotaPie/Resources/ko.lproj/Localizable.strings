@@ -1409,7 +1409,7 @@
 "collection.account-mismatch" = "Claude 앱 계정이 변경됨";
 "collection.desktop-no-windows" = "연결됨 · 한도 수치 미제공";
 
-"credits.menu.decrease" = "Codex 1h −%@";
+"credits.menu.decrease" = "크레딧 사용 · 1시간 %@";
 "credits.menu.balance" = "크레딧 잔액 %@";
 "credits.spendControl" = "지출 한도 도달";
 "credits.subscriptionExhausted" = "구독 한도 소진";
@@ -1450,4 +1450,32 @@
 "routing.responseUnconfirmed" = "응답 확인 안 됨";
 "routing.requestedModel" = "요청 모델 %@";
 "routing.targetOnly" = "배정된 대상 · 실제 응답은 아직 확인 안 됨";
+
+"credits.amount" = "%@ 크레딧";
+"requestAccount.use" = "이 계정 사용";
+"requestAccount.useHelp" = "대화를 선택해 다음 요청에서 사용할 계정을 지정합니다.";
+"requestAccount.inspectionOnly" = "한도 조회와 처리 계정 선택은 별개입니다.";
+"requestAccount.title" = "%@ 계정을 사용할 대화";
+"requestAccount.close" = "닫기";
+"requestAccount.explanation" = "대화를 고르면 다음 요청부터 이 계정을 사용합니다. 진행 중인 응답은 유지됩니다.";
+"requestAccount.loading" = "현재·최근 대화를 불러오는 중…";
+"requestAccount.empty" = "선택할 대화가 없습니다. ChatGPT에서 요청이 처리된 뒤 새로고침하세요.";
+"requestAccount.active" = "처리 중";
+"requestAccount.current" = "현재 처리 계정: %@";
+"requestAccount.last" = "마지막 처리 계정: %@";
+"requestAccount.next" = "다음 요청 계정: %@";
+"requestAccount.unknownAccount" = "확인 안 됨";
+"requestAccount.untitled" = "제목 없는 대화";
+"requestAccount.apply" = "이 대화에 사용";
+"requestAccount.selected" = "선택됨";
+"requestAccount.applied" = "다음 요청부터 %@ 사용 · 진행 중인 응답은 유지";
+"requestAccount.noFallback" = "선택한 계정이 사용 불가하면 요청을 중단합니다.";
+"requestAccount.error.unknownThread" = "이 대화를 더 이상 선택할 수 없습니다. 새로고침한 뒤 다시 선택하세요.";
+"requestAccount.error.observerUnavailable" = "대화의 연결 상태를 확인할 수 없습니다. 연결을 확인한 뒤 새로고침하세요.";
+"requestAccount.error.invalidRequest" = "대화와 계정을 다시 선택해 주세요.";
+"requestAccount.error.failed" = "처리 계정을 바꾸지 못했습니다. 기존 설정을 유지합니다. 새로고침 후 다시 시도하세요.";
+"requestAccount.error.unavailable" = "이 계정을 현재 사용할 수 없습니다. 다른 계정을 선택하거나 상태를 새로고침하세요.";
+"requestAccount.error.quota" = "이 계정의 사용 가능한 한도가 부족합니다. 한도가 남은 다른 계정을 선택하세요.";
+"requestAccount.error.model" = "이 계정은 대화에서 요청한 모델을 사용할 수 없습니다. 모델 또는 계정을 바꿔 주세요.";
+"requestAccount.error.identity" = "이 계정의 로그인을 확인할 수 없습니다. 계정 연결을 확인해 주세요.";
 "routing.activityUnconfirmed" = "진행 여부 미확인";
