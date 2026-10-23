@@ -14,6 +14,7 @@ export interface ResetSignal {
   detectedAtMs?: number;
   sourcePostId?: string;
   relatedSourceIds?: string[];
+  contextAuthor?: string;
   provider?: "codex" | "claude";
   benefitKind?: BenefitKind;
   change?: BenefitChange;
@@ -81,7 +82,9 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>,
   const benefitEvidence = detectedBenefits.length > 0 || restricted && /\b(?:free|offer\w*|discount\w*|credits?|tokens?|access|off)\b|무료|할인|크레딧|토큰/i.test(text);
 
   const parentText = parents.map(p => p.text).join("\n");
-  const contextRelevant = reset.test(parentText) && subject.test(parentText);
+  const officialResetParent = parents.find(p => p.author.toLowerCase() === post.author.toLowerCase()
+    && isWatched(p.author) && reset.test(p.text));
+  const contextRelevant = reset.test(parentText) && (subject.test(parentText) || officialResetParent !== undefined);
   const explicit = reset.test(text) && (subject.test(text) || contextRelevant || post.author.toLowerCase() === "thsottiaux");
   const reply = text.replace(/@\w+/g, "").trim();
   // A weekday or "will" somewhere in a reply can refer to unrelated work.
@@ -93,12 +96,15 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>,
   // weekday elsewhere in a reply is not enough to inherit the request.
   const timedFollowup = contextRelevant && reply.length <= 200 &&
     /^(?:(?:ok(?:ay)?(?:,?\s+fine)?|yes)[.!]\s*)?(?:but\s+)?it(?:['’]s|\s+is|\s+will\s+be)\s+(?:(?:also|still)\s+){0,2}(?:coming|landing|arriving)\s+(?:(?:on|by|in)\s+)?(?:today|tomorrow|midnight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b(?=$|[.!?,])/i.test(reply);
-  const promisedFollowup = timedFollowup && !tentative.test(text) && !/\?|\b(?:not|never|won't|will not)\b/i.test(text);
+  const relativeFollowup = contextRelevant && reply.length <= 200 &&
+    /^(?:(?:it(?:['’]s|\s+is|\s+will\s+be)\s+)?(?:coming|landing|arriving)\s+)?(?:within|in)\s+(?:(?:the\s+)?next\s+)?(?:~\s*)?(?:\d+(?:\.\d+)?|one|two|an?|half(?:\s+an?)?)\s+(?:hours?|minutes?)[.!]?\s*$/i.test(reply)
+    && parseAnnouncementTime(reply, post.createdAtMs) !== null;
+  const promisedFollowup = (timedFollowup || relativeFollowup) && !tentative.test(text) && !/\?|\b(?:not|never|won't|will not)\b/i.test(text);
   const acceptedVote = (contextRelevant || post.author.toLowerCase() === "thsottiaux" && reset.test(parentText)) && /^i accept your vote[.!]?$/i.test(reply);
   const resetChoice = post.author.toLowerCase() === "thsottiaux" && /\bor (?:a )?reset\b/i.test(text)
     && /\b(?:updates?|ship|both)\b/i.test(text);
   const followup = acceptedVote || resetChoice || contextRelevant && (done.test(text) || correction.test(text) || withdrawal.test(text) ||
-    reply.length <= 200 && (shortAnswer || timeAnswer)) || timedFollowup;
+    reply.length <= 200 && (shortAnswer || timeAnswer)) || timedFollowup || relativeFollowup;
   const implicit = post.author.toLowerCase() === "thsottiaux" && hint.test(text) && (subject.test(text) || contextRelevant);
   // General explanations of how resets work, and mentions of prior resets,
   // are not evidence of another reset. Raw monitored posts include both.
@@ -134,6 +140,7 @@ export function classifyPost(post: PublicPost, context: Map<string, PublicPost>,
   const fingerprint = createHash("sha256").update(JSON.stringify([groupId, state, resetKind, timeHint, scopeHint,
     state === "updated" || state === "withdrawn" || !["reset", "resetCredits"].includes(benefitKind) ? normalized : null])).digest("hex").slice(0, 24);
   return { id: post.id, groupId, fingerprint, author: post.author, relatedSourceIds: post.references.map(ref => ref.id),
+    ...(officialResetParent ? { contextAuthor: officialResetParent.author } : {}),
     sourceUrl: `https://x.com/${post.author}/status/${post.id}`, text, contextText: parentText.slice(0, 3000) || null,
     publishedAtMs: post.createdAtMs, state, resetKind, provider: providerForAuthor(post.author), benefitKind,
     ...(change ? { change } : {}), ...(visibleBenefits.length > 1 ? { benefits: visibleBenefits } : {}),
@@ -166,7 +173,7 @@ export function supportsSignal(signal: ResetSignal): boolean {
   if (["public-feed", "claudereset", "resetradar"].includes(signal.observedVia)) return true;
   const parentId = `context:${signal.id}`;
   const context = new Map<string, PublicPost>();
-  if (signal.contextText) context.set(parentId, { id: parentId, author: "", text: signal.contextText,
+  if (signal.contextText) context.set(parentId, { id: parentId, author: signal.contextAuthor ?? "", text: signal.contextText,
     createdAtMs: signal.publishedAtMs, conversationId: parentId, references: [] });
   return classifyPost({ id: signal.id, author: signal.author, text: signal.text,
     createdAtMs: signal.publishedAtMs, conversationId: signal.id,

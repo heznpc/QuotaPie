@@ -907,3 +907,9 @@
 "savings.insight.review-connection" = "Transport failures repeated. Check the network and connection error before continuing.";
 
 "savings.insight.review-error" = "The same failure repeated. Review its cause and completed work in the original conversation.";
+
+"signal.automation.running" = "Automatic work running";
+
+"signal.automation.waiting" = "Automatic work registered · waiting for execution conditions";
+
+"signal.automation.notConfigured" = "No automatic work configured · collecting announcements only";

@@ -267,6 +267,17 @@ export class QuotaPieService {
     const executions=this.work.store.executions();
     return {policies:this.work.list().map(p=>({...p,performance:evaluateWorkPerformance(p,executions)})),executions:executions.slice(-200),accounts,defaults:{timeZone:this.config.profile.timeZone}};
   }
+  resetAutomationStatus(nowMs = Date.now()) {
+    const policies = this.work.store.list();
+    return (["codex", "claude"] as const).filter(provider => this.config.accounts[provider].some(a => a.enabled)).map(provider => {
+      const registered = policies.filter(p => p.provider === provider && p.trigger !== "notify-only");
+      const enabled = registered.filter(p => p.enabled && p.expiresAtMs > nowMs &&
+        (p.workDeadline === undefined || p.workDeadline > nowMs));
+      const runningCount = registered.filter(p => p.state.activeExecutionId !== null).length;
+      return { provider, registeredCount: registered.length, enabledCount: enabled.length, runningCount,
+        state: runningCount ? "running" : enabled.length ? "waiting" : "not-configured" };
+    });
+  }
   async workTargets(provider:string,account:string) {
     const summaries=(await this.recentWork.summaries(this.config)).filter(s=>s.provider===provider&&s.account===account).slice(0,30);
     const targets=[];
@@ -1643,9 +1654,18 @@ export class QuotaPieService {
   async collectResetSignals(): Promise<void> {
     if (this.signalWork) return this.signalWork;
     this.signalWork = (async () => {
+      const evidenceVersion = () => (this.resetSignals.health().sources ?? [])
+        .map(source => `${source.id}:${source.lastEvidenceMs ?? ""}`).sort().join("|");
+      const before = evidenceVersion();
       await this.signalCollector.poll();
       if (this.closing || !this.config.resetSignals.enabled) return;
       this.refreshResetTiming(Date.now());
+      if (evidenceVersion() !== before) {
+        this.workForecastCache.clear();
+        // Wake the quota loop so newly collected announcements reach the
+        // runner promptly, with fresh account checks before dispatch.
+        if (this.jobsEnabled) this.requestCollection();
+      }
       for (const signal of this.resetSignals.pending(Date.now())) {
         if (this.closing) break;
         const remaining = this.accountStates(Date.now(), this.currentQuotaWindows(Date.now()))

@@ -763,9 +763,19 @@ struct ResetSignalPayload: Decodable {
     var excludedPosts: [ExcludedResetPost]? = nil
     var sources: [ResetSourceHealth]? = nil
     var coverage: String? = nil
+    var automation: [ResetAutomationStatus]? = nil
     var coverageKey: String {
         source == "x-api" || coverage == "direct-and-relays" ? "signal.coverage.direct" : "signal.coverage.relays"
     }
+}
+
+struct ResetAutomationStatus: Decodable, Identifiable {
+    let provider: String
+    let registeredCount: Int
+    let enabledCount: Int
+    let runningCount: Int
+    let state: String
+    var id: String { provider }
 }
 
 struct ResetSourceHealth: Decodable, Identifiable {

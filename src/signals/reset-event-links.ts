@@ -1,6 +1,7 @@
 import type { ResetSignal } from "./classify";
 export function resetScope(signal:ResetSignal):string {
-  const text=signal.change?.evidence??signal.timeHint??signal.text;
+  // A short reply keeps any audience restriction inherited from its parent.
+  const text=[signal.change?.evidence??signal.timeHint??signal.text,signal.scopeHint??""].join("\n");
   const plans=[...text.matchAll(/\b(Plus|Pro|Business|Enterprise|Team|Free|students?)\b/gi)].map(m=>m[1]!.toLowerCase()).sort();
   const window=/\bweekly\b/i.test(text)?"weekly":/\b(?:short.term|five.hour|5.hour)\b/i.test(text)?"short":"unspecified";
   const audience=plans.length?[...new Set(plans)].join(","):/\bglobal\b|\bsystem.wide\b|\beveryone\b|\ball\s+(?:users|accounts|plans|subscriptions)\b/i.test(text)?"global":"unspecified";

@@ -94,6 +94,13 @@ struct ResetSignalSummary: View {
                 Button(Strings.t("overview.history"), action: openHistory)
                     .font(.caption).buttonStyle(.borderless)
             }
+            ForEach(feed.automation ?? []) { automation in
+                Text((automation.provider == "claude" ? "Claude" : "Codex") + " · " +
+                    Strings.t(automation.state == "running" ? "signal.automation.running" :
+                        automation.enabledCount > 0 ? "signal.automation.waiting" : "signal.automation.notConfigured"))
+                    .font(.caption)
+                    .foregroundStyle(automation.enabledCount > 0 || automation.runningCount > 0 ? Color.secondary : Color.orange)
+            }
             let pending = feed.pendingResets(nowMs: Date().timeIntervalSince1970 * 1000)
             if !pending.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {

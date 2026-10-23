@@ -19,6 +19,14 @@ const reset = (s: ResetSignal) => (s.benefitKind ?? "reset") === "reset" && s.re
 const universal = (s: ResetSignal) => /\bglobal\b|\bsystem.wide\b|\beveryone\b|\ball\s+(?:users|accounts|plans|subscriptions)\b/i.test(textOf(s)) &&
   !/\b(?:paid|Plus|Pro|Business|Enterprise|Team|Free|students?)\b/i.test(textOf(s));
 
+function actionableAnnouncement(signal: ResetSignal): boolean {
+  const audience = resetScope(signal).split(":")[2];
+  if (audience !== "global" && audience !== "unspecified") return false;
+  // The official Codex reset author's unscoped promise creates urgency. It
+  // does not become a "global" fact or substitute for account quota checks.
+  return universal(signal) || (audience === "unspecified" && signal.author.toLowerCase() === "thsottiaux");
+}
+
 /** Announcements create urgency, not allowance. Forecasts retain observation
  * intervals and require independent days; they never prove causal attribution. */
 export function resetOpportunities(signals: ResetSignal[], events: QuotaEvent[], provider: Provider, account: string, now: number, options: {cases?:ResetTimingCase[]; maxAgeMinutes?:number;bucket?:string} = {}): ResetOpportunity[] {
@@ -27,7 +35,7 @@ export function resetOpportunities(signals: ResetSignal[], events: QuotaEvent[],
     ["external_relief", "allowance_relief"].includes(event.kind) && event.occurredAtMs <= now &&
     Number(event.details.usedPercentAfter) <= 1 &&
     recoveryEvidence(event, [], now).reason === "no-public-match");
-  const announcements = known.filter(s => s.state === "announced" && universal(s));
+  const announcements = known.filter(s => s.state === "announced" && actionableAnnouncement(s));
   const targetBucket=options.bucket??observed.find(e=>isWeeklyResetBucket(e.bucket))?.bucket??(provider==="claude"?"seven_day":`${provider}:weekly`);
   const maxAge=(options.maxAgeMinutes??1440)*60000;
   const ids=resetEventIds(known);
@@ -59,7 +67,7 @@ export function resetSignalClosed(s: ResetSignal, signals: ResetSignal[], events
     Number(event.details.usedPercentAfter) <= 1 && recoveryEvidence(event, [], now).reason === "no-public-match" &&
     event.occurredAtMs >= s.publishedAtMs && event.occurredAtMs <= ((parseAnnouncementTime(textOf(s),s.publishedAtMs)??endOfDayBoundary(textOf(s),s.publishedAtMs))?.targetAtMs??s.publishedAtMs+DAY)) || signals.some(other =>
     reset(other) && (other.provider ?? "codex") === (s.provider ?? "codex") &&
-    other.publishedAtMs <= now && other.publishedAtMs >= s.publishedAtMs && other.id !== s.id &&
+    other.publishedAtMs <= now && other.publishedAtMs >= s.publishedAtMs && (other.id !== s.id || other.fingerprint !== s.fingerprint) &&
     ((explicitlyRelated(s,other) && resetScope(s) === resetScope(other)) || standaloneCompletion(s,other,signals)) &&
     ["reported", "withdrawn", "updated"].includes(other.state));
 }

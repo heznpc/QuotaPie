@@ -907,3 +907,9 @@
 "savings.insight.review-connection" = "전송 오류가 반복됐습니다. 네트워크 상태와 연결 오류를 확인한 뒤 이어가세요.";
 
 "savings.insight.review-error" = "같은 실패가 반복됐습니다. 원본 대화에서 오류 원인과 이미 끝난 작업을 검토하세요.";
+
+"signal.automation.running" = "자동 실행 중";
+
+"signal.automation.waiting" = "자동 실행 대상 등록됨 · 실행 조건 대기";
+
+"signal.automation.notConfigured" = "자동 실행 대상 없음 · 예고 수집만 동작 중";

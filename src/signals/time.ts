@@ -1,7 +1,7 @@
 import type { Locale } from "../i18n";
 import type { ResetSignal } from "./classify";
 
-type Schedule = { targetAtMs: number; sourceZone: string; qualifier: "at" | "by" | "around" };
+type Schedule = { targetAtMs: number; sourceZone: string; qualifier: "at" | "by" | "around"; relativeMinutes?: number };
 // Abbreviations explicitly supplied by the author are fixed offsets. PT/ET
 // mean regional civil time, including DST; never silently treat PST as PT.
 const zones: Record<string, number | string> = {
@@ -14,6 +14,8 @@ const endOfDayPattern = /\b(?:EOD|end\s+of\s+(?:the\s+)?day)\b/i;
 export function announcementTimeHint(text: string): string | null {
   const deadline = text.match(/[^.!?\n]*\b(?:EOD|end\s+of\s+(?:the\s+)?day)\b[^.!?\n]*/i)?.[0]?.trim();
   if (deadline) return deadline.slice(0, 300);
+  const relative = text.match(/[^!?\n]*\b(?:within|in)\s+(?:(?:the\s+)?next\s+)?(?:~\s*)?(?:\d+(?:\.\d+)?|one|two|an?|half(?:\s+an?)?)\s+(?:hours?|minutes?)\b[^!?\n]*/i)?.[0]?.trim();
+  if (relative) return relative.slice(0, 300);
   return text.match(/[^.!?\n]*(?:\btomorrow\b|\btoday\b|\bmidnight\b|\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b|\b\d{1,2}(?::\d{2})?\s*(?:am|pm|PST|PDT|PT|UTC)\b|\bin\s+(?:~\s*)?(?:\d+|one|an?)\s+hours?\b)[^.!?\n]*/i)?.[0]?.trim().slice(0, 300) ?? null;
 }
 
@@ -80,6 +82,20 @@ const clocksIn = (text: string) => [...text.matchAll(/\b(\d{1,2})(?::(\d{2}))?\s
 
 export function parseAnnouncementTime(text: string, publishedAtMs: number): Schedule | null {
   if (!Number.isFinite(publishedAtMs)) return null;
+  // Relative bounds are anchored to publication, not receipt or a guessed
+  // author timezone. A "within" deadline is an upper bound, never a start time.
+  const relative = [...text.matchAll(/\b(within|in)\s+(?:(?:the\s+)?next\s+)?(?:~\s*)?(\d+(?:\.\d+)?|one|two|an?|half(?:\s+an?)?)\s+(hours?|minutes?)\b/gi)];
+  if (relative.length) {
+    const durations = [...text.matchAll(/\b(?:\d+(?:\.\d+)?|one|two|an?|half(?:\s+an?)?)\s+(?:hours?|minutes?)\b/gi)];
+    if (relative.length !== 1 || durations.length !== 1 || clocksIn(text).length ||
+        /\b(?:tomorrow|yesterday|EOD|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b|\d{4}-\d{2}-\d{2}/i.test(text)) return null;
+    const match = relative[0]!, amount = match[2]!.toLowerCase();
+    const count = amount === "two" ? 2 : /^(?:one|a|an)$/.test(amount) ? 1 : amount.startsWith("half") ? 0.5 : Number(amount);
+    const minutes = count * (/^hour/i.test(match[3]!) ? 60 : 1);
+    if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 7 * 24 * 60) return null;
+    return { targetAtMs: publishedAtMs + minutes * 60_000, sourceZone: "UTC", relativeMinutes: minutes,
+      qualifier: /^within$/i.test(match[1]!) ? "by" : /\b(?:around|about|approximately)\b|~/i.test(text) ? "around" : "at" };
+  }
   const sourceZone = sourceTimeZone(text);
   if (!sourceZone) return null;
   const zone = zones[sourceZone]!;
@@ -142,6 +158,8 @@ export function localAnnouncementTime(signal: ResetSignal, locale: Locale, timeZ
   }
   const qualifier = schedule?.qualifier === "by" ? (locale === "ko" ? "까지" : "By ") : schedule?.qualifier === "around" ? (locale === "ko" ? "경" : "Around ") : "";
   const label = locale === "ko" ? `${date}${qualifier}` : `${qualifier}${date}`;
+  if (schedule?.relativeMinutes !== undefined) return locale === "ko"
+    ? `게시 시각 기준 → ${label}` : `From publication → ${label}`;
   const source = parts(target, zones[schedule!.sourceZone]!);
   return `${schedule!.sourceZone} ${source[1]}/${source[2]} ${String(source[3]).padStart(2, "0")}:${String(source[4]).padStart(2, "0")} → ${label}`;
 }

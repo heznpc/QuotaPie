@@ -359,6 +359,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           notificationPreferences: service.notificationPreferences(),
           resetSignals: (() => {
             const feed = service.signalCollector.status(nowMs);
+            const automation = service.resetAutomationStatus(nowMs);
             const timingStatus = service.resetTimingStatus();
             const timingCases = timingStatus.cases;
             const publications = "publications" in timingStatus ? timingStatus.publications : [];
@@ -368,7 +369,12 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
               if (!entries.length) return null;
               const forecasts = entries.flatMap(o => o.forecast ? [o.forecast] : []);
               const ko = displayLocale === "ko";
-              if (!forecasts.length) return ko ? "패턴 근거 부족 · 승인된 작업은 예고부터 시작 가능" : "Insufficient history · reviewed work can start at announcement";
+              if (!forecasts.length) {
+                const provider = feed.signals.find(s => s.id === id)?.provider ?? "codex";
+                if (!automation.some(a => a.provider === provider && a.enabledCount > 0))
+                  return ko ? "자동 실행 대상 없음 · 예고 수집만 동작 중" : "No automatic work configured · collecting announcements only";
+                return ko ? "패턴 근거 부족 · 등록 작업의 실행 조건 확인 중" : "Insufficient history · checking registered work conditions";
+              }
               const format = (ms: number) => new Intl.DateTimeFormat(ko ? "ko-KR" : "en-US", {
                 timeZone: service.config.profile.timeZone, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short",
               }).format(ms);
@@ -376,7 +382,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
               return `${ko ? "관측 기반 추정" : "Observed estimate"}: ${format(low)}–${format(high)} · ${ko ? "확정 아님" : "unconfirmed"}`;
             };
             const closed = new Map(resetPlans.map(a => [a.provider + ":" + a.account, new Set(a.closedSignalIDs)]));
-            return { ...feed, signals: feed.signals.map(signal => ({ ...signal,
+            return { ...feed, automation, signals: feed.signals.map(signal => ({ ...signal,
               preparationClosed: accounts.some(a => a.provider === (signal.provider ?? "codex")) && accounts
                 .filter(a => a.provider === (signal.provider ?? "codex"))
                 .every(a => closed.get(a.provider + ":" + a.account)!.has(signal.id)),

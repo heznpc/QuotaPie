@@ -19,6 +19,18 @@ struct PopoverView: View {
     }
 
     private var overview: some View {
+        VStack(spacing: 0) {
+            ScrollView(.vertical) {
+                overviewContent
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Divider()
+            footer.padding(.horizontal, 16).padding(.vertical, 12)
+        }
+        .frame(width: 380, height: model.popoverDetailHeight)
+    }
+
+    private var overviewContent: some View {
         VStack(alignment: .leading, spacing: 0) {
 #if DEBUG
             if ProcessInfo.processInfo.environment["QUOTAPIE_DEBUG_AUTO_OPEN"] == "1" {
@@ -75,11 +87,8 @@ struct PopoverView: View {
                 Divider().padding(.horizontal, 20)
                 statusLinks.padding(.horizontal, 20).padding(.vertical, 10)
             }
-            Divider()
-            footer.padding(.horizontal, 16).padding(.vertical, 12)
         }
-        .frame(width: model.detailSection == nil ? 380 : 460)
-        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func showDetails(_ section: DetailSection, taskID: String? = nil) {
