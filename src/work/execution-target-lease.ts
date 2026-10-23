@@ -1,0 +1,214 @@
+import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { dataDirectory } from "../config";
+import { executionTargetDigest, validExecutionTarget } from "./execution-target";
+import type { WorkExecutionTarget, WorkPolicy } from "./types";
+
+export const executionTargetLeasePath = () => join(dataDirectory(), "execution-target-leases.sqlite3");
+const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const digest = (text: string) => createHash("sha256").update(text).digest("hex");
+export interface ExecutionTargetLease {
+  version: 1; executionId: string; policyId: string; policyRevision: number;
+  source: { account: string; profileKey: string; accountKey: string; identity: string;
+    threadId: string; failedTurnId: string; evidenceStamp: string; nativeOwner?: {pid:number;startedAtMs:number} };
+  target: WorkExecutionTarget; model?: string; marker: string; promptHash: string; clientUserMessageId: string;
+  digest: string; createdAtMs: number; expiresAtMs: number; authorizationValidUntilMs: number;
+  state: "requested" | "acknowledged" | "bound" | "closed";
+  relayInstanceId?: string; acknowledgedAtMs?: number; turnId?: string; closedReason?: string;
+  upstreamResponse?: {requestId:string;turnId:string;identity:string;status:number;observedAtMs:number};
+  targetRequest?: {requestId:string;fingerprint:string;state:"started"|"completed"|"failed"|"unverified";startedAtMs:number;finishedAtMs?:number;status?:number;errorCode?:string};
+  targetRequestFingerprints?: string[];
+}
+
+export function readExecutionTargetLease(id: string, path = executionTargetLeasePath()): ExecutionTargetLease | null {
+  let db: Database | undefined;
+  try {
+    db = new Database(path, {readonly:true});
+    const row=db.query<{value:string},[string]>("SELECT value FROM execution_target_leases WHERE id=?").get(id);
+    return row ? JSON.parse(row.value) : null;
+  } catch { return null; } finally {db?.close();}
+}
+
+/** A lease does not enqueue work. The collector must obtain a live relay ACK
+ * for this exact digest, then enqueue once through its existing durable receipt.
+ * The 15s renewable authorization fence stops execution after collector loss. */
+export class ExecutionTargetLeaseStore {
+  private db: Database;
+  constructor(path = executionTargetLeasePath()) {
+    if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    this.db = new Database(path, { create: true });
+    this.db.exec("PRAGMA busy_timeout=1000; CREATE TABLE IF NOT EXISTS execution_target_leases (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  }
+  close() { this.db.close(); }
+  get(id: string): ExecutionTargetLease | null {
+    const row = this.db.query<{value: string}, [string]>("SELECT value FROM execution_target_leases WHERE id=?").get(id);
+    return row ? JSON.parse(row.value) : null;
+  }
+  list(): ExecutionTargetLease[] {
+    return this.db.query<{value: string}, []>("SELECT value FROM execution_target_leases").all().map(row => JSON.parse(row.value));
+  }
+  private write(lease: ExecutionTargetLease) {
+    this.db.query("INSERT INTO execution_target_leases(id,value) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value")
+      .run(lease.executionId, JSON.stringify(lease));
+  }
+  request(policy: WorkPolicy, executionId: string, clientUserMessageId: string, target: WorkExecutionTarget, nowMs = Date.now(), nativeOwner?: {pid:number;startedAtMs:number}): ExecutionTargetLease {
+    if (!UUID.test(executionId) || !UUID.test(clientUserMessageId) || !UUID.test(policy.nativeSessionId) ||
+        !policy.quotaResume || !UUID.test(policy.quotaResume.turnId) || !validExecutionTarget(policy, target, nowMs) ||
+        !policy.prompt.startsWith(`[QuotaPie quota recovery:${policy.id}]\n`)) throw new Error("execution-target-lease-invalid");
+    const source = { account: policy.account, profileKey: policy.profileKey, accountKey: policy.accountKey,
+      identity: target.sourceIdentity, threadId: policy.nativeSessionId, failedTurnId: policy.quotaResume.turnId, evidenceStamp: policy.quotaResume.stamp, ...(nativeOwner ? {nativeOwner} : {}) };
+    const marker = `[QuotaPie quota recovery:${policy.id}]`, promptHash = digest(policy.prompt);
+    const leaseDigest = digest(JSON.stringify([executionId, policy.id, policy.revision, source, executionTargetDigest(target), policy.model, marker, promptHash, clientUserMessageId]));
+    return this.db.transaction(() => {
+      const existing = this.get(executionId);
+      if (existing) {
+        if (existing.digest !== leaseDigest || existing.state === "closed") throw new Error("execution-target-lease-conflict");
+        return existing;
+      }
+      if (this.list().some(lease => lease.state !== "closed" && lease.expiresAtMs > nowMs &&
+          (lease.source.threadId === source.threadId || lease.target.accountKey === target.accountKey ||
+           lease.source.accountKey === target.accountKey || lease.target.accountKey === source.accountKey)))
+        throw new Error("execution-target-lease-busy");
+      const lease: ExecutionTargetLease = { version: 1, executionId, policyId: policy.id, policyRevision: policy.revision,
+        source, target: structuredClone(target), model: policy.model, marker, promptHash, clientUserMessageId, digest: leaseDigest,
+        createdAtMs: nowMs, expiresAtMs: target.expiresAtMs, authorizationValidUntilMs: Math.min(target.expiresAtMs, nowMs + 15_000), state: "requested" };
+      this.write(lease); return lease;
+    }).immediate();
+  }
+  /** Caller must freshly check source consent, identity, target quota and work budget. */
+  renew(executionId: string, expectedDigest: string, nowMs = Date.now()): ExecutionTargetLease {
+    return this.db.transaction(() => {
+      const lease = this.get(executionId);
+      if (!lease || lease.digest !== expectedDigest || lease.state === "closed" || lease.expiresAtMs <= nowMs)
+        throw new Error("execution-target-lease-unavailable");
+      lease.authorizationValidUntilMs = Math.min(lease.expiresAtMs, nowMs + 15_000);
+      this.write(lease); return lease;
+    }).immediate();
+  }
+  /** Called only by the live source listener after checking identity and fixed target routing. */
+  acknowledge(executionId: string, expectedDigest: string, relayInstanceId: string, sourceProfileKey: string, nowMs = Date.now()): ExecutionTargetLease {
+    return this.db.transaction(() => {
+      const lease = this.get(executionId);
+      if (!lease || lease.digest !== expectedDigest || lease.source.profileKey !== sourceProfileKey || !relayInstanceId ||
+          lease.state === "closed" || lease.authorizationValidUntilMs <= nowMs || lease.expiresAtMs <= nowMs ||
+          lease.state === "bound" && lease.relayInstanceId !== relayInstanceId)
+        throw new Error("execution-target-lease-unavailable");
+      lease.relayInstanceId = relayInstanceId; lease.acknowledgedAtMs = nowMs;
+      if (lease.state === "requested") lease.state = "acknowledged";
+      this.write(lease); return lease;
+    }).immediate();
+  }
+  /** Only an official source-host client message receipt may authorize a native
+   * envelope whose last user record is host context instead of the prompt. */
+  bindCorrelatedTurn(executionId: string, expectedDigest: string, relayInstanceId: string,
+    proof: {threadId:string;turnId:string;clientUserMessageId:string}, nowMs = Date.now()): ExecutionTargetLease {
+    return this.db.transaction(() => {
+      const lease = this.get(executionId);
+      if (!lease || lease.digest !== expectedDigest ||
+          lease.state !== "closed" && lease.expiresAtMs > nowMs && lease.authorizationValidUntilMs > nowMs && lease.relayInstanceId !== relayInstanceId ||
+          !["acknowledged","bound","closed"].includes(lease.state) ||
+          proof.threadId !== lease.source.threadId || proof.clientUserMessageId !== lease.clientUserMessageId || !UUID.test(proof.turnId) ||
+          proof.turnId === lease.source.failedTurnId || lease.turnId !== undefined && lease.turnId !== proof.turnId)
+        throw new Error("execution-target-turn-unverified");
+      lease.turnId = proof.turnId;
+      if (lease.state !== "closed") {
+        lease.state = lease.expiresAtMs <= nowMs || lease.authorizationValidUntilMs <= nowMs ? "closed" : "bound";
+        if (lease.state === "closed") lease.closedReason = "execution-target-authorization-expired";
+      }
+      this.write(lease); return lease;
+    }).immediate();
+  }
+  /** Bind only the exact authorized new user message. Later requests in that
+   * same native turn retain B, even if A recovers or B becomes unavailable. */
+  bindRequest(input: {sourceProfileKey: string; threadId: string; turnId: string; body: unknown; relayInstanceId: string}, nowMs = Date.now()): ExecutionTargetLease | null {
+    return this.db.transaction(() => {
+      const candidates = this.list().filter(lease => lease.source.profileKey === input.sourceProfileKey && lease.source.threadId === input.threadId);
+      if (!UUID.test(input.turnId) && candidates.some(lease => lease.turnId !== undefined))
+        throw new Error("execution-target-turn-unverified");
+      const users = (input.body && typeof input.body === "object" && Array.isArray((input.body as any).input)
+        ? (input.body as any).input : []).filter((item: any) => item?.role === "user");
+      const last = users.at(-1)?.content;
+      const text = typeof last === "string" ? last : Array.isArray(last) && last.every((part: any) => part?.type === "input_text" && typeof part.text === "string")
+        ? last.map((part: any) => part.text).join("") : null;
+      const marker = typeof text === "string" && text.startsWith("[QuotaPie quota recovery:") ? text.split("\n")[0] : null;
+      const allUserText = users.flatMap((item: any) => typeof item.content === "string" ? [item.content]
+        : Array.isArray(item.content) ? item.content.filter((part: any) => part?.type === "input_text" && typeof part.text === "string").map((part: any) => part.text) : []);
+      // A host-added context message after the recovery input is not a license
+      // to send via ordinary routing. Until message/turn correlation verifies
+      // this envelope, retain the execution fence and fail closed.
+      if (candidates.some(lease => lease.state !== "closed" && lease.turnId === undefined && marker !== lease.marker &&
+          allUserText.some((text: string) => text.startsWith(lease.marker + "\n"))))
+        throw new Error("execution-target-message-order-unverified");
+      const matches = candidates.filter(lease => lease.turnId === input.turnId || marker === lease.marker);
+      if (!matches.length) {
+        // An unknown recovery marker must never fall into ordinary pool routing.
+        if (marker && candidates.some(lease=>lease.state!=="closed" && lease.expiresAtMs>nowMs)) throw new Error("execution-target-lease-unavailable");
+        return null;
+      }
+      if (matches.length !== 1) throw new Error("execution-target-lease-conflict");
+      const lease = matches[0]!;
+      if (!UUID.test(input.turnId) || input.turnId === lease.source.failedTurnId || lease.state === "closed" ||
+          lease.state === "requested" || lease.relayInstanceId !== input.relayInstanceId ||
+          lease.expiresAtMs <= nowMs || lease.authorizationValidUntilMs <= nowMs ||
+          lease.turnId !== undefined && lease.turnId !== input.turnId)
+        throw new Error("execution-target-lease-unavailable");
+      if (!lease.turnId) {
+        if (text === null || digest(text) !== lease.promptHash) throw new Error("execution-target-message-mismatch");
+        lease.turnId = input.turnId; lease.state = "bound"; this.write(lease);
+      }
+      return lease;
+    }).immediate();
+  }
+  closeLease(executionId: string, expectedDigest: string, reason: string) {
+    this.db.transaction(() => {
+      const lease = this.get(executionId);
+      if (!lease || lease.digest !== expectedDigest) return;
+      lease.state = "closed"; lease.closedReason = reason; this.write(lease);
+    }).immediate();
+  }
+  /** Durable send intent: a crash, failed stream or ambiguous connection can
+   * never be retried by the native host under this same execution lease. */
+  beginTargetRequest(executionId:string, expectedDigest:string, relayInstanceId:string,
+    request:{requestId:string;turnId:string;identity:string;fingerprint:string}, nowMs=Date.now()):void {
+    this.db.transaction(()=>{
+      const lease=this.get(executionId);
+      if(!lease || lease.digest!==expectedDigest || lease.relayInstanceId!==relayInstanceId || lease.state!=="bound" ||
+          lease.turnId!==request.turnId || lease.target.identity!==request.identity || !request.requestId ||
+          !/^[a-f0-9]{64}$/.test(request.fingerprint) || lease.expiresAtMs<=nowMs || lease.authorizationValidUntilMs<=nowMs)
+        throw new Error("execution-target-send-unavailable");
+      if(lease.targetRequest && lease.targetRequest.state!=="completed" || lease.targetRequestFingerprints?.includes(request.fingerprint))
+        throw new Error("execution-target-repeat-blocked");
+      lease.targetRequest={requestId:request.requestId,fingerprint:request.fingerprint,state:"started",startedAtMs:nowMs};
+      lease.targetRequestFingerprints=[...(lease.targetRequestFingerprints??[]),request.fingerprint];
+      this.write(lease);
+    }).immediate();
+  }
+  finishTargetRequest(executionId:string, expectedDigest:string, relayInstanceId:string, requestId:string,
+    phase:"completed"|"failed"|"cancelled"|"unverified",status:number,nowMs=Date.now(),errorCode?:string):void {
+    this.db.transaction(()=>{
+      const lease=this.get(executionId);
+      if(!lease || lease.digest!==expectedDigest || lease.relayInstanceId!==relayInstanceId ||
+          lease.targetRequest?.requestId!==requestId || lease.targetRequest.state!=="started")return;
+      const completed=phase==="completed"&&status>=200&&status<300;
+      lease.targetRequest.state=completed?"completed":phase==="failed"?"failed":"unverified";
+      lease.targetRequest.finishedAtMs=nowMs;lease.targetRequest.status=status;
+      if(errorCode)lease.targetRequest.errorCode=errorCode;
+      if(!completed){lease.state="closed";lease.closedReason="execution-target-upstream-"+(phase==="cancelled"?"unverified":phase);}
+      this.write(lease);
+    }).immediate();
+  }
+  /** Provider response evidence, never a routing decision or a pre-fetch intent. */
+  recordTargetResponse(executionId: string, expectedDigest: string, relayInstanceId: string,
+    response: {requestId:string;turnId:string;identity:string;status:number;observedAtMs:number}): void {
+    this.db.transaction(() => {
+      const lease=this.get(executionId);
+      if (!lease || lease.digest!==expectedDigest || lease.relayInstanceId!==relayInstanceId || lease.turnId!==response.turnId ||
+          lease.target.identity!==response.identity || !response.requestId || !Number.isInteger(response.status) || response.status<200 || response.status>599 ||
+          !Number.isFinite(response.observedAtMs) || response.observedAtMs<lease.createdAtMs || response.observedAtMs>lease.expiresAtMs)
+        throw new Error("execution-target-response-unverified");
+      lease.upstreamResponse=structuredClone(response);this.write(lease);
+    }).immediate();
+  }
+}

@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -20,6 +21,12 @@ function fixture(work:(f:{pool:AccountPool; accounts:PoolAccount[]; policy:{enab
   try {work({pool,accounts,policy,path,select});} finally {pool.close();rmSync(dir,{recursive:true,force:true});}
 }
 
+function confirm(pool: AccountPool, path: string, thread: string) {
+  const db = new Database(path, { readonly: true });
+  const request = db.query<{id:string;identity:string}, [string]>("SELECT r.id,i.identity FROM requests r JOIN request_identities i ON i.id=r.id WHERE r.thread=? ORDER BY r.rowid DESC LIMIT 1").get(thread)!;
+  db.close(); pool.response(request.id, request.identity, 200, null); pool.finish(request.id, "completed");
+}
+
 test("new text work uses a healthy other account without persisting credentials",()=>fixture(({path,select})=>{
   const result=select()!;
   expect(result.route).toMatchObject({sourceAccount:"a",account:"b",reason:"new"});
@@ -31,7 +38,7 @@ test("new text work uses a healthy other account without persisting credentials"
 }));
 
 test("bindings survive restart, quota ordering changes and disabling new selection",()=>fixture(({pool,path,accounts,policy,select})=>{
-  const thread=randomUUID(); select(thread); accounts[0]!.remaining=99; accounts[0]!.observedAtMs = (accounts[0]!.observedAtMs ?? now) + 1; policy.enabled=false;
+  const thread=randomUUID(); select(thread); confirm(pool,path,thread); accounts[0]!.remaining=99; accounts[0]!.observedAtMs = (accounts[0]!.observedAtMs ?? now) + 1; policy.enabled=false;
   const second=new AccountPool({path,sourceAccount:"a",accounts:()=>accounts,policy:()=>policy,now:()=>now});
   try {
     const selected=second.select({threadId:thread,requestId:randomUUID(),body:{...body,previous_response_id:"response"},model:body.model,
@@ -81,8 +88,8 @@ test("a portable continuation returns to its original login when quota recovers"
   expect(select(thread)?.route).toMatchObject({account:"a",reason:"pinned"});
 }));
 
-test("an account-bound continuation waits until its source recovers before returning",()=>fixture(({select,accounts})=>{
-  const thread=randomUUID(); select(thread);
+test("an account-bound continuation waits until its source recovers before returning",()=>fixture(({select,accounts,pool,path})=>{
+  const thread=randomUUID(); select(thread); confirm(pool,path,thread);
   accounts[0]!.remaining=99; accounts[0]!.observedAtMs = (accounts[0]!.observedAtMs ?? now) + 1;
   expect(select(thread,{...body,previous_response_id:"other-account-response"})?.route)
     .toMatchObject({account:"b",reason:"pinned"});
@@ -153,9 +160,9 @@ test("first text input accepts system context but rejects opaque continuation",(
   expect(isFreshTextTurn({...body,input:[]})).toBe(false);
 });
 
-test("a pinned conversation accepts inline images and keeps its account on follow-up", () => fixture(({ select, policy, accounts }) => {
+test("a pinned conversation accepts inline images and keeps its account on follow-up", () => fixture(({ select, policy, accounts, pool, path }) => {
   const thread = randomUUID();
-  expect(select(thread)?.route.account).toBe("b");
+  expect(select(thread)?.route.account).toBe("b"); confirm(pool,path,thread);
   accounts[0]!.remaining = 99; accounts[0]!.observedAtMs = (accounts[0]!.observedAtMs ?? now) + 1;
   policy.enabled = false;
   const imageTurn = { ...body, input: [...body.input, { role: "assistant", content: "previous response" },
@@ -400,8 +407,8 @@ test("expired remembered source credentials are rejected", () => {
   finally {pool.close();}
 });
 
-test("forks inherit the ancestor binding even after new selection is disabled", () => fixture(({select, accounts, policy, path}) => {
-  const parent=randomUUID(), child=randomUUID(), middle=randomUUID(); select(parent);
+test("forks inherit the ancestor binding even after new selection is disabled", () => fixture(({select, accounts, policy, path, pool: initialPool}) => {
+  const parent=randomUUID(), child=randomUUID(), middle=randomUUID(); select(parent); confirm(initialPool,path,parent);
   accounts[0]!.remaining=99; accounts[0]!.observedAtMs = (accounts[0]!.observedAtMs ?? now) + 1; policy.enabled=false;
   const parents:Record<string,string> = {[child]:middle,[middle]:parent};
   const pool=new AccountPool({path,sourceAccount:"a",accounts:()=>accounts,policy:()=>policy,now:()=>now,
@@ -521,7 +528,7 @@ test("portable history cannot erase known fork ancestry when its parent metadata
 }));
 
 test("an ephemeral helper fallback cannot redirect a known foreign-account fork to its source",()=>fixture(({accounts,policy,path,select})=>{
-  const parent=randomUUID(), child=randomUUID(), helperModel="gpt-6-luna";
+  const parent=randomUUID(), child=randomUUID(), helperModel="unverified-helper-model";
   expect(select(parent)?.route.account).toBe("b");
   accounts[0]!.remaining=90; accounts[0]!.observedAtMs = (accounts[0]!.observedAtMs ?? now) + 1;
   accounts[1]!.models.push(helperModel);

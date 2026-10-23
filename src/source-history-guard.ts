@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { existsSync } from "node:fs";
 import { poolDatabasePath, PoolError } from "./account-pool";
 import { codexRequestIdentity } from "./codex-request-identity";
 import type { CodexForkParentResult } from "./account-pool-lineage";
@@ -10,6 +11,7 @@ import type { CodexForkParentResult } from "./account-pool-lineage";
  */
 export function createSourceHistoryGuard(options: {
   path?: string;
+  denyUnavailableDatabase?: boolean;
   forkParent: (id: string) => Promise<CodexForkParentResult>;
 }) {
   return async (input: { account: string; identity: string; headers: Headers; signal?: AbortSignal }) => {
@@ -17,10 +19,12 @@ export function createSourceHistoryGuard(options: {
     const queue = claim.threadId ? [claim.threadId] : [];
     if (claim.fork.status === "claimed") queue.push(claim.fork.parentId);
     if (!queue.length) return "unbound" as const;
+    const path = options.path ?? poolDatabasePath();
+    if (!existsSync(path)) return "unbound" as const;
     let db: Database | undefined;
     let matched = false, unavailable = false;
     try {
-      db = new Database(options.path ?? poolDatabasePath(), { readonly: true, strict: true });
+      db = new Database(path, { readonly: true, strict: true });
       db.run("PRAGMA busy_timeout=0");
       const seen = new Set<string>();
       while (queue.length && seen.size < 32) {
@@ -46,6 +50,7 @@ export function createSourceHistoryGuard(options: {
     } catch (error) {
       input.signal?.throwIfAborted();
       if (error instanceof PoolError) throw error;
+      if (options.denyUnavailableDatabase) throw new PoolError("pool_source_continuation_unavailable", 409);
       return "unavailable" as const;
     } finally { db?.close(); }
   };

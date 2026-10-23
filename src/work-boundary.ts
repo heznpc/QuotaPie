@@ -37,6 +37,9 @@ export function buildWorkBoundary(accounts: AccountState[], tasks: ResumeTask[],
           remainingPercent: window.remainingPercent, resetsAtMs: window.resetsAtMs,
           observedAtMs: window.observedAtMs, freshness: window.freshness,
           validUntilMs: window.observedAtMs + config.collection.staleAfterSeconds * 1_000,
+          ...(window.metadata ? { metadata: Object.fromEntries(
+            ["ordinaryUsageAllowed", "spendControlReached", "normalModelSlug"]
+              .filter(key => Object.hasOwn(window.metadata!, key)).map(key => [key, window.metadata![key]])) } : {}),
         })),
       };
     }),
