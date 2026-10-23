@@ -77,23 +77,41 @@ extension PopoverModel {
     /// A menu badge follows observed request traffic, never the app's login alone.
     /// Unknown or concurrent routes cannot silently become one chosen account.
     var menuAccount: AccountState? {
+        if focusedProvider == .claude { return focusedClaudeAccount }
+        // The foreground conversation owns the meter, even while other accounts
+        // are serving background work. Popover inspection never changes this.
+        if let conversation = focusedConversation {
+            return enabledAccounts.first { $0.provider == "codex" && $0.account == conversation.currentAccount }
+        }
+        guard focusedConversationID == nil else { return nil }
         guard payload?.routing?.activityUncertain != true else { return nil }
-        guard !currentRoutes.isEmpty else { return selectedAccount }
+        guard !currentRoutes.isEmpty else {
+            guard let selectedAccount,
+                  focusedProvider != .codex || selectedAccount.provider == "codex" else { return nil }
+            return selectedAccount
+        }
         guard currentRoutes.allSatisfy(\.hasVerifiedAccount), activeRoutingAccountIDs.count == 1,
               activeRoutingAccounts.count == 1 else { return nil }
         return activeRoutingAccounts.first
     }
 
     var concurrentRoutingTitle: String? {
+        if focusedProvider == .claude {
+            return focusedClaudeAccount == nil ? Strings.t("notch.accountUnverified", "Claude") : nil
+        }
+        if focusedConversation != nil || focusedConversationID != nil {
+            return menuAccount == nil ? Strings.t("sessionAccount.unverified") : nil
+        }
         if payload?.routing?.activityUncertain == true { return Strings.t("routing.menu.unknown") }
         guard !currentRoutes.isEmpty, menuAccount == nil else { return nil }
         if currentRoutes.contains(where: { !$0.hasVerifiedAccount }) || activeRoutingAccountIDs.count != activeRoutingAccounts.count {
             return Strings.t("routing.menu.unknown")
         }
-        return Strings.t("routing.menu.multiple", String(activeRoutingAccountIDs.count))
+        return Strings.t("routing.menu.focusNeeded")
     }
 
     var routingTooltip: String? {
+        guard focusedProvider != .claude else { return nil }
         if payload?.routing?.activityUncertain == true { return Strings.t("routing.unavailable") }
         guard !currentRoutes.isEmpty else { return nil }
         return Strings.t("routing.active") + "\n" + Set(currentRoutes.map { $0.routeLabel(in: enabledAccounts) }).sorted().joined(separator: "\n")

@@ -5,6 +5,29 @@ import XCTest
 final class RequestAccountSelectionTests: XCTestCase {
     private let thread = "11111111-1111-4111-8111-111111111111"
 
+    func testNewConversationChoiceNeedsNoExistingConversationAndWaitsForAcknowledgment() {
+        let model = RequestAccountSelectionModel(account: "B", label: "Second account")
+        let empty = RequestAccountCatalog(conversations: [], accounts: catalog().accounts)
+        model.load { $0(.success(empty)) }
+        var completion: RequestAccountCatalogCompletion?
+        model.setNewConversations(true) { account, reply in
+            XCTAssertEqual(account, "B")
+            completion = reply
+        }
+        XCTAssertTrue(model.savingNewConversations)
+        XCTAssertNil(model.catalog?.newConversationAccount)
+        var saved = empty
+        saved.newConversationAccount = "B"
+        completion?(.success(saved))
+        XCTAssertEqual(model.catalog?.newConversationAccount, "B")
+        model.setNewConversations(false) { account, reply in
+            XCTAssertNil(account)
+            reply(.failure(StatusClientError.missingActionToken))
+        }
+        XCTAssertEqual(model.catalog?.newConversationAccount, "B")
+        XCTAssertNotNil(model.error)
+    }
+
     func testSuccessfulSelectionChangesOnlyFutureTargetAfterServerAcknowledgesIt() throws {
         let model = RequestAccountSelectionModel(account: "B", label: "Second account")
         model.load { $0(.success(self.catalog())) }

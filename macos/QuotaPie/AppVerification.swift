@@ -12,6 +12,7 @@ struct AppVerification: Decodable {
     let initialSection: String?
     let settingsCategory: String?
     let initialAccountID: String?
+    let initialRequestAccountID: String?
     let navigationClicks: [NavigationClick]?
     struct NavigationClick: Decodable { let x: Double; let y: Double }
     let focusedConversationTitle: String?
@@ -24,6 +25,7 @@ struct AppVerification: Decodable {
     let quotaCachePath: String?
     private static var recordedFastFirst = false
     private static var initialInspectionApplied = false
+    private static var initialRequestAccountApplied = false
     private static var interactiveWindow: NSWindow?
 
     static let current: AppVerification? = {
@@ -71,6 +73,15 @@ struct AppVerification: Decodable {
             Self.initialInspectionApplied = true
             model.showAccount(account)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                record(model: model, item: item, content: content, mountedWindow: mountedWindow)
+            }
+            return
+        }
+        if !Self.initialRequestAccountApplied, let initialRequestAccountID,
+           let account = model.enabledAccounts.first(where: { $0.id == initialRequestAccountID }) {
+            Self.initialRequestAccountApplied = true
+            model.chooseRequestAccount(account)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 record(model: model, item: item, content: content, mountedWindow: mountedWindow)
             }
             return
@@ -182,6 +193,7 @@ struct AppVerification: Decodable {
             "connected": model.lastError == nil && model.lastSuccessAt != nil,
             "selectedAccount": model.selectedAccount?.id as Any? ?? NSNull(),
             "menuAccount": model.menuAccount?.id as Any? ?? NSNull(),
+            "menuRemainingPercent": model.menuAccount.map(Headline.init(account:))?.remainingPercent as Any? ?? NSNull(),
             "activeRoutingAccounts": model.activeRoutingAccountIDs.sorted(),
             "remainingPercent": model.selectedHeadline?.remainingPercent as Any? ?? NSNull(),
             "routedAccount": model.latestRoutedAccount?.id as Any? ?? NSNull(),
@@ -199,6 +211,14 @@ struct AppVerification: Decodable {
             "viewRendered": rendered,
             "windowTitle": mountedContentWindow?.title ?? "",
             "windowIdentifier": mountedContentWindow?.identifier?.rawValue ?? "",
+            // AppKit retains a status-item window even when the verification
+            // item is hidden. It is not an additional content surface.
+            "additionalWindowCount": NSApp.windows.filter { $0 !== mountedContentWindow && ($0.sheetParent != nil || ($0.isVisible && $0.level != .statusBar)) }.count,
+            "additionalWindows": NSApp.windows.filter { $0 !== mountedContentWindow && ($0.sheetParent != nil || ($0.isVisible && $0.level != .statusBar)) }.map {
+                ["kind": String(describing: type(of: $0)), "level": $0.level.rawValue, "sheet": $0.sheetParent != nil] as [String: Any]
+            },
+            "attachedSheetCount": mountedContentWindow?.sheets.count ?? 0,
+            "requestAccountTargetID": model.requestAccountTarget?.id as Any? ?? NSNull(),
             "settingsCategory": settingsCategory as Any? ?? NSNull(),
             "detailSection": model.detailSection?.rawValue as Any? ?? NSNull(),
             "isShowingAccountList": model.isShowingAccountList,

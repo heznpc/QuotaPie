@@ -8,6 +8,15 @@ final class ClaudeDesktopSessionTests: XCTestCase {
     private let org = "11111111-2222-4333-8444-555555555555"
     private let account = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 
+    func testSessionMarkerChangesWithLoginOrOrganizationWithoutExposingCookie() {
+        let session = DesktopSession(sessionKey: "fixture-session", organizationID: org)
+        XCTAssertEqual(session.fingerprint.count, 64)
+        XCTAssertEqual(session.fingerprint, DesktopSession(sessionKey: "fixture-session", organizationID: org.uppercased()).fingerprint)
+        XCTAssertNotEqual(session.fingerprint, DesktopSession(sessionKey: "next-session", organizationID: org).fingerprint)
+        XCTAssertNotEqual(session.fingerprint, DesktopSession(sessionKey: "fixture-session", organizationID: account).fingerprint)
+        XCTAssertFalse(session.fingerprint.contains("fixture-session"))
+    }
+
     private func encrypt(_ text: String, host: String = ".claude.ai") -> Data {
         var key = [UInt8](repeating: 0, count: 16)
         let salt = Array("saltysalt".utf8)
@@ -98,6 +107,25 @@ final class ClaudeDesktopSessionTests: XCTestCase {
         XCTAssertThrowsError(try sanitizedUsage(["limits": [["kind": "session", "group": "default", "percent": "1"]]]))
     }
 
+    func testResetGrantKeepsServerDecisionsAndDoesNotTurnNullIntoZero() throws {
+        let grant: [String: Any] = ["id": "launch-team", "resets_total": 1, "resets_left": 1,
+            "ends_at": "2026-10-22T16:00:00Z", "usable_now": false, "claimable": true,
+            "clears": ["five_hour"], "blocking": [], "private": "private"]
+        let result = try sanitizedUsage(["cedar_ember": ["eligible": true, "grants": [grant]], "limits": NSNull()])
+        let state = result["cedar_ember"] as! [String: Any]
+        let saved = (state["grants"] as! [[String: Any]])[0]
+        XCTAssertEqual(saved["resets_left"] as? Int, 1)
+        XCTAssertEqual(saved["usable_now"] as? Bool, false)
+        XCTAssertEqual(saved["claimable"] as? Bool, true)
+        XCTAssertEqual(saved["ends_at"] as? String, "2026-10-22T16:00:00Z")
+        XCTAssertNil(saved["private"])
+        XCTAssertTrue(try sanitizedUsage(["cedar_ember": NSNull()])["cedar_ember"] is NSNull)
+        for invalid: Any in [true, -1, 0.5, 2] {
+            var bad = grant; bad["resets_left"] = invalid
+            XCTAssertThrowsError(try sanitizedUsage(["cedar_ember": ["grants": [bad]]]))
+        }
+    }
+
     func testCookiesReadWALAndRejectLogoutExpiryAndAmbiguity() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -116,7 +144,7 @@ final class ClaudeDesktopSessionTests: XCTestCase {
         let first = try DesktopSession.readCookies(password: password, path: path)
         XCTAssertEqual(first.organizationID, org)
         XCTAssertEqual(first.usageRequest.url?.host, "claude.ai")
-        XCTAssertEqual(first.usageRequest.url?.query, "skip_spend=1")
+        XCTAssertEqual(first.usageRequest.url?.query, "cedar_ember=1&skip_spend=1")
         XCTAssertEqual(first.appStartRequest.url?.host, "claude.ai")
         XCTAssertEqual(first.appStartRequest.url?.path, "/edge-api/bootstrap/\(org)/app_start")
         XCTAssertTrue(first.appStartRequest.url!.query!.contains("include_system_prompts=false"))

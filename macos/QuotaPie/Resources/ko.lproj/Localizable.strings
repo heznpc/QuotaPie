@@ -1429,6 +1429,7 @@
 "routing.compaction" = "압축";
 "routing.menu.unknown" = "Codex · 처리 계정 미확인";
 "routing.menu.multiple" = "Codex · %@개 계정 사용 중";
+"routing.menu.focusNeeded" = "Codex · 대화를 선택하세요";
 "routing.title" = "요청 처리 계정";
 "routing.active" = "현재 처리 중";
 "routing.processing" = "처리 중 · %@";
@@ -1523,12 +1524,118 @@
 "requestAccount.search" = "대화 제목 또는 ID 검색";
 "alert.event.title.recovered" = "%@ · %@ 한도 회복 확인";
 
-"sessionAccount.title" = "이 세션 처리 계정";
+"sessionAccount.title" = "현재 대화";
 "sessionAccount.follow" = "현재 창 따라가기";
-"sessionAccount.choose" = "세션 선택";
+"sessionAccount.choose" = "대화 선택";
 "sessionAccount.unmatched" = "현재 세션을 확인할 수 없습니다. 세션을 선택해 처리 계정을 확인하세요.";
 "sessionAccount.unverified" = "처리 계정 확인 중";
 "sessionAccount.processing" = "처리 중 · %@";
 "sessionAccount.last" = "최근 처리 · %@";
 
 "sessionAccount.other" = "다른 대화";
+"updateSettings.title" = "업데이트 후 설정 확인";
+"updateSettings.message" = "QuotaPie가 업데이트되어 새로 시작되었습니다. 기존 설정을 그대로 사용할까요?";
+"updateSettings.newSettings" = "이번 업데이트에 새 설정이 추가되었습니다. 아래 항목을 펼쳐 설정을 확인한 뒤 계속해 주세요.";
+"updateSettings.retention" = "다시 묻지 않도록 선택해도 새 설정이 추가되면 업데이트 후 한 번 더 확인합니다.";
+"updateSettings.review" = "설정 검토 및 변경…";
+"updateSettings.keep" = "기존 설정 사용";
+"updateSettings.confirm" = "선택한 설정 사용";
+"updateSettings.alwaysKeep" = "기존 설정 계속 유지 · 다음 업데이트부터 묻지 않음";
+
+"updateSettings.current" = "현재 설정";
+"updateSettings.expandHint" = "항목을 펼쳐 세부 설정을 확인하고 변경할 수 있습니다. 변경한 값은 각 설정에서 저장됩니다.";
+"updateSettings.dontAsk" = "기존 설정 계속 유지 · 다음 업데이트부터 묻지 않음";
+"updateSettings.useCurrent" = "현재 설정으로 계속";
+"updateSettings.unavailable" = "확인할 수 없음";
+"updateSettings.on" = "켜짐";
+"updateSettings.off" = "꺼짐";
+"updateSettings.automationSummary" = "계정 자동 전환 %@ · 압축 %@ · 작업 절약 %@";
+"updateSettings.notificationSummary" = "알림 %@ · 사용 속도 표시 %@";
+"updateSettings.generalSummary" = "계정 표시 이름 확인 및 변경";
+
+"sessionAccount.modore" = "Modore에서 세션·작업 폴더 보기";
+
+"sessionAccount.notFound" = "현재 계정 목록에서 이 대화를 확인하지 못했습니다. 새로고침하거나 다른 대화를 선택하세요.";
+
+"sessionAccount.noMatches" = "일치하는 대화가 없습니다";
+
+"navigation.back" = "뒤로";
+"requestAccount.pickerTitle" = "대화에 계정 적용";
+"requestAccount.targetAccount" = "사용할 계정";
+"requestAccount.remaining" = "%@%% 남음";
+"requestAccount.selectPrompt" = "계정을 적용할 대화를 선택하세요";
+"requestAccount.confirm" = "선택한 대화에 적용";
+"requestAccount.alreadyApplied" = "이미 적용된 계정";
+"requestAccount.applyTiming" = "다음 요청부터 적용됩니다. 이 계정을 사용할 수 없으면 요청을 중단합니다.";
+"requestAccount.applyTimingAutomatic" = "다음 요청부터 이 계정을 우선 사용합니다. 한도가 끝나면 잔여 한도가 있는 다른 계정으로 자동 전환합니다.";
+"requestAccount.preferred" = "우선 사용하도록 지정한 계정: %@";
+"sessionAccount.chooseHelp" = "대화를 선택하면 사용 중인 계정과 남은 한도를 확인할 수 있습니다.";
+"sessionAccount.inspected" = "선택한 대화";
+
+"requestAccount.action.inUse" = "사용 중";
+"requestAccount.action.context" = "대화: %@";
+"requestAccount.action.scheduled" = "다음 요청에 사용";
+"requestAccount.action.chooseConversation" = "대화에 적용…";
+"requestAccount.action.change" = "이 대화에 사용";
+"requestAccount.action.applying" = "계정 변경 중…";
+"requestAccount.action.connection" = "연결을 확인하면 계정을 변경할 수 있습니다.";
+"requestAccount.action.unverified" = "계정 사용 가능 여부 확인 중";
+
+"requestAccount.newConversations" = "새 대화에 이 계정 사용";
+"requestAccount.newConversations.configure" = "새 대화 계정 설정";
+"requestAccount.newConversations.help" = "새 텍스트 대화의 첫 프롬프트부터 이 계정을 사용합니다. 선택한 모델을 그대로 유지합니다.";
+"requestAccount.newConversations.selected" = "새 대화: %@";
+
+// Claude reset grants: server evidence, not inferred eligibility.
+"claude.reset.title" = "Claude 초기화권";
+"claude.reset.server" = "서버 기록 · 마지막 관측 기준";
+"claude.reset.previous" = "이전 서버 기록 · 현재 상태 미확인";
+"claude.reset.unknown" = "서버가 초기화권 기록을 제공하지 않았습니다. 잔여 횟수와 사용 여부는 미확인입니다.";
+"claude.reset.count" = "초기화 %2$@회 중 %1$@회 남음";
+"claude.reset.usable" = "지금 사용 가능: %1$@";
+"claude.reset.claimable" = "서버의 사용 허용: %1$@";
+"claude.reset.expiry" = "만료: %1$@";
+"claude.reset.unreported" = "미제공";
+"claude.reset.empty" = "서버가 반환한 초기화권 기록이 없습니다.";
+"claude.reset.yes" = "예";
+"claude.reset.no" = "아니요";
+"sessionAccount.scope" = "선택한 계정은 이 대화에 적용됩니다. Codex의 별도 백그라운드 요청은 로그인 계정을 사용할 수 있습니다.";
+"sessionAccount.otherRequests" = "최근 15분, 다른 요청에서 사용한 계정: %@";
+
+/* Verified Claude access */
+"claude.access.title" = "확인된 접근 범위";
+"claude.access.role" = "조직 역할: %@";
+"claude.access.explanation" = "확인 시점에 조회된 자료입니다. 앱 화면 확인은 사용량 수집 시 자동 갱신되지 않습니다.";
+"claude.access.result.available" = "조회됨";
+"claude.access.result.empty" = "목록 비어 있음";
+"claude.access.result.not-exposed" = "메뉴 미노출";
+"claude.access.source.api" = "자동 수집";
+"claude.access.source.app" = "앱 화면 확인";
+"claude.access.item.profile" = "계정·조직·플랜";
+"claude.access.item.quota" = "사용 한도";
+"claude.access.item.resets" = "리셋권";
+"claude.access.item.conversations" = "내 대화·본문";
+"claude.access.item.projects" = "내 프로젝트";
+"claude.access.item.organizationProjects" = "조직 공개 프로젝트";
+"claude.access.item.sharedProjects" = "공유받은 프로젝트";
+"claude.access.item.projectKnowledge" = "프로젝트 지식 자료";
+"claude.access.item.sessions" = "활성 로그인 세션";
+"claude.access.item.codeConnections" = "Claude Code 연결·범위";
+"claude.access.item.connectors" = "연결된 커넥터";
+"claude.access.item.administration" = "팀 관리 메뉴";
+"claude.access.item.billing" = "결제 관리 메뉴";
+"notch.settings.title" = "노치에 사용량 표시";
+"notch.settings.description" = "Codex·Claude를 사용하는 동안 노치 양옆에 현재 계정과 한도 잔여량을 표시합니다. 클릭하면 기존 계정 화면이 열립니다. 다른 앱이 노치를 사용하거나 전체 화면일 때는 메뉴바에서 확인할 수 있습니다. 한도·계정 변화만 짧게 강조하며, macOS의 동작 줄이기 설정을 따릅니다.";
+"notch.compactRemaining" = "%@ 남음";
+"notch.settings.summary" = "노치 사용량 표시: %@ · 계정별 이름";
+"notch.accountUnverified" = "%@ · 계정 확인 중";
+"notch.unverified" = "계정 확인 중";
+"notch.verifyAccount" = "사용 중인 계정을 확인하고 있습니다";
+"notch.waitingForUsage" = "최신 사용량을 확인하고 있습니다";
+"notch.remaining" = "%@ 한도 잔여량";
+"notch.exhausted" = "사용 한도에 도달했습니다";
+"notch.accountChanged" = "처리 계정이 변경되었습니다";
+"notch.low" = "남은 한도가 20% 미만입니다";
+"notch.recovered" = "사용 가능한 한도가 갱신되었습니다";
+"notch.details" = "자세히";
+"notch.open" = "QuotaPie에서 이 계정 보기";

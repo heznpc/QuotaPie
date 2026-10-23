@@ -7,9 +7,11 @@ struct AccountListRow: View {
     let select: () -> Void
     var useAccount: (() -> Void)? = nil
     var canUseAccount = true
+    var requestAccountAction: RequestAccountActionState? = nil
     var routingOption: RequestAccountOption? = nil
     var configureCredits: ((Bool) -> Void)? = nil
     var creditSaving = false
+    var chooseNewConversationAccount: (() -> Void)? = nil
     @State private var hovering = false
 
     private var presentation: AccountListPresentation { AccountListPresentation(account: account) }
@@ -21,11 +23,17 @@ struct AccountListRow: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 8) {
                 headerButton
-                if let useAccount {
-                    RequestAccountButton(enabled: canUseAccount && routingOption?.available == true, action: useAccount)
-                        .font(.caption).controlSize(.small).fixedSize()
+                if let state = requestAccountAction, case .unavailable = state {
+                    // The full reason is shown below the account, never as an inert button.
+                    EmptyView()
+                } else if let useAccount, let state = requestAccountAction {
+                    RequestAccountControl(state: state, action: useAccount)
+                        .font(.caption).controlSize(.small)
                         .accessibilityIdentifier("account.use." + account.id)
                 }
+            }
+            if case .unavailable(let reason) = requestAccountAction, reason != routingOption?.statusText {
+                Label(reason, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
             }
             if let option = routingOption {
                 Label(option.statusText, systemImage: option.available ? "checkmark.circle" : "exclamationmark.circle")
@@ -43,6 +51,12 @@ struct AccountListRow: View {
                             .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                 }
+            }
+            if let chooseNewConversationAccount {
+                Button(Strings.t("requestAccount.newConversations.configure"), action: chooseNewConversationAccount)
+                    .font(.caption).buttonStyle(.bordered).controlSize(.small)
+                    .disabled(!canUseAccount)
+                    .accessibilityIdentifier("account.newConversations." + account.id)
             }
             Button(action: select) {
                 quotaContent.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())

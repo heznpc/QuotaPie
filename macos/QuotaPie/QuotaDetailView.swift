@@ -62,6 +62,12 @@ struct AccountSection: View {
                 Text(Strings.t("account.previousReadings")).font(.caption2).foregroundStyle(.secondary)
             }
             ForEach(primaryAndAttentionWindows) { window in quotaRow(window) }
+            if let report = account.claudeAccess { ClaudeAccessView(report: report) }
+            if account.provider == "claude", let window = account.windows.first(where: { $0.metadata?.claudeResetGrant != nil }),
+               let grants = window.metadata?.claudeResetGrant {
+                ClaudeResetGrantView(state: grants, observedAtMs: window.observedAtMs,
+                    isCurrent: !transportUnavailable && account.collection.isHealthy && window.freshness == "fresh")
+            }
             if !otherWindows.isEmpty {
                 DisclosureGroup(Strings.t("detail.overview.otherLimits", String(otherWindows.count))) {
                     VStack(alignment: .leading, spacing: 12) {

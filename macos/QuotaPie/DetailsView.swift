@@ -75,12 +75,21 @@ struct DetailsView: View {
         switch section {
         case .quota:
             if let payload = model.payload, !payload.accounts.isEmpty {
+                if let conversation = model.displayedConversation {
+                    Text(Strings.t("requestAccount.action.context", conversation.displayTitle))
+                        .font(.callout).fixedSize(horizontal: false, vertical: true)
+                }
+                if let error = model.requestAccountResult {
+                    Label(error, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange)
+                }
                 ForEach(orderedAccounts) { account in
                     if account.provider == "codex", account.enabled {
                         HStack {
                             Text(account.accountLabel).font(.headline)
                             Spacer()
-                            RequestAccountButton(enabled: model.canActOnTasks) { model.chooseRequestAccount(account) }
+                            RequestAccountControl(state: model.requestAccountAction(for: account)) {
+                                model.applyRequestAccount(account, using: actions.useRequestAccount)
+                            }
                                 .accessibilityIdentifier("limits.use." + account.id)
                         }
                     }

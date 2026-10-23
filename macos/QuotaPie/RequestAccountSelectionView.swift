@@ -1,117 +1,104 @@
 import SwiftUI
 
+/// Account assignment stays in the menu bar's navigation surface.
 struct RequestAccountSelectionView: View {
-    @Environment(\.dismiss) private var dismiss
     @StateObject private var selection: RequestAccountSelectionModel
     @State private var search = ""
+    @State private var selectedThreadID: String?
     let actions: PopoverActions
+    let back: () -> Void
     let didApply: (String) -> Void
 
-    init(account: AccountState, actions: PopoverActions, didApply: @escaping (String) -> Void = { _ in }) {
+    init(account: AccountState, actions: PopoverActions, back: @escaping () -> Void,
+         didApply: @escaping (String) -> Void) {
         _selection = StateObject(wrappedValue: RequestAccountSelectionModel(account: account.account, label: account.accountLabel))
         self.actions = actions
+        self.back = back
         self.didApply = didApply
     }
 
+    private var selectedConversation: RequestAccountConversation? {
+        selection.catalog?.conversations.first { $0.threadId == selectedThreadID }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(Strings.t("requestAccount.title", selection.label)).font(.headline)
-                Spacer()
-                Button(Strings.t("requestAccount.close")) { dismiss() }
-                    .keyboardShortcut(.cancelAction).disabled(selection.applyingThreadID != nil)
-            }
-            Text(Strings.t("requestAccount.explanation")).font(.callout).foregroundStyle(.secondary)
-            if selection.loading {
-                HStack { ProgressView().controlSize(.small); Text(Strings.t("requestAccount.loading")) }.font(.callout)
-            }
-            if let error = selection.error {
-                Label(error, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(.orange)
-            }
-            if let catalog = selection.catalog {
-                if selection.target?.available != true {
-                    Label(RequestAccountError.unavailableReason(selection.target?.reason), systemImage: "exclamationmark.circle")
-                        .font(.callout).foregroundStyle(.orange)
-                }
-                TextField(Strings.t("requestAccount.search"), text: $search)
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityIdentifier("requestAccount.search")
-                if catalog.conversations.isEmpty {
-                    Text(Strings.t("requestAccount.empty")).font(.callout).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 100, alignment: .leading)
-                } else {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(catalog.conversations.filter { search.isEmpty ||
-                                $0.displayTitle.localizedCaseInsensitiveContains(search) ||
-                                $0.threadId.localizedCaseInsensitiveContains(search) }) { conversation in
-                                conversationRow(conversation, catalog: catalog)
-                                if conversation.id != catalog.conversations.last?.id { Divider().padding(.vertical, 12) }
-                            }
-                        }
-                    }.frame(maxHeight: 340)
-                }
-            }
-            if selection.appliedThreadID != nil {
-                Label(Strings.t("requestAccount.applied", selection.label), systemImage: "checkmark.circle")
-                    .font(.callout).foregroundStyle(.green)
-                    .accessibilityIdentifier("requestAccount.applied")
-            }
+        VStack(alignment: .leading, spacing: 0) {
+            ConversationNavigationHeader(title: Strings.t("requestAccount.pickerTitle"), back: back,
+                                         refresh: { selection.load(using: actions.loadRequestAccounts) },
+                                         busy: selection.applyingThreadID != nil)
             Divider()
-            HStack {
-                Button(Strings.t("action.refresh")) { selection.load(using: actions.loadRequestAccounts) }
-                    .disabled(selection.loading || selection.applyingThreadID != nil)
-                Spacer()
-                Text(Strings.t("requestAccount.noFallback")).font(.caption).foregroundStyle(.secondary)
-            }
+            VStack(alignment: .leading, spacing: 5) {
+                Text(Strings.t("requestAccount.targetAccount")).font(.caption).foregroundStyle(.secondary)
+                HStack(alignment: .firstTextBaseline) {
+                    Text(selection.label).font(.system(size: 13, weight: .semibold)).lineLimit(2)
+                    Spacer(minLength: 8)
+                    if let remaining = selection.target?.remaining {
+                        Text(Strings.t("requestAccount.remaining", String(Int(remaining))))
+                            .font(.caption).foregroundStyle(.secondary).fixedSize()
+                    }
+                }
+                if let error = selection.error {
+                    Label(error, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange)
+                } else if !selection.loading, selection.catalog != nil, selection.target?.available != true {
+                    Label(RequestAccountError.unavailableReason(selection.target?.reason), systemImage: "exclamationmark.circle")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+            }.padding(16)
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle(Strings.t("requestAccount.newConversations"), isOn: Binding(
+                    get: { selection.catalog?.newConversationAccount == selection.account },
+                    set: { selection.setNewConversations($0, using: actions.configureNewConversations) }
+                ))
+                .toggleStyle(.switch)
+                .disabled(selection.catalog == nil || selection.loading || selection.savingNewConversations ||
+                          selection.applyingThreadID != nil ||
+                          (selection.catalog?.newConversationAccount != selection.account && selection.target?.canAllowCredits != true))
+                .accessibilityIdentifier("requestAccount.newConversations")
+                Text(Strings.t("requestAccount.newConversations.help"))
+                    .font(.caption).foregroundStyle(.secondary)
+                if let account = selection.catalog?.newConversationAccount {
+                    Text(Strings.t("requestAccount.newConversations.selected", selection.catalog?.label(for: account) ?? account))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }.padding(.horizontal, 16).padding(.bottom, 12)
+            Divider()
+            TextField(Strings.t("requestAccount.search"), text: $search)
+                .textFieldStyle(.roundedBorder).padding(.horizontal, 16).padding(.vertical, 12)
+                .accessibilityIdentifier("requestAccount.search")
+            ConversationChoiceList(catalog: selection.catalog, query: search, selectedID: selectedThreadID,
+                                   loading: selection.loading, assignmentAccount: selection.account) { selectedThreadID = $0 }
+                .disabled(selection.applyingThreadID != nil)
+            Divider()
+            VStack(alignment: .leading, spacing: 8) {
+                Text(selectedConversation?.displayTitle ?? Strings.t("requestAccount.selectPrompt"))
+                    .font(.system(size: 12, weight: .medium)).lineLimit(2)
+                    .foregroundStyle(selectedConversation == nil ? .secondary : .primary)
+                if let conversation = selectedConversation {
+                    let state = selection.action(for: conversation)
+                    if state.isActionable {
+                        Button(Strings.t("requestAccount.confirm")) {
+                            selection.apply(threadID: conversation.threadId, using: actions.useRequestAccount)
+                        }
+                        .buttonStyle(.borderedProminent).controlSize(.large)
+                        .accessibilityIdentifier("requestAccount.confirm")
+                    } else {
+                        RequestAccountControl(state: state, action: {})
+                            .accessibilityIdentifier("requestAccount.status")
+                    }
+                }
+                if let conversation = selectedConversation, selection.action(for: conversation).isActionable {
+                    Text(Strings.t(selection.target?.autoSwitchEnabled == true
+                                   ? "requestAccount.applyTimingAutomatic" : "requestAccount.applyTiming"))
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }.padding(16)
         }
-        .padding(20).frame(width: 440)
-        .interactiveDismissDisabled(selection.applyingThreadID != nil)
+        .frame(width: 360)
         .onAppear { selection.load(using: actions.loadRequestAccounts) }
         .onChange(of: selection.appliedThreadID) { threadID in
-            guard let threadID else { return }
-            didApply(threadID)
-            dismiss()
+            if let threadID { didApply(threadID) }
         }
-        .accessibilityIdentifier("requestAccount.sheet")
-    }
-
-    private func conversationRow(_ conversation: RequestAccountConversation, catalog: RequestAccountCatalog) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(conversation.displayTitle).font(.system(size: 13, weight: .medium)).lineLimit(2)
-                    .help(conversation.displayTitle)
-                Spacer(minLength: 4)
-                if conversation.active { Text(Strings.t("requestAccount.active")).font(.caption).foregroundStyle(.secondary) }
-            }
-            Text(Strings.t(conversation.active ? "requestAccount.current" : "requestAccount.last", catalog.label(for: conversation.currentAccount)))
-                .font(.caption).foregroundStyle(.secondary)
-            HStack {
-                if let next = conversation.targetAccount {
-                    Text(Strings.t("requestAccount.next", catalog.label(for: next))).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 6)
-                if selection.applyingThreadID == conversation.id { ProgressView().controlSize(.small) }
-                Button(Strings.t(conversation.targetAccount == selection.account ? "requestAccount.selected" : "requestAccount.apply")) {
-                    selection.apply(threadID: conversation.id, using: actions.useRequestAccount)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!selection.canApply || conversation.targetAccount == selection.account)
-                .accessibilityIdentifier("requestAccount.apply." + conversation.id)
-            }
-        }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 2)
-    }
-}
-
-struct RequestAccountButton: View {
-    let enabled: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Label(Strings.t("requestAccount.use"), systemImage: "arrow.triangle.branch")
-        }
-        .buttonStyle(.bordered).disabled(!enabled)
-        .help(Strings.t("requestAccount.useHelp"))
+        .accessibilityIdentifier("requestAccount.page")
     }
 }

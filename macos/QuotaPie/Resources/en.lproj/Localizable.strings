@@ -1429,6 +1429,7 @@
 "routing.compaction" = "Compaction";
 "routing.menu.unknown" = "Codex · account unverified";
 "routing.menu.multiple" = "Codex · %@ accounts active";
+"routing.menu.focusNeeded" = "Codex · Select a conversation";
 "routing.title" = "Request accounts";
 "routing.active" = "Processing now";
 "routing.processing" = "Processing · %@";
@@ -1523,7 +1524,7 @@
 "requestAccount.search" = "Search conversation title or ID";
 "alert.event.title.recovered" = "%@ · %@ allowance recovered";
 
-"sessionAccount.title" = "Account for this conversation";
+"sessionAccount.title" = "Current conversation";
 "sessionAccount.follow" = "Follow the current window";
 "sessionAccount.choose" = "Choose conversation";
 "sessionAccount.unmatched" = "Current conversation unavailable. Choose a conversation to see its processing account.";
@@ -1532,3 +1533,109 @@
 "sessionAccount.last" = "Last processed · %@";
 
 "sessionAccount.other" = "Other conversation";
+"updateSettings.title" = "Settings after update";
+"updateSettings.message" = "QuotaPie has restarted after updating. Would you like to use your existing settings?";
+"updateSettings.newSettings" = "This update adds new settings. Expand the sections below to review your choices before continuing.";
+"updateSettings.retention" = "Even when you skip future prompts, updates that add new settings will ask you to review them.";
+"updateSettings.review" = "Review and change settings…";
+"updateSettings.keep" = "Use existing settings";
+"updateSettings.confirm" = "Use selected settings";
+"updateSettings.alwaysKeep" = "Always keep settings · Don’t ask on future updates";
+
+"updateSettings.current" = "Current settings";
+"updateSettings.expandHint" = "Expand a section to review and change its settings. Changes are saved by each control.";
+"updateSettings.dontAsk" = "Keep my settings without asking after future updates";
+"updateSettings.useCurrent" = "Continue with these settings";
+"updateSettings.unavailable" = "Unavailable";
+"updateSettings.on" = "On";
+"updateSettings.off" = "Off";
+"updateSettings.automationSummary" = "Account switching %@ · Compaction %@ · Task savings %@";
+"updateSettings.notificationSummary" = "Notifications %@ · Usage speed %@";
+"updateSettings.generalSummary" = "Review and edit account display names";
+
+"sessionAccount.modore" = "Manage session and workspace in Modore";
+
+"sessionAccount.notFound" = "This conversation is not in the current account catalog. Refresh or choose another conversation.";
+
+"sessionAccount.noMatches" = "No matching conversations";
+
+"navigation.back" = "Back";
+"requestAccount.pickerTitle" = "Assign an account";
+"requestAccount.targetAccount" = "Account to use";
+"requestAccount.remaining" = "%@%% left";
+"requestAccount.selectPrompt" = "Choose a conversation for this account";
+"requestAccount.confirm" = "Apply to selected conversation";
+"requestAccount.alreadyApplied" = "Already assigned";
+"requestAccount.applyTiming" = "Applies from the next request. Requests stop if this account is unavailable.";
+"sessionAccount.chooseHelp" = "Choose a conversation to see its account and remaining quota.";
+"sessionAccount.inspected" = "Selected conversation";
+
+"requestAccount.action.inUse" = "In use";
+"requestAccount.action.context" = "Conversation: %@";
+"requestAccount.action.scheduled" = "Set for next request";
+"requestAccount.action.chooseConversation" = "Assign to conversation…";
+"requestAccount.action.change" = "Use for this conversation";
+"requestAccount.action.applying" = "Changing account…";
+"requestAccount.action.connection" = "Reconnect to change accounts.";
+"requestAccount.action.unverified" = "Checking account availability";
+"requestAccount.applyTimingAutomatic" = "This account is preferred starting with the next request. When its allowance runs out, requests switch to another account with remaining allowance.";
+"requestAccount.preferred" = "Preferred account: %@";
+
+"requestAccount.newConversations" = "Use for new chats";
+"requestAccount.newConversations.configure" = "Choose account for new chats";
+"requestAccount.newConversations.help" = "New text chats use this account from the first prompt. The selected model is preserved.";
+"requestAccount.newConversations.selected" = "New chats: %@";
+
+// Claude reset grants: server evidence, not inferred eligibility.
+"claude.reset.title" = "Claude reset tickets";
+"claude.reset.server" = "Server record · at last observation";
+"claude.reset.previous" = "Previous server record · current status unverified";
+"claude.reset.unknown" = "The server did not provide reset-ticket records. Remaining tickets and use are unknown.";
+"claude.reset.count" = "%1$@ of %2$@ resets remaining";
+"claude.reset.usable" = "Usable now: %1$@";
+"claude.reset.claimable" = "Server permits claim: %1$@";
+"claude.reset.expiry" = "Expires: %1$@";
+"claude.reset.unreported" = "Not reported";
+"claude.reset.empty" = "The server returned no reset-ticket records.";
+"claude.reset.yes" = "Yes";
+"claude.reset.no" = "No";
+"sessionAccount.scope" = "This account applies to this conversation. Separate Codex background requests may use the signed-in account.";
+"sessionAccount.otherRequests" = "Other requests in the last 15 minutes used: %@";
+
+/* Verified Claude access */
+"claude.access.title" = "Verified access";
+"claude.access.role" = "Organization role: %@";
+"claude.access.explanation" = "These results describe access at the shown time. App inspections are not refreshed by usage polling.";
+"claude.access.result.available" = "Accessible";
+"claude.access.result.empty" = "Empty";
+"claude.access.result.not-exposed" = "Not exposed";
+"claude.access.source.api" = "Collected";
+"claude.access.source.app" = "App inspected";
+"claude.access.item.profile" = "Account, organization and plan";
+"claude.access.item.quota" = "Usage limits";
+"claude.access.item.resets" = "Reset grants";
+"claude.access.item.conversations" = "My conversations and messages";
+"claude.access.item.projects" = "My projects";
+"claude.access.item.organizationProjects" = "Organization projects";
+"claude.access.item.sharedProjects" = "Shared projects";
+"claude.access.item.projectKnowledge" = "Project knowledge";
+"claude.access.item.sessions" = "Active login sessions";
+"claude.access.item.codeConnections" = "Claude Code connections and scopes";
+"claude.access.item.connectors" = "Connected connectors";
+"claude.access.item.administration" = "Team administration menu";
+"claude.access.item.billing" = "Billing administration menu";
+"notch.settings.title" = "Show usage beside the notch";
+"notch.settings.description" = "Show the current account and remaining quota beside the notch while using Codex or Claude. Click to open the existing account view. When another app uses the notch or an app is full screen, use the menu bar instead. Briefly highlight quota and account changes, respecting Reduce Motion.";
+"notch.compactRemaining" = "%@ left";
+"notch.settings.summary" = "Notch usage display: %@ · Account names";
+"notch.accountUnverified" = "%@ · Checking account";
+"notch.unverified" = "Checking account";
+"notch.verifyAccount" = "Verifying the account in use";
+"notch.waitingForUsage" = "Waiting for current usage";
+"notch.remaining" = "%@ quota remaining";
+"notch.exhausted" = "Usage limit reached";
+"notch.accountChanged" = "Request account changed";
+"notch.low" = "Remaining quota is below 20%";
+"notch.recovered" = "Available quota updated";
+"notch.details" = "Details";
+"notch.open" = "View this account in QuotaPie";

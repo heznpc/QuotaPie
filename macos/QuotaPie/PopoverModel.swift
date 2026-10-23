@@ -77,13 +77,18 @@ final class PopoverModel: ObservableObject {
     @Published var requestAccountCatalog: RequestAccountCatalog?
     @Published var requestAccountCatalogError: String?
     @Published var focusedConversationTitle: String?
+    @Published var focusedConversationID: String?
     @Published var inspectedConversationID: String?
+
+    var focusedConversation: RequestAccountConversation? {
+        FocusedConversation.match(threadID: focusedConversationID, title: focusedConversationTitle, catalog: requestAccountCatalog)
+    }
 
     var displayedConversation: RequestAccountConversation? {
         if let id = inspectedConversationID {
             return requestAccountCatalog?.conversations.first { $0.threadId == id }
         }
-        return FocusedConversation.match(title: focusedConversationTitle, catalog: requestAccountCatalog)
+        return focusedConversation
     }
 
     var conversationAccountText: String {
@@ -102,6 +107,8 @@ final class PopoverModel: ObservableObject {
     @Published var connectionRecoveryMessage: String?
     @Published var connectionRecoveryBackup: URL?
     @Published var selectedAccountID: String?
+    @Published var focusedProvider: FocusedProvider?
+    @Published var claudeSessionFingerprint: String?
     // Inspection is independent of the account followed by the menu bar meter.
     // Activating a different host must not replace an account the user is reading.
     @Published private(set) var inspectedAccountID: String?
@@ -456,6 +463,9 @@ struct PopoverActions {
         $0(.failure(StatusClientError.missingActionToken))
     }
     var useRequestAccount: (String, String, @escaping RequestAccountAssignmentCompletion) -> Void = { _, _, completion in
+        completion(.failure(StatusClientError.missingActionToken))
+    }
+    var configureNewConversations: (String?, @escaping RequestAccountCatalogCompletion) -> Void = { _, completion in
         completion(.failure(StatusClientError.missingActionToken))
     }
 }

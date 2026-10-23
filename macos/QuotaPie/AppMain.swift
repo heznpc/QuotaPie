@@ -43,15 +43,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private let popoverModel = PopoverModel()
+    private var notch: NotchController?
+    private let claudeFocusReader = ClaudeFocusReader()
+    private var focusGeneration = 0
     private let resumeLauncher = ResumeLauncher()
     private let accountLauncher = CodexProfileLauncher()
     private let userNotificationCenter = UNUserNotificationCenter.current()
     private var client: StatusClient?
     private var usageWindow: UsageWindowController?
     private var settingsWindow: SettingsWindowController?
+    private var updateSettingsWindow: UpdateSettingsWindowController?
+    private let updateSettingsPolicy = UpdateSettingsReviewPolicy()
     private var notificationPresenter: NotificationPresenter?
     private var notificationTimer: Timer?
     private var refreshTimer: Timer?
+    private var conversationFocusTimer: Timer?
+    private var lastConversationRefresh = Date.distantPast
     private var selectionSubscription: AnyCancellable?
     private var activationObserver: NSObjectProtocol?
     private var lifecycleObservers: [NSObjectProtocol] = []
@@ -139,6 +146,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.delegate = self
 
         if !isFixturePreview {
+            notch = NotchController { [weak self] in
+                guard let self else { return }
+                if let account = self.popoverModel.menuAccount { self.popoverModel.showAccount(account) }
+                else { self.popoverModel.showAccountList() }
+                self.showPopover()
+            }
             AwakeController.shared.start()
             profileUpdateMonitor.start()
             installCollectionRecoveryObservers()
@@ -154,7 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
             ) { [weak self] notification in
                 guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-                self?.followCodexFocus(app)
+                self?.followHostFocus(app)
             }
             lifecycleObservers = [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification].map { name in
                 NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
@@ -172,6 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 frontmost: workspace.frontmostApplication.flatMap(codexIdentity),
                 running: running, profiles: CodexProfilesModel.shared.profiles
             )
+            if let app = workspace.frontmostApplication { followHostFocus(app) }
         } else if let verification {
             verification.selectInitialAccount(in: popoverModel)
         }
@@ -181,6 +195,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         refresh()
         if !isFixturePreview {
+            // Switching tabs inside Codex does not activate a new application.
+            // Track it independently of quota collection and popover opening.
+            conversationFocusTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                self?.refreshConversationFocus()
+            }
+            if let conversationFocusTimer { RunLoop.main.add(conversationFocusTimer, forMode: .common) }
             notificationTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
                 guard let self, let token = self.currentActionToken else { return }
                 self.notificationPresenter?.statusDidRefresh(actionToken: token)
@@ -188,6 +208,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             if let notificationTimer { RunLoop.main.add(notificationTimer, forMode: .common) }
         }
         verification?.armTimeout()
+
+        if !isFixturePreview, let installation = QuotaPieInstallation.read(),
+           let review = updateSettingsPolicy.review(for: installation) {
+            updateSettingsWindow = UpdateSettingsWindowController(review: review, model: popoverModel, actions: popoverActions,
+                complete: { [weak self] alwaysKeep in
+                    self?.updateSettingsPolicy.complete(installation, alwaysKeep: alwaysKeep)
+                })
+            DispatchQueue.main.async { [weak self] in
+                self?.updateSettingsWindow?.present()
+                self?.lastDetailsFetchAt = nil
+                self?.refreshDetailsIfNeeded()
+            }
+        }
 
         if !isFixturePreview, popoverModel.focusedResumeTaskID != nil {
             popoverModel.detailSection = .work
@@ -217,16 +250,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             popoverModel.showAccountList()
             popoverModel.showDetails(.work, taskID: id)
             showPopover()
+        } else if case .session(let id) = route {
+            popoverModel.showAccountList()
+            popoverModel.inspectedConversationID = id
+            showPopover()
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        notch?.stop()
         profileUpdateMonitor.stop()
         networkMonitor?.cancel()
         systemWakeMonitor?.stop()
         quotaRequests.cancel()
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         refreshTimer?.invalidate()
+        conversationFocusTimer?.invalidate()
         notificationTimer?.invalidate()
         if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
         for observer in lifecycleObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
@@ -234,9 +273,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if !isFixturePreview { AwakeController.shared.stop() }
     }
 
-    private func followCodexFocus(_ app: NSRunningApplication) {
-        guard let identity = codexIdentity(app) else { return }
-        popoverModel.followCodexFocus(identity, profiles: CodexProfilesModel.shared.profiles)
+    private func followHostFocus(_ app: NSRunningApplication) {
+        focusGeneration += 1
+        guard let provider = FocusedProvider(bundleIdentifier: app.bundleIdentifier) else {
+            renderNotch()
+            return
+        }
+        popoverModel.followProvider(provider)
+        if provider == .claude {
+            popoverModel.claudeSessionFingerprint = nil
+            readClaudeFocus(force: true)
+        } else if let identity = codexIdentity(app) {
+            popoverModel.followCodexFocus(identity, profiles: CodexProfilesModel.shared.profiles)
+        }
+        refreshConversationFocus()
+        render()
+    }
+
+    private func readClaudeFocus(force: Bool = false) {
+        let generation = focusGeneration
+        claudeFocusReader.read(force: force) { [weak self] fingerprint in
+            guard let self, self.focusGeneration == generation, self.popoverModel.focusedProvider == .claude else { return }
+            if self.popoverModel.claudeSessionFingerprint != fingerprint {
+                self.popoverModel.claudeSessionFingerprint = fingerprint
+                self.render()
+            }
+        }
+    }
+
+    private func renderNotch() {
+        notch?.update(NotchSnapshot(model: popoverModel),
+                      visible: FocusedProvider(bundleIdentifier: NSWorkspace.shared.frontmostApplication?.bundleIdentifier) != nil)
+    }
+
+    private func refreshConversationFocus() {
+        guard !isFixturePreview else { return }
+        if FocusedProvider(bundleIdentifier: NSWorkspace.shared.frontmostApplication?.bundleIdentifier) == .claude {
+            readClaudeFocus()
+        }
+        renderNotch()
+        if let focus = FocusedConversation.read(catalog: popoverModel.requestAccountCatalog) {
+            let changed = popoverModel.focusedConversationTitle != focus.title || popoverModel.focusedConversationID != focus.threadID
+            popoverModel.focusedConversationTitle = focus.title
+            popoverModel.focusedConversationID = focus.threadID
+            if changed { lastConversationRefresh = .distantPast; render() }
+        }
+        guard FocusedConversation.isHostFrontmost || popover.isShown,
+              currentActionToken != nil, Date().timeIntervalSince(lastConversationRefresh) >= 10 else { return }
+        lastConversationRefresh = Date()
+        loadRequestAccounts { [weak self] _ in self?.render() }
     }
 
     private func codexIdentity(_ app: NSRunningApplication) -> CodexProcessIdentity? {
@@ -261,7 +346,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let available = statusItem.button?.window?.screen?.visibleFrame.height ?? NSScreen.main?.visibleFrame.height ?? 800
         popoverModel.popoverDetailHeight = min(600, max(300, available - 80))
         if !popover.isShown {
-            popoverModel.focusedConversationTitle = FocusedConversation.title()
+            refreshConversationFocus()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
         }
         loadRequestAccounts { [weak self] _ in self?.render() }
@@ -304,6 +389,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             loadRequestAccounts: { [weak self] completion in self?.loadRequestAccounts(completion: completion) },
             useRequestAccount: { [weak self] thread, account, completion in
                 self?.useRequestAccount(threadID: thread, account: account, completion: completion)
+            },
+            configureNewConversations: { [weak self] account, completion in
+                self?.configureNewConversations(account: account, completion: completion)
             }
         )
     }
@@ -347,6 +435,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 self.popoverModel.creditSaving = false
                 self.applyRequestAccountCatalog(result)
                 self.render()
+            }
+        }
+    }
+
+    private func configureNewConversations(account: String?, completion: @escaping RequestAccountCatalogCompletion) {
+        guard let client, let token = currentActionToken else {
+            completion(.failure(StatusClientError.missingActionToken)); return
+        }
+        client.configureNewConversations(account: account, actionToken: token) { [weak self] result in
+            DispatchQueue.main.async {
+                self?.applyRequestAccountCatalog(result)
+                completion(result)
             }
         }
     }
@@ -434,7 +534,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     @objc private func refreshVisibleSurface() {
         if usageWindow?.window?.isKeyWindow == true { usageWindow?.refreshReport() }
         else {
-            if settingsWindow?.window?.isKeyWindow == true { lastDetailsFetchAt = nil }
+            if settingsWindow?.window?.isKeyWindow == true || updateSettingsWindow?.window?.isKeyWindow == true { lastDetailsFetchAt = nil }
             requestFreshCollection(reason: "manual")
             refreshDetailsIfNeeded()
         }
@@ -793,7 +893,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func refreshDetailsIfNeeded() {
         guard usesFastQuota, !recoveryPolling.isActive(uptime: ProcessInfo.processInfo.systemUptime),
-              (popover.isShown || settingsWindow?.window?.isVisible == true || verification?.fastQuota == true), !isFetchingDetails, let client,
+              (popover.isShown || settingsWindow?.window?.isVisible == true || updateSettingsWindow?.window?.isVisible == true || verification?.fastQuota == true), !isFetchingDetails, let client,
               lastDetailsFetchAt.map({ Date().timeIntervalSince($0) >= 10 }) ?? true else { return }
         isFetchingDetails = true
         popoverModel.detailsLoading = true
@@ -839,22 +939,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }()
 
     private func render() {
-        if !isFixturePreview, let title = FocusedConversation.title(), popoverModel.focusedConversationTitle != title {
-            popoverModel.focusedConversationTitle = title
-        }
         guard let button = statusItem.button else { return }
-        let scopedConversation = popoverModel.displayedConversation
-        let selected = scopedConversation == nil ? popoverModel.menuAccount :
-            popoverModel.payload?.accounts.first {
-                $0.provider == "codex" && $0.account == scopedConversation?.currentAccount
-            }
-        let headline = selected.map(Headline.init(account:)) ?? popoverModel.selectedHeadline
+        renderNotch()
+        let scopedConversation = popoverModel.focusedConversation
+        let selected = popoverModel.menuAccount
+        let headline = selected.map(Headline.init(account:))
         let accountAttention = selected.flatMap(MenuBarAccountStatus.title(for:))
-        let sessionTitle = scopedConversation != nil ? popoverModel.conversationAccountText : nil
-        let routingTitle = sessionTitle ?? popoverModel.concurrentRoutingTitle
+        let routingTitle = popoverModel.concurrentRoutingTitle
         let creditTitle = selected?.creditMenuTitle
         let badge = selected.map { AccountBadge(accountID: $0.id, name: $0.accountLabel) }
-        let readyTasks = popoverModel.canActOnTasks
+        let readyTasks = popoverModel.focusedProvider != .claude && scopedConversation == nil && popoverModel.canActOnTasks
             ? (popoverModel.payload?.resumeTasks.filter(\.isReady) ?? [])
             : []
         if readyTasks.isEmpty, !popoverModel.showingStartupCache, popoverModel.lastError == nil,
@@ -864,7 +958,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
            let remaining = headline.remainingPercent, remaining.isFinite {
             let providerName = provider == "codex" ? "Codex" : provider == "claude" ? "Claude" : provider
             let windowName = headline.windowKind.flatMap(Headline.windowName) ?? headline.windowLabel ?? ""
-            let label = [providerName, windowName].filter { !$0.isEmpty }.joined(separator: " ")
+            let accountName = selected.map { String($0.accountLabel.prefix(16)) }
+            let label = [accountName ?? providerName, windowName].filter { !$0.isEmpty }.joined(separator: " ")
             // The separate badge keeps its colour while macOS tints the quota image.
             if accountBadgeView.superview == nil {
                 button.addSubview(accountBadgeView)
@@ -882,7 +977,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             button.imagePosition = .imageOnly
             button.imageScaling = .scaleNone
             button.setAccessibilityLabel([headline.accountLabel, headline.localizedTitle].compactMap { $0 }.joined(separator: " · "))
-            button.toolTip = [selected.map { $0.providerTitle + " · " + $0.accountLabel }, headline.localizedTitle, headline.localizedDetail, popoverModel.routingTooltip].compactMap { $0 }.joined(separator: "\n")
+            button.toolTip = [scopedConversation?.displayTitle, selected.map { $0.providerTitle + " · " + $0.accountLabel }, headline.localizedTitle, headline.localizedDetail, popoverModel.routingTooltip].compactMap { $0 }.joined(separator: "\n")
             if renderedAccountID != popoverModel.selectedAccount?.id {
                 renderedAccountID = popoverModel.selectedAccount?.id
                 let index = popoverModel.payload?.accounts.firstIndex { $0.id == renderedAccountID } ?? -1
@@ -923,7 +1018,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         } else if let routingTitle {
             title = routingTitle
             color = .labelColor
-            toolTip = scopedConversation.map { $0.displayTitle + "\n" + popoverModel.conversationAccountText } ?? popoverModel.routingTooltip ?? routingTitle
+            toolTip = scopedConversation.map { $0.displayTitle + "\n" + Strings.t("sessionAccount.unverified") } ?? popoverModel.routingTooltip ?? routingTitle
         } else if let creditTitle, let credits = selected?.credits {
             title = creditTitle
             color = .labelColor

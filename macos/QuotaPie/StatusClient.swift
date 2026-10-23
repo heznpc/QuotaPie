@@ -202,6 +202,12 @@ final class StatusClient {
         requestAccountRequest(body: ["account": account, "allow": allow], suffix: ["credits"], actionToken: actionToken, completion: completion)
     }
 
+    func configureNewConversations(account: String?, actionToken: String,
+                                   completion: @escaping RequestAccountCatalogCompletion) {
+        requestAccountRequest(body: ["account": account as Any? ?? NSNull()], suffix: ["new-conversations"],
+                              actionToken: actionToken, completion: completion)
+    }
+
     private func requestAccountRequest<T: Decodable>(body: [String: Any]? = nil, suffix: [String] = [], actionToken: String,
                                                     completion: @escaping (Result<T, Error>) -> Void) {
         do {

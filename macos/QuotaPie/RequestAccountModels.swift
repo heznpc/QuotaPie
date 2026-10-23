@@ -4,6 +4,7 @@ import Combine
 struct RequestAccountCatalog: Decodable {
     var conversations: [RequestAccountConversation]
     let accounts: [RequestAccountOption]
+    var newConversationAccount: String? = nil
 
     func option(provider: String, account: String) -> RequestAccountOption? {
         guard provider == "codex" else { return nil }
@@ -22,7 +23,9 @@ struct RequestAccountConversation: Decodable, Identifiable {
     let currentAccount: String?
     var targetAccount: String?
     let active: Bool
+    var preferredAccount: String? = nil
     var id: String { threadId }
+    var effectiveAccount: String? { targetAccount ?? currentAccount }
     var displayTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Strings.t("requestAccount.untitled") : title }
 }
 
@@ -111,14 +114,34 @@ final class RequestAccountSelectionModel: ObservableObject {
     @Published private(set) var applyingThreadID: String?
     @Published private(set) var error: String?
     @Published private(set) var appliedThreadID: String?
+    @Published private(set) var savingNewConversations = false
+
+    func setNewConversations(_ enabled: Bool, using save: (String?, @escaping RequestAccountCatalogCompletion) -> Void) {
+        guard !loading, applyingThreadID == nil, !savingNewConversations else { return }
+        savingNewConversations = true
+        error = nil
+        save(enabled ? account : nil) { [weak self] result in
+            guard let self else { return }
+            self.savingNewConversations = false
+            switch result {
+            case .success(let catalog): self.catalog = catalog
+            case .failure(let error): self.error = error.localizedDescription
+            }
+        }
+    }
 
     init(account: String, label: String) { self.account = account; self.label = label }
 
     var target: RequestAccountOption? { catalog?.accounts.first { $0.account == account } }
-    var canApply: Bool { !loading && applyingThreadID == nil && target?.available == true }
+    var canApply: Bool { !loading && !savingNewConversations && applyingThreadID == nil && target?.available == true }
+
+    func action(for conversation: RequestAccountConversation) -> RequestAccountActionState {
+        .resolve(account: account, conversation: conversation, option: target,
+                 canAct: !loading && !savingNewConversations, applying: applyingThreadID != nil)
+    }
 
     func load(using load: (@escaping RequestAccountCatalogCompletion) -> Void) {
-        guard !loading, applyingThreadID == nil else { return }
+        guard !loading, !savingNewConversations, applyingThreadID == nil else { return }
         loading = true
         error = nil
         appliedThreadID = nil
@@ -135,7 +158,8 @@ final class RequestAccountSelectionModel: ObservableObject {
     }
 
     func apply(threadID: String, using apply: (String, String, @escaping RequestAccountAssignmentCompletion) -> Void) {
-        guard canApply, catalog?.conversations.contains(where: { $0.threadId == threadID }) == true else { return }
+        guard canApply, let conversation = catalog?.conversations.first(where: { $0.threadId == threadID }),
+              action(for: conversation).isActionable else { return }
         applyingThreadID = threadID
         error = nil
         appliedThreadID = nil
@@ -150,6 +174,7 @@ final class RequestAccountSelectionModel: ObservableObject {
                 }
                 if let index = self.catalog?.conversations.firstIndex(where: { $0.threadId == threadID }) {
                     self.catalog?.conversations[index].targetAccount = assignment.account
+                    self.catalog?.conversations[index].preferredAccount = assignment.account
                 }
                 self.appliedThreadID = threadID
             case .failure(let error): self.error = error.localizedDescription

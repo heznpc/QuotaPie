@@ -100,6 +100,8 @@ struct ClaudeDesktopConnectionView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(account.accountLabel).font(.callout.weight(.medium))
                     Text(account.collectionStatusText).font(.caption).foregroundStyle(.secondary)
+                    if let plan = account.verifiedPlanTitle { Text(plan).font(.caption) }
+                    if let report = account.claudeAccess { ClaudeAccessView(report: report) }
                 }
             }
             HStack(spacing: 10) {

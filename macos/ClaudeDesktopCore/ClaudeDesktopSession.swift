@@ -1,6 +1,7 @@
 import Foundation
 import Security
 import CommonCrypto
+import CryptoKit
 import SQLite3
 
 public struct DesktopFailure: Error {
@@ -14,6 +15,13 @@ public struct DesktopFailure: Error {
 public struct DesktopSession: Equatable {
     let sessionKey: String
     public let organizationID: String
+
+    /// Opaque equality proof for the local session that produced a quota sample.
+    /// It cannot authenticate requests and never exposes the cookie to the UI.
+    public var fingerprint: String {
+        let data = try! JSONSerialization.data(withJSONObject: [organizationID.lowercased(), sessionKey])
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
 
     public static func read(allowInteraction: Bool) throws -> DesktopSession {
         SecKeychainSetUserInteractionAllowed(allowInteraction)
@@ -134,7 +142,7 @@ public struct DesktopSession: Equatable {
     }
 
     public var bootstrapRequest: URLRequest { request(path: "/api/bootstrap") }
-    public var usageRequest: URLRequest { request(path: "/api/organizations/\(organizationID)/usage?skip_spend=1") }
+    public var usageRequest: URLRequest { request(path: "/api/organizations/\(organizationID)/usage?cedar_ember=1&skip_spend=1") }
     // The desktop app's alternate bootstrap path. Only explicit diagnostics use
     // this larger response; regular collection needs just identity and usage.
     public var appStartRequest: URLRequest {
@@ -227,8 +235,51 @@ public func limitMetadata(_ payload: [String: Any], organizationID: String) -> [
 public func sanitizedUsage(_ payload: [String: Any]) throws -> [String: Any] {
     let windowKeys = ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "seven_day_oauth_apps", "seven_day_cowork", "seven_day_omelette", "omelette_promotional"]
     let invalid = DesktopFailure("provider-error", "Claude usage response format is unsupported")
-    guard payload.isEmpty || payload.keys.contains(where: { windowKeys.contains($0) || $0 == "limits" || $0 == "extra_usage" }) else { throw invalid }
+    guard payload.isEmpty || payload.keys.contains(where: { windowKeys.contains($0) || ["limits", "extra_usage", "cedar_ember"].contains($0) }) else { throw invalid }
     var result: [String: Any] = [:]
+    if let raw = payload["cedar_ember"] {
+        if raw is NSNull { result["cedar_ember"] = NSNull() }
+        else {
+            guard let state = raw as? [String: Any], let grants = state["grants"] as? [[String: Any]], grants.count <= 128 else { throw invalid }
+            var safe: [String: Any] = [:]
+            for key in ["eligible", "at_limit"] {
+                if let value = state[key] {
+                    guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { throw invalid }
+                    safe[key] = number.boolValue
+                }
+            }
+            safe["grants"] = try grants.map { grant -> [String: Any] in
+                guard let id = shortString(grant["id"]) else { throw invalid }
+                var entry: [String: Any] = ["id": id]
+                for key in ["resets_total", "resets_left"] {
+                    guard let number = grant[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                          number.doubleValue.isFinite, number.doubleValue >= 0, number.doubleValue <= 1_000_000,
+                          number.doubleValue.rounded() == number.doubleValue else { throw invalid }
+                    entry[key] = number.intValue
+                }
+                guard (entry["resets_left"] as! Int) <= (entry["resets_total"] as! Int) else { throw invalid }
+                for key in ["starts_at", "ends_at"] {
+                    if let date = timestamp(grant[key]) { entry[key] = date }
+                    else if grant[key] is NSNull { entry[key] = NSNull() }
+                    else if grant[key] != nil { throw invalid }
+                }
+                for key in ["usable_now", "claimable", "paused"] {
+                    if let value = grant[key] {
+                        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { throw invalid }
+                        entry[key] = number.boolValue
+                    }
+                }
+                for key in ["clears", "blocking"] {
+                    if let value = grant[key] {
+                        guard let strings = value as? [String], strings.count <= 128, strings.allSatisfy({ shortString($0) != nil }) else { throw invalid }
+                        entry[key] = strings
+                    }
+                }
+                return entry
+            }
+            result["cedar_ember"] = safe
+        }
+    }
     for key in windowKeys {
         guard let raw = payload[key] else { continue }
         if payload[key] is NSNull { result[key] = NSNull(); continue }

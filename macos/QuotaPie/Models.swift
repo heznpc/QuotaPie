@@ -686,7 +686,9 @@ struct AccountPlan: Codable {
 struct AccountState: Codable, Identifiable {
     var nickname: String? = nil
     var connection: String? = nil
+    var desktopSessionFingerprint: String? = nil
     var plan: AccountPlan? = nil
+    var claudeAccess: ClaudeAccessReport? = nil
     var credits: CreditUsage? = nil
     let provider: String
     let account: String
@@ -874,6 +876,7 @@ struct QuotaWindow: Codable, Identifiable {
 }
 
 struct QuotaWindowMetadata: Codable {
+    let claudeResetGrant: ClaudeResetGrantState?
     let ordinaryUsageAllowed: Bool?
     let spendControlReached: Bool?
     let resetTicketPending: Bool?
@@ -885,10 +888,13 @@ struct QuotaWindowMetadata: Codable {
         (ordinaryUsageReported && ordinaryUsageAllowed == nil) || (spendControlReported && spendControlReached == nil)
     }
 
-    private enum CodingKeys: String, CodingKey { case ordinaryUsageAllowed, spendControlReached, resetTicketPending, resetTicketObservedAtMs }
+    private enum CodingKeys: String, CodingKey { case ordinaryUsageAllowed, spendControlReached, resetTicketPending, resetTicketObservedAtMs, claudeResetGrantJSON }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        if let json = try values.decodeIfPresent(String.self, forKey: .claudeResetGrantJSON) {
+            claudeResetGrant = try? JSONDecoder().decode(ClaudeResetGrantState.self, from: Data(json.utf8))
+        } else { claudeResetGrant = nil }
         resetTicketPending = try values.decodeIfPresent(Bool.self, forKey: .resetTicketPending)
         resetTicketObservedAtMs = try values.decodeIfPresent(Double.self, forKey: .resetTicketObservedAtMs)
         ordinaryUsageReported = values.contains(.ordinaryUsageAllowed)
@@ -899,6 +905,10 @@ struct QuotaWindowMetadata: Codable {
 
     func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
+        if let claudeResetGrant {
+            let json = String(decoding: try JSONEncoder().encode(claudeResetGrant), as: UTF8.self)
+            try values.encode(json, forKey: .claudeResetGrantJSON)
+        }
         // An explicit unknown permission must remain unknown after a cache round
         // trip; legacy payloads without these fields remain distinguishable.
         try values.encodeIfPresent(resetTicketPending, forKey: .resetTicketPending)

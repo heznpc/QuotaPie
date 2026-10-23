@@ -79,9 +79,11 @@ struct SettingsPanelView: View {
         .controlSize(.regular)
     }
 
-    @ViewBuilder private var categoryContent: some View {
+    @ViewBuilder var categoryContent: some View {
         switch selection.category {
         case .general:
+            NotchSettingsView()
+            Divider()
             AccountNicknamesView(model: model, refresh: actions.refresh)
         case .notifications:
             NotificationPreferencesView(model: model, save: actions.configureNotifications)

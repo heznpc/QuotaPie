@@ -7,11 +7,37 @@ struct PopoverView: View {
     @ObservedObject private var profiles = CodexProfilesModel.shared
     @State private var overviewSupplementaryExpanded = false
     @State private var showingConnectionRecovery = false
+    @State private var choosingConversation = false
     let actions: PopoverActions
 
     var body: some View {
         Group {
-            if model.detailSection != nil {
+            if let account = model.requestAccountTarget {
+                RequestAccountSelectionView(account: account, actions: actions,
+                                            back: { model.requestAccountTarget = nil }) { threadID in
+                    model.inspectedConversationID = threadID
+                    model.requestAccountResult = nil
+                    if let index = model.requestAccountCatalog?.conversations.firstIndex(where: { $0.threadId == threadID }) {
+                        model.requestAccountCatalog?.conversations[index].targetAccount = account.account
+                    }
+                    model.requestAccountTarget = nil
+                    model.showAccountList()
+                    actions.loadRequestAccounts { _ in }
+                }
+                .id(account.id)
+                .frame(height: min(580, model.popoverDetailHeight))
+            } else if choosingConversation {
+                ConversationPickerView(model: model, actions: actions, back: { choosingConversation = false })
+                    .frame(height: min(520, model.popoverDetailHeight))
+            } else if showingConnectionRecovery {
+                VStack(alignment: .leading, spacing: 0) {
+                    ConversationNavigationHeader(title: Strings.t("connectionRecovery.short"),
+                                                 back: { showingConnectionRecovery = false }, refresh: actions.refresh,
+                                                 busy: model.connectionRestoring)
+                    Divider()
+                    OriginalConnectionRecoveryView(model: model, actions: actions).padding(16)
+                }.frame(width: 360)
+            } else if model.detailSection != nil {
                 DetailsView(model: model, section: Binding(
                     get: { model.detailSection ?? .quota },
                     set: { model.detailSection = $0 }
@@ -32,23 +58,6 @@ struct PopoverView: View {
         }
         .onChange(of: model.payload?.actionToken) { _ in actions.loadRequestAccounts { _ in } }
         .onChange(of: model.inspectedAccountID) { _ in overviewSupplementaryExpanded = false }
-        .sheet(isPresented: $showingConnectionRecovery) {
-            VStack(alignment: .leading, spacing: 12) {
-                OriginalConnectionRecoveryView(model: model, actions: actions)
-                Button(Strings.t("requestAccount.close")) { showingConnectionRecovery = false }
-                    .disabled(model.connectionRestoring)
-            }.padding(20).frame(width: 360)
-        }
-        .sheet(item: $model.requestAccountTarget) { account in
-            RequestAccountSelectionView(account: account, actions: actions) { threadID in
-                model.inspectedConversationID = threadID
-                model.requestAccountResult = nil
-                if let index = model.requestAccountCatalog?.conversations.firstIndex(where: { $0.threadId == threadID }) {
-                    model.requestAccountCatalog?.conversations[index].targetAccount = account.account
-                }
-                actions.loadRequestAccounts { _ in }
-            }
-        }
     }
 
     private var accountList: some View {
@@ -91,7 +100,7 @@ struct PopoverView: View {
 
     private var accountListContent: some View {
         VStack(spacing: 0) {
-            SessionAccountView(model: model, selectAccount: selectRequestAccount)
+            SessionAccountView(model: model, selectAccount: selectRequestAccount, chooseConversation: { choosingConversation = true })
             Divider().padding(.horizontal, 16)
             if model.displayedConversation == nil, model.enabledAccounts.contains(where: { $0.provider == "codex" }),
                let routing = model.payload?.routing, !routing.active.isEmpty || !routing.recent.isEmpty {
@@ -122,20 +131,17 @@ struct PopoverView: View {
                                    select: { model.showAccount(account) },
                                    useAccount: account.provider == "codex" ? { selectRequestAccount(account) } : nil,
                                    canUseAccount: model.canActOnTasks && !model.requestAccountApplying,
+                                   requestAccountAction: account.provider == "codex" ? model.requestAccountAction(for: account) : nil,
                                    routingOption: model.requestAccountCatalog?.option(provider: account.provider, account: account.account),
                                    configureCredits: account.provider == "codex" ? { actions.configureCredits(account.account, $0) } : nil,
-                                   creditSaving: model.creditSaving)
+                                   creditSaving: model.creditSaving,
+                                   chooseNewConversationAccount: account.provider == "codex" ? { model.chooseRequestAccount(account) } : nil)
                     if account.id != model.enabledAccounts.last?.id { Divider().padding(.horizontal, 16) }
                 }
             }
             if let message = model.requestAccountCatalogError {
                 Text(message).font(.caption).foregroundStyle(.orange).padding(.horizontal, 16)
             }
-            if let message = model.requestAccountResult {
-                Text(message).font(.caption).padding(.horizontal, 16)
-            }
-            OriginalConnectionRecoveryView(model: model, actions: actions)
-                .padding(.horizontal, 16).padding(.vertical, 10)
             if let message = model.collectionRequestError, model.lastError == nil {
                 Text(message).font(.caption).foregroundStyle(.orange)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.bottom, 12)
@@ -165,28 +171,7 @@ struct PopoverView: View {
     }
 
     private func selectRequestAccount(_ account: AccountState) {
-        guard !model.requestAccountApplying else { return }
-        guard let thread = model.displayedConversation else {
-            model.chooseRequestAccount(account)
-            return
-        }
-        model.requestAccountApplying = true
-        model.requestAccountResult = nil
-        actions.useRequestAccount(thread.threadId, account.account) { result in
-            model.requestAccountApplying = false
-            switch result {
-            case .success(let assignment):
-                guard assignment.threadId == thread.threadId, assignment.account == account.account else {
-                    model.requestAccountResult = StatusClientError.invalidResponse.localizedDescription
-                    return
-                }
-                if let index = model.requestAccountCatalog?.conversations.firstIndex(where: { $0.threadId == thread.threadId }) {
-                    model.requestAccountCatalog?.conversations[index].targetAccount = assignment.account
-                }
-                actions.loadRequestAccounts { _ in }
-            case .failure(let error): model.requestAccountResult = error.localizedDescription
-            }
-        }
+        model.applyRequestAccount(account, using: actions.useRequestAccount)
     }
 
     private var overview: some View {
@@ -221,7 +206,7 @@ struct PopoverView: View {
 
     private var overviewContent: some View {
         VStack(alignment: .leading, spacing: 16) {
-            SessionAccountView(model: model, selectAccount: selectRequestAccount)
+            SessionAccountView(model: model, selectAccount: selectRequestAccount, chooseConversation: { choosingConversation = true })
             Divider().padding(.horizontal, 16)
             quotaOverview
             if let error = model.accountOpenError {
@@ -378,7 +363,7 @@ struct PopoverView: View {
             if let account = model.displayedAccount {
                 if account.provider == "codex" {
                     VStack(alignment: .leading, spacing: 5) {
-                        RequestAccountButton(enabled: model.canActOnTasks) { model.chooseRequestAccount(account) }
+                        RequestAccountControl(state: model.requestAccountAction(for: account)) { selectRequestAccount(account) }
                             .accessibilityIdentifier("account.use." + account.id)
                         Text(Strings.t("requestAccount.inspectionOnly")).font(.caption2).foregroundStyle(.secondary)
                     }

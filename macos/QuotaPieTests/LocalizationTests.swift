@@ -83,8 +83,11 @@ final class LocalizationTests: XCTestCase {
         let pattern = #"(?<!%)%(?!%)(?:\d+\$)?[-+# 0']*(?:\d+|\*)?(?:\.(?:\d+|\*))?(?:hh|h|ll|l|L|z|t|j|q)?[@dDuUxXoOfFeEgGaAcCsSp]"#
         let expression = try! NSRegularExpression(pattern: pattern)
         let range = NSRange(value.startIndex..<value.endIndex, in: value)
-        return expression.matches(in: value, range: range).compactMap { match in
+        let matches = expression.matches(in: value, range: range).compactMap { match in
             Range(match.range, in: value).map { String(value[$0]) }
         }
+        // Numbered arguments intentionally support different word orders.
+        // Unnumbered arguments must still match in their original order.
+        return matches.allSatisfy { $0.contains("$") } ? matches.sorted() : matches
     }
 }

@@ -27,7 +27,9 @@ final class RequestAccountClientTests: XCTestCase {
                 self.respond(None, {'conversations':[{'threadId':'11111111-1111-4111-8111-111111111111','title':'Current work','sourceAccount':'A','currentAccount':'A','targetAccount':None,'active':True}],'accounts':[{'account':'B','label':'Second account','available':True}]})
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers['content-length'])))
-                if body['account'] == 'unavailable':
+                if self.path.endswith('/new-conversations'):
+                    self.respond(body, {'conversations':[], 'accounts':[], 'newConversationAccount':body['account']})
+                elif body['account'] == 'unavailable':
                     self.respond(body, {'error':'pool_manual_target_quota_exhausted'}, 409)
                 else:
                     self.respond(body, dict(body, label='Second account'))
@@ -75,14 +77,28 @@ final class RequestAccountClientTests: XCTestCase {
             failureReceived.fulfill()
         }
         wait(for: [failureReceived], timeout: 5)
+        for account: String? in ["B", nil] {
+            let received = expectation(description: "new chat account")
+            client.configureNewConversations(account: account, actionToken: "fixture-token") { result in
+                do { XCTAssertEqual(try result.get().newConversationAccount, account) }
+                catch { XCTFail(error.localizedDescription) }
+                received.fulfill()
+            }
+            wait(for: [received], timeout: 5)
+        }
         let requests = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: capture)) as? [[String: Any]])
-        XCTAssertEqual(requests.count, 3)
+        XCTAssertEqual(requests.count, 5)
         XCTAssertEqual(requests[0]["method"] as? String, "GET")
         XCTAssertEqual(requests[1]["method"] as? String, "POST")
         XCTAssertEqual(requests[1]["body"] as? [String: String], ["threadId": thread, "account": "B"])
-        for request in requests {
+        for request in requests.prefix(3) {
             XCTAssertEqual(request["path"] as? String, "/api/request-accounts")
             XCTAssertEqual(request["token"] as? String, "fixture-token")
+        }
+        for request in requests.suffix(2) {
+            XCTAssertEqual(request["path"] as? String, "/api/request-accounts/new-conversations")
+            XCTAssertEqual(request["token"] as? String, "fixture-token")
+            XCTAssertEqual(request["method"] as? String, "POST")
         }
     }
 }

@@ -11,12 +11,16 @@ func emit(_ value: [String: Any]) {
 }
 
 let arguments = Array(CommandLine.arguments.dropFirst())
-guard arguments.isEmpty || arguments == ["--connect"] || arguments == ["--inspect-limits"] else {
+guard arguments.isEmpty || arguments == ["--connect"] || arguments == ["--inspect-limits"] || arguments == ["--session-identity"] else {
     emit(["ok": false, "category": "provider-error", "error": "Unsupported helper arguments"]); exit(1)
 }
 Task {
     do {
         let initial = try DesktopSession.read(allowInteraction: arguments == ["--connect"])
+        if arguments == ["--session-identity"] {
+            emit(["ok": true, "fingerprint": initial.fingerprint])
+            exit(0)
+        }
         let bootstrap = try await BoundedRequest().load(initial.bootstrapRequest)
         let accountID = try verifiedAccount(bootstrap, organizationID: initial.organizationID)
         let plan = try verifiedPlan(bootstrap, organizationID: initial.organizationID)
@@ -39,6 +43,8 @@ Task {
         let current = try DesktopSession.read(allowInteraction: false)
         guard initial == current else { throw DesktopFailure("account-mismatch", "Claude account changed during collection; reconnect") }
         var output: [String: Any] = ["ok": true, "accountId": accountID, "organizationId": initial.organizationID, "plan": plan, "usage": try sanitizedUsage(usage)]
+        output["access"] = (try? verifiedAccessSummary(bootstrap, organizationID: initial.organizationID)) ?? [:]
+        output["sessionFingerprint"] = initial.fingerprint
         if let diagnostics { output["limitMetadata"] = diagnostics }
         emit(output)
         exit(0)

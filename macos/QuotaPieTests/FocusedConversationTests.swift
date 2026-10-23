@@ -2,6 +2,15 @@ import XCTest
 @testable import QuotaPie
 
 final class FocusedConversationTests: XCTestCase {
+    func testDocumentIdentityIsParsedWithoutGuessingFromArbitraryText() {
+        let id = "10000000-0000-4000-8000-000000000099"
+        XCTAssertEqual(FocusedConversation.threadID(from: "codex://threads/\(id)?view=review"), id)
+        XCTAssertEqual(FocusedConversation.threadID(from: "https://chatgpt.com/codex/threads/\(id)"), id)
+        XCTAssertNil(FocusedConversation.threadID(from: "Selected thread \(id)"))
+        XCTAssertNil(FocusedConversation.threadID(from: "codex://threads/not-a-thread"))
+        XCTAssertNil(FocusedConversation.threadID(from: "codex://accounts/\(id)"))
+    }
+
     func testOnlyUniqueWindowMatchOrExplicitChoiceSelectsConversation() {
         let first = RequestAccountConversation(threadId: "a", title: "Fix QuotaPie update failure",
             sourceAccount: "source", currentAccount: "actual", targetAccount: "future", active: false)
