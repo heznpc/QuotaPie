@@ -10,8 +10,11 @@ export const COLLECTOR_FILES = [
   "packages/quota-core/package.json",
   "packages/quota-core/LICENSE",
   "script/awake_hook.py",
+  "script/codex-host-wake.py",
+  "script/codex-session-consolidation.py",
   "script/install.sh",
   "script/install-macos.ts",
+  "script/install-maintenance.ts",
   "script/sign-macos.ts",
   "scripts/codex-compaction-local.py",
 ] as const;

@@ -3,6 +3,7 @@ import { mkdtemp, readFile, readdir, writeFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { verificationScenarios } from "./verification-scenarios";
 
 interface Observation {
   connected: boolean;
@@ -18,6 +19,9 @@ interface Observation {
   appearance?: string;
   windowTitle?: string;
   windowIdentifier?: string;
+  additionalWindowCount?: number;
+  attachedSheetCount?: number;
+  requestAccountTargetID?: string | null;
   settingsCategory?: string;
   scrollRegions?: Array<{viewportHeight:number;documentHeight:number}>;
   detailSection?: string;
@@ -43,6 +47,8 @@ interface Observation {
   displayedAccount?: string | null;
   enabledAccountIDs?: string[];
   statusFailure: string | null;
+  menuAccount?: string | null;
+  menuRemainingPercent?: number | null;
   routedAccount?: string | null;
   routedRemainingPercent?: number | null;
   poolError?: string | null;
@@ -93,6 +99,7 @@ async function run() {
       import Foundation
       import Vision
       let request = VNRecognizeTextRequest()
+      request.usesCPUOnly = true
       request.recognitionLevel = .accurate
       request.recognitionLanguages = ["ko-KR", "en-US"]
       request.usesLanguageCorrection = false
@@ -105,6 +112,7 @@ async function run() {
       // column too, so a badge cannot merge into the account's visible label.
       if CommandLine.arguments[3] == "names" {
         let names = VNRecognizeTextRequest()
+        names.usesCPUOnly = true
         names.recognitionLevel = .accurate
         names.recognitionLanguages = ["en-US", "ko-KR"]
         names.usesLanguageCorrection = false
@@ -116,7 +124,7 @@ async function run() {
         }
       }
       try JSONSerialization.data(withJSONObject: rows).write(to: URL(fileURLWithPath: CommandLine.arguments[2]))
-    `, reportPath + ".png", ocrPath, inspectAccountNames ? "names" : "full"], 60_000);
+    `, reportPath + ".png", ocrPath, inspectAccountNames ? "names" : "full"], 120_000);
     return JSON.parse(await readFile(ocrPath, "utf8")) as NonNullable<Observation["renderedText"]>;
   };
   let rowClick: {x:number;y:number} | undefined;
@@ -128,6 +136,23 @@ async function run() {
   const settingsRequests: Array<{path:string;method:string}> = [];
   let settingsScenario = false;
   let sessionAccountScenario = false;
+  let requestAccountScenario = false;
+  let newConversationAccount: string | null = null;
+  let newConversationRequests: unknown[] = [];
+  let accountActionScenario = false;
+  let unavailableAccountScenario = false;
+  let accountActionClick: {x:number;y:number} | undefined;
+  let conversationClick: {x:number;y:number} | undefined;
+  let assignmentClick: {x:number;y:number} | undefined;
+  let chooseConversationClick: {x:number;y:number} | undefined;
+  let otherConversationClick: {x:number;y:number} | undefined;
+  const assignmentRequests: Array<{threadId:string;account:string}> = [];
+  const conversationID = "20000000-0000-4000-8000-000000000001";
+  const assignmentConversations = Array.from({length:12}, (_,index) => ({
+    threadId:index === 0 ? conversationID : `20000000-0000-4000-8000-${String(index+1).padStart(12,"0")}`,
+    title:index === 0 ? "QuotaPie 대화 계정 선택 화면 점검" : index === 1 ? "긴 제목의 대화도 어떤 작업인지 읽을 수 있어야 합니다 — 메뉴바 계정 전환" : `Project conversation ${index+1}`,
+    sourceAccount:"default",currentAccount:"default",targetAccount:null as string|null,active:false,
+  }));
   const fastQuotaRequests: Array<{path:string;method:string;token:string|null;reason?:string}> = [];
   const account = (id: string, label: string, remaining: number) => ({ provider: "codex", account: id, accountLabel: label, enabled: true,
     windows: [{ provider: "codex", account: id, bucket: "codex:primary", label: "5h", windowSeconds: 18_000,
@@ -214,18 +239,32 @@ async function run() {
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async request => {
     const requestPath = new URL(request.url).pathname;
     if (settingsScenario) settingsRequests.push({path:requestPath,method:request.method});
-    if (requestPath === "/api/request-accounts" || requestPath === "/api/request-accounts/credits") {
+    if (["/api/request-accounts", "/api/request-accounts/credits", "/api/request-accounts/new-conversations"].includes(requestPath)) {
       if (request.headers.get("x-quotapie-action-token") !== "isolated-fixture") return new Response("Unauthorized", {status:403});
+      if (request.method === "POST" && requestPath.endsWith("/new-conversations")) {
+        const value = await request.json() as {account:string|null};
+        newConversationRequests.push(value);
+        if (value.account !== "second" && value.account !== null) return new Response("Unexpected account", {status:400});
+        newConversationAccount = value.account;
+      }
+      if ((requestAccountScenario || accountActionScenario) && request.method === "POST" && requestPath === "/api/request-accounts") {
+        const value = await request.json() as {threadId:string;account:string};
+        assignmentRequests.push(value);
+        const conversation=assignmentConversations.find(item=>item.threadId===value.threadId);
+        if (!conversation || value.account!=="second") return new Response("Unexpected assignment",{status:400});
+        conversation.targetAccount=value.account;
+        return Response.json({threadId:value.threadId,account:value.account,label:"Second"});
+      }
       if (request.method === "POST" && requestPath.endsWith("/credits")) {
         const value = await request.json() as any; creditRequests.push(value);
         if (value.account !== "default" || value.allow !== true) return new Response("Unexpected choice", {status:400});
         creditAllowed = true;
       }
-      return Response.json({conversations:sessionAccountScenario ? [{threadId:"10000000-0000-4000-8000-000000000099", title:"Current conversation",sourceAccount:"default",currentAccount:"second",targetAccount:"default",active:false}] : [],accounts:payload.accounts.filter(a=>a.provider==="codex").map(a=>({
-        account:a.account,label:a.accountLabel,available:!creditScenario || a.account==="default" && creditAllowed,
-        reason:creditScenario && !(a.account==="default" && creditAllowed) ? "pool_manual_quota_exhausted" : null,
+      return Response.json({newConversationAccount,conversations:requestAccountScenario || accountActionScenario ? assignmentConversations : sessionAccountScenario ? [{threadId:"10000000-0000-4000-8000-000000000099", title:"Current conversation",sourceAccount:"default",currentAccount:"second",targetAccount:"default",active:false}] : [],accounts:payload.accounts.filter(a=>a.provider==="codex").map(a=>({
+        account:a.account,label:a.accountLabel,available:unavailableAccountScenario && a.account==="second" ? false : !creditScenario || a.account==="default" && creditAllowed,
+        reason:unavailableAccountScenario && a.account==="second" ? "pool_manual_quota_exhausted" : creditScenario && !(a.account==="default" && creditAllowed) ? "pool_manual_quota_exhausted" : null,
         creditAllowed:a.account==="default" && creditAllowed,creditPolicy:creditAllowed?"allow":"block",
-        canAllowCredits:creditScenario,autoSwitchEnabled:true,remaining:creditScenario?0:18}))});
+        canAllowCredits:true,autoSwitchEnabled:true,remaining:creditScenario?0:18}))});
     }
     if (request.method === "GET" && requestPath === "/api/dots/connection") {
       return Response.json({state:"ready",toolAvailable:true,configured:true,processRunning:true,healthy:true,ready:true,discoveryObserved:true,activeSubscriptions:0,enabledTargets:0,nextURL:null,canConnect:false,canDisconnect:true});
@@ -265,7 +304,7 @@ async function run() {
   const profiles = ["main", "second"].map((id, index) => ({ id, name: id, codexHome: join(stage, id, "home"),
     appData: join(stage, id, "data"), collectionAccount: index ? "second" : "default", dockIcon: index ? "chatgpt" : "codex-system" }));
   try {
-    await exec(["bash", "script/build_and_run.sh", "bundle", stage]);
+    await exec(["bash", "script/build_and_run.sh", "bundle", stage], 600_000);
     const plist = join(app, "Contents/Info.plist");
     await exec(["/usr/libexec/PlistBuddy", "-c", `Set :CFBundleIdentifier ${bundleID}`, plist]);
     await exec(["/usr/libexec/PlistBuddy", "-c", "Delete :CFBundleURLTypes", plist]);
@@ -273,7 +312,9 @@ async function run() {
     await exec(["codesign", "--force", "--sign", "-", "--timestamp=none", join(app, "Contents/Helpers/QuotaPieClaudeSessionHelper")]);
     await exec(["codesign", "--force", "--sign", "-", "--timestamp=none", app]);
     await exec(["/usr/bin/defaults", "write", bundleID, "local.quotapie.codex-desktop-profiles.v1", "-data", Buffer.from(JSON.stringify(profiles)).toString("hex")]);
-    for (const scenario of [
+    for (const scenario of verificationScenarios([
+      ...["request-account-picker","request-account-new","request-account-selected","request-account-apply","request-account-choose-other","request-account-switch-context","request-account-back","request-account-picker-dark","request-account-current","request-account-explicit-current","request-account-scheduled","request-account-unavailable"].map(name=>({name,running:["main"],frontmost:null,initialAccountID:"codex/second",initialRequestAccountID:"codex/second",appearance:name.endsWith("dark")?"dark":"light",expected:{account:"codex/second",remaining:100,label:"Second"}})),
+      ...["account-action-list","account-action-switch","account-action-repeat","account-action-unavailable"].map(name=>({name,running:["main"],frontmost:null,expected:{account:["account-action-switch","account-action-repeat"].includes(name)?"codex/second":"codex/default",remaining:["account-action-switch","account-action-repeat"].includes(name)?100:18,label:"Main"}})),
       {name:"session-account",running:["main"],frontmost:null,expected:{account:"codex/default",remaining:18,label:"Second"}},
       { name: "fast-quota-delayed-details", running: ["main"], frontmost: null, fastQuota: true, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "main-only", running: ["main"], frontmost: null, expected: { account: "codex/default", remaining: 18, label: "Main" } },
@@ -303,6 +344,7 @@ async function run() {
       { name: "settings-unavailable", running:["main"], frontmost:null, initialSection:"settings", settingsCategory:"general", expected:null },
       { name: "account-detail-dark", running:["main"], frontmost:null, initialAccountID:"codex/second", appearance:"dark", expected:{account:"codex/second",remaining:100,label:"Second"} },
       { name: "account-detail-auth", running:["main"], frontmost:null, mixedAccounts:true, initialAccountID:"claude/default", expected:{account:"claude/default",remaining:37,label:"Claude Main"} },
+      { name: "claude-reset-grant", running:["main"], frontmost:null, initialSection:"quota", expected:{account:"claude/default",remaining:37,label:"Claude Main"} },
       { name: "account-detail-blocked", running:["main"], frontmost:null, blockedAccounts:true, initialAccountID:"codex/default", expected:{account:"codex/default",remaining:18,label:"Main"} },
       { name: "excluded-posts", running: ["main"], frontmost: null, initialSection: "resets", expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "session-efficiency", running: ["main"], frontmost: null, initialSection: "activity", expected: { account: "codex/default", remaining: 18, label: "Main" } },
@@ -315,10 +357,15 @@ async function run() {
       { name: "host-goals-stale", running: ["main"], frontmost: null, withTasks: true, goalState: "stale", initialSection: "work", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "host-goals-account-change", running: ["main"], frontmost: null, withTasks: true, goalState: "account_changed", initialSection: "work", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
       { name: "host-goals-absent", running: ["main"], frontmost: null, withTasks: true, goalState: "no_goal", initialSection: "work", contentHeight: 1000, expected: { account: "codex/default", remaining: 18, label: "Main" } },
-    ]) {
-      const requestedScenarios = process.env.QUOTAPIE_VERIFY_SCENARIOS?.split(",");
-      if (requestedScenarios && !requestedScenarios.includes(scenario.name)) continue;
+    ], process.env.QUOTAPIE_VERIFY_SCENARIOS)) {
       sessionAccountScenario = scenario.name === "session-account";
+      requestAccountScenario = scenario.name.startsWith("request-account-");
+      newConversationAccount = null; newConversationRequests = [];
+      accountActionScenario = scenario.name.startsWith("account-action-");
+      unavailableAccountScenario = scenario.name.endsWith("unavailable");
+      assignmentRequests.length=0; assignmentConversations.forEach(item=>{item.targetAccount=null;item.currentAccount="default";});
+      if (["request-account-current","request-account-explicit-current"].includes(scenario.name)) assignmentConversations[0]!.currentAccount="second";
+      if (["request-account-explicit-current","request-account-scheduled"].includes(scenario.name)) assignmentConversations[0]!.targetAccount="second";
       (payload as any).routing = sessionAccountScenario ? {checkedAtMs:Date.now(),freshness:"fresh",active:[],recent:[]} : undefined;
       creditScenario = "credit" in scenario;
       creditAllowed = false; creditRequests.length = 0;
@@ -328,6 +375,16 @@ async function run() {
       payload.accounts = "mixedAccounts" in scenario ? mixedAccounts : "blockedAccounts" in scenario ? blockedAccounts :
         "singleAccount" in scenario ? [baseAccounts[0]!] : "manyAccounts" in scenario ? manyAccounts :
         "rowAccounts" in scenario ? rowAccounts : baseAccounts;
+      if (scenario.name === "claude-reset-grant") {
+        const claude = account("default", "Claude Main", 37);
+        payload.accounts = [{...claude, provider:"claude", windows:claude.windows.map(window => ({...window,
+          provider:"claude", bucket:"five_hour", metadata:{claudeResetGrantJSON:JSON.stringify({
+            source:"claude-usage.cedar_ember", state:"reported", eligible:true, grants:[{
+              id:"launch-team",resets_left:1,resets_total:1,ends_at:"2030-01-02T16:00:00Z",usable_now:false,claimable:true,
+            }],
+          })},
+        }))}];
+      }
       if (creditScenario) payload.accounts = baseAccounts.map(a=>({...a,windows:a.windows.map(w=>({...w,remainingPercent:0,usedPercent:100}))}));
       fastQuotaScenario = "fastQuota" in scenario;
       payload.resumeTasks = "withTasks" in scenario ? pausedTasks : [];
@@ -352,23 +409,88 @@ async function run() {
         appearance: "appearance" in scenario ? scenario.appearance : undefined,
         inspectAutoResume: scenario.name === "auto-resume",
         fastQuota: fastQuotaScenario, quotaCachePath,
-        focusedConversationTitle: sessionAccountScenario ? "Current conversation" : undefined,
+        focusedConversationTitle: accountActionScenario ? assignmentConversations[0]!.title : sessionAccountScenario ? "Current conversation" : undefined,
         focusedResumeTaskID: "focusedResumeTaskID" in scenario ? scenario.focusedResumeTaskID : undefined,
         initialSection: "initialSection" in scenario ? scenario.initialSection : undefined,
         settingsCategory: "settingsCategory" in scenario ? scenario.settingsCategory : undefined,
         initialAccountID: "initialAccountID" in scenario ? scenario.initialAccountID : undefined,
-        navigationClicks: scenario.name === "credit-recovery-allow" ? [creditClick] : scenario.name === "account-list-navigation" ? [rowClick, backClick] : undefined }));
+        initialRequestAccountID: "initialRequestAccountID" in scenario ? scenario.initialRequestAccountID : undefined,
+        navigationClicks: scenario.name === "account-action-switch" ? [accountActionClick] : scenario.name === "account-action-repeat" ? [accountActionClick,accountActionClick] :
+          scenario.name === "request-account-new" ? [{x:169/360,y:123/580}] :
+          ["request-account-selected","request-account-current","request-account-explicit-current","request-account-scheduled","request-account-unavailable"].includes(scenario.name) ? [conversationClick] : scenario.name === "request-account-apply" ? [conversationClick,assignmentClick] :
+          scenario.name === "request-account-choose-other" ? [conversationClick,assignmentClick,chooseConversationClick] :
+          scenario.name === "request-account-switch-context" ? [conversationClick,assignmentClick,chooseConversationClick,otherConversationClick] :
+          scenario.name === "request-account-back" ? [{x:24/360,y:22/580}] :
+          scenario.name === "credit-recovery-allow" ? [creditClick] : scenario.name === "account-list-navigation" ? [rowClick, backClick] : undefined }));
       await exec(["/usr/bin/open", "-W", "-n", "-g", app, "--args", "--verification", request], 20_000);
       const observed = JSON.parse(await readFile(reportPath, "utf8")) as Observation;
-      if (creditScenario || settingsScenario || scenario.name.startsWith("account-detail-") || ["auto-resume", "account-list-mixed", "account-list-blocked", "account-list-existing-limits"].includes(scenario.name)) {
+      if (requestAccountScenario || accountActionScenario || creditScenario || settingsScenario || scenario.name.startsWith("account-detail-") || ["auto-resume", "account-list-mixed", "account-list-blocked", "account-list-existing-limits"].includes(scenario.name)) {
         observed.renderedText = await recognizeText(reportPath, scenario.name === "account-list-mixed");
       }
       const failures = smokeFailures(observed, scenario.expected);
+      if (scenario.name === "claude-reset-grant") {
+        observed.renderedText = await recognizeText(reportPath);
+        const text = (observed.renderedText ?? []).map(row => row.text).join(" ");
+        for (const expected of observed.locale === "ko" ? ["초기화권", "서버 기록", "아니요", "launch-team"] : ["reset tickets", "Server record", "No", "launch-team"])
+          if (!text.includes(expected)) failures.push("reset_grant_evidence_missing_" + expected);
+      }
+      if (requestAccountScenario) {
+        if (scenario.name === "request-account-new") {
+          if (newConversationRequests.length !== 1 || newConversationAccount !== "second") failures.push("new_conversation_preference_not_saved");
+          if (!(observed.renderedText??[]).some(row=>row.text.includes(observed.locale === "ko" ? "새 대화: Second" : "New chats: Second")))
+            failures.push("new_conversation_preference_not_visible");
+        }
+        if (observed.additionalWindowCount!==0 || observed.attachedSheetCount!==0) failures.push("account_selection_opened_another_window");
+        if (Math.abs((observed.viewWidth??0)-360)>1) failures.push("account_selection_changed_popover_width");
+        if (["request-account-apply","request-account-choose-other","request-account-switch-context"].includes(scenario.name)) {
+          if (assignmentRequests.length!==1 || assignmentRequests[0]?.threadId!==conversationID || assignmentRequests[0]?.account!=="second") failures.push("assignment_not_explicit_or_wrong_target");
+          const expectedConversation=scenario.name === "request-account-switch-context" ? assignmentConversations[1]!.threadId : conversationID;
+          if (observed.requestAccountTargetID!==null || observed.displayedConversationID!==expectedConversation || !observed.isShowingAccountList) failures.push("assignment_did_not_return_to_conversation_context");
+          const text=observed.renderedText??[];
+          if (scenario.name === "request-account-apply") {
+            const choose=text.find(item=>item.text.includes(observed.locale === "ko" ? "다른 대화" : "Other conversation"));
+            if (!choose) failures.push("conversation_switch_not_visible");
+            else chooseConversationClick={x:choose.left,y:choose.top};
+          }
+          if (scenario.name === "request-account-choose-other") {
+            const row=text.find(item=>item.text.includes("긴 제목"));
+            if (!row || observed.viewHeight!==520) failures.push("conversation_picker_not_inline");
+            else otherConversationClick={x:row.left,y:row.top};
+          }
+        } else if (assignmentRequests.length) failures.push("browsing_or_cancelling_changed_account");
+        if (scenario.name === "request-account-back") {
+          if (observed.requestAccountTargetID!==null || observed.inspectedAccount!=="codex/second") failures.push("back_did_not_restore_previous_screen");
+        } else if (!["request-account-apply","request-account-choose-other","request-account-switch-context"].includes(scenario.name)) {
+          const text=observed.renderedText??[];
+          const row=text.find(item=>/quotapie/i.test(item.text));
+          const apply=text.find(item=>item.text.includes(observed.locale === "ko" ? "선택한 대화에 적용" : "Apply to selected"));
+          const expectsApply=scenario.name === "request-account-selected";
+          if (!row || expectsApply && !apply || !expectsApply && apply) failures.push("apply_button_must_only_appear_for_a_real_change");
+          const expectedStatus=scenario.name === "request-account-scheduled" ? (observed.locale === "ko" ? "다음 요청에 사용" : "Set for next request") :
+            ["request-account-current","request-account-explicit-current"].includes(scenario.name) ? (observed.locale === "ko" ? "사용 중" : "In use") : null;
+          if (expectedStatus && !text.some(item=>item.text.includes(expectedStatus))) failures.push("selected_account_status_not_visible");
+          if (scenario.name === "request-account-picker" && row) conversationClick={x:row.left,y:row.top};
+          if (scenario.name === "request-account-selected" && apply) assignmentClick={x:apply.left,y:apply.top};
+          if (observed.requestAccountTargetID!=="codex/second" || (observed.viewHeight??0)>600) failures.push("account_picker_context_or_height_incorrect");
+        }
+      }
+      if (accountActionScenario) {
+        const text=observed.renderedText??[];
+        const ko=observed.locale === "ko";
+        const change=text.filter(item=>item.text.includes(ko ? "이 대화에 사용" : "Use for this conversation"));
+        if (change.length !== (unavailableAccountScenario ? 0 : 1)) failures.push("account_action_not_consistent_with_current_selection");
+        if (scenario.name === "account-action-list" && change[0]) accountActionClick={x:change[0].left,y:change[0].top};
+        const changed=["account-action-switch","account-action-repeat"].includes(scenario.name);
+        if (assignmentRequests.length !== (changed ? 1 : 0)) failures.push("duplicate_or_missing_account_assignment");
+        if (changed && (assignmentRequests[0]?.threadId!==conversationID || assignmentRequests[0]?.account!=="second")) failures.push("account_assignment_wrong_context");
+        if (!text.some(item=>item.text.replace(/\s/g, "").includes((changed ? (ko ? "다음 요청에 사용" : "Set for next request") : (ko ? "사용 중" : "In use")).replace(/\s/g, "")))) failures.push("account_status_missing");
+        if (observed.additionalWindowCount!==0 || observed.attachedSheetCount!==0 || observed.requestAccountTargetID!==null) failures.push("contextual_account_change_opened_picker_or_window");
+      }
       if (creditScenario) {
         const text = observed.renderedText ?? [];
         const all = text.map(x=>x.text).join(" ").replace(/\s/g, "");
         const ko = observed.locale === "ko";
-        if (!all.includes((ko ? "원래 연결로 복구" : "Restore original connection").replace(/\s/g,""))) failures.push("recovery_not_visible");
+        if (!all.includes((ko ? "연결 복구" : "Recovery").replace(/\s/g,""))) failures.push("recovery_not_visible");
         if (scenario.name === "credit-recovery-blocked") {
           if (!all.includes((ko ? "크레딧 사용이 허용되지 않아 차단됨" : "paid credits are not allowed").replace(/\s/g,""))) failures.push("quota_reason_not_visible");
           const button = text.find(row=>row.text.includes(ko ? "크레딧으로 계속" : "Continue with credits"));
@@ -397,7 +519,7 @@ async function run() {
         const text=(observed.renderedText ?? []).map(row=>row.text).join(" ");
         if (!text.includes(observed.locale === "ko" ? "제한" : "restrict")) failures.push("detail_provider_denial_hidden");
       }
-      const expectedList = !("initialSection" in scenario) && !("initialAccountID" in scenario);
+      const expectedList = ["request-account-apply","request-account-choose-other","request-account-switch-context"].includes(scenario.name) || !("initialSection" in scenario) && !("initialAccountID" in scenario);
       if (observed.isShowingAccountList !== expectedList) failures.push("wrong_popover_landing_page");
       if (scenario.name === "account-list-single") {
         singleAccountHeight = observed.viewHeight ?? 0;
@@ -416,7 +538,8 @@ async function run() {
         if (!(observed.scrollRegions ?? []).some(region=>region.documentHeight > region.viewportHeight + 100)) failures.push("many_accounts_cannot_scroll");
       }
       if (sessionAccountScenario && (observed.displayedConversationID !== "10000000-0000-4000-8000-000000000099" ||
-          !observed.conversationAccountText?.includes("Second") || !observed.menuText?.includes("Second"))) failures.push("focused_session_account_missing");
+          !observed.conversationAccountText?.includes("Second") || !observed.menuAccessibleLabel?.includes("Second") ||
+          !observed.menuHasImage || observed.menuAccount !== "codex/second" || observed.menuRemainingPercent !== 100)) failures.push("focused_session_account_missing");
       if (scenario.name === "account-list-existing-limits") {
         const text = observed.renderedText ?? [];
         const normalized = (value:string) => value.replace(/\s/g, "");

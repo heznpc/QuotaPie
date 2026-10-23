@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync,
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { get } from "node:http";
+import { testArguments } from "./test-arguments";
 
 // Tests must not be allowed to publish fixture state to an installed collector,
 // even when a test restores the wrong environment or launches a child process.
@@ -123,24 +124,13 @@ ${[...ports].sort((a, b) => a - b).map(port => `(allow network-outbound (remote 
       throw new Error(`Test network ${mode} control could not be verified; refusing to run tests (exit ${networkExit}, received ${proofRequests}): ${await new Response(networkProof.stderr).text()}`);
     proofRequests = 0;
   }
-  // Bun 1.3 can misclassify an explicit relative test file as a directory
-  // during preload discovery. Existing paths are unambiguous as absolute paths;
-  // preserve flags and non-path test-name filters unchanged.
-  const valueFlags = new Set(["-t", "--test-name-pattern", "--timeout", "--rerun-each", "--retry",
-    "--seed", "--max-concurrency", "--preload", "-r", "--config", "-c", "--cwd", "--env-file",
-    "--reporter", "--reporter-outfile", "--coverage-dir", "--coverage-reporter", "--bail"]);
-  let optionValue = false;
-  const testArgs = process.argv.slice(2).map(arg => {
-    if (optionValue) { optionValue = false; return arg; }
-    if (arg.startsWith("-")) { optionValue = valueFlags.has(arg); return arg; }
-    return existsSync(arg) ? resolve(arg) : arg;
-  });
+  const testArgs = testArguments(process.argv.slice(2), resolve(import.meta.dir, "../tests"));
   if (testArgs.includes("--verify-isolation")) {
     console.log(`Test filesystem and exact fixture-port barriers verified (${protectedPorts.size} pre-existing ports excluded; ${fixturePorts.size} reserved fixture ports; positive control passed, denied synthetic listener received 0 requests); no tests were run.`);
     result = 0;
   } else {
     await Promise.all(reservations.splice(0).map(server => server.stop(true)));
-    const tests = Bun.spawn([...command, process.execPath, "test", ...(testArgs.length ? testArgs : [resolve(import.meta.dir, "../tests")])],
+    const tests = Bun.spawn([...command, process.execPath, "test", ...testArgs],
       { env: { ...env, QUOTAPIE_TEST_ISOLATION: "verified", QUOTAPIE_TEST_PORTS: [...fixturePorts].join(",") },
         stdin: "inherit", stdout: "inherit", stderr: "inherit" });
     result = await tests.exited;

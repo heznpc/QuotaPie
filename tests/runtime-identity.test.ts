@@ -28,14 +28,24 @@ test("legacy hash version retains exactly the original input set while current i
     const helper="script/codex-session-consolidation.py";
     writeFileSync(join(root,helper),"new consolidation helper");
     expected.update(`${helper}\0${Buffer.byteLength("new consolidation helper")}\0`);expected.update("new consolidation helper");
-    expect(runtimeSourceHash(root)).toBe(expected.digest("hex"));
+    const versionThreeHash=expected.copy().digest("hex");
+    expect(runtimeSourceHash(root,3)).toBe(versionThreeHash);
+    expect(()=>runtimeSourceHash(root)).toThrow();
+    const maintenance="script/install-maintenance.ts";
+    writeFileSync(join(root,maintenance),"maintenance fence");
+    expected.update(`${maintenance}\0${Buffer.byteLength("maintenance fence")}\0`);expected.update("maintenance fence");
+    const currentHash=expected.digest("hex");
+    expect(runtimeSourceHash(root)).toBe(currentHash);
+    writeFileSync(join(root,maintenance),"changed maintenance fence");
+    expect(runtimeSourceHash(root)).not.toBe(currentHash);
+    expect(runtimeSourceHash(root,3)).toBe(versionThreeHash);
     expect(runtimeSourceHash(root,1)).toBe(legacyHash);
     expect(runtimeSourceHash(root,2)).toBe(versionTwoHash);
     writeFileSync(join(root,helper),"changed consolidation helper");
     expect(runtimeSourceHash(root,1)).toBe(legacyHash);
     expect(runtimeSourceHash(root,2)).toBe(versionTwoHash);
-    expect(()=>runtimeSourceHash(root,4 as 1)).toThrow("Unsupported runtime hash version");
-    expect(captureRuntimeIdentity().hashVersion).toBe(3);
+    expect(()=>runtimeSourceHash(root,5 as 1)).toThrow("Unsupported runtime hash version");
+    expect(captureRuntimeIdentity().hashVersion).toBe(4);
   } finally {rmSync(root,{recursive:true,force:true});}
 });
 
@@ -44,6 +54,7 @@ test("runtime identity detects changed and missing code but ignores notes and bu
   try {
     for (const path of ["src", "bin", "script", "scripts", "dist"]) mkdirSync(join(root, path));
     for (const file of ["src/cli.ts", "bin/quotapie", "script/awake_hook.py", "script/codex-host-wake.py", "scripts/codex-compaction-local.py", "script/codex-session-consolidation.py"]) writeFileSync(join(root, file), "initial");
+    writeFileSync(join(root, "script/install-maintenance.ts"), "initial");
     mkdirSync(join(root, "packages/quota-core/src"), { recursive: true });
     writeFileSync(join(root, "packages/quota-core/package.json"), "{}");
     writeFileSync(join(root, "packages/quota-core/src/index.ts"), "initial");

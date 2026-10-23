@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, sym
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { bundleCollector, COLLECTOR_FILES, writeDmgInstaller } from "../script/prepare-distribution";
+import { stageRuntime } from "../script/install-macos";
+import { runtimeSourceHash } from "../src/runtime-identity";
 
 function write(root: string, path: string, value = path) {
   mkdirSync(dirname(join(root, path)), { recursive: true });
@@ -16,6 +18,22 @@ function fixture() {
   for (const path of [...COLLECTOR_FILES, "src/cli.ts", "src/dashboard.html", "src/providers/codex.ts", "packages/quota-core/src/index.ts"]) write(root, path);
   return { root, app };
 }
+
+test("packaged collector can be installed with the same runtime identity as its source", () => {
+  const { root, app } = fixture();
+  try {
+    write(root, "package.json", JSON.stringify({ name: "quotapie" }));
+    // Independent of COLLECTOR_FILES: newly required installer inputs must also
+    // reach a downloaded bundle, not just a developer checkout.
+    write(root, "script/codex-host-wake.py");
+    write(root, "script/codex-session-consolidation.py");
+    write(root, "script/install-maintenance.ts");
+    const collector = bundleCollector(root, app), installed = join(root, "installed");
+    stageRuntime(collector, installed);
+    expect(runtimeSourceHash(installed)).toBe(runtimeSourceHash(root));
+    expect(readFileSync(join(installed, "script/install-maintenance.ts"), "utf8")).toBe("script/install-maintenance.ts");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test("distribution includes runtime inputs without local data and replaces old payloads without nesting", () => {
   const { root, app } = fixture();

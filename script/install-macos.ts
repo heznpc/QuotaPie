@@ -56,7 +56,7 @@ function reportedHashVersion(identity: any): RuntimeHashVersion | null {
   // Older collectors did not report a version. Do not try multiple algorithms
   // against a failed hash: the advertised version selects exactly one input set.
   if (!Object.hasOwn(identity, "hashVersion")) return 1;
-  return identity.hashVersion === 1 || identity.hashVersion === 2 || identity.hashVersion === RUNTIME_HASH_VERSION ? identity.hashVersion : null;
+  return identity.hashVersion === 1 || identity.hashVersion === 2 || identity.hashVersion === 3 || identity.hashVersion === RUNTIME_HASH_VERSION ? identity.hashVersion : null;
 }
 
 /** Copy executable inputs only. Never follow links into a checkout's private data. */
@@ -92,7 +92,7 @@ export function stageRuntime(source: string, destination: string) {
     copyFileSync(join(source, "LICENSE"), join(destination, "LICENSE"), constants.COPYFILE_EXCL);
     chmodSync(join(destination, "LICENSE"), 0o600);
   }
-  for (const file of ["bin/quotapie", "src/cli.ts", "script/awake_hook.py", "script/codex-host-wake.py", "script/codex-session-consolidation.py", "scripts/codex-compaction-local.py", "script/install.sh", "script/install-macos.ts", "packages/quota-core/src/index.ts", "packages/quota-core/package.json"]) {
+  for (const file of ["bin/quotapie", "src/cli.ts", "script/awake_hook.py", "script/codex-host-wake.py", "script/codex-session-consolidation.py", "scripts/codex-compaction-local.py", "script/install.sh", "script/install-macos.ts", "script/install-maintenance.ts", "packages/quota-core/src/index.ts", "packages/quota-core/package.json"]) {
     if (!existsSync(join(destination, file))) throw new Error(`Missing runtime input: ${file}`);
   }
 }
@@ -141,7 +141,9 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
   let rollbackFailed = false;
   let maintenance: InstallMaintenance | null = null;
   let previousIdentity: {origin:string;sourceHash:string;hashVersion:RuntimeHashVersion} | null = null;
-  let managerSnapshot: {manager:string;wrapper:string;replacement:string} | null = null;
+  let managerSnapshot: {manager:string;wrapper:string;replacement:string;python:string} | null = null;
+  let installed: { installed: true; runtime: string; app: string; cli: string; config: string; data: string;
+    sourceHash: string; hashVersion: RuntimeHashVersion; collectorPid: number; menuPid: number; collection: string } | null = null;
   const managerLockRelease: {release?:()=>void} = {};
   let managerLock: Promise<void> | null = null;
   const checkCancelled = () => { if (deps.signal?.aborted) throw new Error("Installation interrupted; previous installation restored."); };
@@ -299,7 +301,7 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
         throw new Error("The installed relay manager ownership cannot be verified.");
       const stagedManager=join(work,"manage.py"),replacement=readFileSync(join(stagedRuntime,"scripts/codex-compaction-local.py"),"utf8");
       writeFileSync(stagedManager,replacement,{mode:0o600,flag:"wx"});
-      managerSnapshot={manager,wrapper,replacement};addSwap(relayManager,stagedManager);
+      managerSnapshot={manager,wrapper,replacement,python:command[1]!};addSwap(relayManager,stagedManager);
     }
     const expectedHash = runtimeSourceHash(stagedRuntime);
     if (expectedHash !== runtimeSourceHash(source)) throw new Error("Runtime inputs changed while staging; retry installation.");
@@ -338,7 +340,13 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
       value.ProgramArguments = index ? [join(app, "Contents/MacOS/QuotaPie")] : [join(runtime, "bin/quotapie"), "serve"];
       value.WorkingDirectory = index ? home : runtime;
       value.EnvironmentVariables = { ...value.EnvironmentVariables, BUN_BIN: bun, PATH: env.PATH,
-        QUOTAPIE_CONFIG: config, QUOTAPIE_HOME: data, ...(index ? { QUOTAPIE_API_URL: origin } : {}) };
+        QUOTAPIE_CONFIG: config, QUOTAPIE_HOME: data, ...(index ? {
+          QUOTAPIE_API_URL: origin,
+          // The launch agent is swapped/rolled back with the app. Its unique
+          // receipt distinguishes an update from an ordinary app restart.
+          QUOTAPIE_INSTALL_ID: id,
+          QUOTAPIE_INSTALL_IS_UPDATE: present(app) || present(config) ? "1" : "0",
+        } : {}) };
       value.StandardOutPath = join(data, index ? "menubar.log" : "service.log");
       value.StandardErrorPath = join(data, index ? "menubar.error.log" : "service.error.log");
       const staged = join(dirname(agents[index]!), `.${LABELS[index]}.install-${id}.plist`);
@@ -470,7 +478,7 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
       try { rmSync(swap.backup, { recursive: true, force: true }); }
       catch { console.warn(`Installation verified; an old backup could not be removed: ${swap.backup}`); }
     }
-    return { installed: true, runtime, app, cli, config, data, sourceHash: expectedHash, hashVersion: RUNTIME_HASH_VERSION, ...verified,
+    installed = { installed: true, runtime, app, cli, config, data, sourceHash: expectedHash, hashVersion: RUNTIME_HASH_VERSION, ...verified,
       collection };
   } catch (error) {
     const failures: string[] = [];
@@ -530,8 +538,29 @@ export async function installMacOS(options: InstallOptions = {}, overrides: Part
       for (const swap of swaps) if (present(swap.staged)) rmSync(swap.staged, { recursive: true, force: true });
       rmSync(stagedApp, { recursive: true, force: true });
       rmSync(work, { recursive: true, force: true });
-      rmSync(lock, { recursive: true, force: true });
+      if (!installed) rmSync(lock, { recursive: true, force: true });
     }
+  }
+  try {
+    let relayUpgrade = null;
+    if (managerSnapshot) {
+      // The manager acquires management.lock itself. Release our manager lock
+      // after committing the app, but retain the install lock through reload.
+      // A partial handler reload cannot safely roll back the installed runtime.
+      if (deps.signal?.aborted) throw new Error("Installation interrupted before session relay update.");
+      if (managerFile(relayManager) !== managerSnapshot.replacement || managerFile(relayWrapper) !== managerSnapshot.wrapper)
+        throw new Error("The installed relay manager changed before session relay update.");
+      const result = await deps.run([managerSnapshot.python, relayManager, "upgrade", "--source", runtime, "--bun", bun, "--watch"], env);
+      if (result.code !== 0) throw new Error(result.stderr.trim() || "Relay manager upgrade failed.");
+      relayUpgrade = JSON.parse(result.stdout);
+      if (relayUpgrade?.endpoints_preserved !== true || !Array.isArray(relayUpgrade.applied) || !Array.isArray(relayUpgrade.deferred))
+        throw new Error("Relay manager did not verify its upgrade result.");
+    }
+    return { ...installed!, relayUpgrade };
+  } catch (error) {
+    throw new Error(`App installed and restarted, but existing session relay update failed: ${error instanceof Error ? error.message : error}`);
+  } finally {
+    rmSync(lock, { recursive: true, force: true });
   }
 }
 
