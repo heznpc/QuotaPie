@@ -1,0 +1,37 @@
+import Foundation
+
+/// Stable general-quota columns never substitute a model allowance or an
+/// unknown duration for a missing five-hour or weekly reading.
+struct AccountListPresentation {
+    let fiveHour: QuotaWindow?
+    let weekly: QuotaWindow?
+    let additionalLimitCount: Int
+
+    init(account: AccountState) {
+        let general = account.windows.filter { window in
+            switch account.provider {
+            case "codex": return window.bucket.hasPrefix("codex:")
+            case "claude": return ["five_hour", "seven_day"].contains(window.bucket)
+            default: return false
+            }
+        }
+        func reading(seconds: Double) -> QuotaWindow? {
+            general.filter { $0.windowSeconds == seconds }.sorted {
+                if ($0.freshness == "fresh") != ($1.freshness == "fresh") { return $0.freshness == "fresh" }
+                if $0.observedAtMs != $1.observedAtMs { return $0.observedAtMs > $1.observedAtMs }
+                return $0.bucket < $1.bucket
+            }.first
+        }
+        fiveHour = reading(seconds: 5 * 3_600)
+        weekly = reading(seconds: 7 * 86_400)
+        let shownIDs = Set([fiveHour, weekly].compactMap { $0?.id })
+        additionalLimitCount = account.windows.filter { !shownIDs.contains($0.id) }.count
+    }
+
+    static func resetTime(_ timestampMs: Double?, now: Date = Date()) -> String {
+        guard let timestampMs, timestampMs.isFinite, timestampMs > 0 else { return "—" }
+        let date = Date(timeIntervalSince1970: timestampMs / 1_000)
+        let clock = DisplayFormat.clock(timestampMs)
+        return Calendar.current.isDate(date, inSameDayAs: now) ? clock : "\(DisplayFormat.day(timestampMs)) \(clock)"
+    }
+}

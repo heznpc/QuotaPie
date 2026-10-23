@@ -76,6 +76,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
         const accounts = service.quotaAccounts(nowMs);
         return json({ nowMs, actionToken, accounts, collection: service.collectionStatus(),
           resumeTasks: service.resumeTaskSummaries(100, nowMs, accounts.flatMap(account => account.windows)),
+          autoResume: service.autoResume.status(), compaction: compaction.snapshot(nowMs),
           headline: headlineJson(buildHeadline(accounts, nowMs, locale)) });
       }
       if (url.pathname === "/api/collection/refresh") {
@@ -90,7 +91,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
             const input = JSON.parse(body);
             if (!input || typeof input !== "object" || Array.isArray(input) ||
                 Object.keys(input).some(key => key !== "reason") ||
-                (input.reason !== undefined && !["startup", "wake", "network", "manual"].includes(input.reason)))
+                (input.reason !== undefined && !["startup", "wake", "network", "manual", "visible"].includes(input.reason)))
               return json({ error: "invalid_refresh" }, 400);
           } catch { return json({ error: "invalid_refresh" }, 400); }
         }

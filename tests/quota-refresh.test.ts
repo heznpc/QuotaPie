@@ -46,6 +46,10 @@ test("quota HTTP returns persisted measurements and task readiness without histo
     const data: any = await response.json();
     expect(data.accounts[0].windows[0]).toMatchObject({ remainingPercent: 58, freshness: "stale", observedAtMs: now - 601000 });
     expect(data.collection.refreshing).toBe(false);
+    expect(data.autoResume.accounts.every((account: any) => account.enabled === false)).toBe(true);
+    expect(data.autoResume.incidents).toEqual([]);
+    expect(data.compaction.active).toEqual([]);
+    expect(typeof data.compaction.checkedAtMs).toBe("number");
     expect(data.resumeTasks[0]).toMatchObject({ id: "fixture-task", state: "waiting" });
     expect(typeof data.actionToken).toBe("string");
     expect(data).not.toHaveProperty("recentWork");
@@ -73,6 +77,7 @@ test("refresh HTTP authenticates and accepts asynchronously without dispatching 
     expect(request).toHaveBeenCalledTimes(1);
     expect(poll).not.toHaveBeenCalled();
     expect(f.service.work.store.executions()).toHaveLength(0);
+    expect((await fetch(base + "/api/collection/refresh", { method: "POST", headers, body: '{"reason":"visible"}' })).status).toBe(202);
   } finally { server.stop(true); request.mockRestore(); poll.mockRestore(); await f.close(); }
 });
 
@@ -88,13 +93,14 @@ test("a healthy account or old success cannot mask failed-account retries; early
     await f.service.pollCodex(true);
     expect(f.service.nextCollectionDelayMs(60000, now)).toBe(5000);
     now += 1000; await f.service.pollCodex(true);
-    expect(calls).toEqual({ a: 1, b: 2 });
-    now += 4000; await f.service.pollCodex(true);
+    expect(calls).toEqual({ a: 1, b: 1 });
+    now += 4000; await expect(f.service.pollCodex(true)).rejects.toThrow("all attempted Codex accounts failed (a)");
     expect(f.service.nextCollectionDelayMs(60000, now)).toBe(15000);
-    now += 15000; await f.service.pollCodex(true);
+    now += 15000; await expect(f.service.pollCodex(true)).rejects.toThrow("all attempted Codex accounts failed (a)");
     expect(f.service.nextCollectionDelayMs(60000, now)).toBe(30000);
+    expect(calls).toEqual({ a: 3, b: 1 });
     f.config.accounts.codex[0]!.enabled = false;
-    expect(f.service.nextCollectionDelayMs(60000, now)).toBe(60000);
+    expect(f.service.nextCollectionDelayMs(60000, now)).toBe(40000);
     f.config.accounts.codex[0]!.enabled = true;
     fails = false; await f.service.pollCodex(); // Explicit refresh bypasses the retry timer.
     expect(f.service.nextCollectionDelayMs(60000, now)).toBe(60000);
@@ -111,6 +117,7 @@ test("wake merges into a coalesced request and in-flight collection reports its 
   const boundary = spyOn(f.service, "publishBoundary").mockResolvedValue(undefined);
   try {
     f.service.requestCollection(); f.service.requestCollection(true);
+    expect(f.service.collectionStatus().refreshing).toBe(true);
     const pending = f.service.tick();
     expect(f.service.collectionStatus().refreshing).toBe(true);
     expect(codex).toHaveBeenCalledWith(false);
@@ -139,4 +146,122 @@ test("multiple requests during a running watch cause one follow-up, never a para
     expect(count).toBe(2);
     expect(f.service.nextCollectionDelayMs(60000)).toBe(60000);
   } finally { release(); f.service.stop(); tick.mockRestore(); await f.close(); }
+});
+
+test("wake refreshes immediately while repeated visible/network requests are bounded between completed polls", async () => {
+  const f = fixture(); f.config.accounts.codex = [];
+  let now = 2_000_000_000_000, count = 0;
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  const tick = spyOn(f.service, "tick").mockImplementation(async () => {
+    count++;
+    return { events: [], windows: [], triggers: [], collected: false };
+  });
+  const waitFor = async (expected: number) => {
+    for (let attempt = 0; attempt < 50 && count < expected; attempt++) await Bun.sleep(1);
+    expect(count).toBe(expected);
+  };
+  const watching = f.service.watch();
+  try {
+    await waitFor(1); await Bun.sleep(1);
+    f.service.requestCollection(true); await waitFor(2); await Bun.sleep(1);
+    const firstRequest = f.service.collectionStatus().requestedAtMs;
+    for (let i = 0; i < 5; i++) { now += 1_000; f.service.requestCollection(true); }
+    await Bun.sleep(5);
+    expect(count).toBe(2);
+    expect(f.service.collectionStatus().requestedAtMs).toBe(firstRequest);
+    now = firstRequest! + QuotaPieService.FORCED_COLLECTION_MIN_INTERVAL_MS;
+    f.service.requestCollection(true); await waitFor(3);
+    expect(f.service.collectionStatus().requestedAtMs).toBe(now);
+  } finally { f.service.stop(); await watching; clock.mockRestore(); tick.mockRestore(); await f.close(); }
+});
+
+test("a failed account still retries in five seconds even when another wake request is coalesced", async () => {
+  const f = fixture(); let now = 2_000_000_000_000;
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  const calls = { a: 0, b: 0 };
+  const factory = spyOn(f.service as any, "createCodexClient").mockImplementation((profile: any) => ({
+    readRateLimits: async () => {
+      calls[profile.id as "a" | "b"]++;
+      if (profile.id === "a") throw new Error("offline");
+      return [sample(profile.id, now)];
+    }, close: async () => {},
+  }));
+  try {
+    f.service.requestCollection(true); await f.service.pollCodex();
+    now += 1_000; f.service.requestCollection(true);
+    expect(f.service.nextCollectionDelayMs(60_000, now)).toBe(4_000);
+    now += 4_000; await expect(f.service.pollCodex(true)).rejects.toThrow("all attempted Codex accounts failed (a)");
+    expect(calls).toEqual({ a: 2, b: 1 });
+    expect(f.service.nextCollectionDelayMs(60_000, now)).toBe(15_000);
+  } finally { clock.mockRestore(); factory.mockRestore(); await f.close(); }
+});
+
+test("healthy-account deadlines remain scheduled independently of another account's retry", async () => {
+  const f = fixture(); let now = 2_000_000_000_000;
+  const clock = spyOn(Date, "now").mockImplementation(() => now), calls = { a: 0, b: 0 };
+  const factory = spyOn(f.service as any, "createCodexClient").mockImplementation((profile: any) => ({
+    readRateLimits: async () => {
+      calls[profile.id as "a" | "b"]++;
+      if (profile.id === "a") throw new Error("offline");
+      return [sample(profile.id, now)];
+    }, close: async () => {},
+  }));
+  try {
+    await f.service.pollCodex(true);
+    for (const delay of [5_000, 15_000, 30_000]) {
+      now += delay; await expect(f.service.pollCodex(true)).rejects.toThrow("all attempted Codex accounts failed (a)");
+    }
+    expect(calls).toEqual({ a: 4, b: 1 });
+    expect(f.service.nextCollectionDelayMs(60_000, now)).toBe(10_000);
+    now += 10_000; await f.service.pollCodex(true);
+    expect(calls).toEqual({ a: 4, b: 2 });
+    expect(f.service.nextCollectionDelayMs(60_000, now)).toBe(20_000);
+  } finally { clock.mockRestore(); factory.mockRestore(); await f.close(); }
+});
+
+test("healthy-account scheduling preserves reset and freshness wake deadlines", async () => {
+  const f = fixture(); let now = 2_000_000_000_000;
+  f.config.collection.pollSeconds = 300;
+  f.config.collection.staleAfterSeconds = 60;
+  const clock = spyOn(Date, "now").mockImplementation(() => now), calls = { a: 0, b: 0 };
+  const factory = spyOn(f.service as any, "createCodexClient").mockImplementation((profile: any) => ({
+    readRateLimits: async () => {
+      calls[profile.id as "a" | "b"]++;
+      return [{ ...sample(profile.id, now), resetsAtMs: now + (profile.id === "a" ? 10_000 : 3600000) }];
+    }, close: async () => {},
+  }));
+  try {
+    await f.service.pollCodex(true);
+    expect(f.service.nextCollectionDelayMs(300_000, now)).toBe(11_000);
+    now += 11_000; await f.service.pollCodex(true);
+    expect(calls).toEqual({ a: 2, b: 1 });
+    now += 50_000; await f.service.pollCodex(true);
+    expect(calls).toEqual({ a: 3, b: 2 });
+  } finally { clock.mockRestore(); factory.mockRestore(); await f.close(); }
+});
+
+test("switching a previously healthy profile to keychain keeps isolation closed without a one-second wake loop", async () => {
+  const f = fixture(); let now = 2_000_000_000_000;
+  const clock = spyOn(Date, "now").mockImplementation(() => now), calls = { a: 0, b: 0 };
+  const factory = spyOn(f.service as any, "createCodexClient").mockImplementation((profile: any) => ({
+    readRateLimits: async () => { calls[profile.id as "a" | "b"]++; return [sample(profile.id, now)]; },
+    close: async () => {},
+  }));
+  const profileConfig = join(f.config.accounts.codex[0]!.codexHome!, "config.toml");
+  try {
+    await f.service.pollCodex(true);
+    writeFileSync(profileConfig, 'cli_auth_credentials_store = "keychain"\n');
+    now += 60_000; await f.service.pollCodex(true);
+    expect(calls).toEqual({ a: 1, b: 2 });
+    expect(f.service.codexPollResults().find(result => result.account === "a")?.error).toContain("multi-account Codex requires");
+    expect(f.service.nextCollectionDelayMs(60_000, now)).toBe(60_000);
+    now += 1_000; await f.service.pollCodex(true);
+    expect(calls).toEqual({ a: 1, b: 2 });
+    expect(f.service.nextCollectionDelayMs(60_000, now)).toBe(59_000);
+    writeFileSync(profileConfig, 'cli_auth_credentials_store = "file"\n');
+    await f.service.pollCodex(); // An explicit refresh can immediately verify the repair.
+    expect(calls).toEqual({ a: 2, b: 3 });
+    expect(f.service.codexPollResults().find(result => result.account === "a")?.error).toBeNull();
+    expect(f.service.nextCollectionDelayMs(60_000, now)).toBe(60_000);
+  } finally { clock.mockRestore(); factory.mockRestore(); await f.close(); }
 });

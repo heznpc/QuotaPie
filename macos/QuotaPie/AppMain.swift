@@ -257,7 +257,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         // Read again immediately so the values are not already ageing by the
         // time the popover finishes opening.
-        refresh()
+        if usesFastQuota, !isFixturePreview { requestFreshCollection(reason: "visible") }
+        else { refresh() }
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -480,7 +481,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // Only our local quota HTTP request is replaced; host work and rich
         // detail requests keep running. Ignore its eventual cancellation callback.
         quotaRequests.cancel()
-        lastDetailsFetchAt = nil
+        if reason != "visible" { lastDetailsFetchAt = nil }
         submitPendingCollectionRequest()
         refresh()
     }
@@ -495,7 +496,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isRequestingCollection = false
-                if case .failure = result {
+                switch result {
+                case .success(let collection):
+                    self.popoverModel.applyCollectionRefresh(collection)
+                    self.render()
+                case .failure:
                     self.popoverModel.collectionRequestError = Strings.t("collection.requestFailed")
                     // Retain the event through startup/network failure. Retrying
                     // this coalesced collection request never resumes a task.
@@ -509,6 +514,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     @objc private func refresh() {
         guard let client, let generation = quotaRequests.begin() else { return }
         let notificationRevision = popoverModel.notificationPreferencesRevision
+        let savingsRevision = popoverModel.savingsPreferencesRevision
+        let compactionRevision = popoverModel.compactionPreferencesRevision
         let receive: (Result<StatusPayload, Error>) -> Void = { [weak self] result in
             DispatchQueue.main.async {
                 guard let self, self.quotaRequests.finish(generation) else { return }
@@ -518,7 +525,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     if !self.usesFastQuota {
                         self.popoverModel.applyStatus(payload, notificationRevision: notificationRevision)
                     } else {
-                        self.popoverModel.applyQuota(payload)
+                        self.popoverModel.applyQuota(payload, savingsRevision: savingsRevision,
+                                                     compactionRevision: compactionRevision)
                         try? self.quotaCache?.save(payload)
                     }
                     self.popoverModel.lastSuccessAt = Date()
@@ -611,11 +619,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         guard let button = statusItem.button else { return }
         let headline = popoverModel.selectedHeadline
         let selected = popoverModel.selectedAccount
+        let accountAttention = selected.flatMap(MenuBarAccountStatus.title(for:))
         let badge = selected.map { AccountBadge(accountID: $0.id, name: $0.accountLabel) }
-        let readyTasks = popoverModel.lastError == nil
+        let readyTasks = popoverModel.canActOnTasks
             ? (popoverModel.payload?.resumeTasks.filter(\.isReady) ?? [])
             : []
         if readyTasks.isEmpty, !popoverModel.showingStartupCache, popoverModel.lastError == nil,
+           accountAttention == nil,
            let headline, ["normal", "pace-risk"].contains(headline.kind),
            let provider = headline.provider,
            let remaining = headline.remainingPercent, remaining.isFinite {
@@ -677,6 +687,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 ?? popoverModel.statusFailure?.shortText ?? Strings.t("headline.disconnected")
             color = .systemOrange
             toolTip = popoverModel.lastError ?? Strings.t("status.tooltip")
+        } else if let accountAttention {
+            title = accountAttention
+            color = .secondaryLabelColor
+            toolTip = [selected?.collection.isHealthy == false ? selected?.collection.actionText : accountAttention,
+                       headline?.localizedTitle, popoverModel.measurementDate.map {
+                           Strings.t("collection.measuredAt", $0.formatted(date: .abbreviated, time: .shortened))
+                       }].compactMap { $0 }.joined(separator: "\n")
         } else {
             title = headline?.localizedTitle ?? Strings.t("headline.checking")
             if headline?.kind == "degraded" || headline?.kind == "setup" { color = .secondaryLabelColor }

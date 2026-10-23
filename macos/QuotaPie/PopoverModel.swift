@@ -28,6 +28,7 @@ final class PopoverModel: ObservableObject {
     private(set) var poolPreferencesRevision = 0
     private(set) var savingsPreferencesRevision = 0
     private(set) var compactionPreferencesRevision = 0
+    private var compactionProjectionAtMs: Double?
     @Published var lastError: String?
     @Published var statusFailure: StatusFailure?
     @Published var notificationSaving = false
@@ -148,7 +149,7 @@ final class PopoverModel: ObservableObject {
 
     /// Quota polls never erase detail data or preferences, and out-of-order
     /// responses cannot put an older reading or action token back on screen.
-    func applyQuota(_ status: StatusPayload) {
+    func applyQuota(_ status: StatusPayload, savingsRevision: Int? = nil, compactionRevision: Int? = nil) {
         guard showingStartupCache || (status.nowMs ?? 0) >= (payload?.nowMs ?? 0) else { return }
         if var current = payload {
             current.nowMs = status.nowMs
@@ -157,14 +158,50 @@ final class PopoverModel: ObservableObject {
                 account.preservingDetails(from: current.accounts.first { $0.id == account.id })
             }
             current.actionToken = status.actionToken
-            current.collection = status.collection
+            if let collection = status.collection, collection.supersedes(current.collection) {
+                current.collection = collection
+            }
             current.resumeTasks = status.resumeTasks
+            if let autoResume = status.autoResume, !autoResumeSaving,
+               autoResumeSavedAtMs == 0 || (status.nowMs ?? 0) > autoResumeSavedAtMs {
+                current.autoResume = autoResume
+            }
+            if var compaction = status.compaction, acceptsCompaction(compaction, projectedAt: status.nowMs) {
+                if compactionSaving || (compactionRevision != nil && compactionRevision != compactionPreferencesRevision) {
+                    compaction.policy = current.compaction?.policy
+                }
+                if savingsSaving || (savingsRevision != nil && savingsRevision != savingsPreferencesRevision) {
+                    if compaction.savings == nil { compaction.savings = current.compaction?.savings }
+                    compaction.savings?.policy = current.compaction?.savings?.policy
+                }
+                current.compaction = compaction
+                compactionProjectionAtMs = max(status.nowMs ?? compaction.checkedAtMs, compaction.checkedAtMs)
+            }
             payload = current
-        } else { payload = status }
+        } else {
+            payload = status
+            if let compaction = status.compaction {
+                compactionProjectionAtMs = max(status.nowMs ?? compaction.checkedAtMs, compaction.checkedAtMs)
+            }
+        }
         let activeTaskIDs = Set(status.resumeTasks.filter(\.isActive).map(\.id))
         resumeActivities = resumeActivities.filter { activeTaskIDs.contains($0.key) }
         showingStartupCache = false
         quotaRevision += 1
+    }
+
+    func applyCollectionRefresh(_ collection: CollectionRefreshState) {
+        guard collection.supersedes(payload?.collection) else { return }
+        payload?.collection = collection
+    }
+
+    private func acceptsCompaction(_ incoming: CompactionPayload, projectedAt: Double?) -> Bool {
+        guard let current = payload?.compaction else { return true }
+        if incoming.checkedAtMs != current.checkedAtMs { return incoming.checkedAtMs > current.checkedAtMs }
+        // The same observation can become stale later without changing its
+        // checkedAtMs. Track that projection independently of quota-only polls.
+        return max(projectedAt ?? incoming.checkedAtMs, incoming.checkedAtMs)
+            > (compactionProjectionAtMs ?? max(payload?.nowMs ?? current.checkedAtMs, current.checkedAtMs))
     }
 
     var measurementDate: Date? {
@@ -215,6 +252,13 @@ final class PopoverModel: ObservableObject {
             next.actionToken = current.actionToken
             next.collection = current.collection
             next.resumeTasks = current.resumeTasks
+            if current.autoResume != nil { next.autoResume = current.autoResume }
+        }
+        if let incoming = next.compaction, acceptsCompaction(incoming, projectedAt: status.nowMs) {
+            compactionProjectionAtMs = max(status.nowMs ?? incoming.checkedAtMs, incoming.checkedAtMs)
+        } else { next.compaction = payload?.compaction }
+        if next.collection?.supersedes(payload?.collection) != true {
+            next.collection = payload?.collection
         }
         payload = next
         showingStartupCache = false

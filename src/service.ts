@@ -159,6 +159,7 @@ export class QuotaPieService {
   private signalWork: Promise<void> | null = null;
   private codexClients = new Map<string, CodexAppServerClient>();
   private codexRetries = new Map<string, { failures: number; atMs: number }>();
+  private codexNextPollMs = new Map<string, number>();
   private collectionStartedAtMs: number | null = null;
   private collectionFinishedAtMs: number | null = null;
   private collectionRequestedAtMs: number | null = null;
@@ -882,6 +883,8 @@ export class QuotaPieService {
     }
     this.codexPollState.set(account, { count: observations.length, error: null });
     this.codexRetries.delete(account);
+    const nextPollNowMs = Date.now();
+    this.codexNextPollMs.set(account, nextPollNowMs + nextWakeDelayMs(observations, this.config, nextPollNowMs));
     this.collection.recordAttempt("codex", account, CODEX_SOURCE, Date.now(), null, null);
     const events = this.closing ? [] : this.ingestCodexSnapshot(observations);
     if (!this.closing) {
@@ -902,11 +905,15 @@ export class QuotaPieService {
     if (!profiles.length) return [];
     const requireFileCredentials = profiles.length > 1;
     const outcomes = await Promise.all(profiles.map(async (profile) => {
-      if (respectRetry && (this.codexRetries.get(profile.id)?.atMs ?? 0) > Date.now()) {
-        return { ok: false as const, skipped: true, events: [] as QuotaEvent[], message: "retry pending" };
+      const nextAttemptMs = this.codexRetries.get(profile.id)?.atMs ?? this.codexNextPollMs.get(profile.id) ?? 0;
+      if (respectRetry && nextAttemptMs > Date.now()) {
+        return { ok: false as const, skipped: true, events: [] as QuotaEvent[], message: "collection pending" };
       }
       if (requireFileCredentials && !codexUsesFileCredentials(profile)) {
         this.codexRetries.delete(profile.id);
+        // An isolation configuration error needs a regular recheck, not the
+        // expired deadline left by this account's previous successful read.
+        this.codexNextPollMs.set(profile.id, Date.now() + this.config.collection.pollSeconds * 1_000);
         const message = "multi-account Codex requires cli_auth_credentials_store = \"file\" in this profile's config.toml";
         this.codexPollState.set(profile.id, { count: 0, error: message });
         this.collection.recordAttempt(
@@ -942,7 +949,9 @@ export class QuotaPieService {
     }));
     if (outcomes.every(outcome => "skipped" in outcome)) return [];
     if (!outcomes.some((outcome) => outcome.ok)) {
-      throw new Error(`all configured Codex accounts failed (${profiles.map((profile) => profile.id).join(", ")})`);
+      const attempted = profiles.filter((_, index) => !("skipped" in outcomes[index]!));
+      const scope = attempted.length === profiles.length ? "configured" : "attempted";
+      throw new Error(`all ${scope} Codex accounts failed (${attempted.map((profile) => profile.id).join(", ")})`);
     }
     return outcomes.flatMap((outcome) => outcome.events);
   }
@@ -1074,7 +1083,7 @@ export class QuotaPieService {
   }
 
   collectionStatus() {
-    return { refreshing: this.collecting, requestedAtMs: this.collectionRequestedAtMs,
+    return { refreshing: this.collecting || this.refreshRequested, requestedAtMs: this.collectionRequestedAtMs,
       lastStartedAtMs: this.collectionStartedAtMs, lastFinishedAtMs: this.collectionFinishedAtMs,
       nextAttemptAtMs: this.collectionNextAtMs };
   }
@@ -1088,9 +1097,14 @@ export class QuotaPieService {
   nextCollectionDelayMs(scheduled: number, nowMs = Date.now()): number {
     const enabled = new Set(this.config.collection.codexEnabled
       ? this.config.accounts.codex.filter(p => p.enabled).map(p => p.id) : []);
-    const retries = [...this.codexRetries].filter(([account]) => enabled.has(account))
-      .map(([, retry]) => Math.max(1_000, retry.atMs - nowMs));
-    return Math.min(scheduled, ...retries);
+    // A failed account's short retry must not poll every healthy account too.
+    // Keep each successful account's regular deadline in the wake schedule so
+    // failures cannot postpone its next measurement either.
+    const attempts = [...enabled].flatMap(account => {
+      const atMs = this.codexRetries.get(account)?.atMs ?? this.codexNextPollMs.get(account);
+      return atMs === undefined ? [] : [Math.max(1_000, atMs - nowMs)];
+    });
+    return Math.min(scheduled, ...attempts);
   }
 
   analyses(nowMs = Date.now(), provider?: Provider): WindowAnalysis[] {
@@ -2132,6 +2146,7 @@ export class QuotaPieService {
     windows: WindowAnalysis[];
     collected: boolean;
   }> {
+    this.refreshRequested = false;
     const collectionStartedAtMs = evaluationTimeMs ?? Date.now();
     this.collectionStartedAtMs = Date.now();
     this.collecting = true;
@@ -2277,9 +2292,16 @@ export class QuotaPieService {
 
   private refreshRequested = false;
   private wakeCollection: (() => void) | null = null;
+  private lastForcedCollectionRequestMs: number | null = null;
+  static readonly FORCED_COLLECTION_MIN_INTERVAL_MS = 10_000;
 
   requestCollection(force = false): void {
     const nowMs = Date.now();
+    if (this.closing) return;
+    if (force && this.lastForcedCollectionRequestMs !== null &&
+        nowMs >= this.lastForcedCollectionRequestMs &&
+        nowMs - this.lastForcedCollectionRequestMs < QuotaPieService.FORCED_COLLECTION_MIN_INTERVAL_MS) return;
+    if (force) this.lastForcedCollectionRequestMs = nowMs;
     // Coalesce wake/network/manual bursts, including one request arriving
     // while an older read is still in flight. Never start a second poll loop.
     this.forceNextCollection ||= force;

@@ -3,10 +3,11 @@
 export async function inspectNativeBody(request: Request, maxBytes: number): Promise<{
   bytes?: Uint8Array<ArrayBuffer>;
   body?: BodyInit;
+  reason: "buffered" | "empty-body" | "body-too-large";
 }> {
-  if (!request.body) return {};
+  if (!request.body) return { reason: "empty-body" };
   const length = Number(request.headers.get("content-length"));
-  if (length > maxBytes) return { body: request.body };
+  if (length > maxBytes) return { body: request.body, reason: "body-too-large" };
   const reader = request.body.getReader(), chunks: Uint8Array<ArrayBuffer>[] = [];
   let total = 0;
   try {
@@ -18,12 +19,12 @@ export async function inspectNativeBody(request: Request, maxBytes: number): Pro
         const bytes = new Uint8Array(total);
         let offset = 0;
         for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
-        return { bytes, body: bytes };
+        return { bytes, body: bytes, reason: total ? "buffered" : "empty-body" };
       }
       chunks.push(next.value); total += next.value.length;
       if (total > maxBytes) {
         let index = 0;
-        return { body: new ReadableStream<Uint8Array>({
+        return { reason: "body-too-large", body: new ReadableStream<Uint8Array>({
           async pull(controller) {
             if (index < chunks.length) { controller.enqueue(chunks[index++]!); return; }
             const next = await reader.read();
