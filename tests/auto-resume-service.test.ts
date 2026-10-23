@@ -109,10 +109,77 @@ function fixture(persistent = false) {
     } };
 }
 
-async function waitFor(check: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 200 && !check(); attempt++) await Bun.sleep(5);
+async function waitFor(check: () => boolean, attempts = 200): Promise<void> {
+  for (let attempt = 0; attempt < attempts && !check(); attempt++) await Bun.sleep(5);
   expect(check()).toBe(true);
 }
+
+test("the resident collector observes recovery and resumes once without a menu request or reset-pass signal", async () => {
+  const f = fixture();
+  await f.enableAndDiscover();
+  await Bun.sleep(2);
+  f.observe(Date.now(), 100);
+  f.config.collection.codexEnabled = true;
+  f.config.collection.pollSeconds = 60;
+  let recovered = false, reads = 0;
+  (f.client as any).readRateLimits = async () => {
+    reads++;
+    return [{ provider: "codex", account: ACCOUNT, bucket: BUCKET, label: "5h", windowSeconds: 18000,
+      usedPercent: recovered ? 0 : 100, observedAtMs: Date.now(), resetsAtMs: Date.now() + 3600000,
+      source: "fixture", quality: "authoritative" }];
+  };
+  const request = spyOn(f.service, "requestCollection");
+  const watching = f.service.watch();
+  try {
+    await waitFor(() => f.service.collectionStatus().nextAttemptAtMs !== null);
+    expect(reads).toBe(1); expect(f.runs()).toBe(0);
+    recovered = true;
+    await waitFor(() => f.runs() === 1, 1500);
+    await f.service.work.settle();
+    expect(reads).toBe(2);
+    expect(request).not.toHaveBeenCalled();
+    expect(f.service.autoResume.status().incidents[0]?.state).toBe("resumed");
+    expect(f.service.work.store.executions()).toHaveLength(1);
+  } finally { f.service.stop(); await watching; request.mockRestore(); }
+}, 10000);
+
+test("a validated recovery push wakes the same-session runner without another provider read or menu request", async () => {
+  const f = fixture();
+  await f.enableAndDiscover();
+  await Bun.sleep(2); f.observe(Date.now(), 100);
+  f.config.collection.codexEnabled = true;
+  f.config.collection.pollSeconds = 3600;
+  let reads = 0;
+  (f.client as any).readRateLimits = async () => {
+    reads++;
+    return [{ provider: "codex", account: ACCOUNT, bucket: BUCKET, label: "5h", windowSeconds: 18000,
+      usedPercent: 100, observedAtMs: Date.now(), resetsAtMs: Date.now() + 3600000,
+      source: "fixture", quality: "authoritative" }];
+  };
+  const notificationClient = (f.service as any).createCodexClient(f.config.accounts.codex[0]);
+  const update = (usedPercent: number) => notificationClient.notificationHandler([{ provider: "codex", account: ACCOUNT,
+    bucket: BUCKET, label: "5h", windowSeconds: 18000, usedPercent, observedAtMs: Date.now(),
+    resetsAtMs: Date.now() + 3600000, source: "fixture", quality: "authoritative" }]);
+  const request = spyOn(f.service, "requestCollection");
+  const watching = f.service.watch();
+  try {
+    await waitFor(() => f.service.collectionStatus().nextAttemptAtMs !== null);
+    expect(f.runs()).toBe(0); expect(request).not.toHaveBeenCalled();
+    expect(reads).toBe(1);
+    await update(0);
+    await waitFor(() => f.runs() === 1);
+    await f.service.work.settle();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith();
+    expect(reads).toBe(1);
+    expect(f.service.autoResume.status().incidents[0]?.state).toBe("resumed");
+    await Bun.sleep(2); await update(0);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(f.service.work.store.executions()).toHaveLength(1);
+  } finally {
+    f.service.stop(); await watching; request.mockRestore(); await notificationClient.close();
+  }
+});
 
 test("a newly registered ready incident wakes the resident runner once without waiting for its quota timer", async () => {
   const f = fixture();

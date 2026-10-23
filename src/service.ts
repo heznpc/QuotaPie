@@ -1105,7 +1105,12 @@ export class QuotaPieService {
     );
     client.onUpdate((observations) => {
       if (this.closing) return;
-      this.recordCodexRead(profile.id, observations);
+      const blocked = this.work.store.list().filter(policy => policy.purpose === "quota-resume" &&
+        policy.account === profile.id && !this.work.admission(policy).ready).map(policy => policy.id);
+      const result = this.recordCodexRead(profile.id, observations);
+      // Reuse the resident runner after verified recovery. This wake does not
+      // force another provider read or wait for the next menu interaction.
+      if (result.ok) this.wakeReadyAutoResume(blocked);
     });
     return client;
   }
