@@ -1,0 +1,126 @@
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { codexProfileRoot, type AppConfig } from "../config";
+import { hostQueueClientMessageId, type HostQueueTargetLease } from "../quota-resume/host-queue";
+import { ExecutionTargetLeaseStore, type ExecutionTargetLease } from "./execution-target-lease";
+import type { WorkExecutionTarget, WorkPolicy } from "./types";
+
+function boundedJSON(path: string): any {
+  if (statSync(path).size > 262144) throw new Error("execution-target-relay-unavailable");
+  return JSON.parse(readFileSync(path, "utf8"));
+}
+export function nativeTargetRelayEndpoint(config: AppConfig, policy: WorkPolicy): string {
+  const profile = config.accounts.codex.find(p => p.enabled && p.id === policy.account);
+  if (!profile) throw new Error("execution-target-relay-unavailable");
+  const root = realpathSync(codexProfileRoot(profile));
+  const manifest = boundedJSON(join(homedir(), ".local/lib/quotapie-compaction/current.json"));
+  const settings = boundedJSON(manifest.profile_settings?.[root] ?? manifest.settings_path);
+  if (realpathSync(settings.codex_home) !== root || !Number.isInteger(settings.port) || settings.port < 1024 || settings.port > 65535 ||
+      !/^[a-f0-9]{48}$/.test(settings.token)) throw new Error("execution-target-relay-unavailable");
+  const endpoint = `http://127.0.0.1:${settings.port}/${settings.token}/backend-api/codex`;
+  const source = readFileSync(join(root, "config.toml"), "utf8");
+  const configured = source.match(/^# BEGIN QuotaPie compaction relay\nopenai_base_url = ("[^\n]+")\n# END QuotaPie compaction relay\n/);
+  if (!configured || JSON.parse(configured[1]!) !== endpoint) throw new Error("execution-target-native-route-unverified");
+  return endpoint;
+}
+
+export async function inspectNativeTargetOwner(config: AppConfig, policy: WorkPolicy): Promise<{pid:number;startedAtMs:number}> {
+  const profile = config.accounts.codex.find(p => p.enabled && p.id === policy.account);
+  if (!profile || process.platform !== "darwin") throw new Error("execution-target-native-route-unverified");
+  const helper = fileURLToPath(new URL("../../script/codex-host-wake.py", import.meta.url));
+  const child = Bun.spawn(["/usr/bin/python3", "-B", helper, "--inspect-owner"], { stdin: "pipe", stdout: "pipe", stderr: "ignore",
+    env: {PATH:"/usr/bin:/bin:/usr/sbin:/sbin",LANG:"en_US.UTF-8"}, timeout: 5000 });
+  child.stdin.write(JSON.stringify({account:policy.account,codexHome:realpathSync(codexProfileRoot(profile)),threadId:policy.nativeSessionId}) + "\n");
+  child.stdin.end();
+  let output = "";
+  for await (const bytes of child.stdout) {
+    output += new TextDecoder().decode(bytes);
+    if (output.length > 4096) { child.kill(); throw new Error("execution-target-native-route-unverified"); }
+  }
+  let value: any; try { value = JSON.parse(output); } catch {}
+  if (await child.exited !== 0 || value?.status !== "ready" || !Number.isInteger(value.pid) || value.pid <= 0 ||
+      !Number.isFinite(value.startedAtMs) || value.startedAtMs > Date.now()) throw new Error("execution-target-native-route-unverified");
+  return {pid:value.pid,startedAtMs:value.startedAtMs};
+}
+
+/** The stored ACK is not sufficient: this adapter asks the live listener and
+ * verifies the exact digest, identity and generation before the only enqueue. */
+export function nativeTargetLease(config: AppConfig, policy: WorkPolicy, executionId: string, target: WorkExecutionTarget,
+  authorized: () => boolean, options: {store?:ExecutionTargetLeaseStore;endpoint?:()=>string;owner?:()=>Promise<{pid:number;startedAtMs:number}>;
+    fetch?:typeof fetch;now?:()=>number;renewalIntervalMs?:number} = {}): HostQueueTargetLease {
+  const store = options.store ?? new ExecutionTargetLeaseStore(), now = options.now ?? Date.now;
+  const endpoint = options.endpoint ?? (() => nativeTargetRelayEndpoint(config,policy));
+  let lease: ExecutionTargetLease | undefined, acknowledgedEndpoint: string | undefined;
+  let verifiedOwner: {pid:number;startedAtMs:number} | undefined, ownerCheckedAtMs = 0;
+  let closed=false,revoked=false,timer:ReturnType<typeof setInterval>|undefined,renewal:Promise<void>|null=null;
+  const readOwner = options.owner ?? (() => inspectNativeTargetOwner(config,policy));
+  const current = () => {
+    if (closed || revoked || !lease || !acknowledgedEndpoint || !authorized()) return false;
+    try {
+      const fresh = store.get(executionId);
+      return endpoint() === acknowledgedEndpoint && !!fresh && fresh.digest === lease.digest &&
+        fresh.relayInstanceId === lease.relayInstanceId && ["acknowledged","bound"].includes(fresh.state) &&
+        fresh.authorizationValidUntilMs > now() && fresh.expiresAtMs > now();
+    } catch { return false; }
+  };
+  const renew=():Promise<void> => {
+    if(renewal)return renewal;
+    renewal=(async()=>{
+      if (!current() || !lease) throw new Error("execution-target-authorization-changed");
+      if (now() - ownerCheckedAtMs >= 5000) {
+        const owner = await readOwner();
+        if (!verifiedOwner || owner.pid !== verifiedOwner.pid || owner.startedAtMs !== verifiedOwner.startedAtMs)
+          throw new Error("execution-target-native-owner-changed");
+        ownerCheckedAtMs = now();
+      }
+      if (!current()) throw new Error("execution-target-authorization-changed");
+      store.renew(executionId,lease.digest,now());
+    })().finally(()=>{renewal=null});
+    return renewal;
+  };
+  return {
+    async acknowledge() {
+      if(current()){await renew();return;}
+      if(closed || revoked)throw new Error("execution-target-authorization-changed");
+      if (!authorized()) throw new Error("execution-target-authorization-changed");
+      const owner = await readOwner();
+      if (!authorized()) throw new Error("execution-target-authorization-changed");
+      lease = store.request(policy,executionId,hostQueueClientMessageId(executionId),target,now(),owner);
+      lease = store.renew(executionId,lease.digest,now());
+      const url = endpoint(), startedAt = now();
+      const response = await (options.fetch ?? fetch)(url + "/quotapie-execution-target/ack", {method:"POST",headers:{"content-type":"application/json"},
+        body:JSON.stringify({executionId,digest:lease.digest}),redirect:"error",signal:AbortSignal.timeout(5000)});
+      const value: any = await response.json().catch(()=>null);
+      if (!response.ok) {
+        const reason = value?.error?.code ?? value?.reason;
+        throw new Error(typeof reason === "string" && /^execution-target-[a-z-]{1,80}$/.test(reason) ? reason : "execution-target-relay-unavailable");
+      }
+      const recorded = store.get(executionId);
+      if (!authorized() || endpoint() !== url || value?.executionId !== executionId || value.digest !== lease.digest ||
+          typeof value.relayInstanceId !== "string" || !value.relayInstanceId || value.sourceProfileKey !== policy.profileKey || value.targetIdentity !== target.identity ||
+          !Number.isFinite(value.acknowledgedAtMs) || value.acknowledgedAtMs < startedAt || value.acknowledgedAtMs > now() || now()-value.acknowledgedAtMs > 5000 ||
+          !recorded || recorded.digest !== lease.digest || recorded.relayInstanceId !== value.relayInstanceId || recorded.acknowledgedAtMs !== value.acknowledgedAtMs)
+        throw new Error("execution-target-relay-ack-unverified");
+      const stillOwner = await readOwner();
+      if (stillOwner.pid !== owner.pid || stillOwner.startedAtMs !== owner.startedAtMs) throw new Error("execution-target-native-owner-changed");
+      verifiedOwner = owner; ownerCheckedAtMs = now();
+      lease = recorded; acknowledgedEndpoint = url;
+      if (!current()) throw new Error("execution-target-relay-ack-unverified");
+      timer ??= setInterval(()=>{void renew().catch(()=>{
+        revoked=true;
+        try{if(lease&&!closed)store.closeLease(executionId,lease.digest,"execution-target-authorization-changed")}catch{}
+      })},options.renewalIntervalMs??5000);
+      timer.unref?.();
+    },
+    current,
+    renew,
+    close(reason) {
+      if(closed)return;closed=true;
+      if(timer)clearInterval(timer);
+      try { if (lease) store.closeLease(executionId,lease.digest,reason); }
+      finally { if (!options.store) store.close(); }
+    },
+  };
+}

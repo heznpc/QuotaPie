@@ -23,6 +23,7 @@ export interface AutoResumeDependencies {
   policy(id: string): WorkPolicy | null;
   disable(id: string): Promise<void>;
   admissionReason(policy: WorkPolicy): string;
+  quotaTarget?(policy: WorkPolicy): {quotaAccount:string;quotaAccountLabel:string;quotaTargetState:"candidate"|"confirmed"|"used"} | undefined;
   ownsExecution?(id: string): boolean;
   execution?(id: string): WorkExecution | null;
   now?: () => number;
@@ -183,7 +184,11 @@ export class AutoResumeController {
       else if(policy?.state.activeExecutionId) {
         state=this.deps.ownsExecution?.(policy.state.activeExecutionId)===false?"needs-review":"running";
         reason=state==="needs-review"?"execution-unverified":undefined;
-        const receipt=this.deps.execution?.(policy.state.activeExecutionId)?.hostQueue;
+        const execution=this.deps.execution?.(policy.state.activeExecutionId);
+        const receipt=execution?.hostQueue;
+        if(execution?.executionTarget && execution.status==="claimed") {
+          state="waiting";reason="execution-target-relay-verifying";
+        }
         if(state==="running" && receipt && !receipt.turnId) {
           state="queued";
           reason=receipt.hostWakeStatus==="unavailable"?"host-queue-wake-unavailable":
@@ -194,7 +199,7 @@ export class AutoResumeController {
         state=policy?.state.status==="turn-finished"?"resumed":policy?.state.lastResult?.status==="quota-blocked"&&this.authorized(i)?"waiting":"needs-review";
         reason=state==="waiting"?"quota-recovery-unconfirmed":policy?.state.lastResult?.reason;
       } else if(i.state==="waiting" && policy) reason=this.deps.admissionReason(policy);
-      return {id:i.id,account:i.account,threadId:i.threadId,projectLabel:i.projectLabel,state,reason,detectedAtMs:i.detectedAtMs,policyId:i.policyId};
+      return {id:i.id,account:i.account,threadId:i.threadId,projectLabel:i.projectLabel,state,reason,detectedAtMs:i.detectedAtMs,policyId:i.policyId,...(policy?this.deps.quotaTarget?.(policy):{})};
     });
     // Unresolved work must remain visible to both the UI and notification
     // reconciliation even after newer history accumulates. Bound only history.

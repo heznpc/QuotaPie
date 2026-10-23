@@ -3,7 +3,7 @@ import { lstatSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { codexProfileRoot, type AppConfig } from "../config";
 import { CodexAppServerClient, type CodexThreadTurnSummary } from "../providers/codex-appserver";
-import type { WorkPolicy, WorkResult } from "../work/types";
+import type { WorkPolicy, WorkResult, WorkExecutionTarget } from "../work/types";
 import { workPolicyExpiresAtMs } from "../work/lifetime";
 import { readQuotaResumeEvidence } from "./evidence";
 import { metadataPath } from "../dots/thread-reader";
@@ -38,7 +38,14 @@ interface ReceiptOptions {
   afterTurnId?: string;
 }
 
+export interface HostQueueTargetLease {
+  acknowledge(): Promise<void>;
+  current(): boolean;
+  renew(): Promise<void>;
+  close(reason: string): void;
+}
 export interface HostQueueOptions {
+  targetLease?: HostQueueTargetLease;
   stillAuthorized(): boolean;
   /** Account, quota, and host-goal checks immediately before the durable intent. */
   beforeEnqueue(): Promise<void>;
@@ -183,9 +190,9 @@ export async function removeOwnHostQueuedInput(receipt: HostQueueReceipt, option
 /** Writes one durable message through the official queue API. Only the existing
  * native host may consume it; this adapter never loads, starts, or stops a turn. */
 export async function executeHostQueuedQuotaResume(
-  request: { config: AppConfig; policy: WorkPolicy; claimId: string }, options: HostQueueOptions,
+  request: { config: AppConfig; policy: WorkPolicy; claimId: string; executionTarget?: WorkExecutionTarget }, options: HostQueueOptions,
 ): Promise<WorkResult> {
-  const { config, policy, claimId } = request;
+  const { config, policy, claimId, executionTarget } = request;
   const now = options.now ?? Date.now, startedAt = now();
   const done = (result: WorkResult): WorkResult => ({ ...result, durationSeconds: Math.max(0, (now() - startedAt) / 1000) });
   if (policy.purpose !== "quota-resume" || policy.provider !== "codex" || policy.dispatchOwner !== "local" ||
@@ -194,6 +201,8 @@ export async function executeHostQueuedQuotaResume(
   const deadline = Math.min(workPolicyExpiresAtMs(policy), policy.workDeadline ?? Infinity,
     startedAt + Math.min(policy.maxDurationSeconds, policy.maxTotalDurationSeconds - policy.state.totalDurationSeconds) * 1000);
   if (!Number.isFinite(deadline) || deadline <= startedAt) return done({ status: "time-budget-ended", reason: "host-queue-time-budget-ended" });
+  if (executionTarget && !options.targetLease) return done({ status: "activity-paused", reason: "execution-target-relay-unavailable" });
+  let targetAcknowledged = false;
   let root: string;
   try {
     const profile = config.accounts.codex.find(p => p.enabled && p.id === policy.account);
@@ -212,7 +221,8 @@ export async function executeHostQueuedQuotaResume(
       return stat.isFile() && policy.quotaResume!.stamp === `${path}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
     } catch { return false; }
   });
-  const authorized = () => !options.signal?.aborted && options.stillAuthorized() && now() < deadline;
+  const authorized = () => !options.signal?.aborted && options.stillAuthorized() && now() < deadline &&
+    (!targetAcknowledged || options.targetLease!.current());
   const receipt: HostQueueReceipt = { threadId: policy.nativeSessionId, clientUserMessageId: hostQueueClientMessageId(claimId), sentAtMs: now() };
   const receiptOptions = { client, onReceipt: options.onReceipt, afterTurnId: policy.quotaResume.turnId };
   let sendAttempted = false;
@@ -238,6 +248,11 @@ export async function executeHostQueuedQuotaResume(
     await options.beforeEnqueue();
     if (!authorized()) return done({ status: "activity-paused", reason: "host-queue-authorization-changed" });
     if (!hasNativeWriter()) return done({ status: "failed", reason: "native-writer-unavailable" });
+    if (executionTarget) {
+      await options.targetLease!.acknowledge();
+      targetAcknowledged = true;
+      if (!options.targetLease!.current()) return done({ status: "activity-paused", reason: "execution-target-relay-unavailable" });
+    }
     receipt.sentAtMs = now();
     await options.onReceipt({ ...receipt });
     if (!authorized() || !hasNativeWriter()) return done({ status: "activity-paused", reason: "host-queue-authorization-changed" });
@@ -251,6 +266,7 @@ export async function executeHostQueuedQuotaResume(
     receipt.queuedSubmissionId = queued.id;
     await options.onReceipt({ ...receipt });
     while (authorized()) {
+      if (executionTarget) await options.targetLease!.renew();
       const result = await observeHostQueueReceipt(receipt, receiptOptions);
       if (result) return done(result);
       await wakeAcceptedHostQueue(receipt, { config, account: policy.account, client, stillAuthorized: authorized,
@@ -267,5 +283,8 @@ export async function executeHostQueuedQuotaResume(
     await removeOwnHostQueuedInput(receipt, receiptOptions);
     const observed = await observeHostQueueReceipt(receipt, receiptOptions).catch(() => null);
     return done(observed ?? { status: "uncertain", reason: safeReason(error, "host-queue-delivery-unconfirmed") });
-  } finally { await ownedClient?.close(); }
+  } finally {
+    if (executionTarget) options.targetLease?.close("host-queue-execution-ended");
+    await ownedClient?.close();
+  }
 }

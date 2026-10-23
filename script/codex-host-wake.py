@@ -236,6 +236,12 @@ def main():
         request = json.loads(sys.stdin.readline(16385))
         io = NativeIO()
         plan = prepare(request, io)
+        if sys.argv[1:] == ["--inspect-owner"]:
+            print(json.dumps({"status": "ready", "pid": plan["pid"],
+                              "startedAtMs": plan["start"][0] * 1000 + plan["start"][1] / 1000}), flush=True)
+            return
+        if sys.argv[1:]:
+            raise Unavailable("request-invalid")
         print(json.dumps({"status": "ready"}), flush=True)
         if not select.select([sys.stdin], [], [], 32)[0] or sys.stdin.readline(16) != "send\n":
             raise Unavailable("authorization-changed")
