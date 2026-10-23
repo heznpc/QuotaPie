@@ -2,20 +2,26 @@ import {randomUUID} from "node:crypto";
 import type { AppConfig } from "../config";
 import type { WindowAnalysis } from "../types";
 import { WorkStore } from "./store";
-import type { WorkPolicy, WorkPolicyInput, WorkResult, WorkOwner, WorkForecast } from "./types";
+import type { WorkPolicy, WorkPolicyInput, WorkResult, WorkOwner, WorkForecast, WorkExecutionTarget } from "./types";
+import { executionQuotaPolicy, validExecutionTarget } from "./execution-target";
 import { evaluateWorkAdmission, workObservation, workWindows } from "./admission";
 
 export interface WorkControllerDependencies {
   windows(): WindowAnalysis[];
   inspect(input: WorkPolicyInput): Promise<{profileKey:string;accountKey:string;cwd:string;model?:string}>;
-  execute(policy: WorkPolicy, executionId: string, authorized: () => boolean, signal: AbortSignal): Promise<WorkResult>;
+  execute(policy: WorkPolicy, executionId: string, authorized: () => boolean, signal: AbortSignal, executionTarget?: WorkExecutionTarget): Promise<WorkResult>;
+  releaseExecutionTarget?(executionId:string,reason:string):void;
+  prepareExecutionTarget?(policy: WorkPolicy, executionId: string, target: WorkExecutionTarget, authorized:()=>boolean, signal:AbortSignal): Promise<void>;
   forecast?(policy: WorkPolicy, nowMs: number): WorkForecast | null;
   announcementPublishedAtMs?(policy: WorkPolicy): number | undefined;
   minimumReserveByBucket?(policy: WorkPolicy): Record<string,number>;
   announcement(policy: WorkPolicy): boolean;
   legacyBusy(policy: WorkPolicyInput): boolean;
-  hostGoalBlock?(policy: WorkPolicy): string | null;
-  beforeDispatch?(policy: WorkPolicy): Promise<void>;
+  /** Selection runs only before a claim. Running executions use their durable target. */
+  executionTarget?(policy: WorkPolicy): WorkExecutionTarget | null;
+  validateExecutionTarget?(policy: WorkPolicy, target: WorkExecutionTarget): string | null;
+  hostGoalBlock?(policy: WorkPolicy, target?: WorkExecutionTarget): string | null;
+  beforeDispatch?(policy: WorkPolicy, target?: WorkExecutionTarget): Promise<void>;
   now?: () => number;
 }
 /** Settings and execution are owned by the collector. Dots is a client of the
@@ -31,32 +37,43 @@ export class WorkController {
   observe() {
     const windows = this.deps.windows();
     for (const policy of this.store.list()) {
-      const observation = workObservation(policy, windows, this.now());
+      const execution = policy.state.activeExecutionId ? this.store.getExecution(policy.state.activeExecutionId) : this.store.executions(policy.id)
+        .filter(e => e.executionTarget && Object.keys(e.targetAccounting?.pendingAccountingByBucket ?? {}).length).at(-1);
+      const quota = execution?.executionTarget ? executionQuotaPolicy(policy, execution.executionTarget, execution.targetAccounting) : policy;
+      const observation = workObservation(quota, windows, this.now());
       if (observation) this.store.observe(policy.id, observation);
     }
   }
   admission(policy: WorkPolicy, running = false) {
-    const goalBlock = this.deps.hostGoalBlock?.(policy);
+    const execution = policy.state.activeExecutionId ? this.store.getExecution(policy.state.activeExecutionId) : null;
+    const target = execution?.executionTarget ?? (!policy.state.activeExecutionId && !running ? this.deps.executionTarget?.(policy) ?? undefined : undefined);
+    if (target) {
+      if (!validExecutionTarget(policy, target, this.now())) return {ready:false,reason:"execution-target-expired",timeoutSeconds:0};
+      const block = this.deps.validateExecutionTarget?.(policy, target) ?? (this.deps.validateExecutionTarget ? null : "execution-target-unverified");
+      if (block) return {ready:false,reason:block,timeoutSeconds:0};
+    }
+    const quota = target ? executionQuotaPolicy(policy, target, execution?.targetAccounting) : policy;
+    const goalBlock = this.deps.hostGoalBlock?.(policy, target);
     if (goalBlock) return {ready:false,reason:goalBlock,timeoutSeconds:0};
-    if (this.closed || this.deps.legacyBusy(policy)) return {ready:false,reason:"legacy-work-active",timeoutSeconds:0};
+    if (this.closed || this.deps.legacyBusy(policy) || target && this.deps.legacyBusy(quota)) return {ready:false,reason:"legacy-work-active",timeoutSeconds:0};
     const hold=this.holds.get(policy.id);
     if(!running && hold && this.now()-hold.atMs<30000) return {ready:false,reason:hold.reason,timeoutSeconds:0};
-    const execution=running&&policy.state.activeExecutionId?this.store.getExecution(policy.state.activeExecutionId):null;
-    const effective=execution?.dispatchedAtMs!==undefined?{...policy,state:{...policy.state,totalDurationSeconds:policy.state.totalDurationSeconds+Math.max(0,(this.now()-execution.dispatchedAtMs)/1000)}}:policy;
+    const effective=execution?.dispatchedAtMs!==undefined?{...quota,state:{...quota.state,totalDurationSeconds:quota.state.totalDurationSeconds+Math.max(0,(this.now()-execution.dispatchedAtMs)/1000)}}:quota;
     // A running turn has passed its start trigger. Quota-ready and scheduled
     // work also do not use public announcements to decide admission.
     const needsAnnouncement = !running && (policy.trigger === "public-announcement" ||
       policy.trigger === "forecast-probability" && policy.unknownForecastAction === "announcement");
-    return evaluateWorkAdmission(effective, this.deps.windows(), this.now(), {
+    const result = evaluateWorkAdmission(effective, this.deps.windows(), this.now(), {
       maxAgeMs:this.config.collection.staleAfterSeconds*1000,
       publicAnnouncementEligible:needsAnnouncement && this.deps.announcement(policy), ignoreTrigger:running, running,
-      minimumReserveByBucket:this.deps.minimumReserveByBucket?.(policy) ?? {},
+      minimumReserveByBucket:this.deps.minimumReserveByBucket?.(quota) ?? {},
       forecast:execution?.planning ? undefined : this.deps.forecast?.(policy,this.now()),
       frozenPlanning:execution?.planning,
       announcementPublishedAtMs:needsAnnouncement ? this.deps.announcementPublishedAtMs?.(policy) : undefined,
       estimatedWorkMinutes:this.estimatedWorkMinutes(policy),
       inheritedActivitySchedules:this.inheritedActivitySchedules(),
     });
+    return {...result, ...(target ? {executionTarget:target} : {})};
   }
   estimatedWorkMinutes(policy:WorkPolicy):number|undefined {
     const samples=this.store.executions(policy.id).filter(e=>e.status==="finished"&&e.dispatchedAtMs!==undefined&&e.finishedAtMs!==undefined&&e.result?.status!=="failed")
@@ -139,22 +156,25 @@ export class WorkController {
     });
     if(binding.profileKey!==policy.profileKey || binding.accountKey!==policy.accountKey || binding.cwd!==policy.cwd || binding.model!==policy.model)
       throw new Error("work-binding-changed");
-    await this.deps.beforeDispatch?.(policy);
+    await this.deps.beforeDispatch?.(policy, "executionTarget" in admission ? admission.executionTarget : undefined);
     const raced=this.store.getClaimRequest(id,owner,revision,requestId);
     if(raced) return raced;
     const latest=this.store.get(id)!;
-    if(!this.admission(latest).ready) throw new Error("work-admission-changed");
+    const finalAdmission=this.admission(latest);
+    if(!finalAdmission.ready) throw new Error("work-admission-changed");
+    const target = "executionTarget" in finalAdmission ? finalAdmission.executionTarget : undefined;
     const ordered=this.store.list().sort((a,b)=>b.priority-a.priority);
     const position=ordered.findIndex(p=>p.id===id);
     if(ordered.slice(0,position).some(other=>other.provider===latest.provider &&
       (other.account===latest.account||other.accountKey===latest.accountKey||other.profileKey===latest.profileKey) && this.admission(other).ready))
       throw new Error("higher-priority-work");
-    const claimed=this.store.claimRequest(id,owner,revision,requestId,this.now());
+    const claimed=this.store.claimRequest(id,owner,revision,requestId,this.now(),target);
     const execution=claimed.execution;
     if(execution && !claimed.created) return execution;
     if(!execution) throw new Error("work-already-claimed-or-held");
-    const planned=admission;
-    if ("planning" in planned && planned.planning) this.store.recordPlanning(execution.id,planned.planning,this.now(),Object.fromEntries(Object.entries(latest.budgetByBucket).map(([bucket,budget])=>[bucket,Math.max(budget.reservePercent,this.deps.minimumReserveByBucket?.(latest)[bucket]??0)])));
+    const planned=finalAdmission;
+    const quotaPlanning=target?executionQuotaPolicy(latest,target):latest;
+    if ("planning" in planned && planned.planning) this.store.recordPlanning(execution.id,planned.planning,this.now(),Object.fromEntries(Object.entries(quotaPlanning.budgetByBucket).map(([bucket,budget])=>[bucket,Math.max(budget.reservePercent,this.deps.minimumReserveByBucket?.(quotaPlanning)[bucket]??0)])));
     const controller=new AbortController();
     const authorized=()=>{
       this.observe();
@@ -168,13 +188,31 @@ export class WorkController {
       try {
         if(!authorized()) result={status:"activity-paused",reason:"dispatch-precondition-changed"};
         else {
+          if(execution.executionTarget) {
+            if(!this.deps.prepareExecutionTarget) throw new Error("execution-target-relay-unavailable");
+            await this.deps.prepareExecutionTarget(this.store.get(id)!,execution.id,execution.executionTarget,authorized,controller.signal);
+            if(!authorized()) throw new Error("execution-target-authorization-changed");
+          }
           this.store.markDispatched(execution.id,this.now());
           dispatched=true;
           const executionPolicy=this.store.get(id)!;
           const limit=this.admission(executionPolicy,true).timeoutSeconds;
-          result=await this.deps.execute({...executionPolicy,maxDurationSeconds:Math.min(executionPolicy.maxDurationSeconds,limit)},execution.id,authorized,controller.signal);
+          result=await this.deps.execute({...executionPolicy,maxDurationSeconds:Math.min(executionPolicy.maxDurationSeconds,limit)},execution.id,authorized,controller.signal,execution.executionTarget);
         }
-      } catch { result={status:dispatched?"uncertain":"activity-paused",reason:"execution-result-unverified"}; }
+      } catch(error) {
+        const reason=error instanceof Error && /^execution-target-[a-z-]{1,80}$/.test(error.message)?error.message:"execution-result-unverified";
+        if(!dispatched && execution.executionTarget) {
+          this.holds.set(id,{reason,atMs:this.now()});
+          this.deps.releaseExecutionTarget?.(execution.id,reason);
+          return this.store.releaseUnsentTargetClaim(execution.id,reason,this.now());
+        }
+        result={status:dispatched?"uncertain":"activity-paused",reason};
+      }
+      if(!dispatched && execution.executionTarget) {
+        this.holds.set(id,{reason:result.reason??"execution-target-authorization-changed",atMs:this.now()});
+        this.deps.releaseExecutionTarget?.(execution.id,result.reason??"execution-target-authorization-changed");
+        return this.store.releaseUnsentTargetClaim(execution.id,result.reason??"execution-target-authorization-changed",this.now());
+      }
       this.observe();
       return this.store.finish(execution.id,result,this.now());
     })().catch(()=>{

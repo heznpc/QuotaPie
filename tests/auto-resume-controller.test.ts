@@ -560,3 +560,50 @@ test("queued status distinguishes wake outcomes without treating a wake request 
     expect(f.work.executions()).toHaveLength(1);
   }
 });
+
+test('resident discovery links one local repair without hiding or rewriting the failed original, including registration crash restart',async()=>{
+ const f=fixture(),parent=await f.enroll();
+ const exec=f.work.claim(parent.id,'local',1,2001)!;f.work.markDispatched(exec.id,2002);f.work.finish(exec.id,{status:'failed',reason:'host-turn-failed'},2003);
+ const snapshot=JSON.stringify(f.work.get(parent.id)),execution=JSON.stringify(f.work.executions(parent.id));
+ const repair={parentIncidentId:parent.id,parentExecutionId:exec.id,parentPolicyRevision:f.work.get(parent.id)!.revision,permitId:'a'.repeat(64),sourceQuotaTurnId:turnId,failedTurnId:nextTurnId,failedAtMs:2003,stamp:'local-terminal',goalFingerprint:'goal'};
+ let preparations=0,validations=0,registrationFails=true;
+ f.deps.prepareLocalRepair=async()=>{preparations++;return repair};
+ f.deps.validateLocalRepair=async()=>{validations++};
+ f.deps.register=async incident=>{
+  f.state.registrationCalls++;if(registrationFails)throw Error('crash-after-permit');
+  f.work.save({...policyInput(incident),quotaResume:{turnId:repair.failedTurnId,stamp:repair.stamp,localBeforeSendRecovery:{permitId:repair.permitId,parentExecutionId:exec.id,sourceQuotaTurnId:turnId}}},null,incident.id);
+ };
+ await f.controller.poll();const child=f.controller.incidents().find(i=>i.localRepair)!;
+ expect(child).toBeDefined();expect(f.controller.incidents()).toHaveLength(2);expect(preparations).toBe(1);
+ expect(f.controller.status().incidents.find(i=>i.id===parent.id)).toMatchObject({state:'needs-review',localRepairChildIncidentId:child.id});
+ expect(f.controller.status().incidents.find(i=>i.id===child.id)).toMatchObject({localRepairParentIncidentId:parent.id});
+ await f.controller.close();registrationFails=false;const restarted=f.create();await restarted.poll();await restarted.poll();
+ expect(restarted.incidents()).toHaveLength(2);expect(preparations).toBe(1);expect(f.work.list()).toHaveLength(2);
+ expect(JSON.stringify(f.work.get(parent.id))).toBe(snapshot);expect(JSON.stringify(f.work.executions(parent.id))).toBe(execution);
+ await restarted.validatePolicy(f.work.get(child.id)!);expect(validations).toBe(1);
+ const childExec=f.work.claim(child.id,'local',1,3001)!;f.work.markDispatched(childExec.id,3002);f.work.finish(childExec.id,{status:'failed',reason:'host-turn-failed'},3003);
+ await restarted.poll();expect(restarted.incidents()).toHaveLength(2);expect(preparations).toBe(1);
+});
+
+test.each(['consent','account','parent-revision'] as const)('a local repair loses authorization after %s changes',async mode=>{
+ const f=fixture(),parent=await f.enroll();const e=f.work.claim(parent.id,'local',1,2001)!;f.work.markDispatched(e.id,2002);f.work.finish(e.id,{status:'failed',reason:'host-turn-failed'},2003);
+ const repair={parentIncidentId:parent.id,parentExecutionId:e.id,parentPolicyRevision:f.work.get(parent.id)!.revision,permitId:'a'.repeat(64),sourceQuotaTurnId:turnId,failedTurnId:nextTurnId,failedAtMs:2003,stamp:'local-terminal',goalFingerprint:'goal'};
+ f.deps.prepareLocalRepair=async()=>repair;
+ f.deps.register=async i=>{f.work.save({...policyInput(i),quotaResume:{turnId:nextTurnId,stamp:'local-terminal',localBeforeSendRecovery:{permitId:'a'.repeat(64),parentExecutionId:e.id,sourceQuotaTurnId:turnId}}},null,i.id)};
+ await f.controller.poll();const child=f.controller.incidents().find(i=>i.localRepair)!;expect(f.controller.blockPolicy(f.work.get(child.id)!)).toBeNull();
+ if(mode==='consent')await f.controller.setEnabled('plus',false);
+ if(mode==='account')f.state.accounts[0]!.accountKey='other';
+ if(mode==='parent-revision'){const p=f.work.get(parent.id)!;f.work.setEnabled(p.id,false,p.revision,'user-off-again');}
+ expect(f.controller.blockPolicy(f.work.get(child.id)!)).toBe('auto-resume-disabled');
+});
+
+
+test('a user disable during the active turn cannot impersonate the automatic terminal revision',async()=>{
+ for(const disabled of [false,true]){
+  const f=fixture(),i=await f.enroll(),e=f.work.claim(i.id,'local',1,2001)!;f.work.markDispatched(e.id,2002);
+  if(disabled)f.work.setEnabled(i.id,false,1,'user-during-turn');
+  f.work.finish(e.id,{status:'failed',reason:'host-turn-failed'},2003);
+  expect(f.work.get(i.id)!.revision).toBe(2);
+  expect(f.work.hasReviewedChangeAfter(e)).toBe(disabled);
+ }
+});

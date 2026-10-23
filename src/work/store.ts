@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { QuotaStorage } from "../storage/database";
-import type { LegacyWorkFence, WorkBudget, WorkExecution, WorkObservation, WorkOwner, WorkPolicy, WorkPolicyInput, WorkResult, WorkPreferences, WorkPreferenceValues } from "./types";
+import type { LegacyWorkFence, WorkBudget, WorkExecution, WorkObservation, WorkOwner, WorkPolicy, WorkPolicyInput, WorkResult, WorkPreferences, WorkPreferenceValues, WorkExecutionTarget } from "./types";
+import { executionQuotaPolicy, validExecutionTarget } from "./execution-target";
 import { workPolicyExpiresAtMs } from "./lifetime";
 import { codexQuotaLane, stricterQuotaBudget, type QuotaBudgetReplacement } from "./quota-budgets";
 
@@ -15,6 +16,7 @@ export class WorkStore {
       CREATE TABLE IF NOT EXISTS work_preferences (id TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS work_policies (id TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS work_executions (id TEXT PRIMARY KEY, policy_id TEXT NOT NULL, value TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS work_executions_policy_id ON work_executions(policy_id);
       CREATE TABLE IF NOT EXISTS work_requests (id TEXT PRIMARY KEY, payload TEXT NOT NULL, response TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS work_dispatch_requests (id TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS work_fences (id TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -92,7 +94,7 @@ export class WorkStore {
   }
   private untouchedQuotaResume(policy: WorkPolicy): boolean {
     return policy.purpose === "quota-resume" && !!policy.quotaResume && policy.enabled && policy.state.status === "waiting" &&
-      policy.state.turns === 0 && policy.state.activeExecutionId === null && this.executions(policy.id).length === 0;
+      policy.state.turns === 0 && policy.state.activeExecutionId === null && this.executions(policy.id).every(e=>e.executionTarget && e.status==="finished" && e.dispatchedAtMs===undefined && !e.hostQueue && !e.managedTurn);
   }
   /** Newly reported constraints may narrow an untouched recovery, but never
    * erase existing requirements or change a dispatched execution's budgets. */
@@ -189,6 +191,13 @@ export class WorkStore {
     const row = this.storage.db.query<{ value: string }, [string]>("SELECT value FROM work_executions WHERE id=?").get(id);
     return row ? JSON.parse(row.value) : null;
   }
+  /** Automatic finish may increment a revision, but an explicit save/toggle
+   * after dispatch must never be mistaken for that automatic transition. */
+  hasReviewedChangeAfter(execution: WorkExecution): boolean {
+    return this.storage.db.query<{id:string},[string,number]>(
+      "SELECT id FROM work_requests WHERE json_extract(response,'$.id')=? AND json_extract(response,'$.revision')>? LIMIT 1"
+    ).get(execution.policyId,execution.policyRevision)!==null;
+  }
   executions(policyId?: string): WorkExecution[] {
     const rows = policyId === undefined
       ? this.storage.db.query<{ value: string }, []>("SELECT value FROM work_executions ORDER BY rowid").all()
@@ -211,33 +220,37 @@ export class WorkStore {
     if (!execution) throw new Error("work-execution-record-missing");
     return execution;
   }
-  claimRequest(id: string, owner: WorkOwner, revision: number, requestId: string, nowMs = Date.now()): { execution: WorkExecution | null; created: boolean } {
+  claimRequest(id: string, owner: WorkOwner, revision: number, requestId: string, nowMs = Date.now(), target?: WorkExecutionTarget): { execution: WorkExecution | null; created: boolean } {
     return this.storage.transaction(() => {
       const prior = this.getClaimRequest(id, owner, revision, requestId);
       if (prior) return { execution: prior, created: false };
-      const execution = this.claim(id, owner, revision, nowMs);
+      const execution = this.claim(id, owner, revision, nowMs, target);
       if (!execution) return { execution: null, created: false };
       this.storage.db.query("INSERT INTO work_dispatch_requests(id,value) VALUES (?,?)").run(requestId,
         JSON.stringify({ policyId: id, owner, revision, executionId: execution.id }));
       return { execution, created: true };
     });
   }
-  claim(id: string, owner: WorkOwner, expectedRevision: number, nowMs = Date.now()): WorkExecution | null {
+  claim(id: string, owner: WorkOwner, expectedRevision: number, nowMs = Date.now(), target?: WorkExecutionTarget): WorkExecution | null {
     return this.storage.transaction(() => {
       const policy = this.get(id);
       if (!policy || policy.revision !== expectedRevision) throw new WorkRevisionConflict(policy);
       if (!policy.enabled || policy.dispatchOwner !== owner || workPolicyExpiresAtMs(policy) <= nowMs || (policy.workDeadline !== undefined && policy.workDeadline <= nowMs)
         || policy.state.activeExecutionId || policy.state.turns >= policy.maxTurns || policy.state.totalDurationSeconds >= policy.maxTotalDurationSeconds
         || ["objective-completed", "needs-user-input", "uncertain", "failed", "time-budget-ended", "quota-blocked"].includes(policy.state.status)) return null;
-      for (const [bucket, budget] of Object.entries(policy.budgetByBucket)) {
-        if ((policy.state.spentByBucket[bucket] ?? 0) >= budget.maxUsagePercent) return null;
-        const baseline = policy.state.baselines[bucket];
+      if (target && !validExecutionTarget(policy, target, nowMs)) throw new Error("work-execution-target-invalid");
+      const quota = target ? executionQuotaPolicy(policy, target) : policy;
+      for (const [bucket, budget] of Object.entries(quota.budgetByBucket)) {
+        if ((quota.state.spentByBucket[bucket] ?? 0) >= budget.maxUsagePercent) return null;
+        const baseline = quota.state.baselines[bucket];
         if (baseline && baseline.remainingPercent <= budget.reservePercent) return null;
       }
-      if (this.executions().some(e => e.status !== "finished" && overlaps(policy, e.policySnapshot))
-        || this.fences().some(f => overlaps(policy, f))) return null;
+      if (this.executions().some(e => e.status !== "finished" &&
+          ([policy, quota].some(a => overlaps(a, e.policySnapshot) || !!e.executionTarget && overlaps(a, {provider: "codex", ...e.executionTarget}))))
+        || this.fences().some(f => overlaps(policy, f) || overlaps(quota, f))) return null;
       const execution: WorkExecution = { id: randomUUID(), policyId: id, policyRevision: policy.revision, owner,
-        policySnapshot: structuredClone(policy), turnOrdinal: policy.state.turns + 1, claimedAtMs: nowMs, status: "claimed" };
+        policySnapshot: structuredClone(policy), turnOrdinal: policy.state.turns + 1, claimedAtMs: nowMs, status: "claimed",
+        ...(target ? { executionTarget: structuredClone(target), targetAccounting: { spentByBucket: {}, baselines: structuredClone(target.baselineByBucket) } } : {}) };
       policy.state.activeExecutionId = execution.id;
       policy.state.status = "running";
       this.write(policy);
@@ -260,12 +273,29 @@ export class WorkStore {
       if (execution.status !== "claimed") throw new Error("work-execution-not-claimable");
       const policy = this.get(execution.policyId)!;
       if (!policy.enabled || policy.revision !== execution.policyRevision || workPolicyExpiresAtMs(policy) <= nowMs || (policy.workDeadline !== undefined && policy.workDeadline <= nowMs)) throw new Error("work-policy-changed-before-dispatch");
+      if (execution.executionTarget && !validExecutionTarget(policy, execution.executionTarget, nowMs)) throw new Error("work-execution-target-expired");
       execution.status = "dispatched";
       execution.dispatchedAtMs = nowMs;
       policy.state.turns++;
       this.write(policy);
       this.writeExecution(execution, "dispatched", nowMs);
       return execution;
+    });
+  }
+  /** A target ACK failure before any durable host send intent is a waiting
+   * condition, not the user's one continuation attempt. Keep an immutable audit
+   * record; request retries return it, while a later tick may claim anew. */
+  releaseUnsentTargetClaim(id: string, reason: string, nowMs = Date.now()): WorkExecution {
+    return this.storage.transaction(() => {
+      const execution=this.getExecution(id);
+      if(!execution || !execution.executionTarget || execution.status!=="claimed" || execution.hostQueue || execution.managedTurn || execution.dispatchedAtMs!==undefined)
+        throw new Error("work-target-claim-not-releasable");
+      const policy=this.get(execution.policyId);
+      if(!policy || policy.state.activeExecutionId!==id) throw new Error("work-target-claim-not-releasable");
+      execution.status="finished";execution.finishedAtMs=nowMs;execution.result={status:"activity-paused",reason};
+      policy.state.activeExecutionId=null;
+      if(policy.state.status==="running")policy.state.status=policy.enabled?"waiting":"stopped";
+      this.write(policy);this.writeExecution(execution,"target-preflight-held",nowMs);return execution;
     });
   }
   finish(id: string, result: WorkResult, nowMs = Date.now()): WorkExecution {
@@ -349,7 +379,9 @@ export class WorkStore {
       policy.state.status = result.status;
       policy.state.lastResult = structuredClone(result);
       if (result.status !== "uncertain") policy.state.activeExecutionId = null;
-      if (execution.dispatchedAtMs !== undefined) {
+      if (execution.dispatchedAtMs !== undefined && execution.executionTarget && execution.targetAccounting) {
+        execution.targetAccounting.pendingAccountingByBucket = Object.fromEntries(Object.keys(execution.executionTarget.budgetByBucket).map(bucket => [bucket, nowMs]));
+      } else if (execution.dispatchedAtMs !== undefined) {
         policy.state.pendingAccountingByBucket = Object.fromEntries(Object.keys(policy.budgetByBucket).map(bucket => [bucket, nowMs]));
       }
       if (result.status === "objective-completed") { policy.enabled = false; policy.revision++; }
@@ -369,6 +401,12 @@ export class WorkStore {
       const policy = this.get(id);
       if (!policy) throw new Error("work-policy-not-found");
       const active = policy.state.activeExecutionId !== null;
+      const targetExecution = active ? this.getExecution(policy.state.activeExecutionId!) : this.executions(id).filter(e =>
+        e.executionTarget && Object.keys(e.targetAccounting?.pendingAccountingByBucket ?? {}).length).at(-1);
+      if (targetExecution?.executionTarget) {
+        this.observeTarget(targetExecution, observation, active);
+        return policy;
+      }
       for (const [bucket, sample] of Object.entries(observation.buckets)) {
         if (!policy.budgetByBucket[bucket]) continue;
         percent(sample.remainingPercent);
@@ -423,6 +461,41 @@ export class WorkStore {
       return policy;
     });
   }
+  private observeTarget(execution: WorkExecution, observation: WorkObservation, active: boolean): void {
+    const target = execution.executionTarget!, state = execution.targetAccounting!;
+    if (observation.quotaAccount !== target.account) throw new Error("work-target-observation-account-mismatch");
+    for (const [bucket, sample] of Object.entries(observation.buckets)) {
+      if (!target.budgetByBucket[bucket]) continue;
+      percent(sample.remainingPercent);
+      const atMs = sample.atMs ?? observation.atMs, id = sample.id ?? observation.id, prior = state.baselines[bucket];
+      if (!sample.epoch || !Number.isFinite(atMs)) throw new Error("work-invalid-observation");
+      if (prior && (atMs <= prior.atMs || id === prior.observationId)) continue;
+      const reset = prior && (prior.epoch !== sample.epoch || sample.remainingPercent > prior.remainingPercent);
+      const decrement = prior && !reset ? prior.remainingPercent - sample.remainingPercent : 0;
+      if (execution.dispatchedAtMs !== undefined && atMs >= execution.dispatchedAtMs) {
+        state.spentByBucket[bucket] = (state.spentByBucket[bucket] ?? 0) + decrement;
+        const minima = execution.minimumRemainingByBucket ??= {};
+        minima[bucket] = Math.min(minima[bucket] ?? Infinity, sample.remainingPercent);
+        const rows = state.observationCoverageByBucket ??= {};
+        const row = rows[bucket] ??= { firstObservationAtMs: prior?.atMs ?? atMs, lastObservationAtMs: atMs,
+          minimumRemainingPercent: Math.min(prior?.remainingPercent ?? sample.remainingPercent, sample.remainingPercent) };
+        row.observationCount = (row.observationCount ?? 0) + 1;
+        row.maxObservationGapMs = Math.max(row.maxObservationGapMs ?? 0, atMs - (prior?.atMs ?? atMs));
+        row.lastObservationAtMs = atMs; row.minimumRemainingPercent = minima[bucket]!;
+        if (active) row.lastActiveObservationAtMs = atMs;
+        if (reset && prior) {
+          row.lastReset = { evidence: sample.remainingPercent > prior.remainingPercent ? "quota-recovery" : "epoch-change",
+            afterMs: prior.atMs, beforeOrAtMs: atMs, preResetRemainingPercent: prior.remainingPercent, preResetAccountUsage: row.currentEpochAccountUsage ?? 0 };
+          row.currentEpochAccountUsage = 0;
+        } else row.currentEpochAccountUsage = (row.currentEpochAccountUsage ?? 0) + decrement;
+        if (state.pendingAccountingByBucket?.[bucket] !== undefined && atMs >= state.pendingAccountingByBucket[bucket]!) {
+          row.accountingClosedAtMs = atMs; delete state.pendingAccountingByBucket[bucket];
+        }
+      }
+      state.baselines[bucket] = { observationId: id, atMs, remainingPercent: sample.remainingPercent, epoch: sample.epoch };
+    }
+    this.writeExecution(execution, "target-quota-observed", observation.atMs);
+  }
   fenceLegacy(fence: LegacyWorkFence): void {
     this.storage.transaction(() => {
       this.storage.db.query("INSERT INTO work_fences(id,value) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value").run(fence.id, JSON.stringify(fence));
@@ -455,11 +528,16 @@ function validate(input: WorkPolicyInput) {
     const evidence = input.quotaResume;
     if (input.provider !== "codex" || input.dispatchOwner !== "local" || input.trigger !== "quota-ready" || input.maxTurns !== 1 ||
         !evidence || typeof evidence !== "object" || Array.isArray(evidence) ||
-        Object.keys(evidence).some(key => !["turnId", "stamp", "waitUntilRecovered"].includes(key)) ||
+        Object.keys(evidence).some(key => !["turnId", "stamp", "waitUntilRecovered", "localBeforeSendRecovery"].includes(key)) ||
         (evidence.waitUntilRecovered !== undefined && evidence.waitUntilRecovered !== true) ||
         typeof evidence.turnId !== "string" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(evidence.turnId) ||
         typeof evidence.stamp !== "string" || !evidence.stamp.trim() || evidence.stamp.length > 4096 || /[\u0000-\u001f\u007f]/.test(evidence.stamp))
       throw new Error("work-invalid-quota-resume");
+    const repair=evidence.localBeforeSendRecovery;
+    if(repair!==undefined && (!repair||typeof repair!=="object"||Array.isArray(repair)||
+      Object.keys(repair).some(key=>!["permitId","parentExecutionId","sourceQuotaTurnId"].includes(key))||
+      !/^[a-f0-9]{64}$/.test(repair.permitId)||![repair.parentExecutionId,repair.sourceQuotaTurnId].every(id=>typeof id==="string"&&/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id))||repair.sourceQuotaTurnId===evidence.turnId))
+      throw new Error("work-invalid-local-repair");
   } else if (input.quotaResume !== undefined) throw new Error("work-invalid-quota-resume");
   for (const value of [input.maxDurationSeconds, input.maxTotalDurationSeconds, input.expiresAtMs]) if (!Number.isFinite(value) || value <= 0) throw new Error("work-invalid-limit");
   if (!Number.isFinite(input.priority) || !Number.isFinite(input.resetWithinMinutes) || input.resetWithinMinutes < 0) throw new Error("work-invalid-policy");

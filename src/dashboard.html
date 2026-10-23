@@ -434,18 +434,42 @@
         const keys = { "auto-resume-disabled": "disabled", "account-binding-changed": "accountChanged", superseded: "superseded",
           "quota-recovery-unconfirmed": "quota", "subscription-quota-blocked": "quota", "reserve-reached": "quota", "quota-stale": "quota", "quota-unknown": "quota", "reset-unconfirmed": "quota",
           "host-goal-not-active": "goal", "host-goal-stale": "goal", "host-goal-unavailable": "goal",
-          "execution-target-relay-unavailable": "targetRoute", "execution-target-native-route-unverified": "targetRoute", "execution-target-lease-unavailable": "targetRoute",
-          "execution-target-policy-changed": "targetChanged", "execution-target-identity-changed": "targetChanged",
-          "execution-target-quota-period-changed": "targetQuota", "execution-target-expired": "targetQuota", "execution-target-quota-unavailable": "targetQuota",
+          "execution-target-provider-rejected": "targetProviderRejected",
+          "execution-target-provider-quota-blocked": "targetProviderQuota",
+          "execution-target-completion-unconfirmed": "targetCompletionUnknown",
+          "execution-target-relay-verifying": "targetRoute", "execution-target-native-writer-required": "targetRoute", "execution-target-relay-unavailable": "targetRoute", "execution-target-native-route-unverified": "targetRoute", "execution-target-lease-unavailable": "targetRoute",
+          "execution-target-policy-changed": "targetChanged", "execution-target-identity-changed": "targetChanged", "execution-target-native-owner-changed": "targetChanged",
+          "execution-target-quota-period-changed": "targetQuota", "execution-target-expired": "targetQuota", "execution-target-quota-unavailable": "targetQuota", "execution-target-unavailable": "targetQuota",
+          "host-queue-turn-failed": "turnFailed", "host-queue-turn-interrupted": "turnInterrupted", "host-queue-quota-blocked": "turnQuotaBlocked",
+          "execution-target-lease-busy": "targetBusy", "execution-target-authorization-expired": "targetAuthorization", "execution-target-authorization-changed": "targetAuthorization",
+          "execution-target-lease-conflict": "targetProof", "execution-target-lease-invalid": "targetProof", "execution-target-message-mismatch": "targetProof", "execution-target-message-order-unverified": "targetProof", "execution-target-turn-unverified": "targetProof", "execution-target-response-unverified": "targetProof", "execution-target-relay-ack-unverified": "targetProof", "execution-target-unverified": "targetProof",
           "host-queue-awaiting-turn": "queued", "host-queue-busy": "queueBusy", "host-queue-unsupported": "queueUnsupported", "native-writer-present": "busy", "native-turn-active": "busy", "work-turn-limit": "limit" };
         const key = Object.hasOwn(keys, reason) ? keys[reason] : "review";
         return autoWords.reasons[key];
       };
       Object.assign(autoWords.reasons, LOCALE === "ko" ? {
+        turnFailed: "ChatGPT가 재개 턴을 실패로 기록했습니다. 대화의 오류를 확인하세요. QuotaPie는 같은 입력을 다시 전송하지 않습니다.",
+        turnInterrupted: "ChatGPT에서 재개 턴이 중단됐습니다. 같은 입력을 다시 전송하지 않습니다.",
+        turnQuotaBlocked: "재개한 대화가 다시 사용 한도에 걸렸습니다.",
+        targetProviderRejected: "지정 계정의 요청이 제공자 오류로 끝났습니다. 같은 입력은 다시 전송하지 않습니다.",
+        targetProviderQuota: "지정 계정도 제공자로부터 사용 한도 오류를 받았습니다.",
+        targetCompletionUnknown: "지정 계정으로 전송한 요청의 완료를 확인하지 못했습니다. 중복 실행을 막기 위해 다시 보내지 않습니다.",
+        targetBusy: "다른 자동재개 실행이 지정 계정을 사용 중이어서 기다립니다.",
+        targetProof: "같은 대화와 실행인지 확인되지 않아 재개를 보류했습니다.",
+        targetAuthorization: "재개 권한 확인이 만료돼 전송을 보류했습니다.",
         targetRoute: "이 대화를 처리하는 앱 연결을 확인 중입니다. 확인 전에는 재개 입력을 보내지 않습니다.",
         targetChanged: "지정한 계정 또는 계정 풀 설정이 바뀌어 재개를 보류했습니다.",
         targetQuota: "지정한 계정의 최신 한도와 리셋 구간을 다시 확인하고 있습니다."
       } : {
+        turnFailed: "ChatGPT reported that the resumed turn failed. Check the conversation error. QuotaPie will not resend the same input.",
+        turnInterrupted: "The resumed turn was interrupted in ChatGPT. The same input will not be resent.",
+        turnQuotaBlocked: "The resumed conversation reached a usage limit again.",
+        targetProviderRejected: "The assigned account request ended with a provider error. The same input will not be resent.",
+        targetProviderQuota: "The provider reported a usage limit for the assigned account too.",
+        targetCompletionUnknown: "Completion of the request sent to the assigned account could not be confirmed. It will not be resent to prevent duplicate execution.",
+        targetBusy: "Waiting for another automatic continuation using the assigned account.",
+        targetProof: "Resume is paused because the conversation and execution could not be verified.",
+        targetAuthorization: "Sending is paused because resume authorization verification expired.",
         targetRoute: "Verifying the app connection for this conversation before sending resume input.",
         targetChanged: "Resume is paused because the assigned account or pool settings changed.",
         targetQuota: "Rechecking the assigned account's current allowance and reset period."

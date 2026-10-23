@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { QuotaStorage } from "../storage/database";
 import type { WorkPolicy, WorkExecution } from "../work/types";
 import type { QuotaResumeEvidence } from "./evidence";
+import { localRepairChildId, type LocalRepair } from "./local-repair";
 import type { CodexThreadTurnSummary } from "../providers/codex-appserver";
 
 export interface AutoResumeAccount { account: string; label: string; profileKey: string | null; accountKey: string | null }
@@ -13,6 +14,7 @@ export interface QuotaResumeIncident {
   id: string; account: string; profileKey: string; accountKey: string; authorizationRevision: number;
   threadId: string; projectLabel: string; detectedAtMs: number; evidence: QuotaResumeEvidence;
   state: "waiting" | "skipped" | "needs-review"; reason?: string; policyId: string;
+  localRepair?: LocalRepair; localRepairChildIncidentId?: string;
 }
 export interface AutoResumeDependencies {
   accounts(): AutoResumeAccount[];
@@ -23,6 +25,9 @@ export interface AutoResumeDependencies {
   policy(id: string): WorkPolicy | null;
   disable(id: string): Promise<void>;
   admissionReason(policy: WorkPolicy): string;
+  quotaTarget?(policy: WorkPolicy): {quotaAccount:string;quotaAccountLabel:string;quotaTargetState:"candidate"|"confirmed"|"used"} | undefined;
+  prepareLocalRepair?(incident:QuotaResumeIncident,policy:WorkPolicy,childId:string):Promise<LocalRepair|null>;
+  validateLocalRepair?(incident:QuotaResumeIncident,policy:WorkPolicy):Promise<void>;
   ownsExecution?(id: string): boolean;
   execution?(id: string): WorkExecution | null;
   now?: () => number;
@@ -91,8 +96,35 @@ export class AutoResumeController {
     const p=this.checkedPreference(incident.account);
     return !this.closed && incident.state==="waiting" && !!p?.enabled && p.revision===incident.authorizationRevision &&
       this.matches(p) && incident.accountKey===p.accountKey && incident.profileKey===p.profileKey &&
-      incident.evidence.failedAtMs>=p.enabledAtMs && (incident.evidence.recoveryIncidentId===undefined ||
+      incident.evidence.failedAtMs>=p.enabledAtMs && this.localRepairAuthorized(incident) && (incident.evidence.recoveryIncidentId===undefined ||
         this.authorizedRecoveryParent(incident.account,incident.evidence)!==null);
+  }
+  private localRepairAuthorized(incident:QuotaResumeIncident):boolean {
+    const repair=incident.localRepair;if(!repair)return true;
+    const parent=this.incident(repair.parentIncidentId),policy=parent&&this.deps.policy(parent.policyId);
+    return !!parent&&!parent.localRepair&&parent.localRepairChildIncidentId===incident.id&&parent.state==="waiting"&&
+      parent.account===incident.account&&parent.accountKey===incident.accountKey&&parent.profileKey===incident.profileKey&&
+      parent.authorizationRevision===incident.authorizationRevision&&parent.threadId===incident.threadId&&
+      JSON.stringify(parent.evidence)===JSON.stringify(incident.evidence)&&!!policy&&!policy.enabled&&policy.revision===repair.parentPolicyRevision&&
+      policy.state.turns===1&&policy.state.activeExecutionId===null&&policy.state.status==="failed";
+  }
+  private async discoverLocalRepairs(account:string):Promise<void> {
+    if(!this.deps.prepareLocalRepair)return;
+    for(const incident of this.incidents().filter(i=>i.account===account&&!i.localRepair&&!i.localRepairChildIncidentId&&this.authorized(i))){
+      const policy=this.deps.policy(incident.policyId);
+      if(!policy||policy.enabled||policy.state.status!=="failed"||policy.state.turns!==1||policy.state.activeExecutionId)continue;
+      const childId=localRepairChildId(incident.id);
+      let repair:LocalRepair|null;try{repair=await this.deps.prepareLocalRepair(incident,policy,childId);}catch{continue;}
+      if(!repair||repair.parentIncidentId!==incident.id||repair.parentPolicyRevision!==policy.revision||!this.authorized(incident))continue;
+      const child=this.storage.transaction(()=>{
+        const fresh=this.incident(incident.id),current=this.deps.policy(incident.policyId);
+        if(!fresh||fresh.localRepairChildIncidentId||!this.authorized(fresh)||current?.revision!==policy.revision||current.state.status!=="failed")return null;
+        const existing=this.incident(childId);if(existing)return null;
+        const next:QuotaResumeIncident={...fresh,id:childId,policyId:childId,detectedAtMs:this.now(),state:"waiting",reason:"local-before-send-repair",localRepair:repair};
+        fresh.localRepairChildIncidentId=childId;this.saveIncident(fresh);this.saveIncident(next);return next;
+      });
+      if(child)await this.register(child);
+    }
   }
   /** The marker identifies a candidate only. The service must separately bind
    * the new turn to the exact, durably completed parent execution. */
@@ -142,7 +174,9 @@ export class AutoResumeController {
     const incident=this.incident(policy.id);
     if(!incident || !this.authorized(incident)) return "auto-resume-disabled";
     if(policy.account!==incident.account || policy.profileKey!==incident.profileKey || policy.accountKey!==incident.accountKey ||
-      policy.nativeSessionId!==incident.threadId || policy.quotaResume?.turnId!==incident.evidence.turnId || policy.quotaResume.stamp!==incident.evidence.stamp)
+      policy.nativeSessionId!==incident.threadId || policy.quotaResume?.turnId!==(incident.localRepair?.failedTurnId??incident.evidence.turnId) ||
+      policy.quotaResume.stamp!==(incident.localRepair?.stamp??incident.evidence.stamp) ||
+      JSON.stringify(policy.quotaResume.localBeforeSendRecovery)!==JSON.stringify(incident.localRepair?{permitId:incident.localRepair.permitId,parentExecutionId:incident.localRepair.parentExecutionId,sourceQuotaTurnId:incident.localRepair.sourceQuotaTurnId}:undefined))
       return "auto-resume-binding-changed";
     return null;
   }
@@ -150,6 +184,13 @@ export class AutoResumeController {
   async validatePolicy(policy: WorkPolicy): Promise<void> {
     if(policy.purpose!=="quota-resume") return;
     const block=this.blockPolicy(policy); if(block) throw new Error(block);
+    const incident=this.incident(policy.id)!;
+    if(incident.localRepair){
+      if(!this.deps.validateLocalRepair)throw new Error("local-repair-unverified");
+      await this.deps.validateLocalRepair(incident,policy);
+      if(this.blockPolicy(policy))throw new Error("auto-resume-disabled");
+      return;
+    }
     const evidence=await this.deps.evidence(policy.account,policy.nativeSessionId);
     if(this.blockPolicy(policy)) throw new Error("auto-resume-disabled");
     if(!evidence) {
@@ -183,7 +224,11 @@ export class AutoResumeController {
       else if(policy?.state.activeExecutionId) {
         state=this.deps.ownsExecution?.(policy.state.activeExecutionId)===false?"needs-review":"running";
         reason=state==="needs-review"?"execution-unverified":undefined;
-        const receipt=this.deps.execution?.(policy.state.activeExecutionId)?.hostQueue;
+        const execution=this.deps.execution?.(policy.state.activeExecutionId);
+        const receipt=execution?.hostQueue;
+        if(execution?.executionTarget && execution.status==="claimed") {
+          state="waiting";reason="execution-target-relay-verifying";
+        }
         if(state==="running" && receipt && !receipt.turnId) {
           state="queued";
           reason=receipt.hostWakeStatus==="unavailable"?"host-queue-wake-unavailable":
@@ -194,12 +239,16 @@ export class AutoResumeController {
         state=policy?.state.status==="turn-finished"?"resumed":policy?.state.lastResult?.status==="quota-blocked"&&this.authorized(i)?"waiting":"needs-review";
         reason=state==="waiting"?"quota-recovery-unconfirmed":policy?.state.lastResult?.reason;
       } else if(i.state==="waiting" && policy) reason=this.deps.admissionReason(policy);
-      return {id:i.id,account:i.account,threadId:i.threadId,projectLabel:i.projectLabel,state,reason,detectedAtMs:i.detectedAtMs,policyId:i.policyId};
+      return {id:i.id,account:i.account,threadId:i.threadId,projectLabel:i.projectLabel,state,reason,detectedAtMs:i.detectedAtMs,policyId:i.policyId,
+        ...(i.localRepairChildIncidentId?{localRepairChildIncidentId:i.localRepairChildIncidentId,localRepairReason:"local-before-send-repair-linked"}:{}),
+        ...(i.localRepair?{localRepairParentIncidentId:i.localRepair.parentIncidentId,repairReason:"local-before-send-repair"}:{}),};
     });
     // Unresolved work must remain visible to both the UI and notification
     // reconciliation even after newer history accumulates. Bound only history.
     const terminal=(incident:typeof projected[number])=>incident.state==="resumed" || incident.state==="skipped";
-    const incidents=[...projected.filter(i=>!terminal(i)),...projected.filter(terminal).slice(0,100)];
+    const incidents=[...projected.filter(i=>!terminal(i)),...projected.filter(terminal).slice(0,100)].map(i=>{
+      const policy=this.deps.policy(i.policyId);return {...i,...(policy?this.deps.quotaTarget?.(policy):{})};
+    });
     return {accounts,incidents};
   }
   private async register(incident: QuotaResumeIncident): Promise<void> {
@@ -234,6 +283,7 @@ export class AutoResumeController {
       try {
         for(const incident of this.incidents().filter(i=>i.account===account.account && i.state==="waiting" && !this.deps.policy(i.policyId)))
           await this.register(incident);
+        await this.discoverLocalRepairs(account.account);
         // Always inspect the newest page. An old pagination cursor must not
         // delay a newly blocked conversation behind weeks of historical pages.
         const latestPage=await this.deps.listThreads(account.account,null);

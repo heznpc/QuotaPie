@@ -1,6 +1,8 @@
 import copy
 import ctypes
 import importlib.util
+import io
+import json
 from pathlib import Path
 import struct
 import tempfile
@@ -48,6 +50,15 @@ class WakeTests(unittest.TestCase):
         wake.send(plan, self.request, self.io)
         self.assertEqual(self.io.sent, [(42, "codex://threads/wake/" + self.request["threadId"])])
         self.assertNotIn("UNRELATED_SECRET", str(plan))
+
+    def test_inspect_owner_is_read_only_and_never_waits_for_send_authorization(self):
+        output = io.StringIO()
+        with patch.object(wake.sys, "platform", "darwin"), patch.object(wake.sys, "argv", ["helper", "--inspect-owner"]), \
+                patch.object(wake.sys, "stdin", io.StringIO(json.dumps(self.request) + "\n")), patch.object(wake.sys, "stdout", output), \
+                patch.object(wake, "NativeIO", return_value=self.io), patch.object(wake.select, "select", side_effect=AssertionError("must not wait")):
+            wake.main()
+        self.assertEqual(json.loads(output.getvalue()), {"status": "ready", "pid": 42, "startedAtMs": 123000.456})
+        self.assertEqual(self.io.sent, [])
 
     def test_no_owner_duplicate_owner_and_wrong_profile_fail(self):
         for records in ([], self.io.records * 2, [{**self.io.records[0], "args": args(self.io.executable, self.io.profile["appData"], self.io.profile["codexHome"])}]):

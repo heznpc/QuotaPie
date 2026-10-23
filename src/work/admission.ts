@@ -160,5 +160,5 @@ export function workObservation(policy: WorkPolicyInput, windows: WindowAnalysis
     buckets[window.bucket] = { remainingPercent: window.remainingPercent!, epoch: String(window.resetsAtMs), atMs: window.observedAtMs, id };
   }
   const atMs = Math.max(...scoped.map(window => window.observedAtMs));
-  return { id: `${policy.id}:${atMs}`, atMs, buckets };
+  return { quotaAccount: policy.account, id: `${policy.id}:${atMs}`, atMs, buckets };
 }
