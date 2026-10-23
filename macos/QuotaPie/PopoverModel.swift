@@ -23,6 +23,8 @@ final class PopoverModel: ObservableObject {
     private(set) var notificationPreferencesRevision = 0
     @Published var savingsSaving = false
     @Published var savingsMessage: String?
+    @Published var publicNewsSaving = false
+    @Published var publicNewsError: String?
     @Published var compactionSaving = false
     @Published var compactionSaveMessage: String?
 
@@ -75,8 +77,12 @@ final class PopoverModel: ObservableObject {
         payload = next
     }
 
+    var connectedAccounts: [AccountState] {
+        payload?.accounts.filter { $0.enabled && $0.hasConnected } ?? []
+    }
+
     var selectedAccount: AccountState? {
-        let accounts = payload?.accounts.filter(\.enabled) ?? []
+        let accounts = connectedAccounts
         return accounts.first { $0.id == selectedAccountID }
             ?? accounts.first { $0.provider == "codex" && $0.account == "default" }
             ?? accounts.first
@@ -156,7 +162,7 @@ final class PopoverModel: ObservableObject {
 }
 
 enum DetailSection: String, CaseIterable, Identifiable {
-    case quota, activity, resets, settings
+    case quota, activity, resets, accounts, settings
     var id: String { rawValue }
     var title: String { Strings.t("detail." + rawValue) }
 }
@@ -172,6 +178,7 @@ struct PopoverActions {
     let retryTask: (ResumeTask) -> Void
     let dismissTask: (ResumeTask) -> Void
     let quit: () -> Void
+    var configurePublicNews: (Bool) -> Void = { _ in }
     var openAccount: (AccountState) -> Void = { _ in }
     var configureCompaction: (String) -> Void = { _ in }
     var configureSavings: (Bool?, String?) -> Void = { _, _ in }

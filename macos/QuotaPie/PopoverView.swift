@@ -28,7 +28,18 @@ struct PopoverView: View {
                     .padding(.horizontal, 20).padding(.top, 12)
             }
 #endif
-            quotaOverview.padding(20)
+            if model.connectedAccounts.isEmpty {
+                PublicNewsView(model: model, actions: actions).padding(20)
+                Divider().padding(.horizontal, 20)
+                VStack(alignment: .leading, spacing: 10) {
+                    Label(Strings.t("accounts.personal"), systemImage: "person.crop.circle").font(.headline)
+                    Text(Strings.t("accounts.personalHint")).font(.callout).foregroundStyle(.secondary)
+                    Button(Strings.t("accounts.add")) { showDetails(.accounts) }.buttonStyle(.bordered)
+                    if model.lastError != nil { Text(model.statusFailureText).font(.caption).foregroundStyle(.orange) }
+                }.padding(20)
+            } else {
+                quotaOverview.padding(20)
+            }
             if let pool = model.payload?.accountPool, pool.enabled || !pool.recent.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
                     Label(Strings.t(pool.enabled ? "pool.enabled" : "pool.disabled"), systemImage: "arrow.triangle.branch")
@@ -57,9 +68,9 @@ struct PopoverView: View {
                 Divider().padding(.horizontal, 20)
                 taskOverview.padding(20)
             }
-            if let feed = model.payload?.resetSignals, feed.enabled {
+            if !model.connectedAccounts.isEmpty {
                 Divider().padding(.horizontal, 20)
-                ResetSignalSummary(feed: feed, openHistory: { showDetails(.resets) })
+                PublicNewsView(model: model, actions: actions)
                     .padding(.horizontal, 20).padding(.vertical, 16)
             }
             if awake.enabled || model.notificationsAllowed == false {
@@ -136,38 +147,32 @@ struct PopoverView: View {
             } else {
                 Text(model.lastError == nil ? Strings.t("popover.noAccounts") : model.statusFailureText)
                     .font(.callout).foregroundStyle(.secondary)
-                detailButton("overview.quotaDetail", section: .quota)
+                detailButton("accounts.add", section: .accounts)
             }
         }
     }
 
-    @ViewBuilder private var accountPicker: some View {
-        if (model.payload?.accounts.filter(\.enabled).count ?? 0) > 1 {
+    private var accountPicker: some View {
         Menu {
-            ForEach(model.payload?.accounts.filter(\.enabled) ?? []) { account in
+            ForEach(model.connectedAccounts) { account in
                 Button {
                     model.selectAccount(account)
                 } label: {
-                    if model.selectedAccount?.id == account.id {
-                        Label("\(account.providerTitle) · \(account.accountLabel)", systemImage: "checkmark")
-                    } else {
-                        Text("\(account.providerTitle) · \(account.accountLabel)")
-                    }
+                    Label("\(account.providerTitle) · \(account.accountLabel)",
+                          systemImage: model.selectedAccount?.id == account.id ? "checkmark" :
+                            account.collection.isHealthy ? "person.crop.circle" : "exclamationmark.circle")
                 }
             }
+            if !model.connectedAccounts.isEmpty { Divider() }
+            Button(Strings.t("accounts.add"), systemImage: "plus") { showDetails(.accounts) }
         } label: {
-            Text(model.selectedAccount.map { "\($0.providerTitle) · \($0.accountLabel)" } ?? "QuotaPie")
+            Text(model.selectedAccount.map { "\($0.providerTitle) · \($0.accountLabel)" } ?? Strings.t("accounts.add"))
                 .font(.system(size: 14, weight: .semibold))
                 .lineLimit(1).truncationMode(.middle)
         }
         .menuStyle(.borderlessButton)
         .frame(maxWidth: 230, alignment: .leading)
         .accessibilityLabel(Strings.t("overview.chooseAccount"))
-        } else {
-            Text(model.selectedAccount.map { "\($0.providerTitle) · \($0.accountLabel)" } ?? "QuotaPie")
-                .font(.system(size: 14, weight: .semibold))
-                .lineLimit(1).truncationMode(.middle)
-        }
     }
 
     private func quotaReading(account: AccountState, window: QuotaWindow) -> some View {

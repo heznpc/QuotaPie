@@ -254,7 +254,7 @@
 "overview.preview" = "UI preview · development data";
 "detail.quota" = "Quota";
 "detail.activity" = "Activity";
-"detail.resets" = "Reset history";
+"detail.resets" = "Public news";
 "detail.settings" = "Settings";
 "detail.notifications" = "Notifications";
 "detail.noPausedTasks" = "No work is waiting for quota.";
@@ -552,3 +552,36 @@
 "pool.waiting" = "An account will be selected for a new task.";
 "pool.disabled" = "New routing off · existing bindings retained";
 "pool.blocked" = "Account routing is blocked. Check accounts, sign-in and quota.";
+
+// Account connection and login-free public news
+"detail.accounts" = "Accounts";
+"accounts.add" = "Add account…";
+"accounts.title" = "Connect your accounts";
+"accounts.description" = "Connect an account to see your remaining usage and observed recoveries. Public reset news is available without signing in.";
+"accounts.personal" = "My usage";
+"accounts.personalHint" = "Connect Codex or Claude to see remaining usage, scheduled resets, and recoveries observed on your account.";
+"accounts.connected" = "Connected accounts";
+"accounts.empty" = "No usage has been collected from an account yet.";
+"accounts.ready" = "Usage is up to date";
+"accounts.show" = "Show";
+"accounts.discoveredTitle" = "Codex on this Mac";
+"accounts.discoveredHint" = "Running Codex apps appear here. Sign in to the app, then connect usage. An open app alone does not confirm a login.";
+"accounts.running" = "App found · ready to connect";
+"accounts.openAndLogin" = "Open the app to sign in";
+"accounts.open" = "Open app";
+"accounts.newCodex" = "Sign in with another Codex account…";
+"accounts.newName" = "Account %@";
+"accounts.advanced" = "Advanced · existing app folders";
+"accounts.manualHint" = "For an existing separate Codex app, choose both of its folders.";
+"accounts.claudeGuide" = "Connect Claude";
+"accounts.claudeHint" = "Sign in to Claude Code first. Copy the command below and run it in Terminal.";
+"accounts.copyClaudeLogin" = "Copy login command";
+"accounts.claudeCollection" = "Then enable Claude OAuth collection in settings, or connect the Claude Code status line. The account appears after the first usage reading.";
+"accounts.discoveredCodex" = "Discovered Codex %@";
+"publicNews.noLogin" = "Public news · no account required";
+"publicNews.description" = "Follow public Codex reset announcements, their original posts, and publication times.";
+"publicNews.sourceHint" = "Reads public sources without your Codex or Claude credentials. A public announcement does not confirm a reset on your account.";
+"publicNews.enable" = "Show public reset news";
+"publicNews.disable" = "Turn off public news collection";
+"publicNews.error" = "Could not save this setting. Refresh and try again.";
+"publicNews.menuHint" = "Public reset news and personal usage";

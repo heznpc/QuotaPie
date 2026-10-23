@@ -80,6 +80,15 @@ final class StatusClient {
         }
     }
 
+    func configurePublicNews(enabled: Bool, actionToken: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        do {
+            var request = try authenticatedPOST(pathComponents: ["api", "public-news", "preferences"], actionToken: actionToken)
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["enabled": enabled])
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            perform(request) { result in completion(result.map { _ in () }) }
+        } catch { completion(.failure(error)) }
+    }
+
     func connectProfile(_ profile: CodexDesktopProfile, actionToken: String,
                         completion: @escaping (Result<ProfileConnectionReply, Error>) -> Void) {
         do {

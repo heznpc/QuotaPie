@@ -112,6 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                     let workspace = NSWorkspace.shared
                     guard let self else { return }
+                    CodexProfilesModel.shared.refreshDiscovery(accounts: self.popoverModel.payload?.accounts ?? [])
                     self.popoverModel.reconcileRunningCodexAccounts(
                         frontmost: workspace.frontmostApplication.flatMap(self.codexIdentity),
                         running: workspace.runningApplications.compactMap(self.codexIdentity),
@@ -224,6 +225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             retryTask: { [weak self] task in self?.retry(task) },
             dismissTask: { [weak self] task in self?.dismiss(task) },
             quit: { NSApp.terminate(nil) },
+            configurePublicNews: { [weak self] enabled in self?.configurePublicNews(enabled) },
             openAccount: { [weak self] account in self?.openAccount(account) },
             configureCompaction: { [weak self] model in self?.configureCompaction(model) },
             configureSavings: { [weak self] enabled, thread in self?.configureSavings(enabled, thread) },
@@ -331,6 +333,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
+    private func configurePublicNews(_ enabled: Bool) {
+        guard !popoverModel.publicNewsSaving, let client, let token = currentActionToken else { return }
+        popoverModel.publicNewsSaving = true
+        popoverModel.publicNewsError = nil
+        client.configurePublicNews(enabled: enabled, actionToken: token) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.popoverModel.publicNewsSaving = false
+                if case .failure = result { self.popoverModel.publicNewsError = Strings.t("publicNews.error") }
+                self.refresh()
+            }
+        }
+    }
+
     private func configureSavings(_ enabled: Bool?, _ thread: String?) {
         guard !popoverModel.savingsSaving, let client, let token = currentActionToken else { return }
         popoverModel.savingsSaving = true
@@ -388,6 +404,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                         self.statusLogger.notice("Status connection recovered")
                     }
                     self.popoverModel.applyStatus(payload, notificationRevision: notificationRevision)
+                    if self.verification == nil { CodexProfilesModel.shared.refreshDiscovery(accounts: payload.accounts) }
                     let activeTaskIDs = Set(payload.resumeTasks.filter(\.isActive).map(\.id))
                     self.popoverModel.resumeActivities = self.popoverModel.resumeActivities.filter {
                         activeTaskIDs.contains($0.key)
@@ -473,6 +490,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 ?? popoverModel.statusFailure?.shortText ?? Strings.t("headline.disconnected")
             color = .systemOrange
             toolTip = popoverModel.lastError ?? Strings.t("status.tooltip")
+        } else if popoverModel.payload != nil && popoverModel.connectedAccounts.isEmpty {
+            title = "QuotaPie"
+            color = .labelColor
+            toolTip = Strings.t("publicNews.menuHint")
         } else {
             title = headline?.localizedTitle ?? Strings.t("headline.checking")
             if headline?.kind == "degraded" || headline?.kind == "setup" { color = .secondaryLabelColor }

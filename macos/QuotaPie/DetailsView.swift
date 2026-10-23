@@ -57,7 +57,7 @@ struct DetailsView: View {
     @ViewBuilder private var detailContent: some View {
         switch section {
         case .quota:
-            if let payload = model.payload, !payload.accounts.isEmpty {
+            if let payload = model.payload, !model.connectedAccounts.isEmpty {
                 ForEach(orderedAccounts) { account in
                     AccountSection(
                         account: account,
@@ -70,7 +70,7 @@ struct DetailsView: View {
                 }
             } else {
                 Text(Strings.t("popover.noAccountsDetail")).foregroundStyle(.secondary)
-                Button(Strings.t("action.openSettings"), action: actions.openConfig)
+                Button(Strings.t("accounts.add")) { model.showDetails(.accounts) }
             }
         case .activity:
             if let savings = model.payload?.compaction?.savings {
@@ -121,14 +121,16 @@ struct DetailsView: View {
             Button(Strings.t("action.openDashboard"), action: actions.openDashboard)
                 .buttonStyle(.link)
         case .resets:
-            ResetSignalHistory(feed: model.payload?.resetSignals)
+            PublicNewsView(model: model, actions: actions, expanded: true)
+        case .accounts:
+            AccountConnectionsView(status: model, actions: actions)
         case .settings:
             settingsContent
         }
     }
 
     private var orderedAccounts: [AccountState] {
-        let accounts = model.payload?.accounts ?? []
+        let accounts = model.connectedAccounts
         return accounts.filter { $0.id == model.selectedAccount?.id }
             + accounts.filter { $0.id != model.selectedAccount?.id }
     }
@@ -142,8 +144,6 @@ struct DetailsView: View {
                     .font(.callout).foregroundStyle(.secondary)
                 Button(Strings.t("notification.settings"), action: actions.openNotificationSettings)
             }
-            Divider()
-            CodexProfilesView(status: model, actions: actions)
             Divider()
             TaskSavingsSettingsView(model: model, save: { actions.configureSavings($0, nil) })
             Divider()

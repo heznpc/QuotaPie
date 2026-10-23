@@ -573,6 +573,9 @@ export class QuotaPieService {
         account: profile.id,
         accountLabel: profile.label,
         enabled: profile.enabled,
+        ...(profile.provider === "codex" ? { profileRoot: codexProfileRoot(
+          this.config.accounts.codex.find(item => item.id === profile.id)!
+        ) } : {}),
         collection: {
           health: best?.health ?? "never-attempted",
           activeSource: best && best.lastSuccessAtMs != null ? best.source : null,
@@ -1305,14 +1308,21 @@ export class QuotaPieService {
     this.wakeCollection?.();
   }
 
-  async watch(): Promise<void> {
-    this.stopped = false;
-    this.jobsEnabled = true;
-    if (this.config.resetSignals.enabled && !this.signalTimer) {
+  setPublicNewsEnabled(enabled: boolean): void {
+    this.config.resetSignals.enabled = enabled;
+    if (this.signalTimer) clearInterval(this.signalTimer);
+    this.signalTimer = null;
+    if (enabled && !this.closing) {
       const collect = () => { void this.collectResetSignals().catch(() => undefined); };
       collect();
       this.signalTimer = setInterval(collect, 30_000);
     }
+  }
+
+  async watch(): Promise<void> {
+    this.stopped = false;
+    this.jobsEnabled = true;
+    this.setPublicNewsEnabled(this.config.resetSignals.enabled);
     let consecutiveFailures = 0;
     while (!this.stopped) {
       this.refreshRequested = false;

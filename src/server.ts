@@ -24,7 +24,7 @@ function eventJson(event: QuotaEvent) {
   return { ...event, summary: event.displayText };
 }
 import type { AppConfig } from "./config";
-import { codexProfileRoot, saveNotificationPreferences } from "./config";
+import { codexProfileRoot, saveNotificationPreferences, savePublicNewsPreference } from "./config";
 import { validateNotificationPatch } from "./notification-preferences";
 import type { QuotaPieService } from "./service";
 
@@ -62,6 +62,23 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
       const url = new URL(request.url);
       if (url.pathname === "/api/runtime") {
         return request.method === "GET" ? json(runtime) : json({ error: "method_not_allowed" }, 405);
+      }
+      if (url.pathname === "/api/public-news/preferences") {
+        if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+        if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token"))) return json({ error: "forbidden" }, 403);
+        let input;
+        try {
+          const body = await request.text();
+          if (body.length > 1024) throw new Error("too large");
+          input = JSON.parse(body);
+          if (!input || typeof input !== "object" || Array.isArray(input) || typeof input.enabled !== "boolean" ||
+              Object.keys(input).some(key => key !== "enabled")) throw new Error("invalid preference");
+        } catch { return json({ error: "invalid_preferences" }, 400); }
+        try {
+          savePublicNewsPreference(input.enabled, options.preferencesPath);
+          service.setPublicNewsEnabled(input.enabled);
+          return json({ resetSignals: service.signalCollector.status() });
+        } catch { return json({ error: "preferences_update_failed" }, 409); }
       }
       if (url.pathname === "/api/profiles/connect") {
         if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);

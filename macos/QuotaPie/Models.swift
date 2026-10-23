@@ -458,9 +458,15 @@ struct AccountState: Decodable, Identifiable {
     let windows: [QuotaWindow]
     let bottleneckBucket: String?
     let updatedAtMs: Double?
+    var profileRoot: String? = nil
 
     var id: String { "\(provider)/\(account)" }
     var providerTitle: String { provider == "codex" ? "Codex" : provider == "claude" ? "Claude" : provider }
+
+    /// Keep previously observed accounts through outages; empty defaults are setup candidates.
+    var hasConnected: Bool {
+        collection.lastSuccessAtMs != nil || collection.isHealthy || collection.health == "stale-success" || !windows.isEmpty
+    }
 }
 
 struct CollectionState: Decodable {

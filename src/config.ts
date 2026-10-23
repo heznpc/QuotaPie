@@ -396,3 +396,14 @@ export function saveNotificationPreferences(input: unknown, path = configPath())
   } finally { if (existsSync(temporary)) unlinkSync(temporary); }
   return input;
 }
+
+// Public news preferences do not require any provider account or API token.
+export function savePublicNewsPreference(enabled: boolean, path = configPath()): void {
+  const raw = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, JSON.stringify({ ...raw, resetSignals: { ...raw.resetSignals, enabled } }, null, 2) + "\n", { mode: 0o600 });
+    renameSync(temporary, path);
+  } finally { if (existsSync(temporary)) unlinkSync(temporary); }
+}

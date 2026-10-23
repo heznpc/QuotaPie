@@ -191,6 +191,8 @@ final class CodexProfileLauncher {
 final class CodexProfilesModel: ObservableObject {
     static let shared = CodexProfilesModel()
     @Published private(set) var profiles: [CodexDesktopProfile] = []
+    @Published var runningProfileIDs: Set<String> = []
+    @Published var discovered: [CodexDesktopProfile] = []
     @Published var busy = false
     @Published var message: String?
     private let defaults: UserDefaults
@@ -207,18 +209,20 @@ final class CodexProfilesModel: ObservableObject {
             } catch { message = Strings.t("profiles.error.storage") }
         } else { profiles = [.primary] }
     }
-    func add(name: String, home: String?, data: String?) {
+    @discardableResult
+    func add(name: String, home: String?, data: String?) -> CodexDesktopProfile? {
         let id = UUID().uuidString.lowercased()
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/QuotaPie/CodexProfiles/" + id)
         let profile = CodexDesktopProfile(id: id, name: name.trimmingCharacters(in: .whitespacesAndNewlines),
             codexHome: home ?? root.appendingPathComponent("home").path, appData: data ?? root.appendingPathComponent("app-data").path)
         save(profiles + [profile])
+        return profiles.first { $0.id == id }
     }
     func remove(_ profile: CodexDesktopProfile) {
         // Remove only the launch registration. Never delete files or stop apps.
         save(profiles.filter { $0.id != profile.id })
     }
-    private func save(_ next: [CodexDesktopProfile]) {
+    func save(_ next: [CodexDesktopProfile]) {
         do {
             try CodexDesktopProfile.validate(next)
             defaults.set(try JSONEncoder().encode(next), forKey: key)
@@ -226,8 +230,12 @@ final class CodexProfilesModel: ObservableObject {
         } catch { message = error.localizedDescription }
     }
     private var connectionClient: StatusClient?
-    func connect(_ profile: CodexDesktopProfile, token: String?) {
+    func connect(_ profile: CodexDesktopProfile, token: String?, completion: @escaping () -> Void = {}) {
         guard !busy, let token, !token.isEmpty else { return }
+        if !profiles.contains(where: { $0.id == profile.id }) {
+            save(profiles + [profile])
+            guard profiles.contains(where: { $0.id == profile.id }) else { return }
+        }
         busy = true; message = nil
         do {
             // First connection also stages and health-checks a profile relay.
@@ -249,16 +257,19 @@ final class CodexProfilesModel: ObservableObject {
                     case .failure(let error): self.message = (error as? ProfileConnectionError)?.localizedDescription ?? Strings.t("profiles.connectFailed")
                     }
                     self.connectionClient = nil
+                    completion()
                 }
             }
         } catch { busy = false; message = Strings.t("profiles.connectFailed") }
     }
-    func open(_ profile: CodexDesktopProfile) {
+    func open(_ profile: CodexDesktopProfile, afterOpen: (() -> Void)? = nil) {
         guard !busy else { return }; busy = true; message = nil
         launcher.open(profile) { [weak self] result in
             self?.busy = false
             switch result {
-            case .success: self?.message = Strings.t("profiles.opened", profile.name)
+            case .success:
+                self?.message = Strings.t("profiles.opened", profile.name)
+                afterOpen?()
             case .failure(let error): self?.message = error.localizedDescription
             }
         }

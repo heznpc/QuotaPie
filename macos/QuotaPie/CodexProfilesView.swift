@@ -5,77 +5,90 @@ struct CodexProfilesView: View {
     @ObservedObject var status: PopoverModel
     let actions: PopoverActions
     @ObservedObject private var profiles = CodexProfilesModel.shared
-    @State private var adding = false
     @State private var name = ""
     @State private var home: String?
     @State private var data: String?
 
+    private var candidates: [CodexDesktopProfile] {
+        profiles.discovered.filter { $0.account(in: status.payload?.accounts ?? [])?.hasConnected != true }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(Strings.t("profiles.title")).font(.headline)
-            Text(Strings.t("profiles.description")).font(.callout).foregroundStyle(.secondary)
-            ForEach(profiles.profiles) { profile in
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack {
+            Text(Strings.t("accounts.discoveredTitle")).font(.headline)
+            Text(Strings.t("accounts.discoveredHint")).font(.callout).foregroundStyle(.secondary)
+            ForEach(candidates) { profile in
+                let running = profiles.runningProfileIDs.contains(profile.id)
+                let account = profile.account(in: status.payload?.accounts ?? [])
+                HStack(spacing: 12) {
+                    Image(systemName: "desktopcomputer").font(.title2).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 3) {
                         Text(profile.name).fontWeight(.medium)
-                        Spacer()
-                        Button(Strings.t("profiles.open")) { profiles.open(profile) }
+                        Text(account?.collection.actionText ?? Strings.t(running ? "accounts.running" : "accounts.openAndLogin"))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    if running {
                         Button(Strings.t("profiles.connect")) {
-                            profiles.connect(profile, token: status.payload?.actionToken)
+                            profiles.connect(profile, token: status.payload?.actionToken, completion: actions.refresh)
                         }.disabled(!status.canActOnTasks)
-                        if profile.id != "primary" {
-                            Button(Strings.t("profiles.remove")) { profiles.remove(profile) }
+                    } else {
+                        Button(Strings.t("accounts.open")) {
+                            profiles.open(profile) { refreshDiscovery() }
                         }
                     }
-                    if let account = profile.collectionAccount {
-                        if let observed = status.payload?.accounts.first(where: { $0.provider == "codex" && $0.account == account }) {
-                            Text(observed.collection.isHealthy ? Strings.t("profiles.collecting") : observed.collection.actionText)
-                                .font(.caption).foregroundStyle(observed.collection.isHealthy ? Color.secondary : Color.orange)
-                        } else {
-                            Text(Strings.t("profiles.awaiting")).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    if let account = profile.collectionAccount {
-                        let tasks = status.activeTasks.filter { $0.provider == "codex" && $0.account == account }
-                        if !tasks.isEmpty {
-                            PausedWorkSection(tasks: tasks, hasActionToken: status.canActOnTasks,
-                                activities: status.resumeActivities, onResume: actions.resumeTask,
-                                onRetry: actions.retryTask, onDismiss: actions.dismissTask)
-                        }
-                    }
-                    DisclosureGroup(Strings.t("profiles.paths")) {
-                        Text("CODEX_HOME: " + profile.codexHome).textSelection(.enabled)
-                        Text(Strings.t("profiles.appData") + ": " + profile.appData).textSelection(.enabled)
-                    }.font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Button(Strings.t("profiles.add")) { adding = true }
-            if let message = profiles.message { Text(message).font(.caption).foregroundStyle(.secondary) }
-            Text(Strings.t("profiles.scope")).font(.caption).foregroundStyle(.secondary)
+            Button {
+                let label = Strings.t("accounts.newName", String(profiles.profiles.count + 1))
+                if let profile = profiles.add(name: label, home: nil, data: nil) {
+                    refreshDiscovery()
+                    profiles.open(profile) { refreshDiscovery() }
+                }
+            } label: {
+                Label(Strings.t("accounts.newCodex"), systemImage: "plus")
+            }
+            if profiles.busy { ProgressView().controlSize(.small) }
+            if let message = profiles.message {
+                Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+            DisclosureGroup(Strings.t("accounts.advanced")) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(Strings.t("accounts.manualHint")).font(.caption).foregroundStyle(.secondary)
+                    TextField(Strings.t("profiles.name"), text: $name)
+                    Button(Strings.t("profiles.chooseHome")) { choose { home = $0 } }
+                    if let home { Text(home).font(.caption).textSelection(.enabled) }
+                    Button(Strings.t("profiles.chooseData")) { choose { data = $0 } }
+                    if let data { Text(data).font(.caption).textSelection(.enabled) }
+                    Button(Strings.t("profiles.register")) {
+                        if profiles.add(name: name, home: home, data: data) != nil {
+                            name = ""; home = nil; data = nil
+                            refreshDiscovery()
+                        }
+                    }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || home == nil || data == nil)
+                    ForEach(profiles.profiles) { profile in
+                        DisclosureGroup(profile.name) {
+                            Text("CODEX_HOME: " + profile.codexHome).textSelection(.enabled)
+                            Text(Strings.t("profiles.appData") + ": " + profile.appData).textSelection(.enabled)
+                            Button(Strings.t("profiles.open")) { profiles.open(profile) { refreshDiscovery() } }
+                            if profile.id != "primary" {
+                                Button(Strings.t("profiles.remove")) { profiles.remove(profile); refreshDiscovery() }
+                            }
+                        }.font(.caption)
+                    }
+                    Text(Strings.t("profiles.scope")).font(.caption).foregroundStyle(.secondary)
+                }.padding(.top, 10)
+            }
         }
         .disabled(profiles.busy)
-        .sheet(isPresented: $adding) {
-            VStack(alignment: .leading, spacing: 14) {
-                Text(Strings.t("profiles.add")).font(.headline)
-                TextField(Strings.t("profiles.name"), text: $name)
-                Text(Strings.t("profiles.newHint")).font(.callout).foregroundStyle(.secondary)
-                Button(Strings.t("profiles.chooseHome")) { choose { home = $0 } }
-                if let home { Text(home).font(.caption).textSelection(.enabled) }
-                Button(Strings.t("profiles.chooseData")) { choose { data = $0 } }
-                if let data { Text(data).font(.caption).textSelection(.enabled) }
-                if let error = profiles.message { Text(error).font(.caption).foregroundStyle(.orange) }
-                HStack {
-                    Button(Strings.t("profiles.cancel")) { reset() }
-                    Spacer()
-                    Button(Strings.t("profiles.register")) {
-                        profiles.add(name: name, home: home, data: data)
-                        if profiles.message == nil { reset() }
-                    }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }.padding(24).frame(width: 460)
-        }
+        .onAppear { refreshDiscovery() }
     }
-    private func reset() { adding = false; name = ""; home = nil; data = nil }
+
+    private func refreshDiscovery() {
+        guard AppVerification.current == nil else { return }
+        profiles.refreshDiscovery(accounts: status.payload?.accounts ?? [])
+    }
+
     private func choose(_ selected: (String) -> Void) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true; panel.canChooseFiles = false

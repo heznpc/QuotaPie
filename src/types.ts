@@ -246,6 +246,8 @@ export interface AccountState {
   account: string;
   accountLabel: string;
   enabled: boolean;
+  /** Local Codex profile identity for matching discovered desktop instances. */
+  profileRoot?: string;
   collection: AccountCollectionState;
   windows: WindowAnalysis[];
   bottleneckBucket: string | null;

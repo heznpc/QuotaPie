@@ -51,7 +51,7 @@
 
 /* 팝오버 */
 "popover.noAccounts" = "추적할 계정이 없습니다";
-"popover.noAccountsDetail" = "설정 파일에서 Codex 또는 Claude 계정을 활성화하십시오.";
+"popover.noAccountsDetail" = "계정을 연결하면 내 한도와 실제 회복 기록이 표시됩니다.";
 "popover.noWindows" = "표시할 한도 창이 없습니다.";
 "popover.disconnected" = "로컬 서비스에 연결할 수 없습니다";
 "popover.cachedNotice" = "아래는 마지막 정상값입니다 · %@";
@@ -254,7 +254,7 @@
 "overview.preview" = "UI 미리보기 · 개발용 데이터";
 "detail.quota" = "한도";
 "detail.activity" = "활동";
-"detail.resets" = "리셋 기록";
+"detail.resets" = "공개 소식";
 "detail.settings" = "설정";
 "detail.notifications" = "알림";
 "detail.noPausedTasks" = "한도를 기다리는 작업이 없습니다.";
@@ -540,7 +540,7 @@
 
 "navigation.overview" = "요약으로";
 
-"profiles.accountNotLinked" = "이 계정에 연결된 Codex 앱을 찾지 못했습니다. 설정의 Codex 계정에서 앱 연결을 확인해 주세요.";
+"profiles.accountNotLinked" = "이 계정에 연결된 Codex 앱을 찾지 못했습니다. 계정 탭에서 앱 연결을 확인해 주세요.";
 "profiles.openAccount" = "%@ Codex 앱 열기";
 "profiles.connectedWithRelay" = "사용량 수집과 모델 전환 중계에 연결했습니다. 이미 열려 있던 앱·작업은 이전 연결을 쓸 수 있습니다. 진행 중인 작업을 마친 뒤 이 계정의 앱을 다시 열어 주세요.";
 "profiles.profile_relay_failed" = "사용량 수집은 등록했지만 모델 전환 중계 연결에 실패했습니다. 직접 지정한 서버 설정이 있다면 보존됩니다. 중계 상태를 확인한 뒤 다시 연결해 주세요.";
@@ -552,3 +552,36 @@
 "pool.waiting" = "새 작업에서 사용할 계정을 배정합니다.";
 "pool.disabled" = "새 계정 배정 꺼짐 · 기존 연결 유지";
 "pool.blocked" = "계정 라우팅이 중단됐습니다. 계정·인증·잔여량을 확인하세요.";
+
+// Account connection and login-free public news
+"detail.accounts" = "계정";
+"accounts.add" = "계정 추가…";
+"accounts.title" = "내 계정 연결";
+"accounts.description" = "계정을 연결하면 내 잔여량과 실제 회복 기록을 볼 수 있습니다. 공개 리셋 소식은 로그인 없이 볼 수 있습니다.";
+"accounts.personal" = "내 사용량";
+"accounts.personalHint" = "Codex 또는 Claude를 연결하면 내 잔여량, 정기 갱신 시각, 실제 회복 기록을 볼 수 있습니다.";
+"accounts.connected" = "연결된 계정";
+"accounts.empty" = "아직 사용량을 확인한 계정이 없습니다.";
+"accounts.ready" = "사용량 확인됨";
+"accounts.show" = "보기";
+"accounts.discoveredTitle" = "이 Mac의 Codex";
+"accounts.discoveredHint" = "실행 중인 Codex 앱을 여기서 찾습니다. 해당 앱에서 로그인한 뒤 한도 연결을 누르세요. 앱 실행만으로 로그인 여부를 판단하지 않습니다.";
+"accounts.running" = "앱 발견 · 연결 전";
+"accounts.openAndLogin" = "앱을 열어 로그인하세요";
+"accounts.open" = "앱 열기";
+"accounts.newCodex" = "다른 Codex 계정으로 로그인…";
+"accounts.newName" = "계정 %@";
+"accounts.advanced" = "고급 · 기존 앱 폴더 연결";
+"accounts.manualHint" = "이미 별도로 실행하던 Codex 앱이 있다면 해당 앱의 폴더 두 곳을 지정하세요.";
+"accounts.claudeGuide" = "Claude 연결";
+"accounts.claudeHint" = "먼저 Claude Code에 로그인하세요. 아래 명령을 복사해 터미널에서 실행할 수 있습니다.";
+"accounts.copyClaudeLogin" = "로그인 명령 복사";
+"accounts.claudeCollection" = "그다음 설정에서 Claude OAuth 수집을 켜거나 Claude Code 상태줄을 연결하세요. 사용량이 처음 확인되면 목록에 나타납니다.";
+"accounts.discoveredCodex" = "발견한 Codex %@";
+"publicNews.noLogin" = "공개 소식 · 로그인 불필요";
+"publicNews.description" = "공개된 Codex 리셋 소식과 원문, 발표 시각을 확인하세요.";
+"publicNews.sourceHint" = "Codex·Claude 인증 정보 없이 공개 출처를 읽습니다. 발표만으로 내 계정의 리셋 적용을 확인할 수는 없습니다.";
+"publicNews.enable" = "공개 리셋 소식 켜기";
+"publicNews.disable" = "공개 소식 수집 끄기";
+"publicNews.error" = "설정을 저장하지 못했습니다. 새로고침 후 다시 시도하세요.";
+"publicNews.menuHint" = "공개 리셋 소식과 내 사용량";
