@@ -27,6 +27,7 @@ import { runPoolCommand } from "./account-pool";
 import { runHostGoalsCommand } from "./host-goals-cli";
 import { resumeProfileKey } from "./resume-gate";
 import { runDotsCommand } from "./dots/cli";
+import { runQuotaBar } from "./quota-bar";
 
 const ROOT = resolve(import.meta.dir, "..");
 const BIN = resolve(ROOT, "bin", "quotapie");
@@ -248,6 +249,7 @@ let outputLocale = resolveLocale("auto");
 async function main(): Promise<number> {
   const [command = "status", ...args] = process.argv.slice(2);
   outputLocale = configuredLocale();
+  if (command === "quota-bar" || command === "quotabar") return runQuotaBar(loadConfig(), args);
   if (command === "pool") return runPoolCommand(args);
   if (command === "dots") return runDotsCommand(args);
   if (command === "codex") {

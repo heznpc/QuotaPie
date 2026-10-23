@@ -2,6 +2,37 @@ import type { AppConfig } from "./config";
 import { resolveLocale, t } from "./i18n";
 import type { QuotaEvent, QuotaObservation } from "./types";
 
+function resetCountConsumed(previous: QuotaObservation, next: QuotaObservation): boolean {
+  if (previous.resetCreditsAvailable == null || next.resetCreditsAvailable == null ||
+      next.resetCreditsAvailable >= previous.resetCreditsAvailable) return false;
+  if (next.source !== "claude-desktop") return true;
+  const parse = (value: unknown): unknown => {
+    if (typeof value !== "string") return null;
+    try { return JSON.parse(value); } catch { return null; }
+  };
+  const before = parse(previous.metadata?.claudeResetGrantJSON);
+  const after = parse(next.metadata?.claudeResetGrantJSON);
+  if (!before || typeof before !== "object" || !after || typeof after !== "object") return false;
+  const oldGrants = (before as Record<string, unknown>).grants;
+  const newGrants = (after as Record<string, unknown>).grants;
+  if (!Array.isArray(oldGrants) || !Array.isArray(newGrants)) return false;
+  for (const grants of [oldGrants, newGrants]) {
+    const ids = new Set<string>();
+    for (const grant of grants) {
+      if (!grant || typeof grant.id !== "string" || ids.has(grant.id) ||
+          !Number.isSafeInteger(grant.resets_left) || grant.resets_left < 0) return false;
+      ids.add(grant.id);
+    }
+  }
+  // Disappearance/expiry is not consumption. Require the same server record,
+  // with a declining counter, for the full observed decrease.
+  const decrease = oldGrants.reduce((sum, old) => {
+    const current = newGrants.find(item => item.id === old.id);
+    return sum + (current ? Math.max(0, old.resets_left - current.resets_left) : 0);
+  }, 0);
+  return decrease === previous.resetCreditsAvailable - next.resetCreditsAvailable;
+}
+
 // An event carries its kind and the parameters that describe it. The summary is
 // a rendering of those, kept alongside so stored history stays readable and so
 // consumers that do not want to translate anything have something to show.
@@ -51,6 +82,7 @@ export function classifyDelta(
   }
 
   const events: QuotaEvent[] = [];
+  const ticketConsumed = resetCountConsumed(previous, next);
   // Preserve the observation interval, never substitute a public post's time.
   // Stored in the existing event transaction alongside the accepted snapshot.
   const evidence = {
@@ -66,8 +98,7 @@ export function classifyDelta(
     nextQuality: next.quality,
     resetTicketRecovery: next.metadata?.resetTicketRecovery === true,
     resetTicketObservedAtMs: typeof next.metadata?.resetTicketObservedAtMs === "number" ? next.metadata.resetTicketObservedAtMs : null,
-    resetCreditDecreased: (previous.resetCreditsAvailable != null && next.resetCreditsAvailable != null
-      && next.resetCreditsAvailable < previous.resetCreditsAvailable) || next.metadata?.accountResetCreditDecreased === true || next.metadata?.resetTicketRecovery === true,
+    resetCreditDecreased: ticketConsumed || next.metadata?.accountResetCreditDecreased === true || next.metadata?.resetTicketRecovery === true,
   };
   if (next.source !== previous.source) {
     events.push(
@@ -110,9 +141,7 @@ export function classifyDelta(
   }
 
   if (
-    previous.resetCreditsAvailable != null &&
-    next.resetCreditsAvailable != null &&
-    next.resetCreditsAvailable < previous.resetCreditsAvailable
+    ticketConsumed && previous.resetCreditsAvailable != null && next.resetCreditsAvailable != null
   ) {
     events.push(
       event(next, "banked_reset_consumed", "info", "high", config, {

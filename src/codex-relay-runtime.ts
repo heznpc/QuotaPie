@@ -69,7 +69,7 @@ export const createRelayRuntime: RuntimeFactory = (settings, memory) => {
   const resolveAccountPool = () => {
     const policy = readPoolPolicy();
     if (!sourceAccount || !policy.accounts.includes(sourceAccount) ||
-        !policy.enabled && !manualTargets().some(choice => choice.sourceAccount === sourceAccount)) return undefined;
+        !policy.enabled && !policy.newConversationTarget && !manualTargets().some(choice => choice.sourceAccount === sourceAccount)) return undefined;
     if (!interactivePool || interactivePool.runtimeApiVersion !== AccountPool.RUNTIME_API_VERSION) {
       // New requests use the current routing implementation after a hot reload.
       // Older handles stay in the disposal chain while their streams/telemetry

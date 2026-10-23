@@ -55,7 +55,16 @@ export function filterForeignReasoning(body: unknown, fingerprints: string[] | u
  * local file/response references still have no transferable ownership proof.
  * This validator never removes IDs, reasoning, compaction, or tool messages. */
 export function nativeExecutionHistory(body: unknown): boolean {
-  if (!record(body) || body.previous_response_id != null || body.conversation != null || !Array.isArray(body.input)) return false;
+  return nativeHistoryFailure(body) === null;
+}
+
+/** Fixed diagnostic codes only: never include prompts, IDs or encrypted bytes. */
+export type NativeHistoryFailure = "invalid_body" | "remote_reference" | "invalid_item" |
+  "invalid_compaction" | "invalid_agent_message" | "missing_history" | "invalid_native_shape";
+
+export function nativeHistoryFailure(body: unknown): NativeHistoryFailure | null {
+  if (!record(body) || !Array.isArray(body.input)) return "invalid_body";
+  if (body.previous_response_id != null || body.conversation != null) return "remote_reference";
   const remoteReference = (value: any): boolean => {
     if (!value || typeof value !== "object") return false;
     if (Array.isArray(value)) return value.some(remoteReference);
@@ -64,16 +73,22 @@ export function nativeExecutionHistory(body: unknown): boolean {
       // A local function's schema names parameters; it is not a provider file
       // handle. Other tool/namespace descriptors are still inspected recursively.
       if (["function","custom"].includes(value.type) && ["parameters","input_schema"].includes(key)) continue;
+      if (value.type === "json_schema" && key === "schema") continue;
+      // Structured local tool arguments are data, just like the JSON string in
+      // function_call.arguments. Parameter names are not provider references.
+      if (value.type === "tool_search_call" && key === "arguments" ||
+          value.type === "local_shell_call" && key === "action") continue;
+      if (value === body && key === "metadata" && record(child) && Object.values(child).every(v => typeof v === "string")) continue;
       if (["file_id","file_ids","file_url","audio_url","video_url","previous_response_id","conversation","vector_store_ids","container","container_id"].includes(key) && child != null) return true;
       if (key === "image_url" && (typeof child !== "string" || !/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/.test(child))) return true;
       if (remoteReference(child)) return true;
     }
     return false;
   };
-  if (remoteReference(body)) return false;
+  if (remoteReference(body)) return "remote_reference";
   for (const item of body.input) {
-    if (!record(item)) return false;
-    if (item.type === "compaction" && (typeof item.encrypted_content !== "string" || !item.encrypted_content)) return false;
+    if (!record(item)) return "invalid_item";
+    if (["compaction", "compaction_summary"].includes(item.type) && (typeof item.encrypted_content !== "string" || !item.encrypted_content)) return "invalid_compaction";
   }
   // Native Codex histories include messages exchanged by agents. Preserve the
   // original records, including encrypted content, under the independently
@@ -83,23 +98,56 @@ export function nativeExecutionHistory(body: unknown): boolean {
     Array.isArray(item.content) && item.content.length > 0 && item.content.every((part: any) =>
       record(part) && (part.type === "input_text" && typeof part.text === "string" ||
         part.type === "encrypted_content" && typeof part.encrypted_content === "string" && part.encrypted_content.length > 0));
-  if (body.input.some(item => item.type === "agent_message" && !agentMessageOK(item))) return false;
-  const clear = body.input.filter(item => item.type !== "compaction");
-  if (!body.input.some(item => item.type === "compaction"))
-    return portableReplay({ ...body, input: clear.filter(item => item.type !== "agent_message") }) !== null;
-  // The compaction can contain the user messages and call definitions preceding
-  // these visible records. Validate native shapes without inventing or dropping
-  // any messages; the target is independently authorized by a lease or manual choice.
-  const contentOK = (value: any) => typeof value === "string" || Array.isArray(value) && value.every(part =>
+  if (body.input.some(item => item.type === "agent_message" && !agentMessageOK(item))) return "invalid_agent_message";
+  if (!body.input.some(item => ["compaction", "compaction_summary"].includes(item.type) ||
+      item.type === "context_compaction" && typeof item.encrypted_content === "string" && item.encrypted_content.length > 0 ||
+      (item.type == null || item.type === "message") && item.role === "user")) return "missing_history";
+  // A verified lease or explicit account choice authorizes exact native history.
+  // Interrupted tools can have no result, and earlier calls may be compacted.
+  // Portable replay's complete-pair requirement is inappropriate here: validate
+  // native shapes and remote references without rewriting or dropping records.
+  const contentOK = (value: any, encrypted = false) => typeof value === "string" || Array.isArray(value) && value.every(part =>
     record(part) && (["input_text","output_text","text"].includes(part.type) && typeof part.text === "string" ||
+      encrypted && part.type === "encrypted_content" && typeof part.encrypted_content === "string" && part.encrypted_content.length > 0 ||
       part.type === "input_image" && typeof part.image_url === "string"));
-  return clear.every(item => {
+  const optionalString = (value: any) => value == null || typeof value === "string";
+  const valid = body.input.every((item, index) => {
+    if (["compaction", "compaction_summary"].includes(item.type)) return true;
+    if (item.type === "context_compaction") return optionalString(item.encrypted_content);
+    // Codex sends this final control on /responses for native compaction.
+    // Classification already recognizes it; history admission must do so too.
+    if (item.type === "compaction_trigger") return index === body.input.length - 1;
     if (item.type === "agent_message") return agentMessageOK(item);
     if (item.type === "reasoning") return true;
     if ((item.type == null || item.type === "message") && ["system","developer","user","assistant"].includes(item.role)) return contentOK(item.content);
     if (["function_call","custom_tool_call"].includes(item.type)) return typeof item.call_id === "string" && typeof item.name === "string" &&
       typeof (item.type === "function_call" ? item.arguments : item.input) === "string";
-    if (["function_call_output","custom_tool_call_output"].includes(item.type)) return typeof item.call_id === "string" && contentOK(item.output);
+    if (["function_call_output","custom_tool_call_output"].includes(item.type)) {
+      // Desktop-injected tool results can identify the tool by name/namespace
+      // and response item ID without a local call_id (e.g. thread messages).
+      const namedOutput = item.type === "function_call_output" && item.call_id == null &&
+        typeof item.id === "string" && item.id.length > 0 && typeof item.name === "string" && item.name.length > 0 && optionalString(item.namespace);
+      return (typeof item.call_id === "string" || namedOutput) && contentOK(item.output, true);
+    }
+    // These are durable ResponseItem variants in Codex's native history too.
+    // Built-in tools do not necessarily use a local call_id/output pair.
+    if (item.type === "tool_search_call") return optionalString(item.call_id) && optionalString(item.status) &&
+      typeof item.execution === "string" && Object.hasOwn(item, "arguments");
+    if (item.type === "tool_search_output") return optionalString(item.call_id) && typeof item.status === "string" &&
+      typeof item.execution === "string" && Array.isArray(item.tools);
+    if (item.type === "web_search_call") return optionalString(item.status) &&
+      (item.action == null || record(item.action) && typeof item.action.type === "string");
+    if (item.type === "image_generation_call") return typeof item.status === "string" &&
+      typeof item.result === "string" && optionalString(item.revised_prompt);
+    if (item.type === "local_shell_call") {
+      const action = item.action;
+      return optionalString(item.call_id) && ["completed", "in_progress", "incomplete"].includes(item.status) &&
+        record(action) && action.type === "exec" && Array.isArray(action.command) && action.command.every((arg: any) => typeof arg === "string") &&
+        (action.timeout_ms == null || Number.isSafeInteger(action.timeout_ms) && action.timeout_ms >= 0) &&
+        optionalString(action.working_directory) && optionalString(action.user) &&
+        (action.env == null || record(action.env) && Object.values(action.env).every(v => typeof v === "string"));
+    }
     return item.type === "additional_tools" && item.role === "developer";
   });
+  return valid ? null : "invalid_native_shape";
 }

@@ -5,18 +5,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { DEFAULT_CONFIG } from "../src/config";
-import { createRelayRuntime, type RuntimeMemory } from "../src/codex-relay-runtime";
+import { createRelayRuntime, type RuntimeMemory, type RuntimeSettings } from "../src/codex-relay-runtime";
 import { profileReference } from "../src/work-boundary";
-import { poolAccounts } from "../src/account-pool";
+import { AccountPool, poolAccounts } from "../src/account-pool";
 import { manualTargets, setManualTarget, manualRoutingDatabasePath } from "../src/manual-account-routing";
+import { nativeToolHistory } from "./fixtures/native-history";
 
 const model = "gpt-6-astra", compactModel = "gpt-5.6-sol", token = "a".repeat(48);
 const complete = () => new Response('data: {"type":"response.completed","response":{"status":"completed"}}\n\n', { headers: { "content-type": "text/event-stream" } });
-async function fixture(run: (f: any) => Promise<void>) {
+async function fixture(run: (f: any) => Promise<void>, accountIDs = ["a", "b"]) {
   const root = mkdtempSync(join(tmpdir(), "qp-manual-routing-")), data = join(root, "data"), configPath = join(root, "config.json");
   mkdirSync(data); const now = Date.now(), thread = randomUUID(), memory: RuntimeMemory = {};
   const config = structuredClone(DEFAULT_CONFIG); config.accounts.claude = [];
-  const accounts = ["a", "b"].map((id, index) => {
+  const accounts = accountIDs.map((id, index) => {
     const home = join(root, id); mkdirSync(home);
     const access = `test.${Buffer.from(JSON.stringify({ sub: id, exp: (now + 3600000) / 1000 })).toString("base64url")}.test`;
     const authPath = join(home, "auth.json");
@@ -33,7 +34,7 @@ async function fixture(run: (f: any) => Promise<void>) {
   });
   config.accounts.codex = accounts.map(a => ({ id: a.id, label: a.id, enabled: true, codexHome: a.home }));
   writeFileSync(configPath, JSON.stringify(config));
-  const policy: any = { enabled: true, accounts: ["a", "b"] };
+  const policy: any = { enabled: true, accounts: accountIDs };
   const publish = () => {
     writeFileSync(join(data, "account-pool.json"), JSON.stringify(policy));
     writeFileSync(join(data, "work-state.json"), JSON.stringify({ schemaVersion: 1, generatedAtMs: now - 1000, expiresAtMs: now + 600000, accounts: accounts.map(a => a.row) }));
@@ -42,18 +43,26 @@ async function fixture(run: (f: any) => Promise<void>) {
   process.env.QUOTAPIE_HOME = data; process.env.QUOTAPIE_CONFIG = configPath;
   const sent: any[] = []; let serve = async (_request: any): Promise<Response> => complete();
   globalThis.fetch = (async (url: any, init: any) => {
-    const request = { url: String(url), headers: new Headers(init.headers), body: await new Response(init.body).text() };
+    const headers = new Headers(init.headers), bytes = new Uint8Array(await new Response(init.body).arrayBuffer());
+    const request = { url: String(url), headers, bytes,
+      body: new TextDecoder().decode(headers.get("content-encoding") === "zstd" ? Bun.zstdDecompressSync(bytes) : bytes) };
     sent.push(request); return serve(request);
   }) as any;
-  const runtime = createRelayRuntime({ port: 45001, token, codex_home: accounts[0]!.home,
-    route: { from: "gpt-6-astra", to: "gpt-6-astra", effort: "low" }, taskSavings: { enabled: false, model: "gpt-5.6-luna", effort: "low" } }, memory);
+  const runtimeSettings: RuntimeSettings = { port: 45001, token, codex_home: accounts[0]!.home,
+    route: { from: "gpt-6-astra", to: "gpt-6-astra", effort: "low" }, taskSavings: { enabled: false, model: "gpt-5.6-luna", effort: "low" } };
+  let runtime = createRelayRuntime(runtimeSettings, memory);
+  const restart = () => {
+    runtime.close(); memory.dispose?.();
+    for (const key of Object.keys(memory)) delete (memory as any)[key];
+    runtime = createRelayRuntime(runtimeSettings, memory);
+  };
   const history = [{ type: "compaction", id: "original-item", encrypted_content: "original-encrypted-history" }, { role: "user", content: "Continue" }];
   const request = (input: any = { model, input: history, stream: true }, options: any = {}) => runtime.fetch(new Request(`http://127.0.0.1/${token}/backend-api/codex${options.path ?? "/responses"}`, {
     method: options.method ?? "POST", headers: { authorization: `Bearer ${accounts[0]!.access}`, "chatgpt-account-id": "a", "content-type": "application/json",
       ...(options.omitThread ? {} : { session_id: options.thread ?? thread }), "x-codex-turn-metadata": JSON.stringify({ turn_id: options.turn ?? randomUUID() }), ...options.headers },
     ...(["GET", "HEAD"].includes(options.method) ? {} : { body: options.raw ?? JSON.stringify(input) }) }));
   const select = (account = "b", pendingTurnId?: string) => setManualTarget({ sourceAccount: "a", threadId: thread, account, model }, { config, pendingTurnId });
-  try { await run({ config, accounts, data, policy, publish, sent, request, runtime, memory, thread, history, select, serve: (fn: any) => { serve = fn; } }); }
+  try { await run({ config, accounts, data, policy, publish, sent, request, runtime, memory, thread, history, select, restart, serve: (fn: any) => { serve = fn; } }); }
   finally {
     runtime.close(); memory.dispose?.(); globalThis.fetch = previous.fetch;
     if (previous.home === undefined) delete process.env.QUOTAPIE_HOME; else process.env.QUOTAPIE_HOME = previous.home;
@@ -62,10 +71,82 @@ async function fixture(run: (f: any) => Promise<void>) {
   }
 }
 
+test("new conversation preference sends the very first prompt to B and persists across restart", () => fixture(async f => {
+  f.policy.newConversationTarget = { account: "b", identity: poolAccounts(f.config).find(a => a.id === "b")!.identity };
+  f.policy.enabled = false;
+  f.publish();
+  const first = { model, reasoning: { effort: "high" }, input: [{ role: "developer", content: "Workspace instructions" },
+    { role: "user", content: "Start a new project" }], stream: true };
+  let response = await f.request(first);
+  expect(response.status).toBe(200); await response.text();
+  expect(f.sent).toHaveLength(1);
+  expect(f.sent[0].headers.get("chatgpt-account-id")).toBe("b");
+  expect(JSON.parse(f.sent[0].body)).toEqual(first);
+  expect(manualTargets()[0]).toMatchObject({ account: "b", threadId: f.thread });
+  delete f.policy.newConversationTarget; f.publish(); f.restart();
+  response = await f.request();
+  expect(response.status).toBe(200); await response.text();
+  expect(f.sent.at(-1).headers.get("chatgpt-account-id")).toBe("b");
+}));
+
+test("new conversation preference rejects a replaced login instead of spending the source account", () => fixture(async f => {
+  f.policy.newConversationTarget = { account: "b", identity: "f".repeat(64) }; f.publish();
+  const response = await f.request({ model, input: [{ role: "user", content: "New work" }] });
+  expect(response.status).toBe(409);
+  expect(await response.text()).toContain("pool_manual_target_identity_changed");
+  expect(f.sent).toHaveLength(0);
+}));
+
+for (const remaining of [0, null]) {
+  test(`new conversation preference falls back when its quota is ${remaining === null ? "unknown" : "exhausted"}`, () => fixture(async f => {
+    f.policy.newConversationTarget = { account: "a", identity: poolAccounts(f.config).find(a => a.id === "a")!.identity };
+    f.accounts[0].row.windows[0].remainingPercent = remaining;
+    f.publish();
+    const body = { model, reasoning: { effort: "high" }, input: [{ role: "user", content: "New work" }] };
+    const response = await f.request(body);
+    expect(response.status).toBe(200); await response.text();
+    expect(f.sent).toHaveLength(1);
+    expect(f.sent[0].headers.get("chatgpt-account-id")).toBe("b");
+    expect(JSON.parse(f.sent[0].body)).toEqual(body);
+    expect(manualTargets()[0]?.account).toBe("a");
+  }));
+}
+
+test("new conversation preference keeps quota enforcement when automatic switching is disabled", () => fixture(async f => {
+  f.policy.newConversationTarget = { account: "a", identity: poolAccounts(f.config).find(a => a.id === "a")!.identity };
+  f.policy.enabled = false; f.publish();
+  const response = await f.request({ model, input: [{ role: "user", content: "New work" }] });
+  expect(response.status).toBe(409);
+  expect(await response.text()).toContain("pool_manual_quota_exhausted");
+  expect(f.sent).toHaveLength(0);
+}));
+
+test("new conversation preference never overwrites an existing explicit choice", () => fixture(async f => {
+  await f.select("b");
+  f.policy.newConversationTarget = { account: "a", identity: poolAccounts(f.config).find(a => a.id === "a")!.identity }; f.publish();
+  const response = await f.request({ model, input: [{ role: "user", content: "New work" }] });
+  expect(response.status).toBe(200); await response.text();
+  expect(f.sent[0].headers.get("chatgpt-account-id")).toBe("b");
+}));
+
+test("new conversation preference does not override a fork's existing account", () => fixture(async f => {
+  await f.select("b");
+  let response = await f.request(); expect(response.status).toBe(200); await response.text();
+  f.policy.newConversationTarget = { account: "a", identity: poolAccounts(f.config).find(a => a.id === "a")!.identity }; f.publish();
+  const child = randomUUID(), rollout = join(f.accounts[0].home, "child.jsonl");
+  writeFileSync(rollout, JSON.stringify({type:"session_meta",payload:{id:child,forked_from_id:f.thread}})+"\n");
+  const db = new Database(join(f.accounts[0].home,"state_1.sqlite"));
+  db.query("INSERT INTO threads VALUES (?,?)").run(child,rollout); db.close();
+  response = await f.request({model,input:[{role:"user",content:"Child work"}]},{thread:child});
+  expect(response.status).toBe(200); await response.text();
+  expect(f.sent.at(-1).headers.get("chatgpt-account-id")).toBe("b");
+  expect(manualTargets().some(t=>t.threadId===child)).toBe(false);
+}));
+
 test("manual choice routes exact native history to B and survives source recovery", () => fixture(async f => {
   const selected = await f.select();
   expect(selected).toMatchObject({ sourceAccount: "a", account: "b", threadId: f.thread, model });
-  expect(Object.keys(manualTargets()[0]!)).toEqual(["sourceAccount", "threadId", "account", "model", "selectedAtMs", "revision"]);
+  expect(Object.keys(manualTargets()[0]!)).toEqual(["sourceAccount", "threadId", "account", "model", "selectedAtMs", "revision", "appliedAtMs"]);
   expect(readFileSync(manualRoutingDatabasePath()).includes(Buffer.from(f.accounts[0].access))).toBe(false);
   for (let i = 0; i < 2; i++) {
     const response = await f.request(); expect(response.status).toBe(200); await response.text();
@@ -77,7 +158,22 @@ test("manual choice routes exact native history to B and survives source recover
   expect(f.runtime.snapshot().recent.at(-1).accountRouting.reason).toBe("manual");
 }));
 
+test("all native tool history variants survive manual routing and both compaction paths byte for byte", () => fixture(async f => {
+  await f.select();
+  for (const encoding of ["identity", "zstd"]) for (const path of ["/responses", "/responses/compact"]) {
+    const input = { model, input: [...f.history, ...nativeToolHistory, ...(path === "/responses" ? [{ type: "compaction_trigger" }] : [])],
+      metadata: { conversation: "a local label" } };
+    const json = JSON.stringify(input, null, 2), raw = encoding === "zstd" ? Bun.zstdCompressSync(json) : Buffer.from(json);
+    const response = await f.request(input, { path, raw, headers: { "content-encoding": encoding } });
+    expect(response.status).toBe(200); await response.text();
+    expect(f.sent.at(-1).headers.get("chatgpt-account-id")).toBe("b");
+    expect(f.sent.at(-1).bytes).toEqual(new Uint8Array(raw));
+    expect(f.sent.at(-1).body).toBe(json);
+  }
+}));
+
 test("choice affects the next HTTP request while an existing A stream completes", () => fixture(async f => {
+  f.accounts[0].row.windows[0].remainingPercent = 90; f.publish();
   let controller: ReadableStreamDefaultController<Uint8Array>;
   f.serve(async () => new Response(new ReadableStream({ start(c) { controller = c; } }), { headers: { "content-type": "text/event-stream" } }));
   const oldTurn = randomUUID(), old = await f.request(undefined, { turn: oldTurn }); expect(f.sent[0].headers.get("chatgpt-account-id")).toBe("a");
@@ -146,6 +242,30 @@ test("native compaction and a changed supported response model retain the select
   }
 }));
 
+for (const compacted of [false, true]) for (const encoding of ["identity", "zstd"]) {
+  test(`manual native trigger and cancelled calls survive ${encoding}, prior compaction ${compacted}`, () => fixture(async f => {
+    await f.select();
+    const history = [
+      ...(compacted ? f.history : [{ role: "user", content: "Continue" }]),
+      { type: "function_call", call_id: "cancelled", name: "run", arguments: "{}" },
+    ];
+    for (const path of ["/responses", "/responses/compact"]) {
+      const body = { model, input: [...history, ...(path === "/responses" ? [{ type: "compaction_trigger" }] : [])], stream: true };
+      const raw = JSON.stringify(body, null, 2) + "\n";
+      const bytes = encoding === "zstd" ? Bun.zstdCompressSync(raw) : new TextEncoder().encode(raw);
+      const response = await f.request(body, { path, raw: bytes,
+        headers: { "content-encoding": encoding } });
+      expect(response.status).toBe(200); await response.text();
+      expect(f.sent.at(-1).headers.get("chatgpt-account-id")).toBe("b");
+      expect(f.sent.at(-1).body).toBe(raw);
+      expect(f.sent.at(-1).bytes).toEqual(new Uint8Array(bytes));
+    }
+    const next = await f.request({ model, input: history, stream: true });
+    expect(next.status).toBe(200); await next.text();
+    expect(f.sent).toHaveLength(3);
+  }));
+}
+
 for (const change of ["quota", "stale", "target-identity", "source-identity", "policy", "model"]) test(`manual ${change} failure never sends to A`, () => fixture(async f => {
   await f.select();
   if (change === "quota") f.accounts[1].row.windows[0].remainingPercent = 0;
@@ -161,6 +281,78 @@ for (const change of ["quota", "stale", "target-identity", "source-identity", "p
   expect(response.status).toBeGreaterThanOrEqual(400); await response.text(); expect(f.sent).toHaveLength(0);
 }));
 
+for (const failure of ["exhausted", "stale"]) for (const path of ["/responses", "/responses/compact"]) {
+  test(`manual ${failure} preference rolls over with native history on ${path}`, () => fixture(async f => {
+    await f.select(); await (await f.request()).text();
+    f.accounts[0].row.windows[0].remainingPercent = 75;
+    f.accounts[0].row.windows[0].observedAtMs = Date.now();
+    if (failure === "exhausted") f.accounts[1].row.windows[0].remainingPercent = 0;
+    else f.accounts[1].row.windows[0].validUntilMs = Date.now() - 1;
+    f.accounts[1].row.windows[0].observedAtMs = Date.now(); f.publish();
+    const input = { model, reasoning: { effort: "xhigh" }, input: [...f.history, ...nativeToolHistory], stream: true };
+    const json = JSON.stringify(input, null, 2), raw = Bun.zstdCompressSync(json), turn = randomUUID();
+    for (let i = 0; i < 2; i++) {
+      const response = await f.request(input, { path, turn, raw, headers: { "content-encoding": "zstd" } });
+      expect(response.status).toBe(200); await response.text();
+      expect(f.sent.at(-1).headers.get("chatgpt-account-id")).toBe("a");
+      expect(f.sent.at(-1).bytes).toEqual(new Uint8Array(raw));
+      expect(JSON.parse(f.sent.at(-1).body)).toEqual(input);
+    }
+    if (path === "/responses") {
+      const tool = await f.request({ query: "fixture" }, { path: "/alpha/search", turn });
+      expect(tool.status).toBe(200); await tool.text();
+      expect(f.sent.at(-1).headers.get("chatgpt-account-id")).toBe("a");
+    }
+    expect(manualTargets()[0]!.account).toBe("b");
+  }));
+}
+
+test("disabled switching still honors the manual preference without silent fallback", () => fixture(async f => {
+  await f.select(); f.policy.enabled = false;
+  f.accounts[0].row.windows[0].remainingPercent = 80;
+  f.accounts[1].row.windows[0].remainingPercent = 0; f.publish();
+  const response = await f.request(); expect(response.status).toBe(409);
+  expect((await response.json()).error.code).toBe("pool_manual_quota_exhausted");
+  expect(f.sent).toHaveLength(0);
+}));
+
+for (const path of ["/responses", "/responses/compact"]) test(`manual provider 429 rolls over without rewriting ${path}`, () => fixture(async f => {
+  await f.select();
+  f.accounts[0].row.windows[0].remainingPercent = 80;
+  f.accounts[0].row.windows[0].observedAtMs = Date.now(); f.publish();
+  f.serve(async (request: any) => request.headers.get("chatgpt-account-id") === "b"
+    ? new Response("quota exhausted", { status: 429, headers: { "retry-after": "60" } }) : complete());
+  const input = { model, reasoning: { effort: "xhigh" }, input: f.history, stream: true };
+  const raw = Bun.zstdCompressSync(JSON.stringify(input, null, 2)), turn = randomUUID();
+  const response = await f.request(input, { path, turn, raw, headers: { "content-encoding": "zstd" } });
+  expect(response.status).toBe(200); await response.text();
+  expect(f.sent.map((r: any) => r.headers.get("chatgpt-account-id"))).toEqual(["b", "a"]);
+  for (const sent of f.sent) { expect(sent.bytes).toEqual(new Uint8Array(raw)); expect(JSON.parse(sent.body)).toEqual(input); }
+  if (path === "/responses") {
+    const tool = await f.request({ query: "fixture" }, { path: "/alpha/search", turn });
+    expect(tool.status).toBe(200); await tool.text(); expect(f.sent.at(-1).headers.get("chatgpt-account-id")).toBe("a");
+  }
+  const next = await f.request(input); expect(next.status).toBe(200); await next.text();
+  expect(f.sent.at(-1).headers.get("chatgpt-account-id")).toBe("a");
+}));
+
+for (const allExhausted of [false, true]) test(`manual rollover visits each eligible account once; all exhausted ${allExhausted}`, () => fixture(async f => {
+  await f.select();
+  f.accounts[0].row.windows[0].remainingPercent = 80;
+  f.accounts[0].row.windows[0].observedAtMs = Date.now(); f.publish();
+  f.serve(async (request: any) => !allExhausted && request.headers.get("chatgpt-account-id") === "c" ? complete()
+    : new Response("quota exhausted", { status: 429, headers: { "retry-after": "60" } }));
+  const response = await f.request(); expect(response.status).toBe(allExhausted ? 429 : 200); await response.text();
+  expect(f.sent.map((r: any) => r.headers.get("chatgpt-account-id"))).toEqual(["b", "a", "c"]);
+}, ["a", "b", "c"]));
+
+test("a successful response stream is never replayed after a quota error in its body", () => fixture(async f => {
+  await f.select(); f.accounts[0].row.windows[0].remainingPercent = 80; f.publish();
+  const failure = 'data: {"type":"error","error":{"code":"rate_limit_exceeded"}}\n\n';
+  f.serve(async () => new Response(failure, { headers: { "content-type": "text/event-stream" } }));
+  const response = await f.request(); expect(await response.text()).toBe(failure); expect(f.sent).toHaveLength(1);
+}));
+
 for (const request of ["malformed", "remote", "unknown", "missing-thread", "unbound-tool"]) test(`manual ${request} request is blocked without source pass-through`, () => fixture(async f => {
   await f.select();
   const response = request === "malformed" ? await f.request(undefined, { raw: "{" })
@@ -169,6 +361,18 @@ for (const request of ["malformed", "remote", "unknown", "missing-thread", "unbo
     : request === "missing-thread" ? await f.request(undefined, { omitThread: true })
     : await f.request({ query: "fixture" }, { path: "/alpha/search" });
   expect(response.status).toBeGreaterThanOrEqual(400); await response.text(); expect(f.sent).toHaveLength(0);
+}));
+
+test("manual history rejection explains its fixed reason without exposing history", () => fixture(async f => {
+  await f.select();
+  const response = await f.request({ model, input: f.history, previous_response_id: "private-response-id" });
+  expect(response.status).toBe(409);
+  const error = await response.json();
+  expect(error).toMatchObject({ error: { code: "pool_manual_history_unverified", historyFailure: "remote_reference" } });
+  expect(error.error.message).toContain("remote_reference");
+  expect(JSON.stringify(error)).not.toContain("private-response-id");
+  expect(JSON.stringify(error)).not.toContain("original-encrypted-history");
+  expect(f.sent).toHaveLength(0);
 }));
 
 test("native tool stays with its completed B turn even after the next-request choice changes", () => fixture(async f => {
@@ -181,8 +385,37 @@ test("native tool stays with its completed B turn even after the next-request ch
   expect(f.sent).toHaveLength(2);
 }));
 
-test("selected target 429 is returned once with no automatic source credit fallback", () => fixture(async f => {
-  await f.select(); f.accounts[0].row.windows[0].remainingPercent = 90; f.publish();
+for (const manual of [false, true]) test(`completed turn ownership survives a relay restart (manual ${manual})`, () => fixture(async f => {
+  if (manual) await f.select();
+  const turn = randomUUID();
+  await (await f.request(undefined, { turn })).text();
+  expect(f.sent.at(-1).headers.get("chatgpt-account-id")).toBe("b");
+  f.restart();
+  const search = await f.request({ query: "fixture" }, { path: "/alpha/search", turn });
+  expect(search.status).toBe(200); await search.text();
+  expect(f.sent.at(-1).headers.get("chatgpt-account-id")).toBe("b");
+}));
+
+test("restart does not promote a failed target response to native tool ownership", () => fixture(async f => {
+  await f.select(); const turn = randomUUID();
+  f.serve(async () => new Response("failed", { status: 500 }));
+  await (await f.request(undefined, { turn })).text(); f.restart();
+  const search = await f.request({ query: "fixture" }, { path: "/alpha/search", turn });
+  expect(search.status).toBe(409);
+  expect((await search.json()).error.code).toBe("pool_manual_target_unbound");
+  expect(f.sent).toHaveLength(1);
+}));
+
+test("restart verifies the recorded account identity against current credentials", () => fixture(async f => {
+  await f.select(); const turn = randomUUID();
+  await (await f.request(undefined, { turn })).text(); f.restart();
+  writeFileSync(join(f.accounts[1].home, "auth.json"), JSON.stringify({ auth_mode: "chatgpt", tokens: { account_id: "different-login", access_token: f.accounts[1].access } }));
+  const search = await f.request({ query: "fixture" }, { path: "/alpha/search", turn });
+  expect(search.status).toBe(409); await search.text(); expect(f.sent).toHaveLength(1);
+}));
+
+test("selected target 429 cannot fall back to a source with no subscription quota", () => fixture(async f => {
+  await f.select();
   f.serve(async () => new Response('{"error":{"code":"usage_limit_reached"}}', { status: 429 }));
   const response = await f.request(); expect(response.status).toBe(429); await response.text();
   expect(f.sent).toHaveLength(1); expect(f.sent[0].headers.get("chatgpt-account-id")).toBe("b");
@@ -202,6 +435,44 @@ test("automatic recovery cannot bypass the chosen account quota", () => fixture(
   expect(response.status).toBeGreaterThanOrEqual(400); await response.text();
   expect(f.sent).toHaveLength(0);
 }));
+
+test("recovery messages keep rolling over as successive preferred accounts run out", () => fixture(async f => {
+  await f.select();
+  const input = { model, reasoning: { effort: "xhigh" }, input: [f.history[0],
+    { role: "user", content: "[QuotaPie quota recovery:test]\nContinue" }], stream: true };
+  for (const [index, expected] of ["a", "b", "a"].entries()) {
+    for (const account of f.accounts) {
+      account.row.windows[0].remainingPercent = account.id === expected ? 60 : 0;
+      account.row.windows[0].observedAtMs = Date.now() + index;
+    }
+    f.publish();
+    const response = await f.request(input); expect(response.status).toBe(200); await response.text();
+    expect(f.sent.at(-1).headers.get("chatgpt-account-id")).toBe(expected);
+    expect(JSON.parse(f.sent.at(-1).body)).toEqual(input);
+  }
+}));
+
+for (const path of ["/responses", "/responses/compact"]) for (const provider429 of [false, true]) {
+  test(`automatic native rollover without a manual choice: ${path}, provider 429 ${provider429}`, () => fixture(async f => {
+    if (provider429) {
+      f.accounts[0].row.windows[0].remainingPercent = 80;
+      f.accounts[0].row.windows[0].observedAtMs = Date.now(); f.publish();
+      f.serve(async (request: any) => request.headers.get("chatgpt-account-id") === "a"
+        ? new Response("quota exhausted", { status: 429, headers: { "retry-after": "60" } }) : complete());
+    }
+    const input = { model, reasoning: { effort: "xhigh" }, input: [...f.history, ...nativeToolHistory], stream: true };
+    const raw = Bun.zstdCompressSync(JSON.stringify(input, null, 2)), turn = randomUUID();
+    const response = await f.request(input, { path, turn, raw, headers: { "content-encoding": "zstd" } });
+    expect(response.status).toBe(200); await response.text();
+    expect(f.sent.map((r: any) => r.headers.get("chatgpt-account-id"))).toEqual(provider429 ? ["a", "b"] : ["b"]);
+    for (const sent of f.sent) { expect(sent.bytes).toEqual(new Uint8Array(raw)); expect(JSON.parse(sent.body)).toEqual(input); }
+    if (path === "/responses") {
+      const tool = await f.request({ query: "fixture" }, { path: "/alpha/search", turn });
+      expect(tool.status).toBe(200); await tool.text(); expect(f.sent.at(-1).headers.get("chatgpt-account-id")).toBe("b");
+    }
+    expect(manualTargets()).toHaveLength(0);
+  }));
+}
 
 test("policy disabled during asynchronous pool selection cannot turn a selected target into source pass-through", () => fixture(async f => {
   await f.select();
@@ -244,7 +515,7 @@ test("hot reload replaces the retained version-4 pool before validating native a
         session_id: f.thread, "x-codex-turn-metadata": JSON.stringify({ turn_id: randomUUID() }) }, body: JSON.stringify(body) }));
     expect(response.status).toBe(200); await response.text();
     expect(f.memory.interactivePool).not.toBe(old);
-    expect(next.snapshot!().accountPoolRuntimeVersion).toBe(6);
+    expect(next.snapshot!().accountPoolRuntimeVersion).toBe(AccountPool.RUNTIME_API_VERSION);
     expect(f.sent).toHaveLength(1); expect(f.sent[0].headers.get("chatgpt-account-id")).toBe("b");
     expect(JSON.parse(f.sent[0].body)).toEqual(body);
   } finally { next.close(); }
@@ -275,6 +546,84 @@ test("turning automatic switching off preserves an existing manual choice", () =
   f.policy.enabled = false; f.publish();
   const next = await f.request(); expect(next.status).toBe(200); await next.text();
   expect(f.sent.at(-1).headers.get("chatgpt-account-id")).toBe("b");
+}));
+
+test("in-memory helpers inherit the confirmed parent account with automatic switching off", () => fixture(async f => {
+  await f.select(); await (await f.request()).text();
+  const selections = manualTargets();
+  f.policy.enabled = false; f.publish();
+  const child = randomUUID(), turn = randomUUID();
+  const headers = { "thread-id": child, "x-codex-turn-metadata": JSON.stringify({
+    thread_id: child, turn_id: turn, forked_from_thread_id: f.thread,
+  }) };
+  const body = { model, reasoning: { effort: "xhigh" }, input: f.history, stream: true };
+  const response = await f.request(body, { thread: child, turn, headers });
+  expect(response.status).toBe(200); await response.text();
+  expect(f.sent.at(-1).headers.get("chatgpt-account-id")).toBe("b");
+  expect(JSON.parse(f.sent.at(-1).body)).toEqual(body);
+  const native = await f.request({ query: "fixture" }, { path: "/alpha/search", thread: child, turn, headers });
+  expect(native.status).toBe(200); await native.text();
+  expect(f.sent.at(-1).headers.get("chatgpt-account-id")).toBe("b");
+  const compact = await f.request({ model: compactModel, input: f.history, stream: true },
+    { path: "/responses/compact", thread: child, turn, headers });
+  expect(compact.status).toBe(200); await compact.text();
+  expect(f.sent.at(-1).headers.get("chatgpt-account-id")).toBe("b");
+  expect(JSON.parse(f.sent.at(-1).body).model).toBe(compactModel);
+  expect(manualTargets()).toEqual(selections);
+  expect(JSON.parse(readFileSync(join(f.data, "account-pool.json"), "utf8")).enabled).toBe(false);
+}));
+
+test("helpers inherit the account that completed the parent rather than its pending next choice", () => fixture(async f => {
+  await f.select(); await (await f.request()).text();
+  f.accounts[0].row.windows[0].remainingPercent = 90; f.policy.enabled = false; f.publish();
+  await f.select("a");
+  const child = randomUUID(), turn = randomUUID();
+  const response = await f.request(undefined, { thread: child, turn, headers: {
+    "x-codex-turn-metadata": JSON.stringify({ thread_id: child, turn_id: turn, forked_from_thread_id: f.thread }),
+  } });
+  expect(response.status).toBe(200); await response.text();
+  expect(f.sent.at(-1).headers.get("chatgpt-account-id")).toBe("b");
+  expect(manualTargets()).toHaveLength(1);
+  expect(manualTargets()[0]!.account).toBe("a");
+}));
+
+for (const failure of ["unconfirmed-parent", "conflicting-lineage", "target-quota", "source-identity"])
+  test(`helper ${failure} never sends with an unverified account`, () => fixture(async f => {
+    await f.select();
+    if (failure === "unconfirmed-parent") f.serve(async () => new Response("fixture failure", { status: 500 }));
+    await (await f.request()).text();
+    f.sent.length = 0; f.serve(async () => complete());
+    f.policy.enabled = false;
+    if (failure === "target-quota") f.accounts[1].row.windows[0].remainingPercent = 0;
+    if (failure === "source-identity") writeFileSync(join(f.accounts[0].home, "auth.json"),
+      JSON.stringify({ auth_mode: "chatgpt", tokens: { account_id: "replacement", access_token: f.accounts[0].access } }));
+    f.publish();
+    const child = randomUUID(), turn = randomUUID();
+    if (failure === "conflicting-lineage") {
+      const home = f.accounts[0].home, rollout = join(home, "child.jsonl");
+      writeFileSync(rollout, JSON.stringify({ type: "session_meta", payload: { id: child, forked_from_id: randomUUID() } }) + "\n");
+      const db = new Database(join(home, "state_1.sqlite"));
+      db.query("INSERT INTO threads VALUES (?,?)").run(child, rollout); db.close();
+    }
+    const response = await f.request(undefined, { thread: child, turn, headers: {
+      "x-codex-turn-metadata": JSON.stringify({ thread_id: child, turn_id: turn, forked_from_thread_id: f.thread }),
+    } });
+    expect(response.status).toBeGreaterThanOrEqual(400); await response.text();
+    expect(f.sent).toHaveLength(0);
+    expect(manualTargets()).toHaveLength(1);
+  }));
+
+test("persisted forks inherit the confirmed parent account without changing the automatic switch setting", () => fixture(async f => {
+  await f.select(); await (await f.request()).text();
+  f.policy.enabled = false; f.publish();
+  const child = randomUUID(), home = f.accounts[0].home, rollout = join(home, "child.jsonl");
+  writeFileSync(rollout, JSON.stringify({ type: "session_meta", payload: { id: child, forked_from_id: f.thread } }) + "\n");
+  const db = new Database(join(home, "state_1.sqlite"));
+  db.query("INSERT INTO threads VALUES (?,?)").run(child, rollout); db.close();
+  const response = await f.request({ model, input: f.history, stream: true }, { thread: child });
+  expect(response.status).toBe(200); await response.text();
+  expect(f.sent.at(-1).headers.get("chatgpt-account-id")).toBe("b");
+  expect(JSON.parse(readFileSync(join(f.data, "account-pool.json"), "utf8")).enabled).toBe(false);
 }));
 
 test("manual selection is independent of automatic reserve threshold", () => fixture(async f => {

@@ -57,6 +57,15 @@ function boundedJSON(path: string): any {
   if (statSync(path).size > 262144) throw new Error("execution-target-relay-unavailable");
   return JSON.parse(readFileSync(path, "utf8"));
 }
+export function configuredNativeTargetEndpoint(source: string): string | null {
+  // Root settings may precede the managed block. Parse TOML so a nested table
+  // or quoted copy of that block cannot masquerade as the active endpoint.
+  try {
+    const config = Bun.TOML.parse(source) as Record<string, unknown>;
+    return typeof config.openai_base_url === "string" ? config.openai_base_url : null;
+  } catch { return null; }
+}
+
 export function nativeTargetRelayEndpoint(config: AppConfig, policy: WorkPolicy): string {
   const location=codexSessionLocation(config,policy.account,policy.nativeSessionId);
   const profile = config.accounts.codex.find(p => p.id === location?.ownerAccount);
@@ -68,8 +77,7 @@ export function nativeTargetRelayEndpoint(config: AppConfig, policy: WorkPolicy)
       !/^[a-f0-9]{48}$/.test(settings.token)) throw new Error("execution-target-relay-unavailable");
   const endpoint = `http://127.0.0.1:${settings.port}/${settings.token}/backend-api/codex`;
   const source = readFileSync(join(root, "config.toml"), "utf8");
-  const configured = source.match(/^# BEGIN QuotaPie compaction relay\nopenai_base_url = ("[^\n]+")\n# END QuotaPie compaction relay\n/);
-  if (!configured || JSON.parse(configured[1]!) !== endpoint) throw new Error("execution-target-native-route-unverified");
+  if (configuredNativeTargetEndpoint(source) !== endpoint) throw new Error("execution-target-native-route-unverified");
   return endpoint;
 }
 

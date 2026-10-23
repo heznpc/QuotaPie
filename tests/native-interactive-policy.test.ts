@@ -158,6 +158,27 @@ test("optional historical storage cannot block the source; an actual foreign bin
   } finally { f.close(); }
 });
 
+test("model discovery is independent of conversation account bindings and quota holds", async () => {
+  const f = fixture(), thread = randomUUID(), headers = f.headers(); headers.set("thread-id", thread);
+  try {
+    const db = new Database(f.historyPath);
+    db.run("CREATE TABLE bindings(source TEXT,thread TEXT,account TEXT,identity TEXT,source_identity TEXT)");
+    db.query("INSERT INTO bindings VALUES (?,?,?,?,?)").run("source", thread, "other", "other-identity", f.guard.check().sourceIdentity!);
+    db.close();
+    f.reserve(25);
+    const models = await f.request("/models", "GET", undefined, headers);
+    expect(models.status).toBe(200); await models.text();
+    expect(f.calls).toHaveLength(1);
+    expect(f.calls[0]!.headers.get("authorization")).toBe(headers.get("authorization"));
+    // Discovering models cannot authorize a continuation on the wrong login.
+    const response = await f.request("/responses", "POST", '{"model":"future-model","input":[]}', headers);
+    expect(response.status).toBe(400); await response.text();
+    const invalid = new Headers(headers); invalid.set("authorization", "Bearer unknown");
+    expect((await f.request("/models", "GET", undefined, invalid)).status).toBe(400);
+    expect(f.calls).toHaveLength(1);
+  } finally { f.close(); }
+});
+
 test("unknown native routes cannot change the destination, follow redirects or expose management endpoints", async () => {
   const f = fixture();
   try {

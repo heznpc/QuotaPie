@@ -33,6 +33,18 @@ function fixture(){
  return {input,p,db,store,c,get calls(){return calls},get seenPolicy(){return seenPolicy},get seenTarget(){return seenTarget},check:()=>check(),
   end:async()=>{end({status:"turn-finished",remainingWork:"unknown"});await c.settle();await c.close();db.close();}};
 }
+test("a recovered login does not replace the history account during automatic continuation",async()=>{
+ const f=fixture();try{
+  f.input.continuationAccount=()=>"b";
+  f.input.windows[0]!.remainingPercent=100;f.input.windows[0]!.metadata!.ordinaryUsageAllowed=true;
+  f.input.accounts[0]!.remaining=100;
+  f.input.accounts[2]!.remaining=95;
+  const e=await f.c.dispatch(f.p.id,"local",1,"recovered-source");
+  expect(e.executionTarget?.account).toBe("b");expect(f.seenTarget?.account).toBe("b");
+  expect(f.seenPolicy?.account).toBe("a");expect(f.calls).toBe(1);
+ }finally{await f.end();}
+});
+
 test("A exhausted session claims B once; A recovery cannot change target or charge A",async()=>{
  const f=fixture();try{
   const e=await f.c.dispatch(f.p.id,"local",1,"request");

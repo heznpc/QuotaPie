@@ -244,7 +244,9 @@ export interface AccountCollectionState {
 // A configured account never disappears just because it has no snapshots.
 // The native UI needs to be able to render an honest empty or error state.
 export interface AccountState {
+  claudeAccess?: import("./claude-access").ClaudeAccessReport;
   connection?: "claude-desktop";
+  desktopSessionFingerprint?: string;
   plan?: AccountPlan;
   nickname?: string;
   provider: Provider;

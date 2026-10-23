@@ -51,6 +51,13 @@ test("saved target remains recoverable after its route leaves recent telemetry",
    .toMatchObject({threadId,sourceAccount:"main",targetAccount:"other",currentAccount:null});
 });
 
+test("an applied preference is not advertised as a pending switch after automatic rollover", () => {
+ const service=new RequestAccountAPI(config,{accounts:()=>[],threads:()=>[metadata],
+   targets:()=>[{threadId,sourceAccount:"main",account:"other",model:"gpt-6-astra",selectedAtMs:1,revision:"saved",appliedAtMs:2}]});
+ expect(service.read(routing,labels).conversations[0])
+   .toMatchObject({currentAccount:"main",targetAccount:null,preferredAccount:"other"});
+});
+
 import { supportedManualRoutingSources } from "../src/compaction-status";
 test("mixed live listener versions cannot claim explicit routing support",()=>{
  const gen=(version:number)=>({reachable:true,health:{subscriptionGuardVersion:1,subscriptionGuard:{account:"main"},manualAccountRoutingVersion:version}});
@@ -89,6 +96,11 @@ test("request account endpoint requires local action authentication for reads an
   expect((await fetch(origin+"/api/request-accounts",{headers,method:"POST",body:"{"})).status).toBe(400);
   expect((await fetch(origin+"/api/request-accounts",{headers,method:"POST",body:"x".repeat(2049)})).status).toBe(400);
   expect((await fetch(origin+"/api/request-accounts",{headers,method:"POST",body:JSON.stringify({threadId,account:"other"})})).status).toBe(409);
+  expect((await fetch(origin+"/api/request-accounts/new-conversations",{method:"POST",body:JSON.stringify({account:null})})).status).toBe(403);
+  expect((await fetch(origin+"/api/request-accounts/new-conversations",{headers})).status).toBe(405);
+  const reset=await fetch(origin+"/api/request-accounts/new-conversations",{headers,method:"POST",body:JSON.stringify({account:null})});
+  expect(reset.status).toBe(200);
+  expect((await reset.json() as any).newConversationAccount).toBeNull();
  }finally{server.stop(true);await service.close();rmSync(root,{recursive:true,force:true});}
 });
 
@@ -99,6 +111,24 @@ test("pending legacy native fallback is granted only for an observed source resp
    {...routing,active:[{...route,...patch} as RequestRoute]},["main"],labels);
   expect(options.pendingTurnId).toBeNull();
  }
+});
+
+test("a new conversation account can be chosen before any thread or model exists and cleared independently", () => {
+ const root=mkdtempSync(join(tmpdir(),"qp-new-conversation-")), policyPath=join(root,"pool.json");
+ const account:any={id:"other",identity:"b".repeat(64),tokenExpiresAt:Date.now()+600000,remaining:80,validUntil:Date.now()+600000};
+ const service=new RequestAccountAPI(config,{policyPath,accounts:()=>[account],threads:()=>[],targets:()=>[]});
+ try {
+  savePoolPolicy({enabled:false,accounts:["main","other"],reservePercent:{main:15}},policyPath);
+  service.configureNewConversations({account:"other"});
+  expect(readPoolPolicy(policyPath)).toMatchObject({enabled:false,newConversationTarget:{account:"other",identity:account.identity}});
+  expect(service.read({...routing,active:[],recent:[]},labels)).toMatchObject({conversations:[],newConversationAccount:"other"});
+  configurePoolPolicy({enabled:true},policyPath);
+  expect(readPoolPolicy(policyPath).newConversationTarget?.account).toBe("other");
+  expect(()=>service.configureNewConversations({account:"unknown"})).toThrow("policy_changed");
+  expect(()=>service.configureNewConversations({account:"other",model:"gpt-6-astra"})).toThrow("invalid_request");
+  service.configureNewConversations({account:null});
+  expect(readPoolPolicy(policyPath)).toEqual({enabled:true,accounts:["main","other"],reservePercent:{main:15}});
+ } finally {rmSync(root,{recursive:true,force:true});}
 });
 
 
@@ -119,6 +149,18 @@ test("account list exposes the actual quota reason and credit consent stays inde
   account.tokenExpiresAt=0;
   expect(service.read(routing,labels).accounts[1]).toMatchObject({reason:"pool_manual_authentication_unavailable",canAllowCredits:false});
   expect(()=>service.configureCredits({account:"other",allow:true})).toThrow("authentication_unavailable");
+ } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test("expired quota is never displayed as current remaining allowance", () => {
+ const root=mkdtempSync(join(tmpdir(),"qp-stale-quota-")), policyPath=join(root,"pool.json"), now=Date.now();
+ const account:any={id:"other",identity:"b".repeat(64),tokenExpiresAt:now+600000,remaining:75,validUntil:now-1};
+ const service=new RequestAccountAPI(config,{policyPath,accounts:()=>[account],threads:()=>[],targets:()=>[]});
+ try {
+  savePoolPolicy({enabled:true,accounts:["main","other"]},policyPath);
+  expect(service.read(routing,labels,now).accounts[1]).toMatchObject({available:false,remaining:null,reason:"pool_manual_quota_unavailable"});
+  account.validUntil=now+600000;
+  expect(service.read(routing,labels,now).accounts[1]).toMatchObject({available:true,remaining:75});
  } finally {rmSync(root,{recursive:true,force:true});}
 });
 import { savePoolPolicy, readPoolPolicy, configurePoolPolicy } from "../src/account-pool";

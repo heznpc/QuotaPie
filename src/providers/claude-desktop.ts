@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { accessSummary, type ClaudeAccessSummary } from "../claude-access";
 import { createHash } from "node:crypto";
 import { ACCOUNT_PLAN_KINDS, type AccountPlanKind, type CollectionErrorCategory, type QuotaObservation } from "../types";
 import { mapClaudeUsage } from "./claude-oauth";
@@ -9,7 +10,7 @@ export const CLAUDE_DESKTOP_SOURCE = "claude-desktop";
 export const CLAUDE_DESKTOP_MIN_INTERVAL_MS = 5 * 60_000;
 export const CLAUDE_DESKTOP_UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 export interface ClaudeDesktopIdentity { accountId: string; organizationId: string }
-export interface ClaudeDesktopRead extends ClaudeDesktopIdentity { usage: Record<string, unknown>; plan: AccountPlanKind }
+export interface ClaudeDesktopRead extends ClaudeDesktopIdentity { usage: Record<string, unknown>; plan: AccountPlanKind; access?: ClaudeAccessSummary; sessionFingerprint?: string }
 export interface ClaudeDesktopOptions {
   helperPath?: string;
   timeoutMs?: number;
@@ -103,16 +104,63 @@ export async function readClaudeDesktop(connect = false, options: ClaudeDesktopO
   // never turn an empty usage response into a guessed Free subscription.
   const plan = typeof result.plan === "string" && ACCOUNT_PLAN_KINDS.includes(result.plan as AccountPlanKind)
     ? result.plan as AccountPlanKind : "unknown";
-  return { accountId: result.accountId.toLowerCase(), organizationId: result.organizationId.toLowerCase(), usage: result.usage, plan };
+  const sessionFingerprint = typeof result.sessionFingerprint === "string" && /^[a-f0-9]{64}$/.test(result.sessionFingerprint)
+    ? result.sessionFingerprint : undefined;
+  return { accountId: result.accountId.toLowerCase(), organizationId: result.organizationId.toLowerCase(), usage: result.usage, plan,
+    ...(sessionFingerprint ? { sessionFingerprint } : {}),
+    ...(result.access == null ? {} : { access: accessSummary(result.access) }) };
 }
 
 const LEGACY_BUCKETS = new Set(["five_hour", "seven_day", "seven_day_opus", "seven_day_oauth_apps",
   "seven_day_cowork", "seven_day_omelette", "omelette_promotional", "seven_day_sonnet"]);
 
+// Keep server decisions distinct from dates and displayed availability. Missing
+// or null grant data is unknown, not proof that a ticket was consumed.
+function resetGrantState(value: unknown): Record<string, unknown> {
+  if (value === null) return { source: "claude-usage.cedar_ember", state: "not-provided" };
+  const invalid = () => new ClaudeDesktopError("provider-error");
+  if (!object(value) || !Array.isArray(value.grants) || value.grants.length > 128) throw invalid();
+  const safe: Record<string, unknown> = { source: "claude-usage.cedar_ember", state: "reported" };
+  for (const key of ["eligible", "at_limit"]) if (Object.hasOwn(value, key)) {
+    if (typeof value[key] !== "boolean") throw invalid();
+    safe[key] = value[key];
+  }
+  const ids = new Set<string>();
+  const text = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0 && v.length <= 120 && !/[\x00-\x1f\x7f]/.test(v);
+  safe.grants = value.grants.map(raw => {
+    if (!object(raw) || !text(raw.id) || ids.has(raw.id)) throw invalid();
+    ids.add(raw.id);
+    const grant: Record<string, unknown> = { id: raw.id };
+    for (const key of ["resets_total", "resets_left"]) {
+      const count = raw[key];
+      if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0 || count > 1_000_000) throw invalid();
+      grant[key] = count;
+    }
+    if ((grant.resets_left as number) > (grant.resets_total as number)) throw invalid();
+    for (const key of ["starts_at", "ends_at"]) if (Object.hasOwn(raw, key)) {
+      const date = raw[key];
+      if (date !== null && (typeof date !== "string" || !Number.isFinite(Date.parse(date)))) throw invalid();
+      grant[key] = date;
+    }
+    for (const key of ["usable_now", "claimable", "paused"]) if (Object.hasOwn(raw, key)) {
+      if (typeof raw[key] !== "boolean") throw invalid();
+      grant[key] = raw[key];
+    }
+    for (const key of ["clears", "blocking"]) if (Object.hasOwn(raw, key)) {
+      if (!Array.isArray(raw[key]) || raw[key].length > 128 || !raw[key].every(text)) throw invalid();
+      grant[key] = [...raw[key]];
+    }
+    return grant;
+  });
+  return safe;
+}
+
 export function mapClaudeDesktopUsage(payload: unknown, account: string, observedAtMs = Date.now()): QuotaObservation[] {
   if (!object(payload)) throw new ClaudeDesktopError("provider-error");
   const accepted: Record<string, unknown> = {};
   let recognized = Object.keys(payload).length === 0;
+  const resetGrant = Object.hasOwn(payload, "cedar_ember") ? resetGrantState(payload.cedar_ember) : undefined;
+  if (resetGrant) recognized = true;
   const numeric = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100;
   const reset = (value: unknown) => value == null || (typeof value === "string" && Number.isFinite(Date.parse(value)));
   for (const [key, value] of Object.entries(payload)) {
@@ -146,9 +194,14 @@ export function mapClaudeDesktopUsage(payload: unknown, account: string, observe
     }
   }
   if (!recognized) throw new ClaudeDesktopError("provider-error");
-  const observations = mapClaudeUsage({ ...accepted, limits }, account, observedAtMs).map(observation => ({
+  const observations: QuotaObservation[] = mapClaudeUsage({ ...accepted, limits }, account, observedAtMs).map(observation => ({
     ...observation, source: CLAUDE_DESKTOP_SOURCE,
+    ...(resetGrant ? { metadata: { ...observation.metadata, claudeResetGrantJSON: JSON.stringify(resetGrant) } } : {}),
   }));
+  const canonical = observations.find(item => item.bucket === "five_hour") ?? observations[0];
+  if (canonical && Array.isArray(resetGrant?.grants)) {
+    canonical.resetCreditsAvailable = resetGrant.grants.reduce((total, grant) => total + grant.resets_left, 0);
+  }
   const grant = accepted.omelette_promotional;
   if (object(grant) && typeof grant.utilization === "number") observations.push({
     provider: "claude", account, bucket: "omelette_promotional", label: "Claude Design grant", windowSeconds: null,

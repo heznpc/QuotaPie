@@ -7,6 +7,7 @@ import { DEFAULT_CONFIG } from "../src/config";
 import { QuotaDatabase } from "../src/db";
 import { QuotaPieService } from "../src/service";
 import * as hostWake from "../src/quota-resume/host-wake";
+import * as continuationAccount from "../src/quota-resume/continuation-account";
 import { startDashboard } from "../src/server";
 import type { CodexThreadGoal, CodexThreadListParams, CodexThreadTurnSummary } from "../src/providers/codex-appserver";
 import type { QuotaObservation } from "../src/types";
@@ -113,6 +114,20 @@ async function waitFor(check: () => boolean, attempts = 200): Promise<void> {
   for (let attempt = 0; attempt < attempts && !check(); attempt++) await Bun.sleep(5);
   expect(check()).toBe(true);
 }
+
+test("a foreign history route waits without enqueue or spending its one resume when the login recovers", async () => {
+  const f=fixture();
+  const incident=await f.enableAndDiscover();
+  const route=spyOn(continuationAccount,"quotaResumeContinuationAccount").mockReturnValue("other");
+  try {
+    await Bun.sleep(2);f.observe(Date.now(),0);
+    await f.service.autoResume.poll();await f.service.work.settle();
+    const policy=f.service.work.store.get(incident.policyId)!;
+    expect(f.runs()).toBe(0);expect(policy.state.turns).toBe(0);
+    expect(f.service.work.admission(policy).reason).toBe("quota-resume-history-target-unavailable");
+    expect(f.service.work.store.executions(incident.policyId)).toHaveLength(0);
+  } finally {route.mockRestore();}
+});
 
 test("the resident collector observes recovery and resumes once without a menu request or reset-pass signal", async () => {
   const f = fixture();

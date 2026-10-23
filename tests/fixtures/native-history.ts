@@ -1,0 +1,25 @@
+// Native ResponseItem variants serialized by Codex's context manager. Keep
+// these separate from portable account replay: IDs and opaque data stay intact.
+export const nativeToolHistory = [
+  { type: "function_call_output", id: "fco_fixture", name: "send_message_to_thread", namespace: "codex_app", output: "Original injected result" },
+  { type: "function_call_output", call_id: "encrypted-function", output: [{ type: "encrypted_content", encrypted_content: "opaque-original-result" }] },
+  { type: "custom_tool_call_output", call_id: "encrypted-custom", output: [{ type: "input_text", text: "Result" },
+    { type: "encrypted_content", encrypted_content: "opaque-original-result" }] },
+  { type: "local_shell_call", id: "shell", call_id: null, status: "incomplete",
+    action: { type: "exec", command: ["pwd"], timeout_ms: null, working_directory: "/tmp",
+      env: { container: "local", file_id: "a local variable" }, user: null } },
+  { type: "tool_search_call", id: "search", call_id: "search-call", execution: "client",
+    arguments: { query: "Find a tool", filters: { container: "local", file_id: "parameter name" } } },
+  { type: "tool_search_output", call_id: "search-call", status: "completed", execution: "client",
+    tools: [{ type: "namespace", name: "local", tools: [{ type: "function", name: "read",
+      parameters: { type: "object", properties: { file_id: { type: "string" }, container: { type: "string" } } } }] }] },
+  { type: "tool_search_call", call_id: null, status: "completed", execution: "server", arguments: { query: "search" } },
+  { type: "tool_search_output", call_id: null, status: "completed", execution: "server", tools: [] },
+  { type: "web_search_call", id: "web", status: "completed", action: { type: "search", queries: ["test"] } },
+  { type: "web_search_call", action: { type: "open_page", url: "https://example.com/" } },
+  { type: "web_search_call", action: { type: "find_in_page", url: "https://example.com/", pattern: "test" } },
+  { type: "web_search_call", status: null, action: null },
+  { type: "image_generation_call", id: "image", status: "completed", revised_prompt: "A test image", result: "aW1hZ2U=" },
+  { type: "context_compaction", id: "context", encrypted_content: "opaque-native-context" },
+  { type: "context_compaction" },
+];

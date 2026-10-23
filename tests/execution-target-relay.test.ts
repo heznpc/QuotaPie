@@ -7,6 +7,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { DEFAULT_CONFIG } from "../src/config";
 import { createRelayRuntime, type RuntimeMemory } from "../src/codex-relay-runtime";
 import { profileReference } from "../src/work-boundary";
+import { nativeToolHistory } from "./fixtures/native-history";
+import { AccountPool } from "../src/account-pool";
 
 const model = "gpt-6.1-sol";
 const complete = () => new Response('data: {"type":"response.completed","response":{"status":"completed"}}\n\n',
@@ -609,11 +611,14 @@ function rawRecovery(f:any,p:any,body:string,path="/responses") {
     headers:{authorization:`Bearer ${f.accounts[0].token}`,"chatgpt-account-id":"a",session_id:f.thread,
       "content-type":"application/json",...turnHeaders(p.turn)},body}));
 }
-for (const path of ["/responses","/responses/compact"]) test(`native encrypted history stays byte-identical on fixed ${path}`,()=>fixture(async f=>{
+for (const path of ["/responses","/responses/compact"]) for (const trigger of [false,true]) test(`native encrypted history stays byte-identical on fixed ${path}, trigger ${trigger}`,()=>fixture(async f=>{
   const p=await prepared(f);expect((await p.ack()).status).toBe(200);
   const input={model,input:[{type:"compaction",id:"original-compaction-id",encrypted_content:"native-encrypted-history"},
     {type:"reasoning",id:"original-reasoning-id",encrypted_content:"native-reasoning"},
-    ...f.history.slice(2,-1),{role:"user",id:"original-user-id",content:p.policy.prompt}],reasoning:{effort:"high"},stream:true};
+    ...f.history.slice(2,-1),{role:"user",id:"original-user-id",content:p.policy.prompt},
+    {type:"function_call",call_id:"cancelled",name:"run",arguments:"{}"},
+    ...nativeToolHistory,
+    ...(trigger?[{type:"compaction_trigger"}]:[])],reasoning:{effort:"high"},stream:true};
   const raw=JSON.stringify(input,null,3)+"\n";
   const response=await rawRecovery(f,p,raw,path);expect(response.status).toBe(200);await response.text();
   expect(f.sent).toHaveLength(1);expect(f.sent[0].body).toBe(raw);expect(f.sent[0].headers.get("chatgpt-account-id")).toBe("b");
@@ -733,7 +738,7 @@ test("hot reload replaces obsolete pool routing for new requests and retains the
   const response=await next.fetch(new Request(`http://127.0.0.1/${"a".repeat(48)}/backend-api/codex/responses`,{method:"POST",
     headers:{authorization:`Bearer ${f.accounts[0].token}`,"chatgpt-account-id":"a",session_id:f.thread},body:JSON.stringify({model,input:f.history,stream:true})}));
   expect(response.status).toBe(200);await response.text();expect(f.memory.interactivePool).not.toBe(old);
-  expect(f.memory.interactivePool.runtimeApiVersion).toBe(6);
+  expect(f.memory.interactivePool.runtimeApiVersion).toBe(AccountPool.RUNTIME_API_VERSION);
   expect(await old.canRecoverAsync("a",model,{model,input:f.history})).toBe(true);
   stream.enqueue(new TextEncoder().encode('data: {"type":"response.completed","response":{"status":"completed"}}\n\n'));stream.close();
   expect(await inflight.text()).toContain("response.completed");expect(f.sent).toHaveLength(2);

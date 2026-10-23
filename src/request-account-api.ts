@@ -96,7 +96,8 @@ export class RequestAccountAPI {
         pendingTurnId: route?.upstreamResponseObserved && route.account === sourceAccount &&
           route.attribution !== "unknown" ? route.turnId : null,
         currentAccount: confirmed?.account ?? null,
-        targetAccount: target?.account ?? null,
+        targetAccount: target?.appliedAtMs == null ? target?.account ?? null : null,
+        preferredAccount: target?.account ?? null,
         active: !!confirmed && routing.active.includes(confirmed) && route === confirmed }];
     }).sort((a,b) => Number(b.active)-Number(a.active));
   }
@@ -104,21 +105,42 @@ export class RequestAccountAPI {
   read(routing: RoutingSummary, labels: Map<string,string>, now = Date.now()) {
     const accounts = this.options.accounts?.() ?? poolAccounts(this.config);
     const policy = readPoolPolicy(this.options.policyPath);
-    return { conversations: this.candidates(routing).map(({model: _model,pendingTurnId: _turn,...row}) => row),
+    return { newConversationAccount: policy.newConversationTarget?.account ?? null,
+      conversations: this.candidates(routing).map(({model: _model,pendingTurnId: _turn,...row}) => row),
       accounts: this.config.accounts.codex.filter(p => p.enabled).map(profile => {
         const account = accounts.find(a => a.id === profile.id);
         const enrolled = policy.accounts.includes(profile.id);
         const authenticated = !!account && account.tokenExpiresAt > now + 30_000;
         const allowed = account ? creditConsent(policy, account) : undefined;
+        const remaining = account && account.validUntil > now && account.remaining != null && Number.isFinite(account.remaining)
+          ? account.remaining : null;
         const reason = !enrolled ? "pool_manual_policy_changed" : !authenticated ? "pool_manual_authentication_unavailable" :
-          allowed === true ? null : !account || account.validUntil <= now || account.remaining == null ? "pool_manual_quota_unavailable" :
-          account.remaining <= 0 ? "pool_manual_quota_exhausted" : null;
+          allowed === true ? null : remaining == null ? "pool_manual_quota_unavailable" :
+          remaining <= 0 ? "pool_manual_quota_exhausted" : null;
         return { account: profile.id, label: labels.get(profile.id) ?? profile.label, available: reason === null,
           reason, creditAllowed: allowed === true, creditPolicy: allowed === undefined ? "provider" : allowed ? "allow" : "block",
           canAllowCredits: enrolled && authenticated, autoSwitchEnabled: policy.enabled,
-          remaining: account?.remaining ?? null };
+          remaining };
 
       }) };
+  }
+
+  configureNewConversations(input: unknown) {
+    const value = input as Record<string, unknown> | null;
+    if (!value || typeof value !== "object" || Array.isArray(value) ||
+        Object.keys(value).join(",") !== "account" || value.account !== null && typeof value.account !== "string")
+      throw new RequestAccountError("request_account_invalid_request", 400);
+    const policy = readPoolPolicy(this.options.policyPath);
+    if (value.account === null) delete policy.newConversationTarget;
+    else {
+      const account = (this.options.accounts?.() ?? poolAccounts(this.config)).find(a => a.id === value.account);
+      if (!this.config.accounts.codex.some(p => p.enabled && p.id === value.account) || !policy.accounts.includes(value.account as string))
+        throw new RequestAccountError("pool_manual_policy_changed", 409);
+      if (!account || account.tokenExpiresAt <= Date.now() + 30_000)
+        throw new RequestAccountError("pool_manual_authentication_unavailable", 409);
+      policy.newConversationTarget = { account: account.id, identity: account.identity };
+    }
+    savePoolPolicy(policy, this.options.policyPath);
   }
 
   configureCredits(input: unknown) {

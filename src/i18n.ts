@@ -455,6 +455,7 @@ Usage:
                                  Connect or remove working-task sleep hooks
   quotapie codex [--compact-model MODEL] -- [Codex arguments]
                                  Run Codex with experimental Astra → Sol compaction routing
+  quotapie quota-bar [--provider claude|codex] [--account ID]
   quotapie claude-statusline [--account ID]
                                  Ingest Claude status-line JSON and render one account's compact line
   quotapie watch                Run the adaptive collector and macOS triggers
@@ -493,6 +494,7 @@ Environment:
                                  작업 중 잠자기 방지 훅 연결 또는 해제
   quotapie codex [--compact-model MODEL] -- [Codex 인자]
                                  Astra 압축 요청을 Sol로 자동 전환하여 Codex 실행 (실험 기능)
+  quotapie quota-bar [--provider claude|codex] [--account ID]
   quotapie claude-statusline [--account ID]
                                  Claude 상태 표시줄 JSON을 받아 한 계정의 요약 표시
   quotapie watch                적응형 수집기와 macOS 트리거 실행
@@ -506,6 +508,10 @@ Environment:
   QUOTAPIE_CONFIG=/path/config.json
   QUOTAPIE_HOME=/path/data-dir`,
   },
+  "cli.quota-bar.remaining": { en: () => "remaining", ko: () => "잔여" },
+  "cli.quota-bar.check": { en: () => "check connection", ko: () => "연결 확인 필요" },
+  "cli.quota-bar.no-account": { en: () => "no connected account", ko: () => "연결된 계정 없음" },
+  "cli.quota-bar.unavailable": { en: () => "usage unavailable", ko: () => "사용량 확인 불가" },
   "cli.option.value-required": {
     en: (p) => `${p.label} requires a value`,
     ko: (p) => `${p.label} 옵션에 값이 필요합니다`,

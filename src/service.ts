@@ -1,4 +1,5 @@
 import { autoResumeIncidentNotice, resumeNoticeFamily } from "./quota-resume/notifications";
+import { quotaResumeContinuationAccount } from "./quota-resume/continuation-account";
 import { SessionConsolidation } from "./session-consolidation";
 import { codexSessionLocation, codexSessionOrigins } from "./session-location";
 import { InstallMaintenance } from "../script/install-maintenance";
@@ -59,6 +60,7 @@ import { ClaudeUsageError, fetchClaudeUsage, mapClaudeUsage, readClaudeCredentia
 import { CLAUDE_DESKTOP_SOURCE, CLAUDE_DESKTOP_MIN_INTERVAL_MS, ClaudeDesktopError,
   readClaudeDesktop, mapClaudeDesktopUsage, sameClaudeDesktopIdentity, claudeDesktopIdentityKey, type ClaudeDesktopOptions, type ClaudeDesktopRead } from "./providers/claude-desktop";
 import { saveClaudeDesktopConnection } from "./claude-desktop-connection";
+import { readClaudeAccess, saveClaudeAccess, type ClaudeAccessCheck } from "./claude-access";
 import { claudeProfileEnvironment } from "./providers/claude-profile";
 import { resolveLocale, t } from "./i18n";
 import type { Locale } from "./i18n";
@@ -412,6 +414,11 @@ export class QuotaPieService {
     const accounts=poolAccounts(this.config);
     return { pool: readPoolPolicy(), accounts, windows: this.workWindows(), nowMs: Date.now(),
       maxAgeMs: this.config.collection.staleAfterSeconds*1000,
+      continuationAccount: (policy: WorkPolicy) => {
+        const location=codexSessionLocation(this.config,policy.account,policy.nativeSessionId);
+        if(!location) throw new Error("quota-resume-history-unavailable");
+        return quotaResumeContinuationAccount(location.ownerAccount,policy.nativeSessionId,accounts);
+      },
       sessionOwner: (policy: WorkPolicy) => {
         try {
           const location=codexSessionLocation(this.config,policy.account,policy.nativeSessionId);
@@ -666,6 +673,16 @@ export class QuotaPieService {
     if(policy.purpose!=="quota-resume") return null;
     const permission=this.autoResume.blockPolicy(policy);
     if(permission) return permission;
+    if(!target && !policy.state.activeExecutionId) {
+      try {
+        const location=codexSessionLocation(this.config,policy.account,policy.nativeSessionId);
+        if(!location) return "quota-resume-history-unavailable";
+        if(quotaResumeContinuationAccount(location.ownerAccount,policy.nativeSessionId,poolAccounts(this.config))!==location.ownerAccount)
+          return "quota-resume-history-target-unavailable";
+      } catch(error) {
+        return error instanceof Error ? error.message : "quota-resume-history-unavailable";
+      }
+    }
     if(policy.quotaResume?.localBeforeSendRecovery&&!target)return "local-repair-target-unavailable";
     // Permission is also checked during the owned turn. A failed or expired
     // host observation cannot leave a prior active/no-goal result authoritative.
@@ -1301,9 +1318,24 @@ export class QuotaPieService {
     if (this.closing || !current?.desktopBinding || !sameClaudeDesktopIdentity(current.desktopBinding, result))
       throw new ClaudeDesktopError("account-mismatch");
     const observations = mapClaudeDesktopUsage(result.usage, profile.id, nowMs).map(item => ({
-      ...item, metadata: { desktopIdentity: claudeDesktopIdentityKey(result) },
+      ...item, metadata: { ...item.metadata, desktopIdentity: claudeDesktopIdentityKey(result),
+        ...(result.sessionFingerprint ? { desktopSessionFingerprint: result.sessionFingerprint } : {}) },
     }));
     const accountPlan = { kind: result.plan, identity: claudeDesktopIdentityKey(result) };
+    if (result.access) {
+      const previous = readClaudeAccess(accountPlan.identity);
+      const checks: ClaudeAccessCheck[] = [
+        { id: "profile", result: "available", source: "api", observedAtMs: nowMs },
+        { id: "quota", result: observations.length ? "available" : "empty", source: "api", observedAtMs: nowMs },
+      ];
+      const reset = result.usage.cedar_ember as { grants?: unknown[] } | null | undefined;
+      if (Array.isArray(reset?.grants)) checks.push({ id: "resets", result: reset.grants.length ? "available" : "empty",
+        count: reset.grants.length, source: "api", observedAtMs: nowMs });
+      // UI inspection is historical evidence, never silently refreshed by a quota poll.
+      try { saveClaudeAccess({ ...result.access, identity: accountPlan.identity, observedAtMs: nowMs,
+        checks: [...checks, ...(previous?.checks.filter(c => c.source === "app" && !checks.some(n => n.id === c.id)) ?? [])] }); }
+      catch { /* An optional inspection report must not interrupt quota collection. */ }
+    }
     if (!observations.length) {
       this.collection.recordAttempt("claude", profile.id, CLAUDE_DESKTOP_SOURCE, nowMs,
         new ClaudeDesktopError("no-windows").message, "no-windows", accountPlan);
@@ -1584,6 +1616,9 @@ export class QuotaPieService {
       )[0];
       return {
         ...(desktop ? { connection: "claude-desktop" as const } : {}),
+        ...(desktop && visibleWindows[0]?.metadata?.desktopSessionFingerprint
+          ? { desktopSessionFingerprint: String(visibleWindows[0].metadata.desktopSessionFingerprint) } : {}),
+        ...(desktopBinding && plan ? { claudeAccess: readClaudeAccess(claudeDesktopIdentityKey(desktopBinding)) } : {}),
         ...(plan ? { plan } : {}),
         provider: profile.provider,
         account: profile.id,

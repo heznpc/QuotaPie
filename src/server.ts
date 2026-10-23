@@ -85,7 +85,7 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
       const allowedHosts = new Set(["127.0.0.1", "localhost", "::1", config.dashboard.host.toLowerCase()]);
       if (!hostname || !allowedHosts.has(hostname)) return json({ error: "invalid_host" }, 403);
       const url = new URL(request.url);
-      if (["/api/request-accounts", "/api/request-accounts/credits"].includes(url.pathname)) {
+      if (["/api/request-accounts", "/api/request-accounts/credits", "/api/request-accounts/new-conversations"].includes(url.pathname)) {
         if (request.headers.has("origin") || !tokenMatches(request.headers.get("x-quotapie-action-token")))
           return json({error:"forbidden"},403);
         if (!["GET","POST"].includes(request.method)) return json({error:"method_not_allowed"},405);
@@ -93,11 +93,15 @@ export function startDashboard(service: QuotaPieService, config: AppConfig, opti
           const snapshot = compaction.snapshot();
           const labels = new Map(service.quotaAccounts().filter(a=>a.provider==="codex").map(a=>[a.account,a.accountLabel]));
           if (request.method === "GET") {
-            if (url.pathname.endsWith("/credits")) return json({error:"method_not_allowed"},405);
+            if (url.pathname !== "/api/request-accounts") return json({error:"method_not_allowed"},405);
             return json(requestAccounts.read(snapshot.routing, labels));
           }
           const body = await request.text();
           if (body.length > 2048) return json({error:"request_account_invalid_request"},400);
+          if (url.pathname.endsWith("/new-conversations")) {
+            requestAccounts.configureNewConversations(JSON.parse(body));
+            return json(requestAccounts.read(snapshot.routing, labels));
+          }
           if (url.pathname.endsWith("/credits")) {
             requestAccounts.configureCredits(JSON.parse(body));
             return json(requestAccounts.read(snapshot.routing, labels));

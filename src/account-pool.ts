@@ -6,9 +6,10 @@ import { codexProfileRoot, codexUsesFileCredentials, dataDirectory, loadConfig, 
 import type { CodexForkParentResult } from "./account-pool-lineage";
 import { codexRequestIdentity } from "./codex-request-identity";
 import { defaultWorkBoundaryPath, profileReference } from "./work-boundary";
-import { nativeExecutionHistory, portableReplay, filterForeignReasoning } from "./account-replay";
+import { nativeHistoryFailure, portableReplay, filterForeignReasoning, type NativeHistoryFailure } from "./account-replay";
 
 export interface PoolPolicy { enabled: boolean; accounts: string[]; reservePercent?: Record<string, number>;
+  newConversationTarget?: { account: string; identity: string };
   creditConsent?: Record<string, { identity: string; allow: boolean }> }
 /** Consent follows the verified login, never just a reusable profile name. */
 export function creditConsent(policy: PoolPolicy, account: Pick<PoolAccount, "id" | "identity">): boolean | undefined {
@@ -30,7 +31,8 @@ export class PoolError extends Error {
       typeof (value as any).code === "string" && /^pool_[a-z0-9_]{1,100}$/.test((value as any).code) &&
       Number.isInteger((value as any).status) && (value as any).status >= 400 && (value as any).status <= 599;
   }
-  constructor(readonly code: string, readonly status = 503, readonly retryAfterSeconds?: number) { super(code); }
+  constructor(readonly code: string, readonly status = 503, readonly retryAfterSeconds?: number,
+    readonly historyFailure?: NativeHistoryFailure) { super(code); }
 }
 export const poolPolicyPath = () => join(dataDirectory(), "account-pool.json");
 export const poolDatabasePath = () => join(dataDirectory(), "account-pool.sqlite3");
@@ -64,12 +66,18 @@ export function validatePoolPolicy(value: any): PoolPolicy {
         !Number.isInteger(percent) || (percent as number) < 0 || (percent as number) > 100)))
     throw new PoolError("pool_invalid_reserve", 400);
   const consent = value.creditConsent;
+  const initial = value.newConversationTarget;
+  if (initial != null && (!initial || typeof initial !== "object" ||
+      Object.keys(initial).sort().join(",") !== "account,identity" || !value.accounts.includes(initial.account) ||
+      typeof initial.identity !== "string" || !/^[a-f0-9]{64}$/.test(initial.identity)))
+    throw new PoolError("pool_invalid_policy", 400);
   if (consent != null && (typeof consent !== "object" || Array.isArray(consent) ||
       Object.entries(consent).some(([id, item]: [string, any]) => !value.accounts.includes(id) || !item ||
         Object.keys(item).sort().join(",") !== "allow,identity" || typeof item.allow !== "boolean" ||
         typeof item.identity !== "string" || !/^[a-f0-9]{64}$/.test(item.identity))))
     throw new PoolError("pool_invalid_credit_consent", 400);
   return { enabled: value.enabled, accounts: value.accounts,
+    ...(initial != null ? { newConversationTarget: { ...initial } } : {}),
     ...(consent != null ? { creditConsent: structuredClone(consent) } : {}),
     ...(reserves != null ? { reservePercent: { ...reserves } } : {}) };
 }
@@ -191,6 +199,8 @@ type Binding = { account: string; identity: string; source_identity: string; lab
 type PoolSelectInput = { threadId: string | null; requestId: string; body: unknown; model: string; headers: Headers;
   /** Internal proof from the source guard; never read from request content. */
   verifiedSource?: { identity: string; credentialDigest: string };
+  /** Interactive pool consent permits intact, validated Codex history. */
+  nativeHistory?: true;
   fixedTarget?: { account: string; identity: string; preserveNativeHistory?: true; manual?: true } };
 export type SourceHistoryPolicy = "strict" | "authenticated-source";
 export type SourceContinuationInput = {
@@ -202,7 +212,7 @@ type SourceOnlyReplay = { sourceReplay: NonNullable<ReturnType<typeof portableRe
 export class AccountPool {
   // Bump when imported routing/validation behavior changes: hot reload retains
   // pool instances, so their methods otherwise keep the previous module code.
-  static readonly RUNTIME_API_VERSION = 6;
+  static readonly RUNTIME_API_VERSION = 7;
   readonly runtimeApiVersion = AccountPool.RUNTIME_API_VERSION;
   readonly sourceContinuationRevision = 2;
   private db: Database;
@@ -316,7 +326,7 @@ export class AccountPool {
   async canSelectInteractiveAsync(input: PoolSelectInput, signal?: AbortSignal): Promise<boolean> {
     const policy = this.options.policy();
     if (!policy.enabled || !policy.accounts.includes(this.options.sourceAccount) || !input.threadId || !SHARED_QUOTA_MODELS.has(input.model)) return false;
-    const portable = portableReplay(input.body) !== null;
+    const portable = portableReplay(input.body) !== null || input.nativeHistory === true && nativeHistoryFailure(input.body) === null;
     const lineage = await this.forkSnapshot(input, signal);
     return this.withContentionRetry(() => {
       let thread: string | null = input.threadId;
@@ -506,7 +516,7 @@ export class AccountPool {
           .run(source.id, source.identity, credentialDigest(source.accessToken), source.tokenExpiresAt);
     }).immediate();
   }
-  private inheritedBinding(source: string, thread: string, body: unknown, headers: Headers, sourceAccount: PoolAccount | undefined, forkParent = this.options.forkParent): Binding | SourceOnlyReplay | null {
+  private inheritedBinding(source: string, thread: string, body: unknown, headers: Headers, sourceAccount: PoolAccount | undefined, forkParent = this.options.forkParent, fixedTarget?: PoolSelectInput["fixedTarget"]): Binding | SourceOnlyReplay | null {
     if (!forkParent) return null;
     const claim = codexRequestIdentity(headers);
     if (claim.fork.status === "invalid" || claim.fork.status === "claimed" && claim.threadId !== thread)
@@ -527,8 +537,10 @@ export class AccountPool {
             throw new PoolError("pool_lineage_parent_unavailable", 409);
           const binding = this.db.query<Binding, [string,string]>("SELECT * FROM bindings WHERE source=? AND thread=?").get(source, parent);
           if (!binding) throw new PoolError("pool_lineage_binding_unavailable", 409);
-          if (!sourceAccount || binding.account !== source || binding.identity !== sourceAccount.identity ||
-              binding.source_identity !== sourceAccount.identity)
+          const manualContinuation = fixedTarget?.manual && fixedTarget.preserveNativeHistory &&
+            binding.account === fixedTarget.account && binding.identity === fixedTarget.identity && this.hasCompletedBinding(source, parent, binding);
+          if (!sourceAccount || binding.source_identity !== sourceAccount.identity ||
+              (!manualContinuation && (binding.account !== source || binding.identity !== sourceAccount.identity)))
             throw new PoolError("pool_lineage_account_mismatch", 409);
           // select() still authenticates the caller and enforces quota,
           // reserves and cooldowns before committing this child's binding.
@@ -572,7 +584,7 @@ export class AccountPool {
       // must remain on the account that created it.
       if (!saved && forkParent && (policy.accounts.includes(sourceID) ||
           this.db.query("SELECT 1 FROM bindings WHERE source=? LIMIT 1").get(sourceID))) {
-        const inherited = this.inheritedBinding(sourceID, thread, input.body, input.headers, source, forkParent);
+        const inherited = this.inheritedBinding(sourceID, thread, input.body, input.headers, source, forkParent, input.fixedTarget);
         if (inherited && "sourceReplay" in inherited) sourceReplay = inherited.sourceReplay;
         else saved = inherited;
       }
@@ -597,8 +609,10 @@ export class AccountPool {
         "SELECT status,until_ms FROM auth_cooldowns WHERE identity=? AND digest=? AND until_ms>?")
         .get(a.identity, credentialDigest(a.accessToken), now);
       let selected: PoolAccount | undefined, reason: PoolRoute["reason"];
-      const preserveNative = input.fixedTarget?.preserveNativeHistory === true;
-      if (preserveNative && !nativeExecutionHistory(input.body)) throw new PoolError("pool_execution_target_native_history_unverified", 409);
+      const preserveNative = input.fixedTarget?.preserveNativeHistory === true ||
+        input.nativeHistory === true && policy.enabled && nativeHistoryFailure(input.body) === null;
+      const historyFailure = preserveNative ? nativeHistoryFailure(input.body) : null;
+      if (historyFailure) throw new PoolError("pool_execution_target_native_history_unverified", 409, undefined, historyFailure);
       let foreignReasoning = sourceReplay?.fingerprints ?? saved?.foreignReasoning ?? this.foreignReasoning(sourceID, thread);
       let replayBody = preserveNative ? input.body : sourceReplay?.body ?? filterForeignReasoning(input.body, foreignReasoning);
       let previousAccountLabel: string | undefined;
@@ -623,10 +637,32 @@ export class AccountPool {
             foreignReasoning = [...new Set([...(foreignReasoning ?? []), ...replay.fingerprints])];
           }
         }
+        if (input.fixedTarget.manual) {
+          const quota = this.quota(selected, input.model);
+          const quotaUnavailable = quota.remaining == null || !Number.isFinite(quota.remaining) || quota.validUntil <= now;
+          const quotaExhausted = isExhausted(selected) || !quotaUnavailable && quota.remaining! <= 0;
+          // A manual choice is the preferred account. Enabling automatic
+          // switching also applies to that choice once it cannot serve a new
+          // request. Its already-validated native history stays intact.
+          if (policy.enabled && SHARED_QUOTA_MODELS.has(input.model) &&
+              (cooldownUntil(selected) > now || creditConsent(policy, selected) !== true && (quotaUnavailable || quotaExhausted))) {
+            const replacement = this.eligible(accounts, input.model, selected.id)[0];
+            if (replacement) {
+              previousAccountLabel = selected.label;
+              selected = replacement; reason = "recovered";
+            }
+          }
+          const selectedQuota = this.quota(selected, input.model);
+          if (creditConsent(policy, selected) !== true) {
+            if (selectedQuota.remaining == null || !Number.isFinite(selectedQuota.remaining) || selectedQuota.validUntil <= now)
+              throw new PoolError("pool_manual_quota_unavailable", 409);
+            if (selectedQuota.remaining <= 0 || isExhausted(selected)) throw new PoolError("pool_manual_quota_exhausted", 409);
+          }
+        }
       } else if (saved && source.identity !== saved.source_identity) {
         // A login changed in the trusted local credential store. Honor that
         // explicit login instead of trapping it behind the previous binding.
-        const replay = portableReplay(input.body);
+        const replay = preserveNative ? { body: input.body, fingerprints: [] } : portableReplay(input.body);
         if (!replay) throw new PoolError("pool_recovery_requires_full_history", 409);
         selected = source; reason = "recovered"; previousAccountLabel = saved.label;
         replayBody = replay.body;
@@ -642,7 +678,7 @@ export class AccountPool {
         const restoredSource = policy.enabled && selected.id !== sourceID && SHARED_QUOTA_MODELS.has(input.model)
           ? this.eligible(accounts, input.model, selected.id).find(a => a.id === sourceID) : undefined;
         if (restoredSource) {
-          const replay = portableReplay(replayBody);
+          const replay = preserveNative ? { body: input.body, fingerprints: [] } : portableReplay(replayBody);
           if (replay && !hasUnverifiedAttachments(replay.body)) {
             previousAccountLabel = selected.label;
             selected = restoredSource; reason = "recovered"; replayBody = replay.body;
@@ -653,7 +689,7 @@ export class AccountPool {
             (cooldownUntil(selected) > now || isExhausted(selected) || this.reserveBlock(selected, input.model))) {
           const replacement = this.eligible(accounts, input.model, selected.id)[0];
           if (replacement) {
-            const replay = portableReplay(replayBody);
+            const replay = preserveNative ? { body: input.body, fingerprints: [] } : portableReplay(replayBody);
             if (replay) {
               previousAccountLabel = selected.label;
               reason = this.reserveBlock(selected, input.model) && cooldownUntil(selected) <= now ? "reserve" : "recovered";
@@ -664,7 +700,7 @@ export class AccountPool {
             }
           }
         }
-      } else if (sourceReplay || !SHARED_QUOTA_MODELS.has(input.model) || (!isFreshTextTurn(input.body) && !portableReplay(input.body))) { selected = source; reason = "existing"; }
+      } else if (sourceReplay || !SHARED_QUOTA_MODELS.has(input.model) || (!preserveNative && !isFreshTextTurn(input.body) && !portableReplay(input.body))) { selected = source; reason = "existing"; }
       else {
         // Unknown source quota is not permission to silently change the login.
         selected = !isExhausted(source) && !this.reserveBlock(source, input.model) && (this.quota(source, input.model).remaining == null || this.quota(source, input.model).remaining! > 0) && cooldownUntil(source) <= now && !authCooldown(source)
@@ -674,7 +710,7 @@ export class AccountPool {
         reason = selected ? (this.reserveBlock(source, input.model) && selected.id !== source.id ? "reserve" : "new") : "source_fallback";
         selected ??= source;
         if (selected.id !== sourceID && !isFreshTextTurn(input.body)) {
-          const replay = portableReplay(input.body)!;
+          const replay = preserveNative ? { body: input.body, fingerprints: [] } : portableReplay(input.body)!;
           reason = "recovered"; previousAccountLabel = source.label;
           replayBody = replay.body; foreignReasoning = replay.fingerprints;
         }

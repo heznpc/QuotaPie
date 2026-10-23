@@ -65,7 +65,7 @@ test("actual runtime moves an existing complete session to a fresh account and k
   expect(f.sent).toHaveLength(1); expect(f.sent[0].headers.get("chatgpt-account-id")).toBe("b");
   expect(f.sent[0].headers.get("session_id")).toBe(f.thread);
   const input = JSON.parse(f.sent[0].body).input;
-  expect(input.some((x: any) => x.type === "reasoning")).toBe(false);
+  expect(input).toEqual(f.history);
   expect(input.filter((x: any) => x.call_id).map((x: any) => x.call_id)).toEqual(["same-call", "same-call"]);
   expect(f.runtime.snapshot().recent.at(-1).accountRouting).toMatchObject({ sourceAccount: "a", account: "b", reason: "recovered" });
   expect(f.runtime.snapshot().recent.at(-1).processingAccount).toEqual({ account: "b", evidence: "validated-outgoing-credentials" });
@@ -89,14 +89,14 @@ test("source reserve does not abort the selected target", () => fixture(async f 
   const response = await f.request(); expect(response.status).toBe(200); await response.text(); expect(f.sent[0].headers.get("chatgpt-account-id")).toBe("b");
 }));
 
-test("disabled pool and opaque history retain native source identity without creating a binding", () => fixture(async f => {
+test("disabled pool retains the source; enabling it also routes intact native compaction", () => fixture(async f => {
   f.policy.enabled = false; f.publish();
   let response = await f.request({ model, input: [{ role: "user", content: "Native" }] }); expect(response.status).toBe(200); await response.text();
   expect(f.memory.interactivePool).toBeUndefined(); expect(f.sent[0].headers.get("chatgpt-account-id")).toBe("a");
   f.policy.enabled = true; f.publish();
   const opaque = { model, input: [{ type: "compaction", encrypted_content: "opaque" }] };
   response = await f.request(opaque); expect(response.status).toBe(200); await response.text();
-  expect(f.sent[1].headers.get("chatgpt-account-id")).toBe("a"); expect(f.sent[1].body).toBe(JSON.stringify(opaque));
+  expect(f.sent[1].headers.get("chatgpt-account-id")).toBe("b"); expect(f.sent[1].body).toBe(JSON.stringify(opaque));
 }));
 
 test("source authentication still rejects a different bearer before selected-account inference", () => fixture(async f => {
@@ -109,7 +109,7 @@ test("partial streamed quota failure is not replayed or sent to another account"
   const response = await f.request(); await response.text(); expect(f.sent).toHaveLength(1); expect(f.sent[0].headers.get("chatgpt-account-id")).toBe("b");
 }));
 
-test("a foreign binding keeps its own opaque compaction on that account without replay", () => fixture(async f => {
+test("a foreign binding keeps native compaction intact when rolling back to a recovered source", () => fixture(async f => {
   await (await f.request()).text();
   const compact = { model, input: [{ type: "compaction", encrypted_content: "target-cache" }] };
   const response = await f.request(compact); expect(response.status).toBe(200); await response.text();
@@ -118,7 +118,8 @@ test("a foreign binding keeps its own opaque compaction on that account without 
   f.accounts[1].row.windows[0].remainingPercent = 0; f.accounts[0].row.windows[0].remainingPercent = 80;
   for (const a of f.accounts) a.row.windows[0].observedAtMs = Date.now() - 1;
   f.publish();
-  const blocked = await f.request(compact); expect(blocked.status).toBe(409); await blocked.text(); expect(f.sent).toHaveLength(2);
+  const recovered = await f.request(compact); expect(recovered.status).toBe(200); await recovered.text(); expect(f.sent).toHaveLength(3);
+  expect(f.sent[2].headers.get("chatgpt-account-id")).toBe("a"); expect(f.sent[2].body).toBe(JSON.stringify(compact));
 }));
 
 test("a target 429 is attributed only to that account and does not hold the source after its recovery", () => fixture(async f => {

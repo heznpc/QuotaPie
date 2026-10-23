@@ -68,8 +68,10 @@ def configure(home: Path, compact: int = 96000, output: int = 2000):
     path = home / "config.toml"
     original = path.read_bytes() if path.exists() else b""
     before = tomllib.loads(original.decode())
+    # A carried compaction prefix can already exceed 80k tokens. Counting it
+    # again against 96k leaves only a few tool calls before another compaction.
     values = {"model_auto_compact_token_limit": compact,
-              "model_auto_compact_token_limit_scope": "total",
+              "model_auto_compact_token_limit_scope": "body_after_prefix",
               "tool_output_token_limit": output}
     text = original.decode()
     boundary = re.search(r"(?m)^\s*\[", text)

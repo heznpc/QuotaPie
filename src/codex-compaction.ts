@@ -23,6 +23,7 @@ import { manualNativeToolPayload, type ManualAccountRouting, type ManualRequestT
 import { interactiveRelayPolicy } from "./interactive-relay-policy";
 import { createRelayDiagnostics } from "./relay-diagnostics";
 import { requestContext } from "./request-context";
+import type { NativeHistoryFailure } from "./account-replay";
 export { DEFAULT_COMPACTION_ROUTE, routeCompaction, validateCompactionRoute, type CompactionRoute } from "./codex-compaction-policy";
 
 import type { CompactionRequestEvent as CoreRequestEvent } from "../packages/quota-core/src/events.js";
@@ -33,6 +34,7 @@ export interface CompactionRequestEvent extends CoreRequestEvent {
   inlineImageCount?: number;
   requestEncoding?: RequestEncoding;
   requestInspection?: NativeInspectionReason;
+  historyFailure?: NativeHistoryFailure;
 }
 type NativeInspectionReason = "not-applicable" | "empty-body" | "body-too-large" | "parsed" | "invalid-json" | "missing-model" | BodyDecodeFailure;
 export interface NativeRequestEvent {
@@ -147,7 +149,7 @@ function poolErrorMessage(error: PoolError): string {
     return "QuotaPie: the task's registered account credentials need to be refreshed. Its account binding has been preserved.";
   if (["pool_bound_identity_changed", "pool_bound_account_removed"].includes(error.code))
     return "QuotaPie: the task's original account is unavailable or has changed. Restore that registered account to continue this task.";
-  return `QuotaPie could not route this request (${error.code}). No request was sent to the provider.`;
+  return `QuotaPie could not route this request (${error.code}${error.historyFailure ? ": " + error.historyFailure : ""}). No request was sent to the provider.`;
 }
 
 /** One loopback relay per launched Codex process. Credentials and bodies stay in memory. */
@@ -334,7 +336,7 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
       let expectsSse = false;
       let event: Omit<CompactionRequestEvent, "phase" | "status" | "at" | "durationMs"> | undefined;
       let poolSelection: ReturnType<AccountPool["select"]> = null;
-      let poolInput: { body: unknown; headers: Headers; verifiedSource?: { identity: string; credentialDigest: string } } | undefined;
+      let poolInput: { body: unknown; headers: Headers; nativeHistory?: true; verifiedSource?: { identity: string; credentialDigest: string } } | undefined;
       let verifiedSource: { identity: string; credentialDigest: string } | undefined;
       let selectingAccount = false;
       let guardModel: string | undefined;
@@ -486,24 +488,28 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
               // A leased execution target remains immutable.
               if (interactive && frozenTarget) options.manualAccountRouting?.assertCompatible({ threadId: event.threadId, target: frozenTarget.lease.target });
               if (interactive && !frozenTarget && options.manualAccountRouting) {
-                manualTarget = options.manualAccountRouting.response({ threadId: event.threadId, turnId: event.turnId,
-                  model: event.to, body: outgoing, identityConflict: codexRequestIdentity(sourceHeaders).fork.status === "invalid" });
+                manualTarget = await options.manualAccountRouting.response({ threadId: event.threadId, turnId: event.turnId,
+                  model: event.to, body: outgoing, headers: sourceHeaders, identityConflict: codexRequestIdentity(sourceHeaders).fork.status === "invalid" });
                 if (manualTarget && !accountPool) throw new PoolError("pool_manual_policy_changed", 409);
               }
               const interactivePool = interactive && !sourceRecoveryOnly && !manualTarget && accountPool && await accountPool.canSelectInteractiveAsync({
-                threadId: event.threadId, requestId: event.requestId, headers, body: outgoing, model: event.to }, request.signal);
+                threadId: event.threadId, requestId: event.requestId, headers, body: outgoing, model: event.to, nativeHistory: true }, request.signal);
               if (frozenTarget && !accountPool) throw new SubscriptionRequestError("execution-target-unavailable");
               if (accountPool && (!options.subscriptionGuard || interactivePool || frozenTarget || manualTarget)) {
                 selectingAccount = true;
                 poolSelection = await accountPool.selectAsync({ threadId: event.threadId, requestId: event.requestId,
-                  body: outgoing, model: event.to, headers, verifiedSource,
+                  body: outgoing, model: event.to, headers, verifiedSource, ...(interactivePool ? { nativeHistory: true as const } : {}),
                   ...(frozenTarget ? { fixedTarget: { account: frozenTarget.lease.target.account, identity: frozenTarget.lease.target.identity, preserveNativeHistory: true } }
                     : manualTarget ? { fixedTarget: { account: manualTarget.account.id, identity: manualTarget.account.identity, preserveNativeHistory: true, manual: true } } : {}) }, request.signal);
                 request.signal.throwIfAborted();
-                if (manualTarget && (!poolSelection || poolSelection.route.account !== manualTarget.account.id || poolSelection.identity !== manualTarget.account.identity))
-                  throw new PoolError("pool_manual_target_changed", 409);
+                if (manualTarget) {
+                  if (!poolSelection) throw new PoolError("pool_manual_target_changed", 409);
+                  manualTarget = options.manualAccountRouting!.routed(manualTarget,
+                    { account: poolSelection.route.account, identity: poolSelection.identity });
+                }
                 if (frozenTarget && !poolSelection) throw new PoolError("pool_execution_target_unavailable", 409);
-                poolInput = { body: outgoing, headers: new Headers(headers), verifiedSource };
+                poolInput = { body: outgoing, headers: new Headers(headers), verifiedSource,
+                  ...(interactivePool ? { nativeHistory: true as const } : {}) };
                 if (poolSelection) {
                   selectedGuard = bindSelectedGuard(poolSelection);
                   headers = poolSelection.headers; event.accountRouting = poolSelection.route;
@@ -565,7 +571,9 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
             guardModel = manualTarget.choice.model;
           }
         }
-        if (interactive && !poolSelection && !frozenTarget && !manualTarget && options.sourceHistoryGuard) {
+        // Model discovery has no conversation history to continue. A foreign
+        // thread binding must not veto the authenticated source's model list.
+        if (interactive && !metadataRequest && !poolSelection && !frozenTarget && !manualTarget && options.sourceHistoryGuard) {
           const source = options.subscriptionGuard!.checkIdentity({ headers: sourceHeaders });
           if (source.account && source.sourceIdentity) try {
             await options.sourceHistoryGuard({ account: source.account, identity: source.sourceIdentity, headers: sourceHeaders, signal: request.signal });
@@ -596,15 +604,16 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
         if (selectingAccount || error instanceof PoolError) {
           const code = error instanceof PoolError ? error.code : "pool_request_rejected";
           const status = error instanceof PoolError ? error.status : 503;
+          const historyDiagnostic = error instanceof PoolError && error.historyFailure ? { historyFailure: error.historyFailure } : {};
           rejectedRequests++;
-          if (event) record({ ...event, phase: "failed", status, errorCode: code, failureOrigin: "relay", at: new Date().toISOString(),
+          if (event) record({ ...event, ...historyDiagnostic, phase: "failed", status, errorCode: code, failureOrigin: "relay", at: new Date().toISOString(),
             durationMs: Math.round(performance.now() - started), retryCount: 0 });
           void accountPool?.rejectAsync(code, event ? { requestId: event.requestId, threadId: event.threadId, status } : undefined).catch(() => {});
           const responseHeaders = new Headers();
           if (error instanceof PoolError && error.retryAfterSeconds != null)
             responseHeaders.set("retry-after", String(error.retryAfterSeconds));
           return Response.json({ error: { message: error instanceof PoolError ? poolErrorMessage(error) : "QuotaPie account routing is temporarily unavailable. No request was sent to the provider.",
-            type: "quotapie_account_pool", code } }, { status, headers: responseHeaders });
+            type: "quotapie_account_pool", code, ...historyDiagnostic } }, { status, headers: responseHeaders });
         }
         return new Response("Invalid or unsupported request body", { status: 400 });
       }
@@ -729,7 +738,12 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
             try { options.manualAccountRouting?.observe({ threadId: event.threadId, turnId: event.turnId, requestId: event.requestId,
               model: event.to, sourceIdentity: verifiedSource.identity,
               ...(poolSelection ? { target: { account: poolSelection.route.account, identity: poolSelection.identity } } : {}),
-              sourceContinuation: !poolSelection && !frozenTarget }); } catch { /* Observation cannot interrupt an unchanged source request. */ }
+              sourceContinuation: !frozenTarget && (!poolSelection || poolSelection.route.account === poolSelection.route.sourceAccount) }); }
+            catch (error) {
+              // A cross-account response needs durable turn ownership before it
+              // can produce native tools. An unchanged source needs no migration.
+              if (poolSelection && poolSelection.route.account !== poolSelection.route.sourceAccount) throw error;
+            }
           }
           // Attribute the credentials actually sent, including unchanged source
           // requests that never enter AccountPool. Do not persist tokens or IDs.
@@ -756,15 +770,23 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
         // exhausted. Forward its error without poisoning later model requests.
         if (!metadataRequest && !searchRequest) (selectedGuard ?? options.subscriptionGuard)?.observeResponse?.(status);
         const cooldownRecorded = await recordPoolResponse(response);
-        // A rejected HTTP request has produced no model output. Retry once with
-        // complete portable history; never retry a 200 stream or partial output.
-        if (!frozenTarget && !manualTarget && (!options.subscriptionGuard || interactive && poolSelection) && status === 429 && cooldownRecorded && poolSelection && poolInput && event && !finished && !cancellation.signal.aborted) {
+        // A rejected HTTP request has produced no model output. Try each account
+        // at most once; never replay a 200 stream or partial output. A manual
+        // preference uses the same validated native history as its first attempt.
+        const attemptedAccounts = new Set<string>();
+        let recoveryRecorded = cooldownRecorded;
+        while (!frozenTarget && (!options.subscriptionGuard || interactive && poolSelection) && status === 429 && recoveryRecorded && poolSelection && poolInput && event && !finished && !cancellation.signal.aborted) {
+          if (attemptedAccounts.has(poolSelection.route.account) || attemptedAccounts.size >= 32) break;
+          attemptedAccounts.add(poolSelection.route.account);
           let replacement: ReturnType<AccountPool["select"]> = null;
           const nextId = randomUUID();
           try {
-            if (await accountPool!.canRecoverAsync(poolSelection.route.account, event.to, poolInput.body, cancellation.signal))
+            if (manualTarget || poolInput.nativeHistory || await accountPool!.canRecoverAsync(poolSelection.route.account, event.to, poolInput.body, cancellation.signal))
               replacement = await accountPool!.selectAsync({ threadId: event.threadId, requestId: nextId,
-                body: poolInput.body, model: event.to, headers: poolInput.headers, verifiedSource: poolInput.verifiedSource }, cancellation.signal);
+                body: poolInput.body, model: event.to, headers: poolInput.headers, verifiedSource: poolInput.verifiedSource,
+                ...(poolInput.nativeHistory ? { nativeHistory: true as const } : {}),
+                ...(manualTarget ? { fixedTarget: { account: manualTarget.account.id, identity: manualTarget.account.identity,
+                  preserveNativeHistory: true as const, manual: true as const } } : {}) }, cancellation.signal);
           } catch { /* Preserve the original 429 when safe recovery is unavailable. */ }
           if (finished || cancellation.signal.aborted) {
             if (replacement) await accountPool!.rollbackUnsentAsync(nextId).catch(() => {});
@@ -772,7 +794,14 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
             return new Response(null, { status: 499 });
           }
           let replacementGuard: SubscriptionGuard | undefined;
-          if (replacement?.route.reason === "recovered") try { replacementGuard = bindSelectedGuard(replacement); }
+          if (replacement && attemptedAccounts.has(replacement.route.account)) {
+            await accountPool!.rollbackUnsentAsync(nextId).catch(() => {}); replacement = null;
+          }
+          if (replacement?.route.reason === "recovered") try {
+            replacementGuard = bindSelectedGuard(replacement);
+            if (manualTarget) manualTarget = options.manualAccountRouting!.routed(manualTarget,
+              { account: replacement.route.account, identity: replacement.identity });
+          }
           catch { await accountPool!.rollbackUnsentAsync(nextId).catch(() => {}); replacement = null; }
           if (replacement?.route.reason === "recovered") {
             emit("failed", "account_rate_limited");
@@ -782,8 +811,12 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
               await accountPool!.rollbackUnsentAsync(nextId).catch(() => {});
               return new Response(null, { status: 499 });
             }
+            const originalEncoding = headers.get("content-encoding");
             poolSelection = replacement; headers = replacement.headers; selectedGuard = replacementGuard; upstreamAttempted = false;
-            headers.delete("content-encoding"); body = JSON.stringify(replacement.body);
+            if (manualTarget || replacement.body === poolInput.body) {
+              if (originalEncoding) headers.set("content-encoding", originalEncoding);
+              else headers.delete("content-encoding");
+            } else { headers.delete("content-encoding"); body = JSON.stringify(replacement.body); }
             event = { ...event, requestId: nextId, accountRouting: replacement.route };
             retryCount++; status = 0; receivedResponse = false; responseRequestIds = undefined; emit("started");
             response = await fetchCodexUpstream(guardedFetch, `${UPSTREAM}${path}${url.search}`, {
@@ -793,7 +826,11 @@ export function createCompactionHandler(options: CompactionProxyOptions = {}) {
             status = response.status;
             responseRequestIds = upstreamRequestIds(response.headers);
             (selectedGuard ?? options.subscriptionGuard)?.observeResponse?.(status);
-            await recordPoolResponse(response);
+            recoveryRecorded = await recordPoolResponse(response);
+          }
+          else {
+            if (replacement) await accountPool!.rollbackUnsentAsync(nextId).catch(() => {});
+            break;
           }
         }
         if (finished) { await response.body?.cancel(); return guardFailure

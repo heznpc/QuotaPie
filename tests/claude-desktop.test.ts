@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, loadConfig } from "../src/config";
 import { saveClaudeDesktopConnection } from "../src/claude-desktop-connection";
-import { ClaudeDesktopError, mapClaudeDesktopUsage, readClaudeDesktop } from "../src/providers/claude-desktop";
+import { ClaudeDesktopError, claudeDesktopIdentityKey, mapClaudeDesktopUsage, readClaudeDesktop } from "../src/providers/claude-desktop";
+import { readClaudeAccess, saveClaudeAccess } from "../src/claude-access";
 import { QuotaDatabase } from "../src/db";
 import { QuotaPieService } from "../src/service";
 import { startDashboard } from "../src/server";
@@ -13,6 +14,7 @@ import { jobProfile } from "../src/jobs/runner";
 import { inspectWorkTarget } from "../src/work/runtime";
 import { planTriggers } from "../src/triggers";
 import { ACCOUNT_PLAN_KINDS } from "../src/types";
+import { classifyDelta } from "../src/classify";
 
 const identity = { accountId: "11111111-1111-4111-8111-111111111111", organizationId: "22222222-2222-4222-8222-222222222222" };
 const otherIdentity = { ...identity, accountId: "33333333-3333-4333-8333-333333333333" };
@@ -33,6 +35,80 @@ function fixture(read: (connect: boolean) => Promise<unknown>) {
 }
 
 describe("Claude desktop adapter", () => {
+  test("local session proof is bound to the collected account and removed after failure", async () => {
+    const fingerprint = "a".repeat(64);
+    let response: unknown = { ...success(), sessionFingerprint: fingerprint };
+    const f = fixture(async () => response);
+    try {
+      const result = await f.service.connectClaudeDesktop(f.path);
+      const state = () => f.service.quotaAccounts().find(item => item.account === result.account.account)!;
+      expect(state().desktopSessionFingerprint).toBe(fingerprint);
+      const restarted = new QuotaPieService(loadConfig(f.path), new QuotaDatabase(f.databasePath), { quota: null, workState: null });
+      try { expect(restarted.quotaAccounts().find(item => item.account === result.account.account)!.desktopSessionFingerprint).toBe(fingerprint); }
+      finally { await restarted.close(); }
+      response = { ok: false, category: "account-mismatch" };
+      await f.service.pollClaudeDesktop(Date.now() + 300_001);
+      expect(state().desktopSessionFingerprint).toBeUndefined();
+      const oldHelper = await readClaudeDesktop(false, { read: async () => success() });
+      expect(oldHelper.sessionFingerprint).toBeUndefined();
+      const malformed = await readClaudeDesktop(false, { read: async () => ({ ...success(), sessionFingerprint: "raw-cookie" }) });
+      expect(malformed.sessionFingerprint).toBeUndefined();
+    } finally { await f.close(); }
+  });
+  test("quota refresh keeps app inspection evidence at its original timestamp and account identity", async () => {
+    const key=claudeDesktopIdentityKey(identity);
+    saveClaudeAccess({identity:key,observedAtMs:100,checks:[{id:"projects",result:"empty",source:"app",observedAtMs:100,count:0}]});
+    const f=fixture(async()=>({...success({...usage,cedar_ember:{eligible:false,grants:[]}}),plan:"team",access:{organizationName:"Example",role:"member",email:"member@example.com"}}));
+    try {
+      await f.service.connectClaudeDesktop(f.path);
+      const report=readClaudeAccess(key)!;
+      expect(report.organizationName).toBe("Example");
+      expect(report.checks.find(c=>c.id==="projects")).toMatchObject({source:"app",observedAtMs:100});
+      expect(report.checks.find(c=>c.id==="resets")).toMatchObject({source:"api",result:"empty",count:0});
+      expect(report.checks.find(c=>c.id==="quota")!.observedAtMs).toBeGreaterThan(100);
+      expect(readClaudeAccess(claudeDesktopIdentityKey(otherIdentity))).toBeUndefined();
+    } finally {await f.close();}
+  });
+  const grant = { id: "launch-team", resets_total: 1, resets_left: 1,
+    starts_at: "2030-01-01T00:00:00Z", ends_at: "2030-01-02T16:00:00Z",
+    usable_now: false, claimable: true, paused: false, clears: ["five_hour", "seven_day"], blocking: ["at_limit"] };
+
+  test("reset records retain server decisions independently of the remaining count", () => {
+    const item = mapClaudeDesktopUsage({ ...usage, cedar_ember: { eligible: true, grants: [grant], email: "private" } }, "bound")[0]!;
+    expect(item.resetCreditsAvailable).toBe(1);
+    expect(JSON.parse(item.metadata?.claudeResetGrantJSON as string)).toMatchObject({ source: "claude-usage.cedar_ember", state: "reported", grants: [grant] });
+    expect(JSON.stringify(item)).not.toContain("private");
+    for (const payload of [usage, { ...usage, cedar_ember: null }])
+      expect(mapClaudeDesktopUsage(payload, "bound")[0]!.resetCreditsAvailable).toBeUndefined();
+    for (const malformed of [{ ...grant, resets_left: true }, { ...grant, resets_left: 2 }, { ...grant, usable_now: "true" }])
+      expect(() => mapClaudeDesktopUsage({ ...usage, cedar_ember: { grants: [malformed] } }, "bound")).toThrow(ClaudeDesktopError);
+  });
+
+  test("only a decrease on the same grant proves reset-ticket use; disappearance does not", () => {
+    const before = mapClaudeDesktopUsage({ ...usage, cedar_ember: { grants: [grant] } }, "bound", 1000)[0]!;
+    for (const state of [null, { grants: [] }, { grants: [{ ...grant, id: "replacement", resets_left: 0 }] }]) {
+      const after = mapClaudeDesktopUsage({ ...usage, cedar_ember: state }, "bound", 2000)[0]!;
+      expect(classifyDelta(before, after, DEFAULT_CONFIG).some(event => event.kind === "banked_reset_consumed")).toBe(false);
+    }
+    const after = mapClaudeDesktopUsage({ five_hour: { utilization: 0 }, cedar_ember: { grants: [{ ...grant, resets_left: 0, usable_now: false }] } }, "bound", 2000)[0]!;
+    expect(classifyDelta(before, after, DEFAULT_CONFIG).find(event => event.kind === "banked_reset_consumed")?.details)
+      .toMatchObject({ countBefore: 1, countAfter: 0, quotaRecovered: true });
+  });
+
+  test("desktop collection persists reset source and grant evidence alongside identity", async () => {
+    const f = fixture(async () => success({ ...usage, cedar_ember: { eligible: true, grants: [grant] } }));
+    try {
+      await f.service.connectClaudeDesktop(f.path);
+      const database = new QuotaDatabase(f.databasePath);
+      try {
+        const item = database.latestAll().find(item => item.provider === "claude")!;
+        expect(item.resetCreditsAvailable).toBe(1);
+        expect(item.metadata?.desktopIdentity).toBeDefined();
+        expect(JSON.parse(item.metadata?.claudeResetGrantJSON as string)).toMatchObject({ grants: [grant] });
+      } finally { database.close(); }
+    } finally { await f.close(); }
+  });
+
   test("plan metadata is allowlisted and absent numeric limits never imply a Free plan", async () => {
     for (const plan of ACCOUNT_PLAN_KINDS) {
       const result = await readClaudeDesktop(false, { read: async () => ({ ...success({ limits: [] }), plan }) });

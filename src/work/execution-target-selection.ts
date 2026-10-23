@@ -8,6 +8,7 @@ export interface ExecutionTargetAccounts {
   pool: PoolPolicy; accounts: PoolAccount[]; windows: WindowAnalysis[];
   binding(account: string): { profileKey: string; accountKey: string } | null;
   sessionOwner?(policy: WorkPolicy): {account:string;profileKey:string;accountKey:string;identity:string;manifestSHA256?:string}|null;
+  continuationAccount?(policy: WorkPolicy): string;
   nowMs: number; maxAgeMs: number;
 }
 
@@ -30,17 +31,19 @@ function selectTarget(source:WorkPolicy,input:ExecutionTargetAccounts,localRepai
   const owner=input.sessionOwner?.(source);
   if(input.sessionOwner && !owner)return null;
   const consolidated=!!owner&&owner.account!==source.account;
+  const continuation = input.continuationAccount?.(source) ?? owner?.account ?? source.account;
+  const foreignContinuation = continuation !== (owner?.account ?? source.account);
   if(consolidated && !/^[a-f0-9]{64}$/.test(owner.manifestSHA256??""))return null;
   const sourceWindows = workWindows(source, input.windows);
   // Missing/stale source evidence alone never authorizes a different identity.
-  if (!localRepair && !consolidated && !sourceWindows.some(w => w.quality === "authoritative" && w.freshness === "fresh" &&
+  if (!localRepair && !consolidated && !foreignContinuation && !sourceWindows.some(w => w.quality === "authoritative" && w.freshness === "fresh" &&
       w.observedAtMs <= input.nowMs && input.nowMs - w.observedAtMs <= input.maxAgeMs &&
       (w.remainingPercent === 0 || w.metadata?.ordinaryUsageAllowed === false || w.metadata?.spendControlReached === true))) return null;
   const origin = input.accounts.find(a => a.id === (owner?.account??source.account)), consent=input.accounts.find(a=>a.id===source.account), sourceBinding = input.binding(source.account);
   if (!origin || !consent || !sourceBinding || sourceBinding.profileKey !== source.profileKey || sourceBinding.accountKey !== source.accountKey ||
       owner&&(origin.identity!==owner.identity || !input.pool.accounts.includes(owner.account))) return null;
   for (const account of input.accounts.filter(a => (localRepair || consolidated || a.id !== source.account) && input.pool.accounts.includes(a.id))
-    .sort((a,b) => (b.remaining ?? -1) - (a.remaining ?? -1))) {
+    .sort((a,b) => Number(foreignContinuation && b.id === continuation) - Number(foreignContinuation && a.id === continuation) || (b.remaining ?? -1) - (a.remaining ?? -1))) {
     const binding = input.binding(account.id);
     if (!binding || account.id !== (owner?.account??source.account) && account.identity === origin.identity || account.tokenExpiresAt <= input.nowMs + 30_000 ||
         !account.models.includes(source.model) || account.validUntil <= input.nowMs || account.remaining === null || account.remaining <= 0) continue;
